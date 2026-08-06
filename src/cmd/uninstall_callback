@@ -1,0 +1,7 @@
+#!/bin/bash
+# Default uninstall keeps configuration, cache and user-selected music folders.
+# If fnOS passes wizard_uninstall_mode=purge, fnAudio app data is removed too.
+if [ "${wizard_uninstall_mode:-keep}" = "purge" ] || [ "${FNAUDIO_PURGE:-0}" = "1" ]; then
+  rm -rf "${TRIM_PKGETC}" "${TRIM_PKGVAR}" 2>/dev/null || true
+fi
+exit 0

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime data
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+transcode/
+metadata/
+mpd.log
+mpd.pid
+info.log
+app.pid
+
+# Secrets and local configuration
+config.json
+.env
+.env.*
+
+# Build and package outputs
+*.fpk
+*.tgz
+*.tar.gz
+*.apk
+artifacts/*/*.fpk
+artifacts/*/stage/
+artifacts/*/_inspect/
+artifacts/excluded-generated-cache/
+
+# Local inspection output
+builds/
+$inspect/
+tmp-*/
+
+# Cached third-party repositories; their fixed revisions are documented in references/.
+references/FNOS-API-upstream/
+references/libmpdclient/
+
+# Editor and OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
