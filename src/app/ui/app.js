@@ -3964,19 +3964,7 @@ function setMobileNavigation(open) {
   backdrop.hidden = !open;
   button.setAttribute("aria-expanded", String(open));
 }
-function handleMobileBack() {
-  const groupBack = document.querySelector("[data-group-back]");
-  const creatorRootBack = document.querySelector("[data-creator-root-back]");
-  const folderCrumbs = [...document.querySelectorAll("[data-folder-crumb-root]")];
-  if (groupBack) groupBack.click();
-  else if (creatorRootBack) creatorRootBack.click();
-  else if (folderCrumbs.length > 1) folderCrumbs[folderCrumbs.length - 2].click();
-  else if (folderCrumbs.length === 1) folderCrumbs[0].click();
-  else if (state.view !== "all") setView("all");
-  setMobileNavigation(false);
-}
 $("mobileNavBtn").onclick = () => setMobileNavigation(!document.querySelector(".sidebar")?.classList.contains("mobile-open"));
-$("mobileBackBtn").onclick = handleMobileBack;
 $("mobileNavBackdrop").onclick = () => setMobileNavigation(false);
 document.querySelectorAll(".nav-item[data-view]").forEach(button => {
   button.addEventListener("click", () => setMobileNavigation(false));
