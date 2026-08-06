@@ -1,0 +1,11 @@
+{
+  ".url": {
+    "fnaudio.Application": {
+      "title": "fnAudio",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "url": "/cgi/ThirdParty/fnaudio/index.cgi/",
+      "allUsers": true
+    }
+  }
+}

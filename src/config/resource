@@ -1,0 +1,15 @@
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "fnaudio/music"
+      },
+      {
+        "name": "fnaudio/data"
+      }
+    ]
+  },
+  "api-scope": [
+    "trim.file.sharedAccess"
+  ]
+}

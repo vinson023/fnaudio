@@ -1,0 +1,168 @@
+#!/bin/bash
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+PYTHON_BIN="/var/apps/python312/target/bin/python3"
+if [ -f "${TRIM_APPDEST}/target/server/server.py" ]; then
+  APP_ROOT="${TRIM_APPDEST}/target/server"
+elif [ -f "${TRIM_APPDEST}/server/server.py" ]; then
+  APP_ROOT="${TRIM_APPDEST}/server"
+else
+  APP_ROOT="${TRIM_APPDEST}/target/server"
+fi
+SERVER_PORT="18080"
+if [ -f "${TRIM_PKGETC}/config.json" ]; then
+  configured_port="$(sed -n 's/.*"server_port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${TRIM_PKGETC}/config.json" | head -n 1)"
+  case "${configured_port}" in
+    ''|*[!0-9]*) ;;
+    *) SERVER_PORT="${configured_port}" ;;
+  esac
+fi
+UI_ROOT="${TRIM_APPDEST}/target/ui"
+if [ ! -d "${UI_ROOT}" ] && [ -d "${TRIM_APPDEST}/ui" ]; then
+  UI_ROOT="${TRIM_APPDEST}/ui"
+fi
+mkdir -p "${UI_ROOT}" 2>/dev/null || true
+for manifest in /var/apps/fnaudio/manifest "${TRIM_APPDEST}/manifest"; do
+  if [ -f "${manifest}" ]; then
+    "${PYTHON_BIN}" - "${manifest}" "${SERVER_PORT}" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+port = int(sys.argv[2])
+try:
+    lines = path.read_text(encoding="utf-8").splitlines(True)
+except OSError:
+    raise SystemExit(0)
+updated = False
+out = []
+for line in lines:
+    if line.lstrip().startswith("service_port"):
+        newline = "\r\n" if line.endswith("\r\n") else "\n"
+        out.append(f"service_port          = {port}{newline}")
+        updated = True
+    else:
+        out.append(line)
+if not updated:
+    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+    out.append(f"service_port          = {port}{newline}")
+path.write_text("".join(out), encoding="utf-8")
+PY
+  fi
+done
+printf '{"server_port":%s}\n' "${SERVER_PORT}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
+CMD="TRIM_API_TOKEN=\"\${TRIM_API_TOKEN:-}\" ${PYTHON_BIN} ${APP_ROOT}/server.py --host 0.0.0.0 --port ${SERVER_PORT} --config ${TRIM_PKGETC}/config.json"
+
+log_msg() {
+  mkdir -p "${TRIM_PKGVAR}"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+check_process() {
+  kill -0 "$1" 2>/dev/null
+}
+
+port_ready() {
+  "${PYTHON_BIN}" - "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+port = int(sys.argv[1])
+with socket.create_connection(("127.0.0.1", port), timeout=1):
+    pass
+PY
+}
+
+status() {
+  if [ -f "${PID_FILE}" ]; then
+    pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+    if check_process "${pid}"; then return 0; fi
+    rm -f "${PID_FILE}"
+  fi
+  return 1
+}
+
+start_process() {
+  if status; then return 0; fi
+  mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
+  if [ ! -x "${PYTHON_BIN}" ]; then
+    log_msg "Python runtime not found: ${PYTHON_BIN}"
+    return 1
+  fi
+  if [ ! -f "${APP_ROOT}/server.py" ]; then
+    log_msg "Application server not found: ${APP_ROOT}/server.py"
+    return 1
+  fi
+  if [ -n "${TRIM_API_TOKEN:-}" ]; then
+    log_msg "Starting fnAudio with fnOS API token available"
+  else
+    log_msg "Starting fnAudio without fnOS API token"
+  fi
+  nohup bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
+  printf "%s" "$!" > "${PID_FILE}"
+  for i in $(seq 1 12); do
+    port_ready "${SERVER_PORT}" && return 0
+    if ! check_process "$!"; then
+      log_msg "fnAudio server exited during startup; see log above"
+      rm -f "${PID_FILE}"
+      return 1
+    fi
+    sleep 0.5
+  done
+  log_msg "fnAudio server process started but TCP port ${SERVER_PORT} is not ready yet"
+}
+
+stop_process() {
+  # Stop the supervisor first. Otherwise it can immediately restart MPD while
+  # this script is trying to terminate the existing child process.
+  if [ -f "${PID_FILE}" ]; then
+    pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+    if check_process "${pid}"; then
+      kill -TERM "${pid}" 2>/dev/null || true
+      for i in $(seq 1 10); do
+        check_process "${pid}" || break
+        sleep 1
+      done
+      check_process "${pid}" && kill -KILL "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${PID_FILE}"
+  fi
+
+  stop_mpd_pid() {
+    candidate="$1"
+    case "${candidate}" in
+      ''|*[!0-9]*) return 0 ;;
+    esac
+    if kill -0 "${candidate}" 2>/dev/null; then
+      kill -TERM "${candidate}" 2>/dev/null || true
+      for i in $(seq 1 5); do
+        kill -0 "${candidate}" 2>/dev/null || break
+        sleep 1
+      done
+      kill -KILL "${candidate}" 2>/dev/null || true
+    fi
+  }
+
+  mpd_pid_file="${TRIM_APPDEST}/share/mpd/mpd.pid"
+  if [ -f "${mpd_pid_file}" ]; then
+    mpd_pid="$(head -n 1 "${mpd_pid_file}" | tr -d '[:space:]')"
+    stop_mpd_pid "${mpd_pid}"
+  fi
+
+  # A stale PID file must not leave a private MPD process playing after the
+  # application is stopped. The pattern is specific to fnAudio's MPD config,
+  # so system MPD instances are never touched.
+  for proc in /proc/[0-9]*; do
+    [ -r "${proc}/cmdline" ] || continue
+    cmdline="$(tr '\000' ' ' < "${proc}/cmdline" 2>/dev/null)"
+    case "${cmdline}" in
+      *"mpd"*"fnaudio"*"mpd.conf"*) stop_mpd_pid "${proc##*/}" ;;
+    esac
+  done
+  rm -f "${mpd_pid_file}" 2>/dev/null || true
+}
+
+case "$1" in
+  start) start_process ;;
+  stop) stop_process ;;
+  status) status && exit 0 || exit 3 ;;
+  *) exit 1 ;;
+esac

@@ -1,0 +1,38 @@
+#!/bin/bash
+PYTHON_BIN="/var/apps/python312/target/bin/python3"
+"${PYTHON_BIN}" - <<'PY'
+import json
+import os
+
+appdest = os.environ.get("TRIM_APPDEST", "")
+pkgetc = os.environ.get("TRIM_PKGETC", "")
+config_path = os.path.join(pkgetc, "config.json")
+
+port = 18080
+try:
+    with open(config_path, encoding="utf-8") as fh:
+        config = json.load(fh)
+    port = int(config.get("server_port") or 18080)
+except Exception:
+    port = 18080
+
+items = [{
+    "type": "text",
+    "field": "wizard_server_port",
+    "label": "TCP 服务端口",
+    "initValue": str(port),
+    "helpText": "默认 18080；如果端口被占用，请换一个未占用端口。",
+    "rules": [{"required": True, "message": "请输入 TCP 端口"}],
+}]
+
+payload = [{"stepTitle": "运行设置", "items": items}]
+for rel in ("wizard/config", "target/wizard/config"):
+    target = os.path.join(appdest, rel)
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+PY
+exit 0

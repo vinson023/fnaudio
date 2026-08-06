@@ -1,0 +1,37 @@
+fnAudio 0.1.148 FPK content summary
+===================================
+
+Package: fnaudio-0.1.148.fpk
+Outer archive:
+- app.tgz
+- cmd/: main plus install, upgrade, config, and uninstall lifecycle scripts
+- config/: privilege and resource declarations
+- ICON.PNG and ICON_256.PNG
+- manifest
+- wizard/: install, config, and uninstall definitions
+
+Inner app.tgz payload: 110 entries
+- server/: Python HTTP service, music library, state, metadata, transcode,
+  playback, DLNA, and service-management modules
+- ui/: index.html, app.js, app.css, CGI proxy, desktop config, images, and
+  fnOS vendor bridge
+- target/bin/mpd and target/lib/: private MPD runtime and dynamic libraries
+- bin/, www/, and app-level config/ compatibility directories
+
+Required verified entries:
+- server/server.py
+- ui/index.html
+- ui/index.cgi
+- ui/cgi_proxy.py
+- ui/config
+- ui/vendor/trim-web-app.js
+- target/bin/mpd
+- target/lib/libmpdclient.so.2
+
+Excluded from the app payload:
+- tests/
+- builds/
+- transcode/
+- __pycache__/
+- *.pyc
+- *.sqlite3

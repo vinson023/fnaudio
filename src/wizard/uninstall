@@ -1,0 +1,24 @@
+[
+  {
+    "stepTitle": "卸载选项",
+    "items": [
+      {
+        "type": "select",
+        "field": "wizard_uninstall_mode",
+        "label": "【危险】数据处理",
+        "helpText": "警告：选择删除数据会清理 fnAudio 的配置、数据库和缓存；不会删除你的音乐文件。",
+        "initValue": "keep",
+        "options": [
+          {
+            "label": "仅卸载应用，保留配置和缓存",
+            "value": "keep"
+          },
+          {
+            "label": "【危险】卸载应用并删除 fnAudio 配置和缓存",
+            "value": "purge"
+          }
+        ]
+      }
+    ]
+  }
+]

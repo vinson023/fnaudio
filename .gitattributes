@@ -1,0 +1,20 @@
+# fnOS scripts and application sources must retain Unix line endings.
+* text=auto eol=lf
+
+# Binary assets must not be line-ending normalized.
+*.png binary
+*.PNG binary
+*.exe binary
+*.so binary
+*.fpk binary
+*.tgz binary
+*.apk binary
+
+# Existing Markdown uses two trailing spaces for explicit hard line breaks.
+*.md whitespace=-trailing-space
+*.txt whitespace=-trailing-space
+
+# Preserve the current source snapshot without whitespace-only rewrites.
+*.py whitespace=-blank-at-eof
+*.js whitespace=-blank-at-eof
+*.html whitespace=-blank-at-eof
