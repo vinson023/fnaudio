@@ -1310,12 +1310,12 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
     padding:7px 10px!important;
     background:#fff!important;
   }
-  .pager-inner{display:flex!important;min-height:38px!important;gap:8px!important}
-  .pager-nav{display:flex!important;align-items:center!important;gap:2px!important;min-width:0!important}
+  .pager-inner{display:flex!important;width:100%!important;min-height:38px!important;justify-content:center!important;gap:0!important;margin:0!important}
+  .pager-nav{display:flex!important;width:100%!important;min-width:0!important;align-items:center!important;justify-content:center!important;gap:2px!important;margin:0 auto!important}
   .pager-nav-button{display:grid!important;place-items:center!important;width:32px!important;height:32px!important;padding:0!important;border:0!important;border-radius:5px!important;background:transparent!important;color:#536174!important}
   .pager-nav-button:disabled{opacity:.35!important;cursor:not-allowed!important}
   .pager-nav-button svg{width:18px!important;height:18px!important;fill:none!important;stroke:currentColor!important;stroke-width:2!important;stroke-linecap:round!important;stroke-linejoin:round!important}
-  .pager-page-summary{min-width:76px!important;text-align:center!important;white-space:nowrap!important;color:#697386!important;font-size:12px!important;line-height:32px!important}
+  .pager-page-summary{flex:0 0 auto!important;width:auto!important;min-width:76px!important;text-align:center!important;white-space:nowrap!important;color:#697386!important;font-size:12px!important;line-height:32px!important}
   .pager-status{display:none!important}
   .lyrics-view{
     bottom:var(--fn-player-height)!important;
@@ -1404,6 +1404,8 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .mobile-library-search svg{width:18px!important;height:18px!important;flex:0 0 18px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important}
   .mobile-library-search input{height:100%!important;font-size:14px!important;line-height:normal!important}
   .mobile-library-search input::-webkit-search-cancel-button{opacity:.62!important}
+  body.mobile-search-active .player{display:none!important}
+  body.mobile-search-active .content{height:calc(100dvh - 60px)!important;contain:layout paint!important;transition:none!important}
   .pager{display:none!important}
   .pager.mobile-visible{display:block!important}
 }

@@ -3985,7 +3985,16 @@ function handleSearchInput(source) {
 }
 $("searchInput").oninput = event => handleSearchInput(event.currentTarget);
 const mobileSearchInput = $("mobileSearchInput");
-if (mobileSearchInput) mobileSearchInput.oninput = event => handleSearchInput(event.currentTarget);
+function setMobileSearchFocusState(active) {
+  const enabled = Boolean(active) && window.matchMedia("(max-width: 760px)").matches;
+  document.body.classList.toggle("mobile-search-active", enabled);
+  requestAnimationFrame(updateMobilePagerVisibility);
+}
+if (mobileSearchInput) {
+  mobileSearchInput.oninput = event => handleSearchInput(event.currentTarget);
+  mobileSearchInput.addEventListener("focus", () => setMobileSearchFocusState(true));
+  mobileSearchInput.addEventListener("blur", () => setMobileSearchFocusState(false));
+}
 $("playAllBtn").onclick = playAll;
 $("mobileColumnsBtn").onclick = openColumnsDialog;
 $("closeColumnsDialog").onclick = () => $("columnsDialog").close();
