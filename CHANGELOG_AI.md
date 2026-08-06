@@ -1,5 +1,15 @@
 # fnAudio AI 修改记录
 
+## 2026-08-06：`0.1.161` 虚拟键盘直接覆盖固定播放器
+
+- 目标：让移动端输入法直接覆盖底部歌曲信息和播放控制区域，避免隐藏恢复逻辑及播放器随键盘移动造成的掉帧。
+- 修改：搜索期间播放器始终保持 `position:fixed` 和 `display:grid`；保留 viewport 的 `interactive-widget=overlays-content`，并在 WebView 支持时设置 `navigator.virtualKeyboard.overlaysContent = true`，不支持或拒绝写入时安全降级。
+- 性能：搜索聚焦期间暂停歌曲信息跑马灯、阴影和过渡，并跳过跑马灯尺寸及移动分页位置测量；失焦后统一恢复一次，避免键盘动画中的同步布局读取。
+- 文件：`src/app/ui/app.css`、`src/app/ui/app.js`、`src/app/ui/index.html`、`src/tests/test_ui_mobile_layout.js`、`VERSION`、`src/manifest`，以及 `artifacts/0.1.161/` 和项目恢复文档。
+- 本地验证：50 个 Python 单元测试、JavaScript 语法检查、队列/专辑列回归、移动布局回归和 FPK 结构校验均通过；包外层 18 个文件、运行时 97 个文件，未包含测试、数据库或 Python 缓存。
+- 版本与产物：`0.1.161`；`artifacts/0.1.161/fnaudio-0.1.161.fpk`，4,879,924 字节，SHA-256 `427CA1E87EB6030413B11453AF6D120D6B113C1B2835A54260F4F060342CB875`。
+- 设备验证：按用户此前要求不代为安装，由用户自行安装测试；输入法覆盖模式、动画流畅度和不支持 Virtual Keyboard API 时的降级行为仍需真机确认。
+
 ## 2026-08-06：`0.1.160` 搜索期间保持移动播放器可用
 
 - 目标：修复搜索时隐藏底部歌曲信息和播放控制区域后，部分移动 WebView 无法再次打开播放器的问题。

@@ -886,6 +886,7 @@ function updateFavoriteControls() {
   });
 }
 function updateNowMarquee() {
+  if (document.body.classList.contains("mobile-search-active")) return;
   requestAnimationFrame(() => {
     ["nowTitle", "nowArtist"].forEach(id => {
       const node = $(id);
@@ -1722,6 +1723,7 @@ function renderPager() {
   </div>`;
 }
 function updateMobilePagerVisibility() {
+  if (document.body.classList.contains("mobile-search-active")) return;
   const pager = $("pager");
   const list = $("trackList");
   if (!pager) return;
@@ -3985,11 +3987,26 @@ function handleSearchInput(source) {
 }
 $("searchInput").oninput = event => handleSearchInput(event.currentTarget);
 const mobileSearchInput = $("mobileSearchInput");
+function configureMobileKeyboardOverlay() {
+  if (!window.matchMedia("(max-width: 760px)").matches) return;
+  const virtualKeyboard = navigator.virtualKeyboard;
+  if (!virtualKeyboard || !("overlaysContent" in virtualKeyboard)) return;
+  try {
+    virtualKeyboard.overlaysContent = true;
+  } catch (_) {
+    // Some embedded WebViews expose the property but reject writes.
+  }
+}
 function setMobileSearchFocusState(active) {
   const enabled = Boolean(active) && window.matchMedia("(max-width: 760px)").matches;
   document.body.classList.toggle("mobile-search-active", enabled);
-  requestAnimationFrame(updateMobilePagerVisibility);
+  if (enabled) configureMobileKeyboardOverlay();
+  requestAnimationFrame(() => {
+    updateMobilePagerVisibility();
+    if (!enabled) updateNowMarquee();
+  });
 }
+configureMobileKeyboardOverlay();
 if (mobileSearchInput) {
   mobileSearchInput.oninput = event => handleSearchInput(event.currentTarget);
   mobileSearchInput.addEventListener("focus", () => setMobileSearchFocusState(true));
