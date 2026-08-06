@@ -1,14 +1,14 @@
 # fnAudio 源码范围清单
 
 > 整理日期：2026-08-06  
-> 当前源码版本：`0.1.150`  
+> 当前源码版本：`0.1.153`  
 > 来源：`E:\Codex\fnaudio-0.1.7`
 
 ## 1. 已纳入 `src/`
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/manifest` | 当前 FPK manifest，版本 `0.1.150` |
+| `src/manifest` | 当前 FPK manifest，版本 `0.1.153` |
 | `src/app/server/` | Python 后端及 playback、dlna、services 子包 |
 | `src/app/ui/` | HTML、CSS、JavaScript、CGI、图标和 fnOS vendor 脚本 |
 | `src/app/target/bin/` | 私有 MPD 可执行文件 |
@@ -18,14 +18,14 @@
 | `src/cmd/` | fnOS 生命周期脚本 |
 | `src/config/` | fnOS 权限和资源声明 |
 | `src/wizard/` | 安装、配置和卸载向导 |
-| `src/tests/` | 9 个 Python 测试文件及人工 UI 验证截图/DOM 记录 |
+| `src/tests/` | 9 个 Python 测试文件、2 个 Node 前端回归脚本及人工 UI 验证截图/DOM 记录 |
 | `src/ICON*.PNG`、`src/logo*.svg` | 应用图标和历史 logo 资源 |
 
 整理时统计：
 
-- 当前源码共 137 个文件，约 11.9 MB。
+- 当前源码共 138 个文件，约 11.9 MB。
 - 其中 Python 文件 39 个。
-- 自动化测试为 9 个 Python 文件（50 个单元测试）和 1 个 Node 前端回归脚本。
+- 自动化测试为 9 个 Python 文件（50 个单元测试）和 2 个 Node 前端回归脚本。
 - `src/` 内不包含 `__pycache__`。
 
 ## 2. 已纳入 `docs/history/`
