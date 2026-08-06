@@ -19,7 +19,11 @@ assert.doesNotMatch(app, /function handleMobileBack\(\)/);
 assert.doesNotMatch(app, /\$\("mobileBackBtn"\)/);
 assert.doesNotMatch(app, /querySelector\("\.mobile-library-tabs"\)/);
 assert.match(app, /const mobileSearchInput = \$\("mobileSearchInput"\)/);
-assert.match(app, /if \(mobileSearchInput\) mobileSearchInput\.oninput/);
+assert.match(app, /function setMobileSearchFocusState\(active\)/);
+assert.match(app, /document\.body\.classList\.toggle\("mobile-search-active", enabled\)/);
+assert.match(app, /mobileSearchInput\.addEventListener\("focus", \(\) => setMobileSearchFocusState\(true\)\)/);
+assert.match(app, /mobileSearchInput\.addEventListener\("blur", \(\) => setMobileSearchFocusState\(false\)\)/);
+assert.doesNotMatch(app, /window\.addEventListener\("resize", setMobileSearchFocusState/);
 assert.doesNotMatch(app, /actionButton\("显示歌词", "lyrics"\)/);
 assert.match(app, /if \(pages <= 1\) return "";/);
 assert.match(app, /function updateMobilePagerVisibility\(\)/);
@@ -38,6 +42,11 @@ assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?
 assert.match(css, /\.mobile-library-search\{[\s\S]*?flex:0 0 42px!important;[\s\S]*?margin:8px 10px 6px!important;[\s\S]*?border-radius:10px!important;/);
 assert.match(css, /\.mobile-library-search:focus-within\{[\s\S]*?box-shadow:0 0 0 3px #12b8a816!important/);
 assert.doesNotMatch(css, /\.mobile-menu-back\{/);
+assert.match(css, /\.pager-inner\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
+assert.match(css, /\.pager-nav\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
+assert.match(css, /\.pager-page-summary\{flex:0 0 auto!important;/);
+assert.match(css, /body\.mobile-search-active \.player\{display:none!important\}/);
+assert.match(css, /body\.mobile-search-active \.content\{height:calc\(100dvh - 60px\)!important;/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
 
 console.log("Mobile layout regression checks passed.");

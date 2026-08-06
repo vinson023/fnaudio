@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与发布版本为 `0.1.158`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与发布版本为 `0.1.159`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,7 +8,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.158` |
+| 版本 | `0.1.159` |
 | 平台 | fnOS x86 |
 | 源码目录 | `C:\path\to\fnAudio\src` |
 | 原始来源 | `E:\Codex\fnaudio-0.1.7` |
@@ -18,7 +18,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支并使用 `v0.1.158` 标签标识。FPK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支并使用 `v0.1.159` 标签标识。FPK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除。
 
 ## 接手顺序
 
@@ -42,7 +42,7 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.158 可继续开发源码
+├── src/                       # 0.1.159 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
@@ -79,9 +79,9 @@ Windows 本地验证不能替代 fnOS 真机测试。MPD、FFmpeg、ALSA、USB D
 
 ## 发布说明
 
-当前可安装 FPK 为 `artifacts/0.1.158/fnaudio-0.1.158.fpk`，由 `src/` 通过官方 `fnpack 1.2.3` 直接构建。包的 SHA-256 为 `973795FCA58069CA66CDFE66FDFA168DE8E4E0C63ADD59ACA2E2842DCA379EF2`；构建命令、内容摘要和结构校验见同目录的 `VALIDATION.md`、`PACKAGE_CONTENTS.txt` 与 `SHA256SUMS`。
+当前可安装 FPK 为 `artifacts/0.1.159/fnaudio-0.1.159.fpk`，由 `src/` 通过官方 `fnpack 1.2.3` 直接构建。包的 SHA-256 为 `E20A98721E436D6497C19FD0AA15E3B27AD495E8BB180C9B225E8ED9A467CB43`；构建命令、内容摘要和结构校验见同目录的 `VALIDATION.md`、`PACKAGE_CONTENTS.txt` 与 `SHA256SUMS`。
 
-该包已完成本地源码测试和归档结构校验，设备端由用户自行安装测试。移动搜索栏已放回主页面列表顶部，采用独立圆角搜索框和聚焦高亮；左上角更多菜单中的返回按钮及专用处理逻辑已移除。
+该包已完成本地源码测试和归档结构校验，设备端由用户自行安装测试。移动分页按钮组已整行居中；搜索框获得焦点时播放器会立即隐藏并释放高度，失焦后恢复，避免输入法动画推动固定播放器造成卡顿。
 
 当前设备音乐库为 0 项，故本轮未用真实长列表验证触控滚动、分页操作、歌词实际播放状态或“从当前开始播放全部歌曲”全流程。全新安装、端口变更、停止/启动、两种卸载、USB DAC、移动 WebView 生命周期和 DLNA 互操作也尚未完成，不能据此宣称已完成完整设备端发布验证。
 
