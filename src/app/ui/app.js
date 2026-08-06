@@ -1705,6 +1705,7 @@ function renderPager() {
   if (!isClientPagedView() && (!isPagedLibraryView() || (!isPagedTrackListing() && !isPagedGroupListing()))) return "";
   const total = Math.max(0, Number(isClientPagedView() ? clientPagedTotal() : state.pageTotal || 0));
   const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if (pages <= 1) return "";
   const page = Math.min(Math.max(1, Number(state.page) || 1), pages);
   const prevDisabled = page <= 1 ? "disabled" : "";
   const nextDisabled = page >= pages ? "disabled" : "";
@@ -1719,6 +1720,25 @@ function renderPager() {
     </div>
     <div class="pager-status"><span>共 ${total} ${unit}</span><button class="pager-refresh-button" type="button" data-refresh-library title="刷新音乐库" aria-label="刷新音乐库"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.4 9A7 7 0 0 0 6.2 6.8L4 9"/><path d="M5.6 15a7 7 0 0 0 12.2 2.2L20 15"/></svg></button></div>
   </div>`;
+}
+function updateMobilePagerVisibility() {
+  const pager = $("pager");
+  const list = $("trackList");
+  if (!pager) return;
+  const hasPager = Boolean(pager.querySelector(".pager-inner"));
+  if (!hasPager || !window.matchMedia("(max-width: 760px)").matches) {
+    pager.classList.toggle("mobile-visible", hasPager);
+    return;
+  }
+  const atBottom = !list || list.scrollHeight <= list.clientHeight + 1
+    || list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+  const wasVisible = pager.classList.contains("mobile-visible");
+  pager.classList.toggle("mobile-visible", atBottom);
+  if (atBottom && !wasVisible && list) {
+    requestAnimationFrame(() => {
+      if (pager.classList.contains("mobile-visible")) list.scrollTop = list.scrollHeight;
+    });
+  }
 }
 function syncTrackHeaderScroll() {
   const viewport = $("libraryScroll");
@@ -1789,10 +1809,12 @@ function render() {
   setTrackSelection([...state.selectedTrackRowKeys]);
   if (albumDetail) renderTableHead($("albumDetailTableHead"));
   $("pager").innerHTML = renderPager();
+  updateMobilePagerVisibility();
   bindTrackHeaderScroll();
   requestAnimationFrame(() => {
     measureAutoTrackColumnWidths();
     syncTrackHeaderScroll();
+    updateMobilePagerVisibility();
   });
   loadGroupArtwork();
   $("empty").hidden = list.length > 0 || (isFolder && folderState && folderState.folders.length > 0) || (isGroupRoot && groupedTracks().length > 0);
@@ -3743,7 +3765,6 @@ function closeMobileMoreDialog() {
 function openMobileMoreDialog() {
   const item = currentItem();
   const actions = [
-    actionButton("显示歌词", "lyrics"),
     actionButton("选择播放设备", "device"),
     actionButton(state.shuffle ? "关闭随机播放" : "开启随机播放", "shuffle"),
     actionButton(state.repeat === "all" ? "关闭循环播放" : "开启循环播放", "repeat"),
@@ -3755,9 +3776,7 @@ function openMobileMoreDialog() {
 }
 function runMobileMoreAction(action) {
   closeMobileMoreDialog();
-  if (action === "lyrics") {
-    openLyrics();
-  } else if (action === "device") {
+  if (action === "device") {
     $("deviceDialog").showModal();
     loadDevices();
   } else if (action === "shuffle") {
@@ -3997,6 +4016,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) clearTransientListSelection();
 });
 $("libraryScroll").addEventListener("scroll", closeTrackContextMenu, { passive: true });
+$("trackList").addEventListener("scroll", updateMobilePagerVisibility, { passive: true });
 $("refreshBtn").onclick = () => loadLibrary(true);
 $("modeBtn").onclick = () => {
   state.mp3Transcode = !state.mp3Transcode;
@@ -4194,6 +4214,7 @@ setInterval(refreshServerUserState, 3000);
 window.addEventListener("pagehide", stopRemoteOnUnload);
 window.addEventListener("beforeunload", stopRemoteOnUnload);
 window.addEventListener("resize", updateNowMarquee);
+window.addEventListener("resize", updateMobilePagerVisibility, { passive: true });
 updateDeviceLabel();
 updateModeButton();
 updateNowMarquee();
