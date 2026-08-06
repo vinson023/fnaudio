@@ -1404,8 +1404,16 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .mobile-library-search svg{width:18px!important;height:18px!important;flex:0 0 18px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important}
   .mobile-library-search input{height:100%!important;font-size:14px!important;line-height:normal!important}
   .mobile-library-search input::-webkit-search-cancel-button{opacity:.62!important}
-  body.mobile-search-active .player{display:none!important}
-  body.mobile-search-active .content{height:calc(100dvh - 60px)!important;contain:layout paint!important;transition:none!important}
+  body.mobile-search-active .player{
+    position:absolute!important;
+    display:grid!important;
+    bottom:0!important;
+    contain:layout paint!important;
+    box-shadow:none!important;
+    transition:none!important;
+    transform:translateZ(0)!important;
+  }
+  body.mobile-search-active .now-playing .is-overflowing{animation-play-state:paused!important;transform:translateX(0)!important}
   .pager{display:none!important}
   .pager.mobile-visible{display:block!important}
 }
