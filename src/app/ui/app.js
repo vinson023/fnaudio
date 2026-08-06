@@ -1120,6 +1120,7 @@ function applyCoreSnapshot(core, shouldLoad = true) {
   if (!currentId) return false;
   const index = state.queue.findIndex(item => item.id === currentId);
   if (index < 0) return false;
+  const previousIndex = state.index;
   state.index = index;
   state.repeat = core.repeat || state.repeat;
   state.shuffle = typeof core.shuffle === "boolean" ? core.shuffle : state.shuffle;
@@ -1128,6 +1129,7 @@ function applyCoreSnapshot(core, shouldLoad = true) {
     resetPlaybackProgress();
     loadCurrent();
   }
+  syncCurrentQueuePresentation(previousIndex);
   return true;
 }
 async function coreControl(action, position = null) {
@@ -1353,6 +1355,12 @@ function scrollCurrentQueueTrackIntoView() {
   const viewportBounds = viewport.getBoundingClientRect();
   const targetTop = viewport.scrollTop + rowBounds.top - viewportBounds.top - Math.max(0, (viewport.clientHeight - row.offsetHeight) / 2);
   viewport.scrollTo({ top: Math.max(0, targetTop), behavior: "auto" });
+}
+function syncCurrentQueuePresentation(previousIndex) {
+  if (state.view !== "queue" || previousIndex === state.index) return;
+  state.page = currentQueuePage();
+  render();
+  requestAnimationFrame(() => requestAnimationFrame(scrollCurrentQueueTrackIntoView));
 }
 function openCurrentQueue() {
   if (!$("lyricsView").hidden) closeLyrics();
@@ -1601,9 +1609,7 @@ function renderTrack(item, index = 0) {
   const localCover = coverUrl(item);
   const queueIndex = Number(item.__queueIndex);
   const hasQueuePosition = Number.isInteger(queueIndex) && queueIndex >= 0;
-  const isCurrent = state.view === "queue" && hasQueuePosition
-    ? queueIndex === state.index
-    : String(currentItem()?.id || "") === String(item.id || "");
+  const isCurrent = state.view === "queue" && hasQueuePosition && queueIndex === state.index;
   const columns = activeTrackColumns();
   const artist = displayText(item.artist) || "未知歌手";
   const album = displayText(item.album);
@@ -4058,7 +4064,9 @@ $("playBtn").onclick = () => {
   }
   if (isRemoteTarget()) {
     if (!currentItem() && state.queue.length) {
+      const previousIndex = state.index;
       state.index = 0;
+      syncCurrentQueuePresentation(previousIndex);
       loadCurrent();
       return;
     }
@@ -4114,7 +4122,9 @@ audio.ontimeupdate = () => {
       state.pendingSeekTime = null;
       state.transcodeCacheReady = false;
       state.playSourceKind = "";
+      const previousIndex = state.index;
       state.index = next;
+      syncCurrentQueuePresentation(previousIndex);
       loadCurrent();
     } else {
       audio.pause();

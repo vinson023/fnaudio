@@ -56,4 +56,45 @@ assert.deepEqual(
   [2, 1, 3, 0],
 );
 
+const queueRefreshContext = {
+  state: { view: "queue", index: 3, page: 1 },
+  currentQueuePage: () => 2,
+  renderCount: 0,
+  scrollCount: 0,
+  render: () => { queueRefreshContext.renderCount += 1; },
+  requestAnimationFrame: callback => callback(),
+  scrollCurrentQueueTrackIntoView: () => { queueRefreshContext.scrollCount += 1; },
+};
+vm.runInNewContext(`${sourceBetween("function syncCurrentQueuePresentation", "function openCurrentQueue")}; this.queue = { syncCurrentQueuePresentation };`, queueRefreshContext);
+queueRefreshContext.queue.syncCurrentQueuePresentation(2);
+assert.equal(queueRefreshContext.state.page, 2);
+assert.equal(queueRefreshContext.renderCount, 1);
+assert.equal(queueRefreshContext.scrollCount, 1);
+
+const trackRenderContext = {
+  state: { view: "all", index: 1, selectedTrackRowKeys: new Set() },
+  coverUrl: () => "",
+  activeTrackColumns: () => ["title"],
+  displayText: value => String(value || ""),
+  displayTrackTitle: item => String(item.title || ""),
+  escapeHtml: value => String(value || ""),
+};
+vm.runInNewContext(`${sourceBetween("function trackRowSelectionKey", "function renderGroups")}; this.track = { renderTrack };`, trackRenderContext);
+assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /正在播放|is-current/);
+trackRenderContext.state.view = "queue";
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two", __queueIndex: 1 }), /正在播放|is-current/);
+
+const coreSnapshotContext = {
+  state: { queue: [{ id: "one" }, { id: "two" }], index: 0, repeat: "off", shuffle: false },
+  updateRepeatShuffleButtons: () => {},
+  resetPlaybackProgress: () => {},
+  loadCurrent: () => {},
+  previousQueueIndex: null,
+  syncCurrentQueuePresentation: previousIndex => { coreSnapshotContext.previousQueueIndex = previousIndex; },
+};
+vm.runInNewContext(`${sourceBetween("function applyCoreSnapshot", "async function coreControl")}; this.core = { applyCoreSnapshot };`, coreSnapshotContext);
+assert.equal(coreSnapshotContext.core.applyCoreSnapshot({ current: "two" }, false), true);
+assert.equal(coreSnapshotContext.state.index, 1);
+assert.equal(coreSnapshotContext.previousQueueIndex, 0);
+
 console.log("UI queue and album-column regression checks passed.");
