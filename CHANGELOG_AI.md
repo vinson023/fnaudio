@@ -1,5 +1,14 @@
 # fnAudio AI 修改记录
 
+## 2026-08-06：`0.1.158` 移动搜索返回主页面
+
+- 目标：把移动搜索栏恢复到主页面顶部，并移除左上角更多菜单中的返回按钮。
+- 修改：主内容列表上方新增独立 `type=search` 输入，提供搜索图标、圆角容器、聚焦高亮和原生清除；侧栏恢复为纯导航结构，删除 `mobileBackBtn`、相关样式和 `handleMobileBack()`。
+- 文件：`src/app/ui/index.html`、`src/app/ui/app.css`、`src/app/ui/app.js`、`src/tests/test_ui_mobile_layout.js`、`VERSION`、`src/manifest`，以及 `artifacts/0.1.158/` 和项目恢复文档。
+- 本地验证：50 个 Python 单元测试、JavaScript 语法检查、队列/专辑列回归、移动布局回归和 FPK 结构校验均通过。
+- 版本与产物：`0.1.158`；`artifacts/0.1.158/fnaudio-0.1.158.fpk`，4,879,685 字节，SHA-256 `973795FCA58069CA66CDFE66FDFA168DE8E4E0C63ADD59ACA2E2842DCA379EF2`。
+- 设备验证：按用户要求不代为安装，由用户自行安装测试。
+
 ## 2026-08-06：`0.1.157` 移动搜索与返回布局重构
 
 - 目标：解决移动侧栏中搜索框被返回按钮挤压、输入空间不足的问题，同时明确返回按钮的位置和视觉。

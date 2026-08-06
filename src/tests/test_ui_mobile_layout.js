@@ -10,16 +10,16 @@ const mainStart = index.indexOf('<main class="shell">');
 assert.ok(mainStart >= 0 && sidebarStart > mainStart);
 const sidebarMarkup = index.slice(sidebarStart, index.indexOf("</aside>", sidebarStart));
 
-assert.match(sidebarMarkup, /id="mobileBackBtn"/);
 assert.match(sidebarMarkup, /id="searchInput"/);
-assert.match(sidebarMarkup, /class="mobile-menu-tools"/);
-assert.match(sidebarMarkup, /class="mobile-menu-tools">[\s\S]*?class="library-search"[\s\S]*?class="nav-title">音乐库[\s\S]*?id="mobileBackBtn"/);
-assert.match(sidebarMarkup, /id="mobileBackBtn"[\s\S]*?<svg viewBox="0 0 24 24"/);
+assert.doesNotMatch(sidebarMarkup, /id="mobileBackBtn"/);
+assert.doesNotMatch(sidebarMarkup, /class="mobile-menu-tools"/);
+assert.match(index, /class="mobile-library-search"[\s\S]*?id="mobileSearchInput"[\s\S]*?type="search"/);
 assert.doesNotMatch(index, /class="mobile-library-tabs"/);
-assert.match(app, /function handleMobileBack\(\)/);
-assert.match(app, /\$\("mobileBackBtn"\)\.onclick = handleMobileBack/);
+assert.doesNotMatch(app, /function handleMobileBack\(\)/);
+assert.doesNotMatch(app, /\$\("mobileBackBtn"\)/);
 assert.doesNotMatch(app, /querySelector\("\.mobile-library-tabs"\)/);
-assert.doesNotMatch(app, /\$\("mobileSearchInput"\)\.oninput/);
+assert.match(app, /const mobileSearchInput = \$\("mobileSearchInput"\)/);
+assert.match(app, /if \(mobileSearchInput\) mobileSearchInput\.oninput/);
 assert.doesNotMatch(app, /actionButton\("显示歌词", "lyrics"\)/);
 assert.match(app, /if \(pages <= 1\) return "";/);
 assert.match(app, /function updateMobilePagerVisibility\(\)/);
@@ -35,10 +35,9 @@ assert.match(css, /\.lyrics-header-actions \.lyrics-favorite\{\s*position:static
 assert.match(css, /\.lyrics-panel\{gap:6px!important;padding:8px 14px 10px!important\}/);
 assert.doesNotMatch(css, /grid-template-rows:calc\(56px \+ env\(safe-area-inset-top,0px\)\)/);
 assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?padding:8px 10px 14px!important;/);
-assert.match(css, /\.mobile-menu-tools\{[\s\S]*?grid-template-columns:32px minmax\(0,1fr\)!important;[\s\S]*?grid-template-areas:"back title" "search search"!important;/);
-assert.match(css, /\.mobile-menu-back\{[\s\S]*?width:32px!important;[\s\S]*?height:32px!important;/);
-assert.match(css, /\.sidebar \.library-search\{[\s\S]*?grid-area:search!important;[\s\S]*?min-height:34px!important;[\s\S]*?margin:0!important;/);
-assert.match(css, /\.mobile-menu-tools > \.nav-title\{[\s\S]*?grid-area:title!important;[\s\S]*?line-height:32px!important;/);
+assert.match(css, /\.mobile-library-search\{[\s\S]*?flex:0 0 42px!important;[\s\S]*?margin:8px 10px 6px!important;[\s\S]*?border-radius:10px!important;/);
+assert.match(css, /\.mobile-library-search:focus-within\{[\s\S]*?box-shadow:0 0 0 3px #12b8a816!important/);
+assert.doesNotMatch(css, /\.mobile-menu-back\{/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
 
 console.log("Mobile layout regression checks passed.");
