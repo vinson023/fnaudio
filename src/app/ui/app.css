@@ -1405,9 +1405,11 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .mobile-library-search input{height:100%!important;font-size:14px!important;line-height:normal!important}
   .mobile-library-search input::-webkit-search-cancel-button{opacity:.62!important}
   body.mobile-search-active .player{
-    position:absolute!important;
+    position:fixed!important;
     display:grid!important;
     bottom:0!important;
+    left:0!important;
+    right:0!important;
     contain:layout paint!important;
     box-shadow:none!important;
     transition:none!important;
