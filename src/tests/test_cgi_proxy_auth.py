@@ -1,0 +1,49 @@
+import importlib.util
+import os
+from pathlib import Path
+import unittest
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "ui" / "cgi_proxy.py"
+SPEC = importlib.util.spec_from_file_location("fnaudio_cgi_proxy", MODULE_PATH)
+cgi_proxy = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(cgi_proxy)
+
+
+class CgiProxyAuthTests(unittest.TestCase):
+    TOKEN_ENV = (
+        "TRIM_API_TOKEN",
+        "HTTP_TRIM_TOKEN",
+        "HTTP_X_TRIM_TOKEN",
+        "HTTP_AUTHORIZATION",
+        "HTTP_X_FNAUDIO_TRIM_TOKEN",
+        "HTTP_COOKIE",
+    )
+
+    def setUp(self):
+        self.saved = {name: os.environ.get(name) for name in self.TOKEN_ENV}
+        for name in self.TOKEN_ENV:
+            os.environ.pop(name, None)
+
+    def tearDown(self):
+        for name in self.TOKEN_ENV:
+            os.environ.pop(name, None)
+            if self.saved[name] is not None:
+                os.environ[name] = self.saved[name]
+
+    def test_authorization_header_has_priority(self):
+        os.environ["HTTP_AUTHORIZATION"] = "Bearer header-token"
+        os.environ["HTTP_COOKIE"] = "fnaudio_trim_token=cookie-token"
+        self.assertEqual(cgi_proxy.trim_token(), "header-token")
+
+    def test_android_cookie_is_url_decoded(self):
+        os.environ["HTTP_COOKIE"] = "theme=dark; fnaudio_trim_token=abc%2Bdef%3D%3D; other=value"
+        self.assertEqual(cgi_proxy.trim_token(), "abc+def==")
+
+    def test_unrelated_cookie_is_not_accepted(self):
+        os.environ["HTTP_COOKIE"] = "session=not-a-trim-token; theme=dark"
+        self.assertEqual(cgi_proxy.trim_token(), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

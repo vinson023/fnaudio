@@ -1,6 +1,6 @@
 # fnAudio 技术决策
 
-> 当前源码版本：`0.1.161`  
+> 当前源码版本：`0.1.162`  
 > 规则：本文记录已经形成并会影响后续开发的决策。新决策追加编号，不重写历史。
 
 ## 决策列表
@@ -175,6 +175,34 @@
 - 状态：已实现，设备验收待用户完成
 - 决策：播放器在搜索期间继续使用固定定位，不再切换绝对定位；除 viewport 的 `interactive-widget=overlays-content` 外，在支持时设置 `navigator.virtualKeyboard.overlaysContent = true`。搜索聚焦期间跳过跑马灯尺寸和移动分页位置测量，失焦后统一同步一次。
 - 影响：支持覆盖模式的 WebView 会让键盘直接盖住底部播放器，页面布局与播放器不随键盘动画移动；不支持该 API 的环境不会报错且播放器仍不会隐藏。键盘打开时控件被遮挡是预期行为，收起键盘后自然恢复；fnOS WebView 是否真正执行覆盖模式仍需真机确认。
+
+### D-028：Android 采用 WebView UI + 原生媒体服务
+
+- 状态：已确认，首个构建已完成
+- 背景：移动浏览器和飞牛 App 中的 WebView 在后台或息屏时可能冻结 JavaScript，导致当前曲目中断或无法执行网页 `ended -> next`。
+- 决策：不重写 fnAudio 界面。WebView 继续负责音乐库、搜索、队列、歌词和设置；Android Media3 `MediaSessionService + ExoPlayer` 独占音频输出、完整队列、自动下一首、通知和媒体按键。
+- 影响：Android 页面检测到 `FnAudioNative` 后不得再给 HTML `<audio>` 设置媒体 URL；普通浏览器路径不变。后台可靠性不再依赖 WebView 生命周期，但必须新增原生状态回传和队列恢复测试。
+
+### D-029：Android 直接登录 fnOS 并只保存加密令牌
+
+- 状态：已确认，真机协议验证待完成
+- 背景：客户端需要输入地址、端口和 HTTPS 后直接进入 fnAudio，并能切换历史登录；不能依赖先打开 fnOS 桌面，也不能保存明文密码。
+- 决策：使用 `/websocket?type=main` 执行 `user.login`，兼容 `user`/`username` 字段；Android Keystore 加密保存连接资料、token 和 longToken，不保存密码。历史恢复按 `user.authToken -> user.tokenLogin -> 重新输入密码` 处理。
+- 影响：2FA、验证码和需要 HMAC/`si` 的固件仍需真机补齐。任何日志、文档和构建产物都禁止写入密码或 token。
+
+### D-030：fnOS FPK 与 Android APK 使用同一配套版本
+
+- 状态：已确认
+- 背景：Android 的原生桥和 Cookie 会话接入需要 fnAudio Web/CGI 配合，单独升级 APK 或 FPK 可能退回浏览器播放或无法通过 CGI。
+- 决策：从 `0.1.162` 起，根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 同步；同版本 FPK/APK 放入同一 `artifacts/<version>/` 并分别记录 SHA-256。
+- 影响：发布和真机验收必须明确两端版本。当前 APK 是 Debug 签名，只能用于开发测试，正式 keystore 未建立前不得标记为正式发布。
+
+### D-031：自签名 HTTPS 必须由用户对单个连接显式启用
+
+- 状态：已确认
+- 背景：局域网 NAS 常见自签名证书，但全局忽略 TLS 错误会扩大中间人攻击风险。
+- 决策：默认使用系统证书校验；只有连接资料明确勾选“允许自签名证书”时，登录 WebSocket、WebView 和原生媒体请求才对该连接启用兼容模式。
+- 影响：该选项只应给用户自己控制且可信的 NAS 使用。后续应优先支持导入/固定单个证书指纹，逐步替代信任任意证书链的兼容实现。
 
 ## 新决策模板
 

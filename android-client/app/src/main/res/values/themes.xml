@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FnAudio" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/fnaudio_blue</item>
+        <item name="colorPrimaryVariant">@color/fnaudio_blue_dark</item>
+        <item name="colorAccent">@color/fnaudio_blue</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@color/fnaudio_surface</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

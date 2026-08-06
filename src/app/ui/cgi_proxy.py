@@ -5,6 +5,7 @@ import sys
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import subprocess
 
@@ -42,6 +43,22 @@ def trim_token():
         if value.lower().startswith("bearer "):
             value = value.split(None, 1)[1].strip()
         return value
+    cookie_header = os.environ.get("HTTP_COOKIE", "")
+    accepted_cookie_names = {
+        "fnaudio_trim_token",
+        "trim_api_token",
+        "trim_token",
+        "token",
+    }
+    for field in cookie_header.split(";"):
+        name, separator, raw_value = field.strip().partition("=")
+        if not separator or name.strip().lower() not in accepted_cookie_names:
+            continue
+        value = urllib.parse.unquote(raw_value.strip())
+        if value.lower().startswith("bearer "):
+            value = value.split(None, 1)[1].strip()
+        if value:
+            return value
     return ""
 
 

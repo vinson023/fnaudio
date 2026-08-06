@@ -167,6 +167,108 @@ state.externalShareLocation = null;
 state.albumMetadata = {};
 state.settingsTab = "library";
 state.searchTimer = null;
+state.nativePlayback = { available: false, mediaId: "", queueIds: [], position: 0, duration: 0, playing: false, playbackState: 1 };
+
+function nativePlaybackAvailable() {
+  if (isRemoteTarget()) return false;
+  try {
+    return Boolean(window.FnAudioNative && typeof window.FnAudioNative.isAvailable === "function" && window.FnAudioNative.isAvailable());
+  } catch (error) {
+    return false;
+  }
+}
+function nativePlaybackCall(method, ...args) {
+  if (!nativePlaybackAvailable()) return false;
+  try {
+    const bridge = window.FnAudioNative;
+    if (typeof bridge?.[method] !== "function") return false;
+    bridge[method](...args);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+function absoluteAppUrl(value) {
+  try { return new URL(String(value || ""), window.location.href).href; }
+  catch (error) { return String(value || ""); }
+}
+function nativePlaybackUrl(item, isCurrent = false) {
+  const params = new URLSearchParams();
+  if (shouldTranscodeToMp3(item)) {
+    params.set("transcode", "mp3");
+    if (isCurrent && state.transcodeCacheReady) params.set("cache", "1");
+    else if (item.cue_track && Number(item.cue_start || 0) > 0) params.set("start", String(Number(item.cue_start || 0)));
+  } else if (shouldTranscodeDsdToWav(item)) params.set("transcode", "dsd_wav");
+  else if (item.cue_track) params.set("transcode", "cue_flac");
+  else params.set("transcode", "original");
+  return absoluteAppUrl(`${item.url}?${params.toString()}`);
+}
+function nativeQueueItems() {
+  return state.queue.map((item, index) => ({
+    id: String(item.id || ""),
+    uri: nativePlaybackUrl(item, index === state.index),
+    title: displayTrackTitle(item),
+    artist: displayText(item.artist),
+    album: displayText(item.album),
+    artwork: coverUrl(item) ? absoluteAppUrl(coverUrl(item)) : "",
+    durationMs: Math.max(0, Math.round(Number(item.duration || 0) * 1000)),
+  }));
+}
+function nativeQueueSignature(rows = nativeQueueItems()) {
+  return rows.map(item => `${item.id}\u0000${item.uri}`).join("\u0001");
+}
+function nativeLoadQueue(autoPlay = true, startSeconds = 0, force = false) {
+  const item = currentItem();
+  if (!item || !nativePlaybackAvailable()) return false;
+  const rows = nativeQueueItems();
+  const signature = nativeQueueSignature(rows);
+  const remoteIds = Array.isArray(state.nativePlayback.queueIds) ? state.nativePlayback.queueIds.map(String) : [];
+  const localIds = rows.map(row => row.id);
+  const sameIds = remoteIds.length === localIds.length && remoteIds.every((id, index) => id === localIds[index]);
+  const sameCurrent = String(state.nativePlayback.mediaId || "") === String(item.id || "");
+  if (!force && sameIds && sameCurrent) {
+    if (autoPlay) nativePlaybackCall("play");
+    return true;
+  }
+  state.nativeQueueSignature = signature;
+  nativePlaybackCall("setQueue", JSON.stringify(rows), state.index, Math.max(0, Number(startSeconds || 0)), Boolean(autoPlay), state.repeat, Boolean(state.shuffle));
+  return true;
+}
+window.fnAudioNativeOnState = payload => {
+  let snapshot = payload;
+  try { if (typeof payload === "string") snapshot = JSON.parse(payload); }
+  catch (error) { return; }
+  if (!snapshot || !snapshot.available) return;
+  const previousMediaId = String(state.nativePlayback.mediaId || "");
+  state.nativePlayback = { ...state.nativePlayback, ...snapshot, available: true };
+  const mediaId = String(snapshot.mediaId || "");
+  if (mediaId && mediaId !== String(currentItem()?.id || "")) {
+    const next = state.queue.findIndex(item => String(item.id || "") === mediaId);
+    if (next >= 0) {
+      const previousIndex = state.index;
+      state.index = next;
+      state.streamOffset = 0;
+      state.pendingSeekTime = null;
+      state.transcodeCacheReady = false;
+      state.playSourceKind = "native";
+      syncCurrentQueuePresentation(previousIndex);
+      restoreLibraryNowPlaying();
+      syncLyricsForCurrentTrack(currentItem());
+      updateMediaSessionMetadata(currentItem());
+      updateFavoriteControls();
+      scheduleUserStateSave();
+    }
+  }
+  if (mediaId && mediaId !== previousMediaId) updateNowMarquee();
+  setPlayButton(Boolean(snapshot.playing));
+  const duration = Math.max(0, Number(snapshot.duration || currentItem()?.duration || 0));
+  const seconds = Math.max(0, Number(snapshot.position || 0));
+  $("elapsed").textContent = clock(seconds);
+  $("duration").textContent = clock(duration);
+  if (!state.seeking) $("seek").value = duration ? Math.max(0, Math.min(100, seconds / duration * 100)) : 0;
+  syncPlayerProgress();
+  updateLyricHighlight();
+};
 
 function normalizeTrackColumns(columns) {
   const selected = Array.isArray(columns) ? [...new Set(columns.filter(key => TRACK_COLUMN_DEFINITIONS[key]))] : [];
@@ -563,6 +665,11 @@ async function restorePlaybackSession(playback) {
   state.shuffle = Boolean(playback.shuffle);
   state.playTarget = String(playback.target_id || "local");
   state.playTargetName = state.playTarget === "local" ? "本机播放" : "已恢复播放设备";
+  const nativeCurrentId = String(state.nativePlayback.mediaId || "");
+  if (state.playTarget === "local" && nativeCurrentId) {
+    const nativeIndex = state.queue.findIndex(item => String(item.id || "") === nativeCurrentId);
+    if (nativeIndex >= 0) state.index = nativeIndex;
+  }
   updateRepeatShuffleButtons();
   updateDeviceLabel();
   restoreLibraryNowPlaying();
@@ -872,6 +979,7 @@ function isPlayingNow() {
     return transport === "PLAYING" || transport === "TRANSITIONING";
   }
   if (isRemoteTarget()) return state.remoteStatus?.transport?.state === "PLAYING";
+  if (nativePlaybackAvailable()) return Boolean(state.nativePlayback.playing);
   return Boolean(audio.src && !audio.paused && !audio.ended);
 }
 function updateFavoriteControls() {
@@ -971,6 +1079,7 @@ function stopLocalAudio() {
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
+  if (nativePlaybackAvailable()) nativePlaybackCall("stop");
   audio.pause();
   audio.removeAttribute("src");
   audio.load();
@@ -1134,6 +1243,10 @@ function applyCoreSnapshot(core, shouldLoad = true) {
   return true;
 }
 async function coreControl(action, position = null) {
+  if (nativePlaybackAvailable() && (action === "next" || action === "previous")) {
+    nativePlaybackCall(action === "next" ? "next" : "previous");
+    return { ok: true, native: true };
+  }
   const item = currentItem();
   const response = await fetch("api/playback/control", {
     method: "POST",
@@ -1155,6 +1268,7 @@ async function playNextTrack() {
   return Boolean(await coreControl("next"));
 }
 function setupMediaSession() {
+  if (nativePlaybackAvailable()) return;
   if (!("mediaSession" in navigator) || setupMediaSession.done) return;
   setupMediaSession.done = true;
   const setHandler = (action, handler) => {
@@ -2119,6 +2233,9 @@ async function commitQueue(queue, currentId = "", options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.message || "播放队列保存失败");
   applyConfirmedQueue(queue, data.core);
+  if (nativePlaybackAvailable() && String(state.nativePlayback.mediaId || "") === String(currentItem()?.id || "")) {
+    nativeLoadQueue(isPlayingNow(), currentSeconds(), true);
+  }
   if (Number.isFinite(Number(data.revision))) state.userStateRevision = Number(data.revision);
   scheduleUserStateSave();
   return data.core || {};
@@ -2456,6 +2573,23 @@ async function loadCurrent() {
     state.transcodeCacheReady = await warmCurrentTrackCache(item);
     if (loadToken !== state.playbackLoadToken || String(currentItem()?.id || "") !== String(item.id || "")) return;
   }
+  if (nativePlaybackAvailable()) {
+    state.playSourceKind = "native";
+    const shouldResume = String(state.nativePlayback.mediaId || "") === String(item.id || "") && Boolean(state.nativePlayback.playing);
+    nativeLoadQueue(true, shouldResume ? Number(state.nativePlayback.position || 0) : 0);
+    $("nowTitle").textContent = displayTrackTitle(item);
+    $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`;
+    const nativeCover = coverUrl(item);
+    $("nowCover").innerHTML = nativeCover ? `<img src="${nativeCover}" onerror="this.remove()">` : "♫";
+    syncLyricsForCurrentTrack(item);
+    updateMediaSessionMetadata(item);
+    setPlayButton(true);
+    updateMediaSessionPlaybackState();
+    updateFavoriteControls();
+    updateNowMarquee();
+    syncState();
+    return;
+  }
   const useCache = needsMp3 && state.transcodeCacheReady;
   state.playSourceKind = needsMp3 && !useCache ? "stream" : "cache";
   const params = new URLSearchParams();
@@ -2513,6 +2647,7 @@ function currentSeconds() {
     const seconds = item?.cue_track && !state.remoteCueSegment ? Math.max(0, raw - Number(item.cue_start || 0)) : raw;
     return duration > 0 ? Math.min(duration, seconds) : seconds;
   }
+  if (nativePlaybackAvailable()) return Math.max(0, Number(state.nativePlayback.position || 0));
   const item = currentItem();
   const raw = state.playSourceKind === "stream" ? state.streamOffset + (audio.currentTime || 0) : (audio.currentTime || 0);
   if (item?.cue_track) {
@@ -2525,6 +2660,7 @@ function currentSeconds() {
 function seekDuration() {
   if (isIncomingRendererSession()) return Number(state.rendererSession.duration || 0);
   const item = currentItem();
+  if (nativePlaybackAvailable()) return Math.max(0, Number(state.nativePlayback.duration || item?.duration || 0));
   if (item?.cue_track && item.duration) return Number(item.duration) || 0;
   if (item?.cue_track && isRemoteTarget()) {
     const remoteDuration = Number(state.remoteStatus?.position?.duration_seconds || 0);
@@ -2536,7 +2672,7 @@ function seekDuration() {
 }
 async function refreshCurrentTranscodeStatus() {
   const item = currentItem();
-  if (!item || isRemoteTarget()) return;
+  if (!item || isRemoteTarget() || nativePlaybackAvailable()) return;
   const trackId = String(item.id || "");
   if (!shouldTranscodeToMp3(item)) {
     state.transcodeCacheReady = false;
@@ -2582,6 +2718,10 @@ function commitSeek(value = $("seek").value) {
   if (isRemoteTarget()) {
     const target = currentItem()?.cue_track && !state.remoteCueSegment ? Number(currentItem().cue_start || 0) + seconds : seconds;
     remoteControl("seek", target);
+    return;
+  }
+  if (nativePlaybackAvailable()) {
+    nativePlaybackCall("seekTo", seconds);
     return;
   }
   const item = currentItem();
@@ -3799,6 +3939,7 @@ async function toggleRepeat() {
   const data = await coreControl("repeat");
   if (data?.core) state.repeat = data.core.repeat || state.repeat;
   else state.repeat = state.repeat === "all" ? "off" : "all";
+  if (nativePlaybackAvailable()) nativePlaybackCall("setRepeat", state.repeat);
   updateRepeatShuffleButtons();
   syncState();
 }
@@ -3806,6 +3947,7 @@ async function toggleShuffle() {
   const data = await coreControl("shuffle");
   if (data?.core && typeof data.core.shuffle === "boolean") state.shuffle = data.core.shuffle;
   else state.shuffle = !state.shuffle;
+  if (nativePlaybackAvailable()) nativePlaybackCall("setShuffle", Boolean(state.shuffle));
   updateRepeatShuffleButtons();
   syncState();
 }
@@ -4115,6 +4257,17 @@ $("playBtn").onclick = () => {
     else remoteControl("play");
     return;
   }
+  if (nativePlaybackAvailable()) {
+    if (!currentItem() && state.queue.length) {
+      const previousIndex = state.index;
+      state.index = 0;
+      syncCurrentQueuePresentation(previousIndex);
+      loadCurrent();
+    } else if (!currentItem()) return;
+    else if (state.nativePlayback.playing) nativePlaybackCall("pause");
+    else nativePlaybackCall("play");
+    return;
+  }
   if (!audio.src && state.queue.length) loadCurrent(); else if (audio.paused) audio.play(); else audio.pause();
 };
 $("prevBtn").onclick = () => playPreviousTrack();
@@ -4122,7 +4275,11 @@ $("stopBtn").onclick = stopPlayback;
 $("nextBtn").onclick = () => playNextTrack();
 $("repeatBtn").onclick = toggleRepeat;
 $("shuffleBtn").onclick = toggleShuffle;
-$("volume").oninput = e => audio.volume = Number(e.target.value);
+$("volume").oninput = e => {
+  const value = Number(e.target.value);
+  audio.volume = value;
+  if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+};
 $("volumeBtn").onclick = event => {
   event.stopPropagation();
   $("volumePanel").hidden = !$("volumePanel").hidden;
