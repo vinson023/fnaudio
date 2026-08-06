@@ -1366,16 +1366,28 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .lyrics-panel{padding-top:14px!important}
 }
 
-/* Keep the mobile menu compact: return is an icon action and search sits close to the library nav. */
+/* Keep the mobile menu compact: return and search share one row above the library nav. */
+.mobile-menu-tools{display:contents}
 @media(max-width:760px){
-  .sidebar{padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 16px!important}
+  .sidebar{
+    width:min(76vw,268px)!important;
+    padding:8px 10px 14px!important;
+  }
+  .mobile-menu-tools{
+    display:grid!important;
+    grid-template-columns:32px minmax(0,1fr)!important;
+    align-items:center!important;
+    gap:7px!important;
+    margin:0 0 4px!important;
+  }
   .mobile-menu-back{
-    width:34px!important;
-    min-width:34px!important;
+    width:32px!important;
+    min-width:32px!important;
     height:32px!important;
     min-height:32px!important;
-    margin:0 0 5px!important;
+    margin:0!important;
     padding:0!important;
+    align-self:center!important;
     justify-content:center!important;
     border:0!important;
     border-radius:8px!important;
@@ -1386,9 +1398,18 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .mobile-menu-back span:first-child{font-size:22px!important;line-height:1!important}
   .mobile-menu-back span:last-child{display:none!important}
   .sidebar .library-search{
-    min-height:34px!important;
-    margin:0 0 7px!important;
+    width:100%!important;
+    min-height:32px!important;
+    height:32px!important;
+    margin:0!important;
     padding:0 8px!important;
+  }
+  .sidebar > .nav-title{
+    min-height:18px!important;
+    margin:0!important;
+    padding:0 8px 5px!important;
+    font-size:11px!important;
+    line-height:18px!important;
   }
   .pager{display:none!important}
   .pager.mobile-visible{display:block!important}

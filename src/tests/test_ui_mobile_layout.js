@@ -12,6 +12,7 @@ const sidebarMarkup = index.slice(sidebarStart, index.indexOf("</aside>", sideba
 
 assert.match(sidebarMarkup, /id="mobileBackBtn"/);
 assert.match(sidebarMarkup, /id="searchInput"/);
+assert.match(sidebarMarkup, /class="mobile-menu-tools"/);
 assert.doesNotMatch(index, /class="mobile-library-tabs"/);
 assert.match(app, /function handleMobileBack\(\)/);
 assert.match(app, /\$\("mobileBackBtn"\)\.onclick = handleMobileBack/);
@@ -28,8 +29,11 @@ assert.match(css, /\.pager\{\s*display:block!important;\s*flex:0 0 52px!importan
 assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:64px minmax\(0,1fr\) 64px!important;/);
 assert.match(css, /\.lyrics-close\{\s*position:static!important;/);
 assert.match(css, /\.lyrics-header-actions \.lyrics-favorite\{\s*position:static!important;/);
-assert.match(css, /\.mobile-menu-back\{[\s\S]*?width:34px!important;[\s\S]*?height:32px!important;/);
-assert.match(css, /\.sidebar \.library-search\{[\s\S]*?min-height:34px!important;[\s\S]*?margin:0 0 7px!important;/);
+assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?padding:8px 10px 14px!important;/);
+assert.match(css, /\.mobile-menu-tools\{[\s\S]*?grid-template-columns:32px minmax\(0,1fr\)!important;/);
+assert.match(css, /\.mobile-menu-back\{[\s\S]*?width:32px!important;[\s\S]*?height:32px!important;/);
+assert.match(css, /\.sidebar \.library-search\{[\s\S]*?min-height:32px!important;[\s\S]*?margin:0!important;/);
+assert.match(css, /\.sidebar > \.nav-title\{[\s\S]*?padding:0 8px 5px!important;/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
 
 console.log("Mobile layout regression checks passed.");
