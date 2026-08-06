@@ -1,5 +1,18 @@
 # fnAudio AI 修改记录
 
+## 2026-08-06：`0.1.162` Android 混合客户端与原生后台播放
+
+- 执行者：Codex
+- 目标：开发轻量 Android 客户端，由 WebView 复用 fnAudio 界面，由 Android 原生服务负责队列和播放；支持输入地址、端口、HTTPS、账号密码以及多连接历史，登录后直接打开 fnAudio。
+- Android 工程：新增 `android-client/`，使用 Java 17、AGP 9.3.1、Gradle 9.6.1、Media3 1.10.1、ExoPlayer 和 OkHttp。
+- 登录与历史：通过 `ws(s)://<host>:<port>/websocket?type=main` 发送 `user.login`，兼容 `user`/`username`；历史恢复尝试 `user.authToken` 和 `user.tokenLogin`。Android Keystore 加密保存地址、账号和 token/longToken，不保存密码。
+- WebView：登录后直接加载 `/cgi/ThirdParty/fnaudio/index.cgi/`，初始请求携带 Authorization/Header，并设置同源 token Cookie；异常跳转到桌面/系统入口时显示重新登录提示。
+- 原生播放：新增 `PlaybackService` 和 `NativePlaybackBridge`。Web UI 在 Android 桥存在时把完整队列、当前项、播放/暂停、前后曲、seek、音量、循环和随机交给 MediaController；MediaSessionService 持有 ExoPlayer 队列、自动下一首、通知、媒体键、音频焦点、耳机拔出和唤醒锁。
+- fnOS 配套：`app.js` 保留普通浏览器 HTML audio 路径，同时增加原生状态回传和恢复逻辑；`cgi_proxy.py` 增加同源 Cookie token fallback。版本同步更新为 `0.1.162`。
+- 构建产物：`artifacts/0.1.162/fnaudio-0.1.162.fpk`，SHA-256 `7253729113AEA07F55B93372EDC78BFE4E04E4EB991D71B3EFADEABD8C17CB9A`；`fnaudio-android-0.1.162-debug.apk`，SHA-256 `17898F32B6824C152AF5AA7DE34CE7F8C160547E1BB82028164D785A619C6EF9`。
+- 验证：53 个 Python 单元测试、3 个 Node 回归脚本、JS/Python 语法、Android `lintDebug`、`assembleDebug`、APK v2 签名、APK manifest、FPK 外层/内层结构和关键源文件哈希均通过。
+- 未验证：当前无 ADB 设备连接，尚未安装 APK/FPK；fnOS 登录 token 到 CGI 的真机交接、2FA/HMAC 固件、自签名 HTTPS、后台/息屏跨曲、通知/锁屏/蓝牙控制、多连接切换和厂商省电限制均待验证。当前 APK 是 Debug 签名，不是正式发布包。
+
 ## 2026-08-06：`0.1.161` 虚拟键盘直接覆盖固定播放器
 
 - 目标：让移动端输入法直接覆盖底部歌曲信息和播放控制区域，避免隐藏恢复逻辑及播放器随键盘移动造成的掉帧。

@@ -1,6 +1,6 @@
 # fnAudio 待办
 
-> 当前源码版本：`0.1.161`  
+> 当前源码版本：`0.1.162`  
 > 本文件是当前唯一有效待办列表。`docs/history/` 中的 checklist 只用于追溯。
 
 ## P0：安全边界
@@ -11,16 +11,32 @@
 - [ ] 限制 DLNA `LOCATION`、GENA `CALLBACK` 和外部媒体 URI 的协议、LAN 网段、端口、重定向和响应大小。
 - [ ] 评估取消 root 主进程；若暂时必须 root，收紧配置、数据库、缓存和日志文件权限。
 - [ ] 为设置、共享目录删除和真实路径查询增加操作级权限测试。
+- [ ] 用目标 fnOS 固件确认 Android token Cookie/Authorization 的最小必要字段；删除确认无用的候选 Cookie 名称。
+- [ ] 用证书指纹固定或自定义 CA 替代 Android 自签名兼容模式中的任意证书信任。
 
 ## P1：建立可追溯发布基线
 
 - [x] 在 `C:\path\to\fnAudio` 初始化 Git，创建 `main` 分支；每个发布版本以独立提交和标签记录。
 - [ ] 确认项目许可证、维护者和版本策略。
 - [ ] 建立单一 FPK 构建脚本，禁止从历史 builds 或解包目录组装发布包。
-- [x] 生成 `artifacts/0.1.161/` 的包内文件摘要与 SHA-256，并验证包内 `manifest` 为 `0.1.161`；仍需把该步骤自动化。
+- [x] 生成 `artifacts/0.1.162/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
 - [x] 同版本真机替换策略：已在用户授权下构建仅版本号不同的 `0.1.149` 测试包，并成功完成设备端覆盖升级；其记录见 `artifacts/0.1.149/VALIDATION.md`。
 - [ ] 自动化验证全新安装、覆盖升级、改端口、停止、保留数据卸载和清除数据卸载。
 - [ ] 确认应用中心 `python312`、发布者和端口字段显示正确。
+- [ ] 建立 Android 正式签名 keystore、离线备份、升级密钥策略和 release 构建流程。
+
+## P1：Android 混合客户端
+
+- [x] 创建 `android-client` Gradle 工程和可安装 Debug APK。
+- [x] 实现地址、端口、HTTPS、自签名选项、账号/密码登录表单。
+- [x] 实现 Android Keystore 加密的多连接历史；不保存密码。
+- [x] 实现登录后直达 fnAudio 的 WebView 宿主，不以 fnOS 桌面作为正常流程。
+- [x] 实现 Media3 `MediaSessionService + ExoPlayer`、完整队列、通知/媒体控制基础和 JS bridge。
+- [ ] 在目标 fnOS 固件验证 `user.login`、`user.authToken`、`user.tokenLogin` 和 CGI token 交接的实际报文。
+- [ ] 支持 2FA、验证码、账号冻结，以及需要 HMAC/`si` 的令牌恢复固件。
+- [ ] 为登录协议、连接资料序列化、队列 JSON 和原生状态回传增加自动化测试。
+- [ ] 增加播放错误、网络切换、断线重试、URL 过期和服务进程重建的用户可见状态。
+- [ ] 评估 Android Auto、蓝牙 AVRCP 元数据、耳机按键和音频路由切换兼容性。
 
 ## P1：可靠性与可观测性
 
@@ -68,19 +84,23 @@
 - [ ] 使用 WAV 样本验证解析、时长、seek、封面和 MPD/浏览器播放。
 - [ ] 使用 DFF 样本验证解析、DSD 转 WAV、seek 和 DAC 输出。
 - [ ] 在真实飞牛移动 WebView 验证前后台切换、Media Session、收藏/队列同步和恢复。
-- [ ] 由用户安装 `0.1.161` 到 fnOS，验收输入法直接覆盖固定播放器、键盘弹出/收起流畅度、播放器收起键盘后自然恢复，以及不支持 Virtual Keyboard API 时的降级行为。
+- [ ] 安装 `0.1.162` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面。
+- [ ] 用至少两首歌曲验证 Android 前台、后台、息屏、自动下一首、通知控制、锁屏控制、耳机拔出和蓝牙媒体键。
+- [ ] 验证历史连接切换、过期 token 回退密码、自签名 HTTPS、HTTP、错误端口、IPv6 和外网反向代理。
+- [ ] 继续验收输入法直接覆盖固定播放器、键盘弹出/收起流畅度及不支持 Virtual Keyboard API 时的降级行为。
 - [ ] 验证 USB DAC 热插拔、不同采样率、DSD 和 MPD 重启恢复。
 - [ ] 建立常见 DLNA 控制器和 Renderer 的互操作矩阵。
 - [ ] 验证 Spotify、网易、QQ、MusicBrainz 超时、限流、错误响应和缓存降级。
 
 ## 自动化测试缺口
 
-- [ ] 扩展前端单元测试和桌面/移动 E2E；已有 `tests/test_ui_queue_columns.js` 覆盖队列定位与专辑序号列，`tests/test_ui_mobile_layout.js` 覆盖移动端关键结构和初始化守卫。
+- [ ] 扩展前端单元测试和桌面/移动 E2E；现有 Node 回归覆盖队列/专辑列、移动布局，以及 Android bridge/CGI token fallback 的静态契约。
 - [ ] HTTP API、认证、Range、媒体流和错误响应集成测试。
 - [ ] MPD 进程生命周期和输出配置测试。
 - [ ] FFmpeg 实际转码与并发测试。
 - [ ] FPK 安装、升级、配置和卸载测试。
 - [ ] 多客户端 DLNA 协议回归。
+- [ ] Android instrumented test：登录页、历史切换、WebView 直达、MediaSession 队列和后台服务重建。
 
 ## 完成定义
 

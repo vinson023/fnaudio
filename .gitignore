@@ -23,6 +23,9 @@ config.json
 *.tgz
 *.tar.gz
 *.apk
+android-client/.gradle/
+android-client/local.properties
+android-client/**/build/
 artifacts/*/*.fpk
 artifacts/*/stage/
 artifacts/*/_inspect/

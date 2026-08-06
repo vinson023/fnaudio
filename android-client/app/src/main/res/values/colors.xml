@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fnaudio_blue">#2563EB</color>
+    <color name="fnaudio_blue_dark">#1D4ED8</color>
+    <color name="fnaudio_surface">#F5F7FB</color>
+    <color name="fnaudio_text">#172033</color>
+</resources>

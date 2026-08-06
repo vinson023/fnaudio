@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与发布版本为 `0.1.161`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.162`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,17 +8,18 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，当前源码与
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.161` |
-| 平台 | fnOS x86 |
-| 源码目录 | `C:\path\to\fnAudio\src` |
+| 版本 | `0.1.162` |
+| 平台 | fnOS x86；Android 8.0（API 26）及以上 |
+| fnOS 源码 | `C:\path\to\fnAudio\src` |
+| Android 源码 | `C:\path\to\fnAudio\android-client` |
 | 原始来源 | `E:\Codex\fnaudio-0.1.7` |
 | HTTP 端口 | `18080` |
 | Python | fnOS `python312` |
-| 测试基线 | 50 个 Python 单元测试与 2 个 Node 前端回归脚本通过 |
+| 测试基线 | 53 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；本次发布提交完成后使用 `v0.1.161` 标签标识。FPK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.162` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 
@@ -42,13 +43,18 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.161 可继续开发源码
+├── src/                       # 0.1.162 fnOS 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
 │   ├── tests/
 │   ├── wizard/
 │   └── manifest
+├── android-client/            # Android WebView + Media3 客户端
+│   ├── app/
+│   ├── gradle/
+│   ├── gradlew
+│   └── gradlew.bat
 ├── docs/
 │   ├── INDEX.md
 │   └── history/               # 旧阶段记录，只读参考
@@ -64,10 +70,14 @@ python -B -m unittest discover -s tests -v
 node --check app/ui/app.js
 node tests/test_ui_queue_columns.js
 node tests/test_ui_mobile_layout.js
+node tests/test_ui_android_bridge.js
 Get-Content manifest -Encoding UTF8
+
+Set-Location C:\path\to\fnAudio\android-client
+.\gradlew.bat :app:lintDebug :app:assembleDebug
 ```
 
-Windows 本地验证不能替代 fnOS 真机测试。MPD、FFmpeg、ALSA、USB DAC、fnOS 授权和 DLNA 互操作必须在目标设备复验。
+Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA、USB DAC、fnOS token 交接、Android 后台/息屏播放和 DLNA 互操作必须在目标设备复验。
 
 ## 文档规则
 
@@ -79,10 +89,13 @@ Windows 本地验证不能替代 fnOS 真机测试。MPD、FFmpeg、ALSA、USB D
 
 ## 发布说明
 
-当前可安装 FPK 为 `artifacts/0.1.161/fnaudio-0.1.161.fpk`，由 `src/` 通过官方 `fnpack 1.2.3` 直接构建。包的 SHA-256 为 `427CA1E87EB6030413B11453AF6D120D6B113C1B2835A54260F4F060342CB875`；构建命令、内容摘要和结构校验见同目录的 `VALIDATION.md`、`PACKAGE_CONTENTS.txt` 与 `SHA256SUMS`。
+当前配套产物位于 `artifacts/0.1.162/`：
 
-该包已完成本地源码测试和归档结构校验，设备端由用户自行安装测试。`0.1.161` 让播放器始终保持固定在窗口底部，由虚拟键盘直接覆盖；支持 Virtual Keyboard API 的 WebView 会主动启用覆盖模式，不支持时安全降级。搜索输入期间暂停跑马灯和分页布局测量，并关闭播放器阴影与过渡，避免键盘动画触发额外同步布局。
+- `fnaudio-0.1.162.fpk`：SHA-256 `7253729113AEA07F55B93372EDC78BFE4E04E4EB991D71B3EFADEABD8C17CB9A`。
+- `fnaudio-android-0.1.162-debug.apk`：SHA-256 `17898F32B6824C152AF5AA7DE34CE7F8C160547E1BB82028164D785A619C6EF9`。
 
-当前设备音乐库为 0 项，故本轮未用真实长列表验证触控滚动、分页操作、歌词实际播放状态或“从当前开始播放全部歌曲”全流程。全新安装、端口变更、停止/启动、两种卸载、USB DAC、移动 WebView 生命周期和 DLNA 互操作也尚未完成，不能据此宣称已完成完整设备端发布验证。
+Android 客户端支持多连接登录、加密 token 历史、登录后直达 fnAudio，并由 Media3 前台服务负责队列和后台播放。配套 FPK 为 Web UI 增加原生桥，并让 CGI 接受同源 token Cookie。
+
+两份产物已完成本地构建、Lint、单元/回归测试、包结构、哈希和 APK 签名检查，但尚未安装到真实 fnOS 与 Android 设备。当前 APK 使用 Android Debug 证书；真机 token 交接、后台/息屏跨曲、自签名 HTTPS、多连接切换和厂商省电限制未验证，不能标记为正式发布。
 
 项目许可证尚未明确，不应自行假设开源授权。

@@ -1,6 +1,6 @@
 # 构建产物策略
 
-`0.1.161/` 保存从当前 `C:\path\to\fnAudio\src` 直接构建的唯一当前可追溯 FPK。包身份、内容摘要和本地校验结果都保存在同一目录；设备端由用户自行安装测试。
+`0.1.162/` 保存当前可追溯的 fnOS FPK 和 Android Debug APK。两者必须配套验证：FPK 提供原生桥接和 CGI 会话兼容，APK 提供 WebView 登录壳与 Media3 后台播放服务。
 
 `0.1.148/` 是整理阶段从当时源码重建的历史 FPK，不再代表当前源码版本。
 
@@ -10,8 +10,14 @@
 
 ```text
 artifacts/
+├── 0.1.162/
+│   ├── fnaudio-0.1.162.fpk
+│   ├── fnaudio-android-0.1.162-debug.apk
+│   ├── PACKAGE_CONTENTS.txt
+│   ├── SHA256SUMS
+│   └── VALIDATION.md
 ├── 0.1.161/
-│   ├── fnaudio-0.1.161.fpk       # 当前源码构建，待用户安装测试
+│   ├── fnaudio-0.1.161.fpk       # 上一版 Web-only 行为基线
 │   ├── PACKAGE_CONTENTS.txt
 │   ├── SHA256SUMS
 │   └── VALIDATION.md
@@ -88,4 +94,4 @@ artifacts/
 
 各版本的 `_inspect/` 是本地包结构校验时从 FPK 解出的派生检查副本，不是源码、构建输入或待上传文件；需要节省空间时可直接删除这些目录，不影响 FPK、哈希或验证记录。
 
-每个版本目录的 `VALIDATION.md` 记录构建命令、源码身份、manifest 版本、包哈希和验证结果。`0.1.161` 已完成本地测试与包结构检查，待用户安装；`0.1.160` 的绝对定位过渡方案和 `0.1.159` 的隐藏播放器方案均已被替代；`0.1.153` 保留最近一次 fnOS 启动和移动端结构烟雾验收，早期版本仅作历史追溯。
+每个版本目录的 `VALIDATION.md` 记录构建命令、源码身份、manifest/versionName、包哈希和验证结果。`0.1.162` 首次同时保存配套 FPK 与 Android Debug APK，已完成本地构建和结构校验，待 fnOS/Android 真机安装；`0.1.153` 仍保留最近一次 fnOS 启动和移动端结构烟雾验收，早期版本仅作历史追溯。

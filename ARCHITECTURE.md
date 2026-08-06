@@ -1,7 +1,8 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.161`  
-> 源码根目录：`C:\path\to\fnAudio\src`
+> 当前源码版本：`0.1.162`  
+> fnOS 源码：`C:\path\to\fnAudio\src`  
+> Android 源码：`C:\path\to\fnAudio\android-client`
 
 ## 1. 系统定位
 
@@ -13,11 +14,20 @@ fnAudio 是部署在 fnOS NAS 上的单进程 Python 音乐服务，并带有私
 - 外部 DLNA Renderer 的 Control Point。
 - 面向局域网控制器的 DLNA MediaServer。
 - 面向局域网控制器的 DLNA MediaRenderer。
+- Android 混合客户端的 Web UI 服务端和媒体 URL 来源。
 
 ## 2. 运行时拓扑
 
 ```mermaid
 flowchart TD
+    LOGIN["Android 连接/登录页"] --> WS["fnOS WebSocket /websocket?type=main"]
+    WS --> WEBVIEW["WebView 直达 fnAudio CGI"]
+    WEBVIEW --> CGI
+    WEBVIEW --> BRIDGE["FnAudioNative JS Bridge"]
+    BRIDGE --> CONTROLLER["MediaController"]
+    CONTROLLER --> SERVICE["MediaSessionService + ExoPlayer"]
+    SERVICE --> MEDIA
+
     FNOS["fnOS 应用中心"] --> CGI["index.cgi / cgi_proxy.py"]
     CGI --> HTTP["ThreadingHTTPServer :18080"]
     DIRECT["局域网直连端口"] --> HTTP
@@ -35,7 +45,7 @@ flowchart TD
     STATE --> SDB["state.sqlite3"]
     MEDIA --> FFMPEG["fnOS FFmpeg / ffprobe"]
 
-    CORE --> BROWSER["浏览器 HTMLAudioElement"]
+    CORE --> BROWSER["普通浏览器 HTMLAudioElement"]
     CORE --> MPD["私有 MPD"]
     MPD --> ALSA["ALSA / USB DAC"]
     CORE --> EXTERNAL["外部 DLNA Renderer"]
@@ -49,8 +59,11 @@ flowchart TD
 | 层 | 主要路径 | 职责 |
 | --- | --- | --- |
 | fnOS 生命周期 | `manifest`、`cmd/`、`config/`、`wizard/` | 安装、升级、端口、权限、共享目录、启动停止和卸载 |
-| 入口代理 | `app/ui/index.cgi`、`app/ui/cgi_proxy.py` | iframe 入口、端口发现、token 转发、HTTP 代理 |
-| 前端 | `app/ui/index.html`、`app.css`、`app.js` | 浏览、搜索、播放、队列、歌词、收藏、歌单和设置 |
+| 入口代理 | `app/ui/index.cgi`、`app/ui/cgi_proxy.py` | iframe/Android 入口、端口发现、Header/Cookie token 转发、HTTP 代理 |
+| 前端 | `app/ui/index.html`、`app.css`、`app.js` | 浏览、搜索、播放、队列、歌词、收藏、歌单、设置和原生桥检测 |
+| Android 登录与历史 | `android-client/.../data/`、`network/`、`ui/LoginActivity.java` | WebSocket 登录、Keystore 加密令牌、多连接恢复与切换 |
+| Android Web 宿主 | `android-client/.../ui/MainActivity.java`、`web/NativePlaybackBridge.java` | 直达 fnAudio、会话 Cookie/Header、JS/MediaController 桥、状态回传 |
+| Android 播放 | `android-client/.../playback/` | MediaSessionService、ExoPlayer、通知、媒体键、音频焦点和后台生命周期 |
 | HTTP 编排 | `app/server/server.py` | API、静态文件、媒体响应、DLNA 路由和服务装配 |
 | 音乐库 | `app/server/library.py` | 扫描、Tag、封面、CUE、SQLite 索引和查询 |
 | 播放核心 | `app/server/playback/` | 队列、目标、状态机、插件接口和输出适配 |
@@ -80,12 +93,29 @@ library_path / library_paths
 ```text
 队列同步 -> PlaybackCore -> 选择 target_id
     browser   -> 媒体 URL -> HTML audio
+    android   -> JS Bridge -> MediaController -> ExoPlayer 前台服务
     mpd       -> 私有 MPD -> ALSA/USB DAC
     alsa      -> FFmpeg/aplay/libasound 直接输出
     dlna_push -> SOAP -> 外部 Renderer
 ```
 
 外部控制器把 fnAudio 当作 Renderer 时，DLNA 会话仍会同步回 PlaybackCore，避免维护第二套互不相干的播放状态。
+
+Android 模式下，WebView 仍使用服务端队列 API保存用户状态，但真正的当前项、进度、自动下一首和播放生命周期由 Media3 服务持有。原生状态通过 `window.fnAudioNativeOnState()` 回传；页面恢复时优先采用原生当前曲目，避免被 NAS 中稍旧的播放快照倒退。
+
+### Android 登录与会话
+
+```text
+地址/端口/HTTPS/账号/密码
+  -> ws(s)://host:port/websocket?type=main
+  -> user.login（兼容 user / username）
+  -> token + longToken
+  -> Android Keystore 加密历史（不保存密码）
+  -> WebView Authorization + 同源 token Cookie
+  -> /cgi/ThirdParty/fnaudio/index.cgi/
+```
+
+历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；需要 HMAC/`si`、2FA 或验证码的固件目前仍会回退到重新输入密码，后续需用真机协议 trace 补齐。
 
 ### 转码策略
 
@@ -115,6 +145,9 @@ localStorage 兼容数据
 | FFmpeg / ffprobe | fnOS 系统路径 | 探测、转码和部分直接播放 |
 | ALSA / aplay / libasound | fnOS/Linux | NAS 声卡和 USB DAC |
 | fnOS Trim API | Unix socket | 共享目录授权与文件能力 |
+| Android Media3 1.10.1 | Google Maven | ExoPlayer、MediaSessionService 和 MediaController |
+| OkHttp 4.12.0 | Maven Central | fnOS WebSocket 登录和原生媒体 HTTP 数据源 |
+| Android Keystore | Android 系统 | 加密保存连接 token；密码不落盘 |
 | Spotify、网易、QQ、MusicBrainz | 公网服务 | 元数据、歌词和封面 |
 
 ## 6. 必须保持的架构边界
@@ -125,6 +158,9 @@ localStorage 兼容数据
 - 音乐库查询应通过 SQLite 分页接口，不把整个大库序列化到浏览器。
 - 外部元数据只能后台获取，列表和歌词请求不能因第三方服务阻塞主请求。
 - fnOS 特权操作必须通过明确的授权边界，不能把 token 当作普通前端状态公开。
+- Android 原生服务是 Android 模式下唯一音频输出所有者；网页 `<audio>` 必须保持空闲，避免双重播放。
+- token 只能进入 Keystore 加密存储、同源 Cookie 和内存请求头；不得写日志、文档、截图或构建产物。
+- 切换 NAS 连接时必须停止旧 MediaSessionService，防止旧 token 和旧媒体队列跨服务器复用。
 
 ## 7. 当前扩展点
 

@@ -9,8 +9,8 @@
 3. 涉及系统边界时查看 `ARCHITECTURE.md`，涉及取舍时查看 `DECISIONS.md`。
 4. 查看 `CHANGELOG_AI.md` 的最新记录，确认上次修改和未验证内容。
 5. 在 `C:\path\to\fnAudio` 运行 `git status --short`，确认是否有未提交工作。
-6. 核对 `src/manifest` 必须包含 `version=0.1.161`。
-7. 阅读 `artifacts/0.1.161/VALIDATION.md` 确认当前包的本地验收；`artifacts/0.1.148/` 至 `artifacts/0.1.160/` 均是历史记录，不是当前开发基线。
+6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.162`。
+7. 阅读 `artifacts/0.1.162/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
 8. 运行基线测试和源码清单校验。
 
 ```powershell
@@ -30,7 +30,7 @@ Get-FileHash src\manifest,src\app\server\server.py,src\app\ui\app.js -Algorithm 
 新建 AI 会话时可以直接使用以下提示：
 
 ```text
-请接手 C:\path\to\fnAudio 项目。当前唯一基线是 0.1.161，源码在 C:\path\to\fnAudio\src。
+请接手 C:\path\to\fnAudio 项目。当前配套基线是 0.1.162，fnOS 源码在 C:\path\to\fnAudio\src，Android 源码在 C:\path\to\fnAudio\android-client。
 开始前请完整阅读 PROJECT_CONTEXT.md、RECOVERY.md、TODO.md、ARCHITECTURE.md、
 DECISIONS.md 和 CHANGELOG_AI.md，并核对 src/manifest 与 SOURCE_MANIFEST.sha256。
 docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\builds 或旧版本目录覆盖源码。
@@ -55,19 +55,22 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 | 项目 | 值 |
 | --- | --- |
 | 产品 | fnAudio |
-| 基线版本 | `0.1.161` |
+| 基线版本 | `0.1.162` |
 | 整理日期 | 2026-08-06 |
 | 原始源码 | `E:\Codex\fnaudio-0.1.7` |
-| 当前源码 | `C:\path\to\fnAudio\src` |
-| Git 基线 | `main` 分支，标签 `v0.1.161` |
-| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.161\fnaudio-0.1.161.fpk` |
-| FPK SHA-256 | `427CA1E87EB6030413B11453AF6D120D6B113C1B2835A54260F4F060342CB875` |
+| fnOS 源码 | `C:\path\to\fnAudio\src` |
+| Android 源码 | `C:\path\to\fnAudio\android-client` |
+| Git 基线 | `main` 分支；完成提交后标签 `v0.1.162` |
+| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.162\fnaudio-0.1.162.fpk` |
+| FPK SHA-256 | `7253729113AEA07F55B93372EDC78BFE4E04E4EB991D71B3EFADEABD8C17CB9A` |
+| Android Debug APK | `C:\path\to\fnAudio\artifacts\0.1.162\fnaudio-android-0.1.162-debug.apk` |
+| APK SHA-256 | `17898F32B6824C152AF5AA7DE34CE7F8C160547E1BB82028164D785A619C6EF9` |
 | 已验证测试包 | `C:\path\to\fnAudio\artifacts\0.1.149\fnaudio-0.1.149.fpk`（仅升级验证） |
 | 测试包 SHA-256 | `B7FD239E26D69AC16CE8C1F4B788AE6528F47E2DBA479FCC33B1CD9B0B507AA0` |
 | manifest 原始 SHA-256 | `9170B93C59BE249579805E7075FAD6DFE5A8F99511BEA5488DE3B0AA5D9140EA` |
 | server.py 原始 SHA-256 | `37E82F89827A95987F6481079945E8A09270C72DF1CD0CC818CA2B137A961093` |
 | app.js 原始 SHA-256 | `8ED763723EB02C97B4CCB918EA452E48DCE2984A24A72724C86078D0D599BBF6` |
-| 当前测试基线 | 50 个 Python 单元测试与 2 个 Node 前端回归脚本通过；`0.1.161` 由用户自行安装测试，最近确认的设备版本为 `0.1.153` |
+| 当前测试基线 | 53 个 Python 测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过；`0.1.162` FPK/APK 均待真机安装，最近确认的 fnOS 设备版本为 `0.1.153` |
 
 完整源码哈希见 `SOURCE_MANIFEST.sha256`。上述三个关键哈希用于快速判断是否仍是初始整理基线；后续正常开发会改变它们，变更必须记录在 `CHANGELOG_AI.md`。
 
@@ -79,15 +82,17 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 - 音乐库和元数据使用 `library.sqlite3`，用户状态使用 `state.sqlite3`。
 - 本机播放主要依赖私有 MPD、ALSA 和 fnOS FFmpeg。
 - fnAudio 同时实现 DLNA Control Point、MediaServer 和 MediaRenderer。
-- Android WebView 壳不是当前主项目，也没有合入本恢复目录。
-- 原工作区中的现有 FPK 未被确认与当前源码一致，因此没有作为发布基线复制；当前 FPK 是从 `C:\path\to\fnAudio\src` 重新构建的唯一可追溯包，内容和本地校验记录位于 `artifacts\0.1.161\`。
-- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.161` 基线。
+- `android-client/` 是当前正式开发目录，不要再使用 `E:\Codex\fnaudio-android-shell` 的历史试验文件。
+- Android 采用 WebView UI + Media3 原生播放；登录走 fnOS WebSocket，Keystore 加密 token/longToken，不保存密码。
+- Android 客户端必须与 `0.1.162` 或更新 FPK 配套，当前产物和校验记录位于 `artifacts\0.1.162\`。
+- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.162` 基线。
 
 ## 6. 禁止事项
 
 - 不要因为目录名较新就从 `E:\Codex\builds` 复制文件覆盖 `src/`。
 - 不要把 `docs/history/` 的未完成 checklist 直接合并到当前 TODO，先对照代码和测试。
 - 不要把真实 Spotify secret、fnOS token、NAS 路径数据库或用户状态提交到版本库。
+- 不要把 Android 登录密码、token、Cookie、WebSocket 报文或真实设备地址写入文档、测试夹具、日志和截图。
 - 不要宣称 MPD、USB DAC、WebView 或 DLNA 已完成，仅凭 Windows 单元测试不足以证明真机行为。
 - 不要在未确认包源的情况下发布原工作区现成 FPK。
 - 不要删除历史文档；需要废弃时在 `DECISIONS.md` 记录并移动到更明确的归档目录。
@@ -100,7 +105,8 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 4. 若实现状态、风险或目录变化，更新 `PROJECT_CONTEXT.md`。
 5. 若改变架构取舍，向 `DECISIONS.md` 追加新决策或标记旧决策废弃。
 6. 重新生成 `SOURCE_MANIFEST.sha256`。
-7. 检查 `git status --short`，提交内容明确的 Git commit；不要只依赖会话历史。
+7. 若改 Android，同时运行 `android-client\gradlew.bat :app:lintDebug :app:assembleDebug` 并记录 APK 身份。
+8. 检查 `git status --short`，提交内容明确的 Git commit；不要只依赖会话历史。
 
 ## 8. 清单重新生成
 
@@ -108,7 +114,11 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 
 ```powershell
 Set-Location C:\path\to\fnAudio
-Get-ChildItem src -Recurse -File |
+Get-ChildItem src,android-client -Recurse -File |
+  Where-Object {
+    $_.FullName -notmatch '\\(build|\.gradle)\\' -and
+    $_.Name -ne 'local.properties'
+  } |
   Sort-Object FullName |
   ForEach-Object {
     $relative = $_.FullName.Substring((Resolve-Path .).Path.Length + 1).Replace('\', '/')
