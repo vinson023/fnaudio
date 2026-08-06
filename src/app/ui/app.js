@@ -1821,12 +1821,7 @@ function render() {
     : state.view === "folders" && currentFolderLabel
       ? currentFolderLabel()
       : "本地音乐库";
-  const libraryViews = ["all", "dsd", "folders", "albums", "artists", "composers", "genres"];
-  document.querySelector(".mobile-library-tabs").hidden = !libraryViews.includes(state.view);
   document.querySelectorAll(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === state.view));
-  document.querySelectorAll("[data-mobile-view]").forEach(button => {
-    button.classList.toggle("active", button.dataset.mobileView === state.view);
-  });
   document.querySelectorAll("[data-play]").forEach(button => button.onclick = event => {
     const row = button.closest("[data-track-row-key]");
     const mobile = window.matchMedia("(max-width: 760px)").matches;
@@ -3950,11 +3945,20 @@ function setMobileNavigation(open) {
   backdrop.hidden = !open;
   button.setAttribute("aria-expanded", String(open));
 }
+function handleMobileBack() {
+  const groupBack = document.querySelector("[data-group-back]");
+  const creatorRootBack = document.querySelector("[data-creator-root-back]");
+  const folderCrumbs = [...document.querySelectorAll("[data-folder-crumb-root]")];
+  if (groupBack) groupBack.click();
+  else if (creatorRootBack) creatorRootBack.click();
+  else if (folderCrumbs.length > 1) folderCrumbs[folderCrumbs.length - 2].click();
+  else if (folderCrumbs.length === 1) folderCrumbs[0].click();
+  else if (state.view !== "all") setView("all");
+  setMobileNavigation(false);
+}
 $("mobileNavBtn").onclick = () => setMobileNavigation(!document.querySelector(".sidebar")?.classList.contains("mobile-open"));
+$("mobileBackBtn").onclick = handleMobileBack;
 $("mobileNavBackdrop").onclick = () => setMobileNavigation(false);
-document.querySelectorAll("[data-mobile-view]").forEach(button => {
-  button.onclick = () => setView(button.dataset.mobileView);
-});
 document.querySelectorAll(".nav-item[data-view]").forEach(button => {
   button.addEventListener("click", () => setMobileNavigation(false));
 });
@@ -3973,7 +3977,8 @@ function handleSearchInput(source) {
   }, 240);
 }
 $("searchInput").oninput = event => handleSearchInput(event.currentTarget);
-$("mobileSearchInput").oninput = event => handleSearchInput(event.currentTarget);
+const mobileSearchInput = $("mobileSearchInput");
+if (mobileSearchInput) mobileSearchInput.oninput = event => handleSearchInput(event.currentTarget);
 $("playAllBtn").onclick = playAll;
 $("mobileColumnsBtn").onclick = openColumnsDialog;
 $("closeColumnsDialog").onclick = () => $("columnsDialog").close();

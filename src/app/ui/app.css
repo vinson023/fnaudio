@@ -1276,3 +1276,92 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
 .track.is-current:not(.is-selected):hover{background:#f7fbfc!important}
 .track.is-current:not(.is-selected) .track-title{color:#087f76!important}
 .track.is-current:not(.is-selected) .track-cover{background:#edf6f5!important;box-shadow:inset 0 0 0 1px #87dcd3!important}
+
+/* Mobile content owns the available space above the fixed player. */
+.mobile-menu-back{display:none!important}
+@media(max-width:760px){
+  :root{--fn-player-height:136px}
+  .content{
+    display:flex!important;
+    flex-direction:column!important;
+    height:calc(100dvh - 60px - var(--fn-player-height))!important;
+    min-height:0!important;
+    overflow:hidden!important;
+  }
+  .library-scroll{
+    display:flex!important;
+    flex:1 1 auto!important;
+    min-height:0!important;
+    flex-direction:column!important;
+    overflow:hidden!important;
+  }
+  .library-scroll .track-list{
+    flex:1 1 auto!important;
+    min-height:0!important;
+    overflow-y:auto!important;
+    overscroll-behavior:contain!important;
+    -webkit-overflow-scrolling:touch;
+    padding-bottom:0!important;
+  }
+  .pager{
+    display:block!important;
+    flex:0 0 52px!important;
+    min-height:52px!important;
+    margin:0!important;
+    padding:7px 10px!important;
+    background:#fff!important;
+  }
+  .pager-inner{display:flex!important;min-height:38px!important;gap:8px!important}
+  .pager-nav{display:flex!important;align-items:center!important;gap:2px!important;min-width:0!important}
+  .pager-nav-button{display:grid!important;place-items:center!important;width:32px!important;height:32px!important;padding:0!important;border:0!important;border-radius:5px!important;background:transparent!important;color:#536174!important}
+  .pager-nav-button:disabled{opacity:.35!important;cursor:not-allowed!important}
+  .pager-nav-button svg{width:18px!important;height:18px!important;fill:none!important;stroke:currentColor!important;stroke-width:2!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+  .pager-page-summary{min-width:76px!important;text-align:center!important;white-space:nowrap!important;color:#697386!important;font-size:12px!important;line-height:32px!important}
+  .pager-status{display:none!important}
+  .mobile-menu-back{display:flex!important;align-items:center!important;gap:9px!important;margin:0 0 12px!important;border-bottom:1px solid var(--fn-line)!important;border-radius:0!important;color:#405065!important}
+  .sidebar .library-search{display:flex!important;margin:0 0 14px!important}
+
+  .lyrics-view{
+    bottom:var(--fn-player-height)!important;
+    grid-template-rows:calc(56px + env(safe-area-inset-top,0px)) minmax(0,1fr)!important;
+  }
+  .lyrics-header{
+    display:grid!important;
+    grid-template-columns:64px minmax(0,1fr) 64px!important;
+    min-height:calc(56px + env(safe-area-inset-top,0px))!important;
+    padding:env(safe-area-inset-top,0px) 10px 0!important;
+  }
+  .lyrics-header-meta{
+    position:static!important;
+    grid-column:2!important;
+    width:100%!important;
+    min-width:0!important;
+    transform:none!important;
+    text-align:center!important;
+  }
+  .lyrics-close{
+    position:static!important;
+    grid-column:1!important;
+    justify-self:start!important;
+    width:58px!important;
+    min-width:58px!important;
+    height:34px!important;
+    padding:0 8px!important;
+    transform:none!important;
+  }
+  .lyrics-header-actions{
+    position:static!important;
+    grid-column:3!important;
+    justify-self:end!important;
+    transform:none!important;
+  }
+  .lyrics-header-actions .lyrics-favorite{
+    position:static!important;
+    width:58px!important;
+    min-width:58px!important;
+    height:34px!important;
+    padding:0 8px!important;
+    transform:none!important;
+  }
+  .lyrics-panel{padding-top:14px!important}
+}

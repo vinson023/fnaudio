@@ -9,8 +9,8 @@
 3. 涉及系统边界时查看 `ARCHITECTURE.md`，涉及取舍时查看 `DECISIONS.md`。
 4. 查看 `CHANGELOG_AI.md` 的最新记录，确认上次修改和未验证内容。
 5. 在 `C:\path\to\fnAudio` 运行 `git status --short`，确认是否有未提交工作。
-6. 核对 `src/manifest` 必须包含 `version=0.1.151`。
-7. 阅读 `artifacts/0.1.151/VALIDATION.md` 确认当前包的本地与设备验收；`artifacts/0.1.149/` 和 `artifacts/0.1.150/` 仅是历史记录，不是当前开发基线。
+6. 核对 `src/manifest` 必须包含 `version=0.1.153`。
+7. 阅读 `artifacts/0.1.153/VALIDATION.md` 确认当前包的本地与设备验收；`artifacts/0.1.148/` 至 `artifacts/0.1.152/` 均是历史记录，不是当前开发基线。
 8. 运行基线测试和源码清单校验。
 
 ```powershell
@@ -19,6 +19,7 @@ Get-Content manifest -Encoding UTF8
 python -B -m unittest discover -s tests -v
 node --check app/ui/app.js
 node tests/test_ui_queue_columns.js
+node tests/test_ui_mobile_layout.js
 
 Set-Location C:\path\to\fnAudio
 Get-FileHash src\manifest,src\app\server\server.py,src\app\ui\app.js -Algorithm SHA256
@@ -29,7 +30,7 @@ Get-FileHash src\manifest,src\app\server\server.py,src\app\ui\app.js -Algorithm 
 新建 AI 会话时可以直接使用以下提示：
 
 ```text
-请接手 C:\path\to\fnAudio 项目。当前唯一基线是 0.1.151，源码在 C:\path\to\fnAudio\src。
+请接手 C:\path\to\fnAudio 项目。当前唯一基线是 0.1.153，源码在 C:\path\to\fnAudio\src。
 开始前请完整阅读 PROJECT_CONTEXT.md、RECOVERY.md、TODO.md、ARCHITECTURE.md、
 DECISIONS.md 和 CHANGELOG_AI.md，并核对 src/manifest 与 SOURCE_MANIFEST.sha256。
 docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\builds 或旧版本目录覆盖源码。
@@ -54,19 +55,19 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 | 项目 | 值 |
 | --- | --- |
 | 产品 | fnAudio |
-| 基线版本 | `0.1.151` |
+| 基线版本 | `0.1.153` |
 | 整理日期 | 2026-08-06 |
 | 原始源码 | `E:\Codex\fnaudio-0.1.7` |
 | 当前源码 | `C:\path\to\fnAudio\src` |
-| Git 基线 | `main` 分支，标签 `v0.1.151` |
-| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.151\fnaudio-0.1.151.fpk` |
-| FPK SHA-256 | `05CC22B336A9AC821B0166A31D401B0383A425DA88679CA928604F8FCBB6A039` |
+| Git 基线 | `main` 分支，标签 `v0.1.153` |
+| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.153\fnaudio-0.1.153.fpk` |
+| FPK SHA-256 | `A2214FD1A07513634229EAF2A91A685EE60AD56FED25F2BF66CDB6AE62BDB3F0` |
 | 已验证测试包 | `C:\path\to\fnAudio\artifacts\0.1.149\fnaudio-0.1.149.fpk`（仅升级验证） |
 | 测试包 SHA-256 | `B7FD239E26D69AC16CE8C1F4B788AE6528F47E2DBA479FCC33B1CD9B0B507AA0` |
 | manifest 原始 SHA-256 | `9170B93C59BE249579805E7075FAD6DFE5A8F99511BEA5488DE3B0AA5D9140EA` |
 | server.py 原始 SHA-256 | `37E82F89827A95987F6481079945E8A09270C72DF1CD0CC818CA2B137A961093` |
 | app.js 原始 SHA-256 | `8ED763723EB02C97B4CCB918EA452E48DCE2984A24A72724C86078D0D599BBF6` |
-| 当前测试基线 | 50 个 Python 单元测试与 1 个 Node 前端回归脚本通过；fnOS 已完成 `0.1.150 -> 0.1.151` 覆盖升级和队列切歌 UI 验证 |
+| 当前测试基线 | 50 个 Python 单元测试与 2 个 Node 前端回归脚本通过；fnOS 已完成 `0.1.152 -> 0.1.153` 覆盖升级和移动端烟雾验证 |
 
 完整源码哈希见 `SOURCE_MANIFEST.sha256`。上述三个关键哈希用于快速判断是否仍是初始整理基线；后续正常开发会改变它们，变更必须记录在 `CHANGELOG_AI.md`。
 
@@ -79,8 +80,8 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 - 本机播放主要依赖私有 MPD、ALSA 和 fnOS FFmpeg。
 - fnAudio 同时实现 DLNA Control Point、MediaServer 和 MediaRenderer。
 - Android WebView 壳不是当前主项目，也没有合入本恢复目录。
-- 原工作区中的现有 FPK 未被确认与当前源码一致，因此没有作为发布基线复制；当前 FPK 是从 `C:\path\to\fnAudio\src` 重新构建的唯一可追溯包，内容和本地/设备校验记录位于 `artifacts\0.1.151\`。
-- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.151` 基线。
+- 原工作区中的现有 FPK 未被确认与当前源码一致，因此没有作为发布基线复制；当前 FPK 是从 `C:\path\to\fnAudio\src` 重新构建的唯一可追溯包，内容和本地/设备校验记录位于 `artifacts\0.1.153\`。
+- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.153` 基线。
 
 ## 6. 禁止事项
 

@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>fnAudio</title>
   <link rel="icon" href="images/icon_64.png">
-  <link rel="stylesheet" href="app.css?v=0.1.151">
+  <link rel="stylesheet" href="app.css?v=0.1.153">
 </head>
 <body>
   <header class="topbar">
     <div class="mobile-pagebar">
-      <button class="top-icon-button" id="mobileNavBtn" type="button" title="打开导航" aria-label="打开导航" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg></button>
+      <button class="top-icon-button" id="mobileNavBtn" type="button" title="打开更多菜单" aria-label="打开更多菜单" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg></button>
       <div class="mobile-page-title"><strong id="mobileViewTitle">全部音乐</strong><span id="mobileViewSub">本地音乐库</span></div>
     </div>
     <div class="topbar-library">
@@ -34,6 +34,7 @@
   <div class="mobile-nav-backdrop" id="mobileNavBackdrop" hidden></div>
   <main class="shell">
     <aside class="sidebar">
+      <button class="mobile-menu-back nav-item" id="mobileBackBtn" type="button" title="返回上一级" aria-label="返回上一级"><span aria-hidden="true">←</span><span>返回</span></button>
       <label class="library-search"><span>⌕</span><input id="searchInput" placeholder="搜索音乐"></label>
       <div class="nav-title">音乐库</div>
       <button class="nav-item active" data-view="all">⌂ <span>全部音乐</span><b id="allCount">0</b></button>
@@ -53,16 +54,6 @@
       <div class="sidebar-footer"><span class="pulse"></span><span>本地音乐库</span></div>
     </aside>
     <section class="content">
-      <label class="mobile-library-search"><span>⌕</span><input id="mobileSearchInput" placeholder="搜索歌曲、艺术家或专辑"></label>
-      <nav class="mobile-library-tabs" aria-label="音乐库分类">
-        <button type="button" data-mobile-view="all">全部</button>
-        <button type="button" data-mobile-view="dsd">DSD</button>
-        <button type="button" data-mobile-view="folders">文件夹</button>
-        <button type="button" data-mobile-view="albums">专辑</button>
-        <button type="button" data-mobile-view="artists">歌手</button>
-        <button type="button" data-mobile-view="composers">作曲者</button>
-        <button type="button" data-mobile-view="genres">类型</button>
-      </nav>
       <div class="library-scroll" id="libraryScroll">
         <div class="table-head" id="tableHead"></div>
         <div id="trackList" class="track-list"></div>
@@ -113,7 +104,7 @@
   <div id="trackContextMenu" class="track-context-menu" role="menu" hidden></div>
   <dialog id="mobileMoreDialog"><div class="dialog-head"><h2>更多播放操作</h2><button class="icon-button" id="closeMobileMoreDialog">×</button></div><div id="mobileMoreList" class="track-action-list"></div></dialog>
   <dialog id="columnsDialog"><div class="dialog-head"><h2>显示列</h2><button class="icon-button" id="closeColumnsDialog" title="关闭" aria-label="关闭">×</button></div><p class="dialog-help" id="columnDialogHelp">标题列也可以隐藏。点击表头可按支持的字段排序。</p><div class="column-choice-list" id="columnChoiceList"></div><div class="column-dialog-footer"><button class="secondary-button" id="resetColumnsBtn" type="button">恢复默认</button><button class="secondary-button" id="saveColumnsBtn" type="button">保存</button></div></dialog>
-    <script src="app.js?v=0.1.151"></script>
+    <script src="app.js?v=0.1.153"></script>
 </body>
 </html>
 
