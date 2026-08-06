@@ -3,17 +3,18 @@
 > 生成日期：2026-08-06  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
-> 当前可识别发布版本：`0.1.150`  
+> 当前可识别发布版本：`0.1.151`  
 > 文档目的：为后续开发、排障、测试和发布提供可复用上下文
 
-## 最新状态：`0.1.150` FPK 已构建，待真机验收
+## 最新状态：`0.1.151` 已完成 fnOS 覆盖升级和队列同步验收
 
-- `C:\path\to\fnAudio\src` 是唯一可继续开发的源码，`src/manifest`、根 `VERSION` 和前端静态资源缓存键均为 `0.1.150`。
-- `artifacts/0.1.150/fnaudio-0.1.150.fpk` 由当前 `src/` 通过 `fnpack 1.2.3` 直接构建，大小为 `4,878,790` 字节，SHA-256 为 `B70EAEE3913AC9AEE8C5CE003C5CC409BC8CF535960B702C19398B593F1A8660`。
-- `0.1.150` 包外层有 18 个文件，运行时 `app.tgz` 有 97 个文件；已验证 manifest、前端资源版本、服务端、UI、私有 MPD 和依赖库，且未包含 tests、历史 builds、`__pycache__`、SQLite 或转码缓存。
-- 本地验证已通过 50 个 Python 单元测试、`node --check app/ui/app.js` 和 `node tests/test_ui_queue_columns.js`；`0.1.150` 尚未安装到 fnOS 真机。
-- `artifacts/0.1.149/` 是历史一次性升级测试包，已在 fnOS x86 设备完成升级和基础冒烟，但不包含当前队列定位/“正在播放”标识与专辑详情“序号”默认首列。
-- 不要将 `artifacts/0.1.149/stage/` 或任何 FPK 解包目录当作开发源码或下一次发布起点。新功能只改 `src/`；每次测试/发布包都须单独创建、记录并验证。
+- `C:\path\to\fnAudio\src` 是唯一可继续开发的源码，`src/manifest`、根 `VERSION` 和前端静态资源缓存键均为 `0.1.151`。
+- `artifacts/0.1.151/fnaudio-0.1.151.fpk` 由当前 `src/` 通过 `fnpack 1.2.3` 直接构建，大小为 `4,878,955` 字节，SHA-256 为 `05CC22B336A9AC821B0166A31D401B0383A425DA88679CA928604F8FCBB6A039`。
+- `0.1.151` 包外层有 18 个文件，运行时 `app.tgz` 有 97 个文件；已验证 manifest、前端资源版本、服务端、UI、私有 MPD 和依赖库，且未包含 tests、历史 builds、`__pycache__`、SQLite 或转码缓存。
+- 本地验证已通过 50 个 Python 单元测试、`node --check app/ui/app.js` 和 `node tests/test_ui_queue_columns.js`。已通过 fnOS 应用中心从 `0.1.150` 覆盖升级，设备回报 `fnaudio 0.1.151 / running`，原音乐库、队列和当前播放状态均被保留。
+- 真机 UI 验证：非当前队列视图不显示“正在播放”；打开当前队列会定位到当前曲目；点击下一曲后，当前队列立即重渲染、自动切换到新曲目所在页，并且仅新曲目显示一个“正在播放”标识。
+- 未验证项仍包括全新安装、端口变更、停止/启动、两种卸载、USB DAC、移动 WebView、DLNA 互操作，以及“从当前开始播放全部歌曲”的完整设备端流程。
+- 不要将任何 FPK 解包目录当作开发源码或下一次发布起点。新功能只改 `src/`；每次测试/发布包都须单独创建、记录并验证。
 - 已缓存第三方 `FNOS-API` 固定提交作为外部设备验收与运维参考，评估见 `references/FNOS_API_EVALUATION.md`。它是 `trim-cli` 的高权限 REST 包装，不是官方 SDK，也不应接入 fnAudio 运行时。
 
 ## 0. 快速恢复入口
