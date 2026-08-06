@@ -26,9 +26,12 @@ assert.match(css, /\.content\{\s*display:flex!important;\s*flex-direction:column
 assert.match(css, /\.library-scroll\{\s*display:flex!important;\s*flex:1 1 auto!important;/);
 assert.match(css, /\.library-scroll \.track-list\{\s*flex:1 1 auto!important;[\s\S]*?overflow-y:auto!important;/);
 assert.match(css, /\.pager\{\s*display:block!important;\s*flex:0 0 52px!important;/);
-assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:64px minmax\(0,1fr\) 64px!important;/);
+assert.match(css, /\.lyrics-view\{[\s\S]*?grid-template-rows:48px minmax\(0,1fr\)!important;/);
+assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:52px minmax\(0,1fr\) 52px!important;[\s\S]*?min-height:48px!important;[\s\S]*?padding:0 8px!important;/);
 assert.match(css, /\.lyrics-close\{\s*position:static!important;/);
 assert.match(css, /\.lyrics-header-actions \.lyrics-favorite\{\s*position:static!important;/);
+assert.match(css, /\.lyrics-panel\{gap:6px!important;padding:8px 14px 10px!important\}/);
+assert.doesNotMatch(css, /grid-template-rows:calc\(56px \+ env\(safe-area-inset-top,0px\)\)/);
 assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?padding:8px 10px 14px!important;/);
 assert.match(css, /\.mobile-menu-tools\{[\s\S]*?grid-template-columns:32px minmax\(0,1fr\)!important;/);
 assert.match(css, /\.mobile-menu-back\{[\s\S]*?width:32px!important;[\s\S]*?height:32px!important;/);
