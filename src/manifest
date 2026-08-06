@@ -1,5 +1,5 @@
 appname=fnaudio
-version=0.1.155
+version=0.1.156
 display_name=fnAudio
 desc=本地音乐库、DSD 播放与 UPnP/DLNA 推送播放器
 platform=x86

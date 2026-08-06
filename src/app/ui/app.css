@@ -1323,13 +1323,14 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
 
   .lyrics-view{
     bottom:var(--fn-player-height)!important;
-    grid-template-rows:calc(56px + env(safe-area-inset-top,0px)) minmax(0,1fr)!important;
+    grid-template-rows:48px minmax(0,1fr)!important;
   }
   .lyrics-header{
     display:grid!important;
-    grid-template-columns:64px minmax(0,1fr) 64px!important;
-    min-height:calc(56px + env(safe-area-inset-top,0px))!important;
-    padding:env(safe-area-inset-top,0px) 10px 0!important;
+    grid-template-columns:52px minmax(0,1fr) 52px!important;
+    height:48px!important;
+    min-height:48px!important;
+    padding:0 8px!important;
   }
   .lyrics-header-meta{
     position:static!important;
@@ -1338,15 +1339,19 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
     min-width:0!important;
     transform:none!important;
     text-align:center!important;
+    line-height:1.15!important;
   }
+  .lyrics-header-meta strong{font-size:13px!important}
+  .lyrics-header-meta span{margin-top:1px!important;font-size:10px!important}
   .lyrics-close{
     position:static!important;
     grid-column:1!important;
     justify-self:start!important;
-    width:58px!important;
-    min-width:58px!important;
-    height:34px!important;
-    padding:0 8px!important;
+    width:50px!important;
+    min-width:50px!important;
+    height:30px!important;
+    padding:0 6px!important;
+    font-size:11px!important;
     transform:none!important;
   }
   .lyrics-header-actions{
@@ -1357,13 +1362,14 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   }
   .lyrics-header-actions .lyrics-favorite{
     position:static!important;
-    width:58px!important;
-    min-width:58px!important;
-    height:34px!important;
-    padding:0 8px!important;
+    width:50px!important;
+    min-width:50px!important;
+    height:30px!important;
+    padding:0 6px!important;
+    font-size:11px!important;
     transform:none!important;
   }
-  .lyrics-panel{padding-top:14px!important}
+  .lyrics-panel{gap:6px!important;padding:8px 14px 10px!important}
 }
 
 /* Keep the mobile menu compact: return and search share one row above the library nav. */
