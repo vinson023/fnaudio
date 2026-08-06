@@ -1372,7 +1372,7 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .lyrics-panel{gap:6px!important;padding:8px 14px 10px!important}
 }
 
-/* Keep the mobile menu compact: return and search share one row above the library nav. */
+/* Mobile menu: a clear back/title row with a full-width search field below it. */
 .mobile-menu-tools{display:contents}
 @media(max-width:760px){
   .sidebar{
@@ -1382,11 +1382,15 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
   .mobile-menu-tools{
     display:grid!important;
     grid-template-columns:32px minmax(0,1fr)!important;
+    grid-template-rows:32px 34px!important;
+    grid-template-areas:"back title" "search search"!important;
     align-items:center!important;
-    gap:7px!important;
-    margin:0 0 4px!important;
+    column-gap:7px!important;
+    row-gap:4px!important;
+    margin:0 0 5px!important;
   }
   .mobile-menu-back{
+    grid-area:back!important;
     width:32px!important;
     min-width:32px!important;
     height:32px!important;
@@ -1395,27 +1399,32 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
     padding:0!important;
     align-self:center!important;
     justify-content:center!important;
-    border:0!important;
+    border:1px solid #e0e7ef!important;
     border-radius:8px!important;
-    background:transparent!important;
+    background:#fff!important;
     color:#5d6b7d!important;
   }
   .mobile-menu-back:hover,.mobile-menu-back:active{background:#eaf5f3!important;color:#078f85!important}
-  .mobile-menu-back span:first-child{font-size:22px!important;line-height:1!important}
-  .mobile-menu-back span:last-child{display:none!important}
+  .mobile-menu-back svg{width:18px!important;height:18px!important;fill:none!important;stroke:currentColor!important;stroke-width:2!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+  .mobile-menu-back span{display:none!important}
   .sidebar .library-search{
+    grid-area:search!important;
     width:100%!important;
-    min-height:32px!important;
-    height:32px!important;
+    min-height:34px!important;
+    height:34px!important;
     margin:0!important;
-    padding:0 8px!important;
+    padding:0 10px!important;
   }
-  .sidebar > .nav-title{
-    min-height:18px!important;
+  .mobile-menu-tools > .nav-title{
+    grid-area:title!important;
+    min-height:32px!important;
     margin:0!important;
-    padding:0 8px 5px!important;
-    font-size:11px!important;
-    line-height:18px!important;
+    padding:0 4px!important;
+    color:#687588!important;
+    font-size:12px!important;
+    font-weight:650!important;
+    line-height:32px!important;
+    letter-spacing:.5px!important;
   }
   .pager{display:none!important}
   .pager.mobile-visible{display:block!important}
