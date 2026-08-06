@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>fnAudio</title>
   <link rel="icon" href="images/icon_64.png">
-  <link rel="stylesheet" href="app.css?v=0.1.156">
+  <link rel="stylesheet" href="app.css?v=0.1.157">
 </head>
 <body>
   <header class="topbar">
@@ -35,10 +35,10 @@
   <main class="shell">
     <aside class="sidebar">
       <div class="mobile-menu-tools">
-        <button class="mobile-menu-back nav-item" id="mobileBackBtn" type="button" title="返回上一级" aria-label="返回上一级"><span aria-hidden="true">←</span><span>返回</span></button>
         <label class="library-search"><span>⌕</span><input id="searchInput" placeholder="搜索音乐"></label>
+        <div class="nav-title">音乐库</div>
+        <button class="mobile-menu-back nav-item" id="mobileBackBtn" type="button" title="返回上一级" aria-label="返回上一级"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg><span>返回</span></button>
       </div>
-      <div class="nav-title">音乐库</div>
       <button class="nav-item active" data-view="all">⌂ <span>全部音乐</span><b id="allCount">0</b></button>
       <button class="nav-item" data-view="dsd">◈ <span>DSD 音乐</span><b id="dsdCount">0</b></button>
       <button class="nav-item" data-view="folders">▰ <span>文件夹</span></button>
@@ -106,7 +106,7 @@
   <div id="trackContextMenu" class="track-context-menu" role="menu" hidden></div>
   <dialog id="mobileMoreDialog"><div class="dialog-head"><h2>更多播放操作</h2><button class="icon-button" id="closeMobileMoreDialog">×</button></div><div id="mobileMoreList" class="track-action-list"></div></dialog>
   <dialog id="columnsDialog"><div class="dialog-head"><h2>显示列</h2><button class="icon-button" id="closeColumnsDialog" title="关闭" aria-label="关闭">×</button></div><p class="dialog-help" id="columnDialogHelp">标题列也可以隐藏。点击表头可按支持的字段排序。</p><div class="column-choice-list" id="columnChoiceList"></div><div class="column-dialog-footer"><button class="secondary-button" id="resetColumnsBtn" type="button">恢复默认</button><button class="secondary-button" id="saveColumnsBtn" type="button">保存</button></div></dialog>
-    <script src="app.js?v=0.1.156"></script>
+    <script src="app.js?v=0.1.157"></script>
 </body>
 </html>
 
