@@ -87,6 +87,13 @@ public final class ConnectionProfile {
         );
     }
 
+    public boolean matchesConnection(String candidateHost, int candidatePort, boolean candidateHttps, String candidateUsername) {
+        return host.equals(normalizeHost(candidateHost))
+                && port == candidatePort
+                && https == candidateHttps
+                && username.equals(clean(candidateUsername));
+    }
+
     public String httpOrigin() {
         return (https ? "https" : "http") + "://" + authority();
     }
