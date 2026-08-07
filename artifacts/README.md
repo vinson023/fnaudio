@@ -1,6 +1,6 @@
 # 构建产物策略
 
-`0.1.170/` 保存当前可追溯的 fnOS FPK 和 Android Debug APK。该版本把 Android 媒体卡片和通知的无封面默认播放图标改为白色，并保留桌面右键/移动端长按四项歌曲菜单、多连接历史、原生认证 API、双击返回登录页与 Media3 后台播放服务。
+`0.1.171/` 保存当前可追溯的 fnOS FPK 和 Android Debug APK。该版本恢复 PC 完整右键并与移动长按分开、支持文件直接定位、统一无封面 `♫` 占位，并使用带认证的 Android 通知封面缓存；历史版本目录仍仅用于追溯。
 
 `0.1.148/` 是整理阶段从当时源码重建的历史 FPK，不再代表当前源码版本。
 
@@ -10,9 +10,9 @@
 
 ```text
 artifacts/
-├── 0.1.170/
-│   ├── fnaudio-0.1.170.fpk
-│   ├── fnaudio-android-0.1.170-debug.apk
+├── 0.1.171/
+│   ├── fnaudio-0.1.171.fpk
+│   ├── fnaudio-android-0.1.171-debug.apk
 │   ├── PACKAGE_CONTENTS.txt
 │   ├── SHA256SUMS
 │   └── VALIDATION.md

@@ -29,6 +29,7 @@ import java.util.Map;
 public final class PlaybackService extends MediaSessionService {
     private ExoPlayer player;
     private MediaSession mediaSession;
+    private AuthenticatedBitmapLoader bitmapLoader;
 
     @Override
     public void onCreate() {
@@ -58,7 +59,10 @@ public final class PlaybackService extends MediaSessionService {
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
         player.setHandleAudioBecomingNoisy(true);
         player.setWakeMode(C.WAKE_MODE_LOCAL);
-        mediaSession = new MediaSession.Builder(this, player).build();
+        bitmapLoader = new AuthenticatedBitmapLoader(this, profile, httpClient);
+        mediaSession = new MediaSession.Builder(this, player)
+                .setBitmapLoader(bitmapLoader)
+                .build();
     }
 
     @Nullable
@@ -79,6 +83,10 @@ public final class PlaybackService extends MediaSessionService {
         if (mediaSession != null) {
             mediaSession.release();
             mediaSession = null;
+        }
+        if (bitmapLoader != null) {
+            bitmapLoader.shutdown();
+            bitmapLoader = null;
         }
         if (player != null) {
             player.release();

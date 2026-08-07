@@ -1820,7 +1820,11 @@ function renderTrack(item, index = 0) {
   const rowKey = trackRowSelectionKey(item, index);
   const isSelected = state.selectedTrackRowKeys.has(rowKey);
   const playingIndicator = isCurrent ? `<span class="track-playing-indicator" aria-label="正在播放">正在播放</span>` : "";
-  const titleCell = `<div class="track-main" data-play="${escapeHtml(item.id)}"><div class="track-cover">${localCover ? `<img src="${coverUrl(item)}" loading="lazy" onerror="this.remove()">` : ""}<span>${item.is_dsd ? "◈" : "♫"}</span></div><div class="track-info"><div class="track-title-line"><strong class="track-title">${escapeHtml(displayTrackTitle(item))}</strong>${playingIndicator}</div><span class="mobile-track-subtitle">${escapeHtml(mobileSubtitle)}</span></div></div>`;
+  const coverFallback = `<span class="track-cover-fallback"${localCover ? " hidden" : ""}>♫</span>`;
+  const coverImage = localCover
+    ? `<img src="${escapeHtml(coverUrl(item))}" loading="lazy" alt="" onerror="this.remove();this.parentElement.querySelector('.track-cover-fallback').hidden=false">`
+    : "";
+  const titleCell = `<div class="track-main" data-play="${escapeHtml(item.id)}"><div class="track-cover">${coverImage}${coverFallback}</div><div class="track-info"><div class="track-title-line"><strong class="track-title">${escapeHtml(displayTrackTitle(item))}</strong>${playingIndicator}</div><span class="mobile-track-subtitle">${escapeHtml(mobileSubtitle)}</span></div></div>`;
   return `<div class="track${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}" data-track-row-key="${escapeHtml(rowKey)}" data-track-id="${escapeHtml(item.id)}"${hasQueuePosition ? ` data-queue-index="${queueIndex}"` : ""}>
     ${columns.map(key => key === "title" ? titleCell : `<span class="track-cell track-cell-${key}${key === "format" && item.is_dsd ? " dsd" : ""}">${trackColumnValue(item, key)}</span>`).join("")}
   </div>`;
@@ -3730,7 +3734,7 @@ function openTrackMenuForRow(row, x, y, mobile = false) {
   } else if (!state.selectedTrackRowKeys.has(rowKey)) {
     setTrackSelection([rowKey]);
   }
-  openTrackContextMenu(id, x, y);
+  openTrackContextMenu(id, x, y, mobile);
 }
 function bindTrackLongPress(row) {
   row.addEventListener("pointerdown", event => {
@@ -3890,13 +3894,15 @@ async function resolveTrackLocation(trackId) {
 async function openContainingFolder(trackId) {
   try {
     const location = await resolveTrackLocation(trackId);
+    const path = String(location.path || "");
     const folder = String(location.folder || "");
-    if (!folder) throw new Error("无法获取所在文件夹");
+    if (!path || !folder) throw new Error("无法获取歌曲文件路径");
     const sdk = await getTrimSdk();
     if (!sdk || typeof sdk.openFileManager !== "function") throw new Error("unsupported");
     if (typeof sdk.ready === "function") await sdk.ready();
     if (sdk.isStandaloneWeb) return alert("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开，才能跳转到文件管理");
-    Promise.resolve(sdk.openFileManager(folder)).catch(error => {
+    // fnOS 的文件管理入口接收目标路径；传入完整文件路径时会打开所在目录并直接定位该文件。
+    Promise.resolve(sdk.openFileManager(path)).catch(error => {
       console.warn("openFileManager failed", error);
       alert("飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
     });
@@ -4039,12 +4045,13 @@ function openTrackActionDialog(trackId) {
   bindTrackActionButtons(list);
   $("trackActionDialog").showModal();
 }
-function openTrackContextMenu(trackId, x, y) {
+function openTrackContextMenu(trackId, x, y, mobile = false) {
   const item = itemById(trackId);
   const menu = $("trackContextMenu");
   if (!item || !menu) return;
   state.actionTrackId = String(trackId);
-  menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${trackContextActionButtons(trackId).join("")}</div>`;
+  const actions = mobile ? trackContextActionButtons(trackId) : trackActionButtons(trackId);
+  menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${actions.join("")}</div>`;
   menu.hidden = false;
   menu.style.left = `${Math.max(8, x)}px`;
   menu.style.top = `${Math.max(8, y)}px`;

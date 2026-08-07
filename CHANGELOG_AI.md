@@ -1,5 +1,13 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.171` PC/移动菜单分离、文件定位、封面 fallback 与 Android 通知封面
+
+- PC 端右键恢复完整歌曲操作菜单；移动端长按继续使用四项快捷菜单。
+- “打开包含的文件夹”将完整歌曲路径传递给 fnOS 文件管理入口，便于直接定位文件。
+- 歌曲行有真实封面时隐藏音乐符号；无封面统一显示 `♫`，DSD 不再使用单独符号，并在封面加载失败时恢复 fallback。
+- Android Media3 新增 `AuthenticatedBitmapLoader`，同源封面请求附加 fnOS token Header/Cookie，结果写入应用私有缓存后交给通知栏 BitmapLoader；无封面继续使用白色占位图。
+- 验证：59 个 Python 测试、JavaScript 语法、3 个 Node 回归脚本、Android Debug 编译通过；未连接 Android 真机。
+
 ## 2026-08-07：`0.1.170` Android 媒体卡片白色占位图标
 
 - 目标：按截图把 Android 桌面/锁屏媒体卡片左侧的黑色默认播放图标改成白色，同时不覆盖真实歌曲封面。
