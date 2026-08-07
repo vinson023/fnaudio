@@ -9,8 +9,8 @@
 3. 涉及系统边界时查看 `ARCHITECTURE.md`，涉及取舍时查看 `DECISIONS.md`。
 4. 查看 `CHANGELOG_AI.md` 的最新记录，确认上次修改和未验证内容。
 5. 在 `C:\path\to\fnAudio` 运行 `git status --short`，确认是否有未提交工作。
-6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.166`。
-7. 阅读 `artifacts/0.1.166/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
+6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.167`。
+7. 阅读 `artifacts/0.1.167/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
 8. 运行基线测试和源码清单校验。
 
 ```powershell
@@ -31,7 +31,7 @@ Get-FileHash src\manifest,src\app\server\server.py,src\app\ui\app.js -Algorithm 
 新建 AI 会话时可以直接使用以下提示：
 
 ```text
-请接手 C:\path\to\fnAudio 项目。当前配套基线是 0.1.166，fnOS 源码在 C:\path\to\fnAudio\src，Android 源码在 C:\path\to\fnAudio\android-client。
+请接手 C:\path\to\fnAudio 项目。当前配套基线是 0.1.167，fnOS 源码在 C:\path\to\fnAudio\src，Android 源码在 C:\path\to\fnAudio\android-client。
 开始前请完整阅读 PROJECT_CONTEXT.md、RECOVERY.md、TODO.md、ARCHITECTURE.md、
 DECISIONS.md 和 CHANGELOG_AI.md，并核对 src/manifest 与 SOURCE_MANIFEST.sha256。
 docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\builds 或旧版本目录覆盖源码。
@@ -56,22 +56,22 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 | 项目 | 值 |
 | --- | --- |
 | 产品 | fnAudio |
-| 基线版本 | `0.1.166` |
+| 基线版本 | `0.1.167` |
 | 整理日期 | 2026-08-06 |
 | 原始源码 | `E:\Codex\fnaudio-0.1.7` |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
-| Git 基线 | `main` 分支；本轮提交后应创建标签 `v0.1.166` |
-| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.166\fnaudio-0.1.166.fpk` |
-| FPK SHA-256 | `03993A17CA0E87BA063BFBE6764847B0650A0743BA6D5B5827C9913DA95FBD53` |
-| Android Debug APK | `C:\path\to\fnAudio\artifacts\0.1.166\fnaudio-android-0.1.166-debug.apk` |
-| APK SHA-256 | `84A476C8F62A68955A52A385A37D4E4DF71103A8FED514452753CF042F8B3909` |
+| Git 基线 | `main` 分支；本轮提交后应创建标签 `v0.1.167` |
+| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.167\fnaudio-0.1.167.fpk` |
+| FPK SHA-256 | `A5F5CF912C2477F1597D288201B5386552206B97870C49D1992D72D9741700DD` |
+| Android Debug APK | `C:\path\to\fnAudio\artifacts\0.1.167\fnaudio-android-0.1.167-debug.apk` |
+| APK SHA-256 | `5723CDAE06C7D94FCCD1B5D3E705D33AFC3165157996FFB23FE1C7DFB020FC34` |
 | 已验证测试包 | `C:\path\to\fnAudio\artifacts\0.1.149\fnaudio-0.1.149.fpk`（仅升级验证） |
 | 测试包 SHA-256 | `B7FD239E26D69AC16CE8C1F4B788AE6528F47E2DBA479FCC33B1CD9B0B507AA0` |
 | manifest 原始 SHA-256 | `9170B93C59BE249579805E7075FAD6DFE5A8F99511BEA5488DE3B0AA5D9140EA` |
 | server.py 原始 SHA-256 | `37E82F89827A95987F6481079945E8A09270C72DF1CD0CC818CA2B137A961093` |
 | app.js 原始 SHA-256 | `8ED763723EB02C97B4CCB918EA452E48DCE2984A24A72724C86078D0D599BBF6` |
-| 当前测试基线 | 59 个 Python 测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过；`0.1.166` FPK/APK 均待真机安装，最近确认的 fnOS 设备版本为 `0.1.153` |
+| 当前测试基线 | 59 个 Python 测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过；真实 fnOS 已确认 `0.1.166` 的网关行为，`0.1.167` Android 原生认证和返回流程待真机安装 |
 
 完整源码哈希见 `SOURCE_MANIFEST.sha256`。上述三个关键哈希用于快速判断是否仍是初始整理基线；后续正常开发会改变它们，变更必须记录在 `CHANGELOG_AI.md`。
 
@@ -85,9 +85,10 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 - fnAudio 同时实现 DLNA Control Point、MediaServer 和 MediaRenderer。
 - `android-client/` 是当前正式开发目录，不要再使用 `E:\Codex\fnaudio-android-shell` 的历史试验文件。
 - Android 采用 WebView UI + Media3 原生播放；登录走 fnOS WebSocket，Keystore 加密地址、账号、密码和 token/longToken，历史连接通过独立页面管理。
-- Android 客户端必须与 `0.1.166` 或更新 FPK 配套，当前产物和校验记录位于 `artifacts\0.1.166\`。
-- `0.1.166` 的关键修复是 CGI 队列 POST 路由兜底和 Android 页面内返回分发；若设备仍出现 HTTP 200 队列错误，先确认 FPK 与 APK 都已升级，再检查 CGI `REQUEST_URI`/`HTTP_X_FNAUDIO_PATH` 环境。
-- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.166` 基线。
+- Android 客户端必须与 `0.1.167` 或更新 FPK 配套，当前产物和校验记录位于 `artifacts\0.1.167\`。
+- `0.1.167` 的关键修复是原生认证非 GET API：真实 HTTP 200 队列错误的响应体是 fnOS nginx 返回的 `invalid token`，不是 fnAudio JSON。排障时先确认网页调用 `apiFetch()`、Android 桥存在 `requestJson()`，再检查原生请求是否携带 token Header/Cookie。
+- 根页面返回不再调用 `moveTaskToBack(true)`；第一次提示，2.2 秒内第二次进入登录页。该入口必须设置 `EXTRA_SKIP_AUTO_RESUME`，否则登录页会立即恢复旧连接。
+- `artifacts\0.1.149\` 是以旧 `src` 完整副本、仅修改版本号构建的真机升级测试产物。它已验证设备升级、启动、端口和核心 API，但绝不能作为开发源码或替代 `0.1.167` 基线。
 
 ## 6. 禁止事项
 
@@ -119,7 +120,8 @@ Set-Location C:\path\to\fnAudio
 Get-ChildItem src,android-client -Recurse -File |
   Where-Object {
     $_.FullName -notmatch '\\(build|\.gradle)\\' -and
-    $_.Name -ne 'local.properties'
+    $_.Name -ne 'local.properties' -and
+    $_.Extension -notin '.fpk', '.apk'
   } |
   Sort-Object FullName |
   ForEach-Object {

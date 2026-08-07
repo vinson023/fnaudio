@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.166`  
+> 当前源码版本：`0.1.167`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -24,6 +24,8 @@ flowchart TD
     WS --> WEBVIEW["WebView 直达 fnAudio CGI"]
     WEBVIEW --> CGI
     WEBVIEW --> BRIDGE["FnAudioNative JS Bridge"]
+    BRIDGE --> AUTHHTTP["Authenticated OkHttp API"]
+    AUTHHTTP --> CGI
     BRIDGE --> CONTROLLER["MediaController"]
     CONTROLLER --> SERVICE["MediaSessionService + ExoPlayer"]
     SERVICE --> MEDIA
@@ -62,7 +64,7 @@ flowchart TD
 | 入口代理 | `app/ui/index.cgi`、`app/ui/cgi_proxy.py` | iframe/Android 入口、端口发现、Header/Cookie token 转发、HTTP 代理 |
 | 前端 | `app/ui/index.html`、`app.css`、`app.js` | 浏览、搜索、播放、队列、歌词、收藏、歌单、设置和原生桥检测 |
 | Android 登录与历史 | `android-client/.../data/`、`network/`、`ui/LoginActivity.java` | WebSocket 登录、Keystore 加密令牌、多连接恢复与切换 |
-| Android Web 宿主 | `android-client/.../ui/MainActivity.java`、`web/NativePlaybackBridge.java` | 直达 fnAudio、会话 Cookie/Header、JS/MediaController 桥、状态回传 |
+| Android Web 宿主 | `android-client/.../ui/MainActivity.java`、`web/NativePlaybackBridge.java` | 直达 fnAudio、会话 Cookie/Header、原生认证 API、JS/MediaController 桥、状态回传 |
 | Android 播放 | `android-client/.../playback/` | MediaSessionService、ExoPlayer、通知、媒体键、音频焦点和后台生命周期 |
 | HTTP 编排 | `app/server/server.py` | API、静态文件、媒体响应、DLNA 路由和服务装配 |
 | 音乐库 | `app/server/library.py` | 扫描、Tag、封面、CUE、SQLite 索引和查询 |
@@ -101,11 +103,13 @@ library_path / library_paths
 
 外部控制器把 fnAudio 当作 Renderer 时，DLNA 会话仍会同步回 PlaybackCore，避免维护第二套互不相干的播放状态。
 
-Android 模式下，WebView 仍使用服务端队列 API保存用户状态，但真正的当前项、进度、自动下一首和播放生命周期由 Media3 服务持有。原生状态通过 `window.fnAudioNativeOnState()` 回传；页面恢复时优先采用原生当前曲目，避免被 NAS 中稍旧的播放快照倒退。
+Android 模式下，WebView 仍使用服务端队列 API 保存用户状态，但真正的当前项、进度、自动下一首和播放生命周期由 Media3 服务持有。原生状态通过 `window.fnAudioNativeOnState()` 回传；页面恢复时优先采用原生当前曲目，避免被 NAS 中稍旧的播放快照倒退。
+
+fnOS nginx 会在 token 无效时以 HTTP 200 和纯文本 `invalid token` 拦截 CGI 请求。WebView 的 `shouldInterceptRequest()` 无法可靠取得 POST body，因此 Android 的队列、状态、播放控制和设置等非 GET API 通过 `FnAudioNative.requestJson()` 交给 `MainActivity` 的 OkHttp 客户端。原生层只允许访问当前 NAS 的 `/cgi/ThirdParty/fnaudio/index.cgi/api/`，附加认证 Header/Cookie，并通过 `window.fnAudioNativeOnHttpResponse()` 把状态、响应头和正文交还网页。
 
 fnOS CGI 对路径信息的暴露在不同环境中可能不一致：代理优先从显式 `X-FnAudio-Path`、`REQUEST_URI`、`PATH_INFO` 三个来源恢复 `/index.cgi/` 后的真实 API 路径。播放队列 POST 使用显式路由 Header 作为兜底，避免请求被错误转发到 HTML 首页并以 HTTP 200 返回。
 
-Android 系统返回键不使用 WebView 的原始历史栈，因为其中可能包含 fnOS 登录或系统入口。`MainActivity` 先调用网页的 `fnAudioHandleAndroidBack()` 关闭当前对话框、菜单、歌词或嵌套分类；网页确认没有内部层级可退时，Activity 才把任务移到后台。
+Android 系统返回键不使用 WebView 的原始历史栈，因为其中可能包含 fnOS 登录或系统入口。`MainActivity` 先调用网页的 `fnAudioHandleAndroidBack()` 关闭当前对话框、菜单、歌词或嵌套分类；网页确认没有内部层级可退时，第一次返回显示退出提示，2.2 秒内第二次打开 `LoginActivity` 并结束主页面。主动返回登录页会携带禁止自动恢复标记，避免登录页立即重连。
 
 ### Android 登录与会话
 
@@ -115,7 +119,8 @@ Android 系统返回键不使用 WebView 的原始历史栈，因为其中可能
   -> user.login（兼容 user / username）
   -> token + longToken
   -> Android Keystore 加密历史（地址、账号、密码和令牌）
-  -> WebView Authorization + 同源 token Cookie
+  -> WebView GET: Authorization + 同源 token Cookie
+  -> 非 GET API: FnAudioNative -> authenticated OkHttp
   -> /cgi/ThirdParty/fnaudio/index.cgi/
 ```
 
@@ -163,6 +168,7 @@ localStorage 兼容数据
 - 外部元数据只能后台获取，列表和歌词请求不能因第三方服务阻塞主请求。
 - fnOS 特权操作必须通过明确的授权边界，不能把 token 当作普通前端状态公开。
 - Android 原生服务是 Android 模式下唯一音频输出所有者；网页 `<audio>` 必须保持空闲，避免双重播放。
+- Android 非 GET API 必须通过限定同源和 fnAudio `/api/` 路径的原生认证桥；不得把 token 暴露给任意 URL 或网页脚本回调。
 - token 只能进入 Keystore 加密存储、同源 Cookie 和内存请求头；不得写日志、文档、截图或构建产物。
 - 切换 NAS 连接时必须停止旧 MediaSessionService，防止旧 token 和旧媒体队列跨服务器复用。
 

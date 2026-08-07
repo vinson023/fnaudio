@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.166`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.167`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,7 +8,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.166` |
+| 版本 | `0.1.167` |
 | 平台 | fnOS x86；Android 8.0（API 26）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
@@ -19,7 +19,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.166` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.167` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 
@@ -43,7 +43,7 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.166 fnOS 可继续开发源码
+├── src/                       # 0.1.167 fnOS 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
@@ -89,12 +89,12 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前配套产物位于 `artifacts/0.1.166/`：
+当前配套产物位于 `artifacts/0.1.167/`：
 
-- `fnaudio-0.1.166.fpk`：SHA-256 `03993A17CA0E87BA063BFBE6764847B0650A0743BA6D5B5827C9913DA95FBD53`。
-- `fnaudio-android-0.1.166-debug.apk`：SHA-256 `84A476C8F62A68955A52A385A37D4E4DF71103A8FED514452753CF042F8B3909`。
+- `fnaudio-0.1.167.fpk`：SHA-256 `A5F5CF912C2477F1597D288201B5386552206B97870C49D1992D72D9741700DD`。
+- `fnaudio-android-0.1.167-debug.apk`：SHA-256 `5723CDAE06C7D94FCCD1B5D3E705D33AFC3165157996FFB23FE1C7DFB020FC34`。
 
-Android 客户端支持多连接登录、Keystore 加密保存密码和 token、独立历史连接页、登录后直达 fnAudio，并由 Media3 前台服务负责队列和后台播放。配套 FPK 修正 CGI 页面静态资源基准路径；播放队列 POST 同时使用 `REQUEST_URI` 与 `X-FnAudio-Path` 恢复真实 API 路径，避免 CGI 误返回 HTTP 200 HTML。Android 返回键会先关闭 fnAudio 内部弹层、歌词或分类详情，根页面再把任务移到后台，不返回登录页。
+Android 客户端支持多连接登录、Keystore 加密保存密码和 token、独立历史连接页、登录后直达 fnAudio，并由 Media3 前台服务负责队列和后台播放。`0.1.167` 增加原生认证 HTTP 桥：Android 中所有 fnAudio 非 GET API 由 OkHttp 附加 fnOS token 后发送，解决 WebView POST 被网关以 HTTP 200 `invalid token` 拦截的问题。返回键先关闭 fnAudio 内部弹层、歌词或分类详情；根页面第一次提示即将退出，第二次返回登录页并禁止自动重连。
 
 两份产物已完成本地构建、Lint、单元/回归测试、包结构、哈希和 APK 签名检查，但尚未安装到真实 fnOS 与 Android 设备。当前 APK 使用 Android Debug 证书；真机 token 交接、后台/息屏跨曲、自签名 HTTPS、多连接切换和厂商省电限制未验证，不能标记为正式发布。
 

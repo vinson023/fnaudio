@@ -23,16 +23,34 @@ public final class NativePlaybackBridge {
         MediaController controller();
     }
 
+    public interface HttpRequestHandler {
+        void requestJson(String requestId, String method, String url, String headersJson, String body);
+    }
+
     private final ControllerProvider provider;
+    private final HttpRequestHandler httpRequestHandler;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    public NativePlaybackBridge(ControllerProvider provider) {
+    public NativePlaybackBridge(ControllerProvider provider, HttpRequestHandler httpRequestHandler) {
         this.provider = provider;
+        this.httpRequestHandler = httpRequestHandler;
     }
 
     @JavascriptInterface
     public boolean isAvailable() {
         return true;
+    }
+
+    @JavascriptInterface
+    public void requestJson(String requestId, String method, String url, String headersJson, String body) {
+        if (requestId == null || requestId.trim().isEmpty()) return;
+        httpRequestHandler.requestJson(
+                requestId.trim(),
+                method == null ? "GET" : method,
+                url == null ? "" : url,
+                headersJson == null ? "{}" : headersJson,
+                body == null ? "" : body
+        );
     }
 
     @JavascriptInterface

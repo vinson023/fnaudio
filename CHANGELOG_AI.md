@@ -1,5 +1,17 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.167` Android 原生认证 API 与双击返回登录页
+
+- 目标：修复 Android 播放仍提示“播放队列保存失败（HTTP 200）”，并把根页面返回改为第一次提示、第二次进入登录页。
+- 真实根因：在测试 fnOS 上复现到 CGI 外层 nginx 返回 `HTTP 200 text/plain`，正文为 `invalid token`，请求没有进入 `cgi_proxy.py`。WebView 的 `shouldInterceptRequest()` 能代理 GET，但拿不到 POST body，因此队列、状态和控制 POST 绕过了已认证的 OkHttp 路径。
+- 官方 App 对比：缓存的飞牛媒体 App 使用 Flutter/原生网络、WebSocket 和原生媒体服务持有认证及播放生命周期。fnAudio 沿用“WebView 界面 + 原生认证请求 + Media3 播放”的轻量架构，不复制官方商业素材或私有实现。
+- 原生认证桥：`NativePlaybackBridge` 新增 `requestJson()`；`MainActivity` 只允许当前 NAS 的 fnAudio `/api/` 以及 POST/PUT/PATCH/DELETE，统一附加 `Authorization`、`X-Fnaudio-Trim-Token` 和 token Cookie，通过 OkHttp 异步请求，再把状态、响应头和正文回传给网页。
+- 网页 API：新增 `apiFetch()`、请求 ID/Promise 管理和 `fnAudioNativeOnHttpResponse()`。Android 环境的队列、用户状态、播放控制、转码预热、配置、共享目录同步和播放设备切换均走原生认证；普通浏览器继续使用标准 Fetch。
+- 返回键：网页内部层级处理保持不变。根页面第一次返回显示“APP 即将退出，再按一次返回登录界面”，2.2 秒内第二次打开登录页并结束主页面；`EXTRA_SKIP_AUTO_RESUME` 阻止登录页立即自动重连。删除原有 `moveTaskToBack(true)` 根页面逻辑。
+- 测试：59 个 Python 单元测试、3 个 Node 回归脚本、JavaScript 语法、Android `lintDebug` 与 `assembleDebug` 全部通过。FPK 外层 21 项、`app.tgz` 110 项且无 Python 字节码；APK manifest 为 `com.fnaudio.client / 0.1.167 / versionCode 167 / minSdk 26 / targetSdk 36`，v2 Debug 签名通过。
+- 版本与产物：`fnaudio-0.1.167.fpk` 为 `4,884,107` 字节，SHA-256 `A5F5CF912C2477F1597D288201B5386552206B97870C49D1992D72D9741700DD`；`fnaudio-android-0.1.167-debug.apk` 为 `10,111,653` 字节，SHA-256 `5723CDAE06C7D94FCCD1B5D3E705D33AFC3165157996FFB23FE1C7DFB020FC34`。
+- 待验证：本轮没有连接 Android 设备，不能宣称手机端播放和返回键已完成真机验证。需配套安装 `0.1.167` FPK/APK，至少播放两首歌曲，并确认第二次返回后登录页不会自动重连。
+
 ## 2026-08-07：`0.1.166` CGI 队列路由与 Android 返回修复
 
 - 目标：修复播放时出现“播放队列保存失败（HTTP 200）”，以及 Android 系统返回键进入登录页的问题。
