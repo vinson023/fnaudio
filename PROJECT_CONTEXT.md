@@ -3,14 +3,16 @@
 > 更新日期：2026-08-07  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
-> 当前可识别发布版本：`0.1.169`  
+> 当前可识别发布版本：`0.1.170`  
 > 文档目的：为后续开发、排障、测试和发布提供可复用上下文
 
-## 最新状态：`0.1.169` 歌曲右键/长按四项菜单
+## 最新状态：`0.1.170` Android 媒体卡片白色占位图标
 
-- fnOS 源码位于 `C:\path\to\fnAudio\src`，Android 客户端源码位于 `C:\path\to\fnAudio\android-client`；根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 均为 `0.1.169`。
-- `artifacts/0.1.169/fnaudio-0.1.169.fpk` 大小 `4,884,683` 字节，SHA-256 `E061CA3A761D7BA5E3F6C48604B700E340F938C372A3A90D02C8210C8E2EDD56`。
-- `artifacts/0.1.169/fnaudio-android-0.1.169-debug.apk` 大小 `10,083,954` 字节，SHA-256 `EC2A690930E4560D003CBDF048857E3A75945101C57C1FA0BB559338EDBA7F02`；包名 `com.fnaudio.client`，versionCode 169，min SDK 26，target SDK 36。
+- fnOS 源码位于 `C:\path\to\fnAudio\src`，Android 客户端源码位于 `C:\path\to\fnAudio\android-client`；根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 均为 `0.1.170`。
+- `artifacts/0.1.170/fnaudio-0.1.170.fpk` 大小 `4,885,020` 字节，SHA-256 `3996D1E8E4E693EF889B46845F3ED59D677C5BD2B2A3295345485DDDD4FA7493`。
+- `artifacts/0.1.170/fnaudio-android-0.1.170-debug.apk` 大小 `10,085,880` 字节，SHA-256 `1D4CE15B07B46289DC277A4EB26CCB7FFCA29488A6A1E29D41EC812C171A41BF`；包名 `com.fnaudio.client`，versionCode 170，min SDK 26，target SDK 36。
+- Android Media3 通知改用白色描边播放圆环 `ic_notification`；无真实歌曲封面时生成透明底白色播放圆环 PNG，并以应用私有文件 URI 作为媒体封面，修复系统媒体卡片显示黑色占位图标的问题。
+- 占位 PNG 只生成并保存一次，不把图片字节复制到每个队列项目，避免大队列放大 Binder 数据；存在真实封面 URL 时仍优先显示真实封面。
 - 歌曲行在桌面端支持右键、移动端支持 550ms 长按，统一弹出四项菜单：从当前开始播放所有歌曲、加入当前队列、收藏歌曲、加入播放列表。移动超过 10px、取消触点或滚动列表会取消长按，成功长按后的合成点击会被拦截。
 - 右键/长按菜单的“收藏歌曲”只执行添加，不会在歌曲已收藏时反向取消；“从当前开始播放所有歌曲”仍解析当前视图的完整列表上下文，不退回到只读取当前分页。
 - Android 客户端通过 fnOS `/websocket?type=main` 登录，支持地址、端口、HTTPS、自签名证书兼容、账号/密码和多连接历史；地址、账号、密码、token/longToken 统一进入 Android Keystore AES-GCM 加密载荷，应用数据禁止系统备份。
@@ -21,7 +23,7 @@
 - 原生 HTTP 桥限制为当前 NAS 的 `/cgi/ThirdParty/fnaudio/index.cgi/api/` 与 POST/PUT/PATCH/DELETE 方法，并统一覆盖队列、用户状态、播放控制、转码预热、配置、共享目录同步和播放设备切换；token 不会发送到外部地址。
 - Android 登录成功后会移除登录 Activity。系统返回键先交给 fnAudio 页面关闭对话框、菜单、歌词或嵌套分类；根页面第一次显示退出提示，2.2 秒内第二次打开登录页并禁止自动恢复上次连接。
 - 本地已通过 59 个 Python 测试、3 个 Node 回归脚本、JavaScript/Python 语法检查、Android Lint 和 Debug APK 构建；FPK 外层 21 个条目、内层 `app.tgz` 110 个条目已核对。
-- 当前没有连接 Android 设备；`0.1.169` 尚未安装到 fnOS/手机，右键/长按菜单、多连接新增/编辑、原生队列 POST、两次返回登录页和后台/息屏连续播放仍需真机验证。APK 使用 Debug 证书，不是正式签名发布版。
+- 当前没有连接 Android 设备；`0.1.170` 尚未安装到 fnOS/手机，媒体卡片白色图标、右键/长按菜单、多连接、原生队列 POST、返回键和后台/息屏播放仍需真机验证。APK 使用 Debug 证书，不是正式签名发布版。
 - 不要将任何 FPK 解包目录当作开发源码或下一次发布起点。新功能只改 `src/`；每次测试/发布包都须单独创建、记录并验证。
 - 已缓存第三方 `FNOS-API` 固定提交作为外部设备验收与运维参考，评估见 `references/FNOS_API_EVALUATION.md`。它是 `trim-cli` 的高权限 REST 包装，不是官方 SDK，也不应接入 fnAudio 运行时。
 
@@ -41,12 +43,12 @@
 ## 1. 分析范围与结论
 
 - `E:\Codex` 不是 Git 仓库，工作区内没有 `.git`，无法通过提交历史判断文件来源、变更归属和发布对应关系。
-- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.169`。
+- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.170`。
 - `fnaudio/` 是约 `0.1.2` 的旧版；`fnaudio-0.1.3/` 至 `fnaudio-0.1.6/`、根目录 `builds/` 及多个打包暂存目录均属于历史材料，不应直接作为当前源码修改。
 - 本项目是面向 fnOS 的本地音乐库和多目标播放器。它不是纯前端网页，也不是单一 DLNA 控制器，而是同时承担音乐库、媒体流、转码、本机播放、DLNA Control Point、MediaServer 和 MediaRenderer 等职责。
-- 当前工作目录以 `0.1.169` 为开发基线；除既有 Web/fnOS 与 Android 能力外，歌曲列表新增桌面右键和移动端长按四项菜单。
-- 当前配套产物位于 `artifacts/0.1.169/`。历史 `0.1.149` 完成过 fnOS 升级冒烟，但不能替代本轮菜单交互、Android 多连接、原生认证和返回行为验证。
-- 真实 fnOS 测试设备已确认安装 `fnaudio 0.1.166`。对实际 CGI 的诊断表明：缺少网关认可 token 时返回 HTTP 200 `invalid token`；携带原生认证 Header/Cookie 的队列 POST 返回 JSON。`0.1.169` 尚未安装到 fnOS 或 Android 真机。
+- 当前工作目录以 `0.1.170` 为开发基线；保留 `0.1.169` 的歌曲右键/长按四项菜单，并修复 Android 无封面媒体卡片的黑色默认图标。
+- 当前配套产物位于 `artifacts/0.1.170/`。历史 `0.1.149` 完成过 fnOS 升级冒烟，但不能替代本轮媒体卡片、菜单交互、Android 多连接、原生认证和返回行为验证。
+- 真实 fnOS 测试设备已确认安装 `fnaudio 0.1.166`。对实际 CGI 的诊断表明：缺少网关认可 token 时返回 HTTP 200 `invalid token`；携带原生认证 Header/Cookie 的队列 POST 返回 JSON。`0.1.170` 尚未安装到 fnOS 或 Android 真机。
 
 ## 2. 项目整体架构
 
@@ -179,7 +181,7 @@ flowchart TD
 | `fnaudio-0.1.4/` | 历史阶段源码。 |
 | `fnaudio-0.1.5/` | 历史阶段源码。 |
 | `fnaudio-0.1.6/` | 历史阶段源码。 |
-| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.169`。 |
+| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.170`。 |
 | `fnaudio-android-shell/` | 已被 `C:\path\to\fnAudio\android-client` 替代的 Android 试验壳，只读参考。 |
 | `fnaudio-pack-stage-*/` | 旧版本 FPK 暂存结构，用于历史打包。 |
 | `fnOS Skill/` | fnOS API、CLI 和开发流程参考材料，不进入产品运行时。 |
@@ -337,7 +339,7 @@ flowchart TD
 
 1. 工作区和发布可追溯性仍不完整
    
-   当前已有根 README、`.gitignore`、源码哈希清单、`0.1.169` FPK/APK 和校验记录，以及本地 Git 基线；但仍没有远程备份、LICENSE、CI、正式 Android 签名或统一自动化发布脚本。
+   当前已有根 README、`.gitignore`、源码哈希清单、`0.1.170` FPK/APK 和校验记录，以及本地 Git 基线；但仍没有远程备份、LICENSE、CI、正式 Android 签名或统一自动化发布脚本。
 
 2. 核心文件过大
    
@@ -404,15 +406,15 @@ python -B -m unittest discover -s tests -v
 - 结果：59 个 Python 测试、3 个 Node 前端回归脚本、Android `lintDebug` 与 `assembleDebug` 全部通过。
 - 覆盖：ALSA 能力、配置、DLNA 诊断与协议、音乐库缓存和 SQLite、元数据服务、状态存储、转码缓存及当前曲目缓存优先级。
 - `node --check app/ui/app.js` 通过。
-- Android Debug APK 通过 v2 签名验证，manifest 为 `com.fnaudio.client / 0.1.169 / versionCode 169 / minSdk 26 / targetSdk 36`。
-- `0.1.169` FPK 外层和内层可读取，外层 21 个条目、运行时 `app.tgz` 110 个条目且无 Python 字节码；manifest 为 `fnaudio / 0.1.169 / x86`。
+- Android Debug APK 通过 v2 签名验证，manifest 为 `com.fnaudio.client / 0.1.170 / versionCode 170 / minSdk 26 / targetSdk 36`，并包含 `drawable/ic_notification`。
+- `0.1.170` FPK 外层和内层可读取，外层 21 个条目、运行时 `app.tgz` 110 个条目且无 Python 字节码；manifest 为 `fnaudio / 0.1.170 / x86`。
 - 使用 Python AST 解析当前 `src/` 中 39 个 Python 文件，全部通过。
 - 初始整理时，`src/` 的 136 个文件与原 `0.1.148` 来源逐一比对，缺失 0、哈希差异 0；当前工作状态的完整哈希以 `SOURCE_MANIFEST.sha256` 为准。
-- `SOURCE_MANIFEST.sha256` 含 177 条 fnOS/Android 源码与构建入口记录；排除 Gradle/build 产物、local.properties、FPK 和 APK。
+- `SOURCE_MANIFEST.sha256` 含 178 条 fnOS/Android 源码与构建入口记录；排除 Gradle/build 产物、`.media3-inspect`、local.properties、FPK 和 APK。
 - 使用 `fnpack 1.2.3` 从 `src/` 构建 `artifacts/0.1.148/fnaudio-0.1.148.fpk` 成功。包大小为 4,878,142 字节，SHA-256 为 `856088E19DD926F0ACE2F07C0BB0E76526BB129F6A3A807A27EB2E27686EB4E1`。
 - 以 `src` 的完整副本构建仅版本号为 `0.1.149` 的测试包并升级到真实 fnOS x86 设备成功。升级后应用运行正常，服务端口仍为 `18081`，音乐库为 228 首（5 首 DSD），MPD `0.23.12` 正常；CGI 页面及健康、音乐库、播放核心、播放目标和 MPD 状态 API 均通过冒烟检查。
 - 使用 `tar` 校验 FPK 外层和内层 `app.tgz` 均可读取；包内 `manifest` 为 `fnaudio / 0.1.148 / x86`，运行时负载含 server、ui、私有 MPD 和动态库，未包含 tests、历史 builds、转码缓存、Python 字节码或本地数据库。详细记录在 `artifacts/0.1.148/VALIDATION.md`。
-- 在真实 fnOS x86 设备上，已完成多轮覆盖升级，最近确认安装版本为 `0.1.166`。此前用实际 CGI 验证了无有效 token 时的 HTTP 200 `invalid token`，以及原生认证 Header/Cookie 下队列 POST 成功返回 JSON；`0.1.169` FPK/APK 尚未安装，因此本轮菜单与手机端完整闭环仍待验收。
+- 在真实 fnOS x86 设备上，已完成多轮覆盖升级，最近确认安装版本为 `0.1.166`。此前用实际 CGI 验证了无有效 token 时的 HTTP 200 `invalid token`，以及原生认证 Header/Cookie 下队列 POST 成功返回 JSON；`0.1.170` FPK/APK 尚未安装，因此媒体卡片和手机端完整闭环仍待验收。
 
 未覆盖：
 
@@ -429,7 +431,7 @@ python -B -m unittest discover -s tests -v
 ### 第一阶段：建立可信基线
 
 1. 将本地 `main` 基线推送至受控私有远程仓库，并为 FPK 建立外部制品备份；LICENSE 与版本策略仍需确认。
-2. 已明确 `0.1.169` 的 fnOS/Android 配套源码和手动可复现构建流程；下一步应固化为统一构建脚本和 CI。
+2. 已明确 `0.1.170` 的 fnOS/Android 配套源码和手动可复现构建流程；下一步应固化为统一构建脚本和 CI。
 3. 将历史 `builds/`、旧版本、解包目录、第三方参考和 Android SDK 移出源码仓库或转为只读归档。
 4. 保留当前 59 个 Python 测试和 3 个 Node 回归脚本作为迁移基线，新增最小 HTTP smoke test 和 FPK 包结构检查。
 
@@ -458,7 +460,7 @@ python -B -m unittest discover -s tests -v
 
 ### 第五阶段：完成真机验收
 
-1. 在 fnOS 安装 `0.1.169` FPK，并在 Android 安装配套 Debug APK；先验证桌面右键、移动端长按、完整列表入队和收藏只添加，再复验至少两个连接、队列 POST、双击返回登录页和后台播放。
+1. 在 fnOS 安装 `0.1.170` FPK，并在 Android 安装配套 Debug APK；先用无封面歌曲验证媒体卡片白色图标、再用有封面歌曲验证不被覆盖，并复验右键/长按菜单、连接历史、队列 POST、返回键和后台播放。
 2. 用至少两首歌曲验证前台、后台、息屏、自动下一首、暂停恢复、锁屏通知、耳机拔出和蓝牙媒体键；至少等待跨曲一次。
 3. 验证历史连接独立页面、密码加密保存、过期 token 自动密码登录、自签名 HTTPS 和错误地址提示；全程确认日志不含密码/token。
 4. 补充 WAV、DFF 和高规格 PCM 样本，验证解码、seek、时长、封面和输出格式。
@@ -467,7 +469,7 @@ python -B -m unittest discover -s tests -v
 ## 9. 后续接手约定
 
 - 项目根目录：`C:\path\to\fnAudio`；fnOS 工作目录为 `C:\path\to\fnAudio\src`，Android 工作目录为 `C:\path\to\fnAudio\android-client`。
-- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.169` 为准。
+- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.170` 为准。
 - 根目录当前文档的优先级高于 `docs/history/` 中的阶段记录；历史文档只用于追溯。
 - 不要直接从根 `builds/`、旧版本目录或 FPK 解包目录复制文件到当前源码；先确认来源、差异和目标版本。
 - 修改播放逻辑时，保持 `PlaybackCore -> output plugin` 边界，不要把 SOAP、ALSA 或 FFmpeg 细节重新放回前端。

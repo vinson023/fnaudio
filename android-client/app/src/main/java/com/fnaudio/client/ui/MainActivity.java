@@ -186,7 +186,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             maybeLoadFnAudio();
         });
 
-        webView.addJavascriptInterface(new NativePlaybackBridge(this, this), "FnAudioNative");
+        webView.addJavascriptInterface(new NativePlaybackBridge(this, this, this), "FnAudioNative");
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {

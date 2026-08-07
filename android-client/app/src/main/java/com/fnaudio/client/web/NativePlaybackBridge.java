@@ -1,5 +1,11 @@
 package com.fnaudio.client.web;
 
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,6 +20,9 @@ import androidx.media3.session.MediaController;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,9 +38,12 @@ public final class NativePlaybackBridge {
 
     private final ControllerProvider provider;
     private final HttpRequestHandler httpRequestHandler;
+    @Nullable
+    private final Uri fallbackArtworkUri;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    public NativePlaybackBridge(ControllerProvider provider, HttpRequestHandler httpRequestHandler) {
+    public NativePlaybackBridge(Context context, ControllerProvider provider, HttpRequestHandler httpRequestHandler) {
+        this.fallbackArtworkUri = createFallbackArtworkUri(context.getApplicationContext());
         this.provider = provider;
         this.httpRequestHandler = httpRequestHandler;
     }
@@ -148,7 +160,7 @@ public final class NativePlaybackBridge {
         });
     }
 
-    private static List<MediaItem> parseItems(JSONArray array) {
+    private List<MediaItem> parseItems(JSONArray array) {
         List<MediaItem> items = new ArrayList<>();
         for (int i = 0; i < array.length(); i++) {
             JSONObject row = array.optJSONObject(i);
@@ -164,6 +176,7 @@ public final class NativePlaybackBridge {
             if (durationMs > 0) metadata.setDurationMs(durationMs);
             String artwork = row.optString("artwork");
             if (!artwork.isEmpty()) metadata.setArtworkUri(Uri.parse(artwork));
+            else if (fallbackArtworkUri != null) metadata.setArtworkUri(fallbackArtworkUri);
             items.add(new MediaItem.Builder()
                     .setMediaId(id)
                     .setUri(Uri.parse(uri))
@@ -171,6 +184,37 @@ public final class NativePlaybackBridge {
                     .build());
         }
         return items;
+    }
+
+    @Nullable
+    private static Uri createFallbackArtworkUri(Context context) {
+        File file = new File(context.getFilesDir(), "media_placeholder_white.png");
+        if (!file.exists() || file.length() == 0L) {
+            Bitmap bitmap = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setColor(Color.WHITE);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(34f);
+            canvas.drawCircle(256f, 256f, 170f, paint);
+
+            Path triangle = new Path();
+            triangle.moveTo(224f, 170f);
+            triangle.lineTo(224f, 342f);
+            triangle.lineTo(354f, 256f);
+            triangle.close();
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawPath(triangle, paint);
+
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) return null;
+            } catch (IOException ignored) {
+                return null;
+            } finally {
+                bitmap.recycle();
+            }
+        }
+        return Uri.fromFile(file);
     }
 
     private static int repeatMode(String repeat) {

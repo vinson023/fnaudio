@@ -9,6 +9,12 @@ const mainActivity = fs.readFileSync(path.join(
 const nativeBridge = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "web", "NativePlaybackBridge.java"
 ), "utf8");
+const playbackService = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "playback", "PlaybackService.java"
+), "utf8");
+const notificationIcon = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "res", "drawable", "ic_notification.xml"
+), "utf8");
 const loginActivity = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "ui", "LoginActivity.java"
 ), "utf8");
@@ -59,6 +65,13 @@ if (!cgi.includes('"fnaudio_trim_token"') || !cgi.includes('os.environ.get("HTTP
 if (!nativeBridge.includes("requestJson(String requestId") || !mainActivity.includes("sameProfileOrigin(uri)")
     || !mainActivity.includes('builder.header("Authorization", "Bearer " + profile.token)')) {
   throw new Error("Android authenticated HTTP bridge must attach the fnOS token in the native client");
+}
+if (!playbackService.includes("notificationProvider.setSmallIcon(R.drawable.ic_notification)")
+    || !nativeBridge.includes("metadata.setArtworkUri(fallbackArtworkUri)")
+    || !nativeBridge.includes("media_placeholder_white.png")
+    || !nativeBridge.includes("paint.setColor(Color.WHITE)")
+    || !notificationIcon.includes('android:strokeColor="#FFFFFFFF"')) {
+  throw new Error("The native media notification must use a white fallback icon when track artwork is missing");
 }
 if (!mainActivity.includes("dispatchBackToFnAudio()") || !mainActivity.includes("handleRootBackPress()")
     || !mainActivity.includes("APP 即将退出，再按一次返回登录界面") || mainActivity.includes("moveTaskToBack(true)")) {

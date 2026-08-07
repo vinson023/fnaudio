@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.169`  
+> 当前源码版本：`0.1.170`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -125,6 +125,8 @@ Android 系统返回键不使用 WebView 的原始历史栈，因为其中可能
 ```
 
 历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；令牌失效时可自动使用本机加密保存的密码重新登录。连接记录以规范化 host、端口、协议和账号作为身份：普通表单改变身份会新增 UUID，历史页明确“编辑”才保留所选 UUID；“新增连接”返回空白表单。需要 HMAC/`si`、2FA 或验证码的固件仍需用真机协议 trace 补齐。
+
+Media3 通知小图标由 `PlaybackService` 显式设置为白色播放圆环。歌曲没有真实封面时，`NativePlaybackBridge` 在应用私有目录生成一次透明底白色播放圆环 PNG，并让无封面队列项通过同一个 `file://` URI 引用；真实封面 URL 仍优先。占位 PNG 不嵌入每一个 `MediaItem`，避免长队列重复携带位图数据或触发 Binder 事务过大。
 
 ### 转码策略
 
