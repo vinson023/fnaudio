@@ -1,6 +1,6 @@
 # fnAudio 待办
 
-> 当前源码版本：`0.1.162`  
+> 当前源码版本：`0.1.163`  
 > 本文件是当前唯一有效待办列表。`docs/history/` 中的 checklist 只用于追溯。
 
 ## P0：安全边界
@@ -19,7 +19,7 @@
 - [x] 在 `C:\path\to\fnAudio` 初始化 Git，创建 `main` 分支；每个发布版本以独立提交和标签记录。
 - [ ] 确认项目许可证、维护者和版本策略。
 - [ ] 建立单一 FPK 构建脚本，禁止从历史 builds 或解包目录组装发布包。
-- [x] 生成 `artifacts/0.1.162/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
+- [x] 生成 `artifacts/0.1.163/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
 - [x] 同版本真机替换策略：已在用户授权下构建仅版本号不同的 `0.1.149` 测试包，并成功完成设备端覆盖升级；其记录见 `artifacts/0.1.149/VALIDATION.md`。
 - [ ] 自动化验证全新安装、覆盖升级、改端口、停止、保留数据卸载和清除数据卸载。
 - [ ] 确认应用中心 `python312`、发布者和端口字段显示正确。
@@ -29,7 +29,7 @@
 
 - [x] 创建 `android-client` Gradle 工程和可安装 Debug APK。
 - [x] 实现地址、端口、HTTPS、自签名选项、账号/密码登录表单。
-- [x] 实现 Android Keystore 加密的多连接历史；不保存密码。
+- [x] 实现 Android Keystore 加密的多连接历史，按用户选择保存密码；历史连接在独立页面选择、编辑和删除。
 - [x] 实现登录后直达 fnAudio 的 WebView 宿主，不以 fnOS 桌面作为正常流程。
 - [x] 实现 Media3 `MediaSessionService + ExoPlayer`、完整队列、通知/媒体控制基础和 JS bridge。
 - [ ] 在目标 fnOS 固件验证 `user.login`、`user.authToken`、`user.tokenLogin` 和 CGI token 交接的实际报文。
@@ -84,7 +84,7 @@
 - [ ] 使用 WAV 样本验证解析、时长、seek、封面和 MPD/浏览器播放。
 - [ ] 使用 DFF 样本验证解析、DSD 转 WAV、seek 和 DAC 输出。
 - [ ] 在真实飞牛移动 WebView 验证前后台切换、Media Session、收藏/队列同步和恢复。
-- [ ] 安装 `0.1.162` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面。
+- [ ] 安装 `0.1.163` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面，且 CSS/脚本资源加载正常。
 - [ ] 用至少两首歌曲验证 Android 前台、后台、息屏、自动下一首、通知控制、锁屏控制、耳机拔出和蓝牙媒体键。
 - [ ] 验证历史连接切换、过期 token 回退密码、自签名 HTTPS、HTTP、错误端口、IPv6 和外网反向代理。
 - [ ] 继续验收输入法直接覆盖固定播放器、键盘弹出/收起流畅度及不支持 Virtual Keyboard API 时的降级行为。

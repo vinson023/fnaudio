@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.162`  
+> 当前源码版本：`0.1.163`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -110,12 +110,12 @@ Android 模式下，WebView 仍使用服务端队列 API保存用户状态，但
   -> ws(s)://host:port/websocket?type=main
   -> user.login（兼容 user / username）
   -> token + longToken
-  -> Android Keystore 加密历史（不保存密码）
+  -> Android Keystore 加密历史（地址、账号、密码和令牌）
   -> WebView Authorization + 同源 token Cookie
   -> /cgi/ThirdParty/fnaudio/index.cgi/
 ```
 
-历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；需要 HMAC/`si`、2FA 或验证码的固件目前仍会回退到重新输入密码，后续需用真机协议 trace 补齐。
+历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；令牌失效时可自动使用本机加密保存的密码重新登录。需要 HMAC/`si`、2FA 或验证码的固件仍需用真机协议 trace 补齐。
 
 ### 转码策略
 
@@ -147,7 +147,7 @@ localStorage 兼容数据
 | fnOS Trim API | Unix socket | 共享目录授权与文件能力 |
 | Android Media3 1.10.1 | Google Maven | ExoPlayer、MediaSessionService 和 MediaController |
 | OkHttp 4.12.0 | Maven Central | fnOS WebSocket 登录和原生媒体 HTTP 数据源 |
-| Android Keystore | Android 系统 | 加密保存连接 token；密码不落盘 |
+| Android Keystore | Android 系统 | 加密保存连接地址、账号、密码和 token；`allowBackup=false` |
 | Spotify、网易、QQ、MusicBrainz | 公网服务 | 元数据、歌词和封面 |
 
 ## 6. 必须保持的架构边界

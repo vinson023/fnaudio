@@ -1,13 +1,13 @@
 # fnAudio Android 客户端
 
-这是 fnAudio `0.1.162` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
+这是 fnAudio `0.1.163` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
 
 ## 已实现
 
 - 输入 NAS 地址、端口、HTTPS、自签名证书兼容、账号和密码。
 - 通过 fnOS `/websocket?type=main` 执行 `user.login`；兼容 `user` / `username` 字段差异。
-- 使用 Android Keystore 加密保存多个连接的账号、短令牌和长令牌；不保存密码。
-- 启动时恢复最近连接，历史连接可一键切换、编辑或删除。
+- 使用 Android Keystore 加密保存多个连接的账号、密码、短令牌和长令牌；应用数据禁止系统备份。
+- 登录页通过单独按钮打开历史连接页，可在独立页面选择、编辑或删除连接。
 - 登录后直接加载 `/cgi/ThirdParty/fnaudio/index.cgi/`，不打开 fnOS 桌面。
 - WebView 通过 `FnAudioNative` 桥把队列、播放、暂停、切歌、seek、音量、循环和随机发送给 Media3。
 - `MediaSessionService + ExoPlayer` 负责完整队列、自动下一首、通知、媒体按键、音频焦点、耳机拔出和唤醒锁。
@@ -27,7 +27,7 @@ $env:ANDROID_SDK_ROOT = 'E:\Codex\android-sdk'
 
 ## 与 fnAudio 服务端的配套要求
 
-必须安装 `fnAudio 0.1.162` 或更新版本。该版本的 CGI 会从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token，网页桥也会在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。
+必须安装 `fnAudio 0.1.163` 或更新版本。该版本会为 CGI 入口修正网页静态资源基准路径，并从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token；网页桥也会在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。
 
 ## 尚待真机确认
 

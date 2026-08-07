@@ -14,6 +14,7 @@ public final class ConnectionProfile {
     public final boolean https;
     public final boolean trustSelfSigned;
     public final String username;
+    public final String password;
     public final String token;
     public final String longToken;
     public final long updatedAt;
@@ -26,6 +27,7 @@ public final class ConnectionProfile {
             boolean https,
             boolean trustSelfSigned,
             String username,
+            String password,
             String token,
             String longToken,
             long updatedAt
@@ -36,6 +38,7 @@ public final class ConnectionProfile {
         this.https = https;
         this.trustSelfSigned = trustSelfSigned;
         this.username = clean(username);
+        this.password = password == null ? "" : password;
         this.token = clean(token);
         this.longToken = clean(longToken);
         this.updatedAt = updatedAt > 0 ? updatedAt : System.currentTimeMillis();
@@ -50,7 +53,8 @@ public final class ConnectionProfile {
             int port,
             boolean https,
             boolean trustSelfSigned,
-            String username
+            String username,
+            String password
     ) {
         return new ConnectionProfile(
                 existingId,
@@ -60,6 +64,7 @@ public final class ConnectionProfile {
                 https,
                 trustSelfSigned,
                 username,
+                password,
                 "",
                 "",
                 System.currentTimeMillis()
@@ -75,6 +80,7 @@ public final class ConnectionProfile {
                 https,
                 trustSelfSigned,
                 username,
+                password,
                 nextToken,
                 nextLongToken,
                 System.currentTimeMillis()
@@ -108,6 +114,7 @@ public final class ConnectionProfile {
         json.put("https", https);
         json.put("trustSelfSigned", trustSelfSigned);
         json.put("username", username);
+        json.put("password", password);
         json.put("token", token);
         json.put("longToken", longToken);
         json.put("updatedAt", updatedAt);
@@ -123,6 +130,7 @@ public final class ConnectionProfile {
                 json.optBoolean("https"),
                 json.optBoolean("trustSelfSigned"),
                 json.optString("username"),
+                json.optString("password"),
                 json.optString("token"),
                 json.optString("longToken"),
                 json.optLong("updatedAt")
