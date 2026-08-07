@@ -1,21 +1,16 @@
 package com.fnaudio.client.ui;
 
 import android.content.Intent;
-import android.graphics.Typeface;
 import android.os.Bundle;
-import android.text.InputType;
-import android.view.Gravity;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
-import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.fnaudio.client.R;
@@ -23,9 +18,9 @@ import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.FnOsAuthClient;
 
-import java.util.List;
-
 public final class LoginActivity extends AppCompatActivity {
+    private static final int REQUEST_HISTORY = 701;
+
     private EditText profileName;
     private EditText host;
     private EditText port;
@@ -33,11 +28,11 @@ public final class LoginActivity extends AppCompatActivity {
     private CheckBox trustSelfSigned;
     private EditText username;
     private EditText password;
+    private CheckBox savePassword;
     private Button loginButton;
+    private Button historyButton;
     private View progressRow;
     private TextView loginStatus;
-    private View historySection;
-    private LinearLayout historyList;
 
     private SecureProfileStore store;
     private final FnOsAuthClient authClient = new FnOsAuthClient();
@@ -50,7 +45,7 @@ public final class LoginActivity extends AppCompatActivity {
         setContentView(R.layout.activity_login);
         store = new SecureProfileStore(this);
         bindViews();
-        renderHistory();
+        renderHistoryButton();
 
         ConnectionProfile active = store.active();
         if (active != null) fillForm(active);
@@ -62,7 +57,7 @@ public final class LoginActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        renderHistory();
+        renderHistoryButton();
     }
 
     private void bindViews() {
@@ -73,14 +68,16 @@ public final class LoginActivity extends AppCompatActivity {
         trustSelfSigned = findViewById(R.id.trustSelfSigned);
         username = findViewById(R.id.username);
         password = findViewById(R.id.password);
+        savePassword = findViewById(R.id.savePassword);
         loginButton = findViewById(R.id.loginButton);
+        historyButton = findViewById(R.id.historyButton);
         progressRow = findViewById(R.id.loginProgressRow);
         loginStatus = findViewById(R.id.loginStatus);
-        historySection = findViewById(R.id.historySection);
-        historyList = findViewById(R.id.historyList);
 
         port.setHint("端口号（HTTP 常用 5666，HTTPS 常用 5667）");
         loginButton.setOnClickListener(view -> loginWithPassword());
+        historyButton.setOnClickListener(view -> startActivityForResult(
+                new Intent(this, ConnectionHistoryActivity.class), REQUEST_HISTORY));
         useHttps.setOnCheckedChangeListener((button, checked) -> {
             trustSelfSigned.setEnabled(checked);
             if (port.getText().toString().trim().isEmpty()) port.setText(checked ? "5667" : "5666");
@@ -89,20 +86,24 @@ public final class LoginActivity extends AppCompatActivity {
     }
 
     private void loginWithPassword() {
-        ConnectionProfile profile = profileFromForm();
-        if (profile == null) return;
         String clearPassword = password.getText().toString();
         if (clearPassword.isEmpty()) {
             password.setError("请输入密码");
             password.requestFocus();
             return;
         }
+        ConnectionProfile profile = profileFromForm(savePassword.isChecked() ? clearPassword : "");
+        if (profile == null) return;
         authenticate(profile, clearPassword, "正在登录 fnOS…", false);
     }
 
     private void resumeProfile(ConnectionProfile profile) {
         if (busy) return;
         fillForm(profile);
+        if (profile.token.isEmpty() && profile.longToken.isEmpty() && !profile.password.isEmpty()) {
+            authenticate(profile, profile.password, "正在登录 “" + profile.name + "”…", false);
+            return;
+        }
         authenticate(profile, null, "正在恢复 “" + profile.name + "” 的登录…", true);
     }
 
@@ -113,9 +114,8 @@ public final class LoginActivity extends AppCompatActivity {
             @Override
             public void onSuccess(ConnectionProfile authenticatedProfile) {
                 setBusy(false, "");
-                password.setText("");
                 store.upsert(authenticatedProfile, true);
-                renderHistory();
+                renderHistoryButton();
                 Intent intent = new Intent(LoginActivity.this, MainActivity.class);
                 intent.putExtra(MainActivity.EXTRA_PROFILE_ID, authenticatedProfile.id);
                 startActivity(intent);
@@ -123,20 +123,21 @@ public final class LoginActivity extends AppCompatActivity {
 
             @Override
             public void onError(String message) {
-                setBusy(false, "");
-                if (resume) {
-                    fillForm(profile);
-                    password.requestFocus();
-                    Toast.makeText(LoginActivity.this, "登录已过期，请重新输入密码。", Toast.LENGTH_LONG).show();
-                    showKeyboard(password);
-                } else {
-                    Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                if (resume && !profile.password.isEmpty()) {
+                    authenticate(profile, profile.password, "令牌已失效，正在使用已保存密码重新登录…", false);
+                    return;
                 }
+                setBusy(false, "");
+                fillForm(profile);
+                password.requestFocus();
+                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                showKeyboard(password);
             }
         });
     }
 
-    private ConnectionProfile profileFromForm() {
+    @Nullable
+    private ConnectionProfile profileFromForm(String passwordToSave) {
         String hostValue = host.getText().toString().trim();
         if (hostValue.isEmpty()) {
             host.setError("请输入网址或 IP 地址");
@@ -166,7 +167,8 @@ public final class LoginActivity extends AppCompatActivity {
                 portValue,
                 useHttps.isChecked(),
                 trustSelfSigned.isChecked(),
-                usernameValue
+                usernameValue,
+                passwordToSave
         );
     }
 
@@ -179,86 +181,21 @@ public final class LoginActivity extends AppCompatActivity {
         trustSelfSigned.setChecked(profile.trustSelfSigned);
         trustSelfSigned.setEnabled(profile.https);
         username.setText(profile.username);
-        password.setText("");
+        password.setText(profile.password);
+        savePassword.setChecked(true);
     }
 
-    private void renderHistory() {
-        if (historyList == null || store == null) return;
-        List<ConnectionProfile> profiles = store.list();
-        historyList.removeAllViews();
-        historySection.setVisibility(profiles.isEmpty() ? View.GONE : View.VISIBLE);
-        for (ConnectionProfile profile : profiles) historyList.addView(historyRow(profile));
-    }
-
-    private View historyRow(ConnectionProfile profile) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setBackgroundResource(R.drawable.history_item);
-        int padding = dp(14);
-        row.setPadding(padding, dp(11), dp(8), dp(11));
-        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        rowParams.topMargin = dp(8);
-        row.setLayoutParams(rowParams);
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView title = new TextView(this);
-        title.setText(profile.name);
-        title.setTextSize(15);
-        title.setTextColor(getColor(R.color.fnaudio_text));
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        TextView detail = new TextView(this);
-        detail.setText((profile.https ? "https://" : "http://") + profile.host + ":" + profile.port + " · " + profile.username);
-        detail.setTextSize(12);
-        detail.setTextColor(0xff64748b);
-        detail.setMaxLines(1);
-        labels.addView(title);
-        labels.addView(detail);
-        labels.setOnClickListener(view -> resumeProfile(profile));
-        row.addView(labels);
-
-        Button edit = compactButton("编辑");
-        edit.setOnClickListener(view -> {
-            fillForm(profile);
-            host.requestFocus();
-        });
-        row.addView(edit);
-
-        Button remove = compactButton("删除");
-        remove.setOnClickListener(view -> new AlertDialog.Builder(this)
-                .setTitle("删除连接记录？")
-                .setMessage("只会删除本机保存的地址、账号和加密令牌，不会更改 NAS。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> {
-                    store.remove(profile.id);
-                    if (editingProfileId.equals(profile.id)) editingProfileId = "";
-                    renderHistory();
-                })
-                .show());
-        row.addView(remove);
-        return row;
-    }
-
-    private Button compactButton(String text) {
-        Button button = new Button(this, null, android.R.attr.borderlessButtonStyle);
-        button.setText(text);
-        button.setTextSize(12);
-        button.setAllCaps(false);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-        button.setPadding(dp(8), 0, dp(8), 0);
-        button.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)));
-        return button;
+    private void renderHistoryButton() {
+        if (historyButton == null || store == null) return;
+        int count = store.list().size();
+        historyButton.setVisibility(count == 0 ? View.GONE : View.VISIBLE);
+        historyButton.setText(count == 0 ? "历史连接" : "历史连接（" + count + "）");
     }
 
     private void setBusy(boolean value, String status) {
         busy = value;
         loginButton.setEnabled(!value);
+        historyButton.setEnabled(!value);
         progressRow.setVisibility(value ? View.VISIBLE : View.GONE);
         loginStatus.setText(status);
         profileName.setEnabled(!value);
@@ -268,6 +205,7 @@ public final class LoginActivity extends AppCompatActivity {
         trustSelfSigned.setEnabled(!value && useHttps.isChecked());
         username.setEnabled(!value);
         password.setEnabled(!value);
+        savePassword.setEnabled(!value);
     }
 
     private void hideKeyboard() {
@@ -284,7 +222,19 @@ public final class LoginActivity extends AppCompatActivity {
         }, 180);
     }
 
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_HISTORY || data == null) return;
+        String profileId = data.getStringExtra(ConnectionHistoryActivity.EXTRA_PROFILE_ID);
+        ConnectionProfile selected = store.find(profileId);
+        if (selected == null) return;
+        fillForm(selected);
+        if (resultCode == RESULT_OK) {
+            resumeProfile(selected);
+        } else if (resultCode == ConnectionHistoryActivity.RESULT_EDIT_PROFILE) {
+            host.requestFocus();
+            showKeyboard(host);
+        }
     }
 }

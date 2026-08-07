@@ -100,9 +100,17 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
                 android:autofillHints="password"
-                android:hint="密码（不会保存）"
+                android:hint="密码"
                 android:inputType="textPassword"
                 android:maxLines="1" />
+
+            <CheckBox
+                android:id="@+id/savePassword"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="保存密码（使用 Android 系统密钥加密）"
+                android:textSize="13sp" />
 
             <Button
                 android:id="@+id/loginButton"
@@ -137,36 +145,13 @@
             </LinearLayout>
         </LinearLayout>
 
-        <LinearLayout
-            android:id="@+id/historySection"
+        <Button
+            android:id="@+id/historyButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:orientation="vertical"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="历史连接"
-                android:textColor="@color/fnaudio_text"
-                android:textSize="17sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="3dp"
-                android:text="点按连接；令牌失效时会要求重新输入密码。"
-                android:textColor="#64748B"
-                android:textSize="12sp" />
-
-            <LinearLayout
-                android:id="@+id/historyList"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:orientation="vertical" />
-        </LinearLayout>
+            android:layout_marginTop="16dp"
+            android:text="历史连接"
+            android:textAllCaps="false"
+            android:visibility="gone" />
     </LinearLayout>
 </ScrollView>

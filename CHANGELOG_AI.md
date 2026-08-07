@@ -1,5 +1,16 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.163` Android 登录、历史连接、启动图标与 WebView 资源修复
+
+- 目标：按真机截图修复 Android 启动图标白色外框、登录后 fnAudio 只显示无样式 HTML 的问题；允许安全保存密码，并把历史连接从登录页移到独立选择页面。
+- WebView 根因与修复：部分入口最终 URL 是不带结尾斜杠的 `/cgi/ThirdParty/fnaudio/index.cgi`，相对的 `app.css`、`app.js` 和 API 路径因此解析到了 CGI 同级目录。`index.html` 现在会在检测到 `/index.cgi` 时、首个样式请求前写入以 `/index.cgi/` 结尾的 `<base>`；直接访问本机 TCP Web 服务时保持原路径。
+- Android 登录与存储：`ConnectionProfile` 新增密码字段，与连接地址、账号和 token/longToken 一起进入 Android Keystore AES-GCM 加密载荷；`android:allowBackup=false` 保持不变。令牌恢复失败后会自动使用已保存密码登录，日志和界面不会显示明文。
+- 历史连接：登录页只保留“历史连接”按钮；新增独立 `ConnectionHistoryActivity`，可选择连接、进入编辑或删除本机加密资料。
+- 图标：launcher 改用 Android adaptive icon，蓝色背景由系统蒙版裁切，白色音符作为前景，避免 legacy 图标被启动器再次套白色圆角底框。
+- 版本与产物：统一升级为 `0.1.163`。`artifacts/0.1.163/fnaudio-0.1.163.fpk` 为 `4,882,182` 字节，SHA-256 `DA31F9DFF9974A416CBB088CD30C8530D00D1AAF25BD6AC4DCFC04D0933856C2`；`fnaudio-android-0.1.163-debug.apk` 为 `10,071,583` 字节，SHA-256 `7DD22857DE994B89E8877FE38890A5972733938CA2A989219B8F4E660C4ED053`。
+- 验证：53 个 Python 单元测试、3 个 Node 回归脚本、JavaScript 语法、Android `lintDebug` 和 `assembleDebug` 通过；APK manifest 为 `com.fnaudio.client / 0.1.163 / minSdk 26 / targetSdk 36`，v2 Debug 签名验证通过；FPK manifest 为 `fnaudio / 0.1.163 / x86`，外层 21 个条目、内层 `app.tgz` 110 个条目可读取。
+- 待验证：尚未安装到真实 fnOS/Android 设备。需重点确认启动器图标显示、保存密码后的切换/删除、令牌失效自动登录、CSS/脚本正常加载，以及后台/息屏跨曲播放。
+
 ## 2026-08-06：`0.1.162` Android 混合客户端与原生后台播放
 
 - 执行者：Codex
