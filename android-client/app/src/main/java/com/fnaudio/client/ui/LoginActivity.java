@@ -1,6 +1,7 @@
 package com.fnaudio.client.ui;
 
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
@@ -42,6 +43,7 @@ public final class LoginActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        configureSystemBars();
         setContentView(R.layout.activity_login);
         store = new SecureProfileStore(this);
         bindViews();
@@ -188,8 +190,19 @@ public final class LoginActivity extends AppCompatActivity {
     private void renderHistoryButton() {
         if (historyButton == null || store == null) return;
         int count = store.list().size();
-        historyButton.setVisibility(count == 0 ? View.GONE : View.VISIBLE);
-        historyButton.setText(count == 0 ? "历史连接" : "历史连接（" + count + "）");
+        historyButton.setVisibility(View.VISIBLE);
+        historyButton.setText(count == 0 ? "历史连接" : "历史连接  ·  " + count);
+    }
+
+    private void configureSystemBars() {
+        getWindow().setStatusBarColor(0xff071326);
+        getWindow().setNavigationBarColor(0xff071326);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = getWindow().getDecorView().getSystemUiVisibility();
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        }
     }
 
     private void setBusy(boolean value, String status) {

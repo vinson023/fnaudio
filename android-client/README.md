@@ -1,6 +1,6 @@
 # fnAudio Android 客户端
 
-这是 fnAudio `0.1.163` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
+这是 fnAudio `0.1.164` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
 
 ## 已实现
 
@@ -27,7 +27,7 @@ $env:ANDROID_SDK_ROOT = 'E:\Codex\android-sdk'
 
 ## 与 fnAudio 服务端的配套要求
 
-必须安装 `fnAudio 0.1.163` 或更新版本。该版本会为 CGI 入口修正网页静态资源基准路径，并从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token；网页桥也会在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。
+必须安装 `fnAudio 0.1.164` 或更新版本。该版本会为 CGI 入口修正网页静态资源基准路径，并从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token；网页桥也会在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。
 
 ## 尚待真机确认
 

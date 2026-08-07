@@ -44,6 +44,16 @@ class CgiProxyAuthTests(unittest.TestCase):
         os.environ["HTTP_COOKIE"] = "session=not-a-trim-token; theme=dark"
         self.assertEqual(cgi_proxy.trim_token(), "")
 
+    def test_cgi_base_is_injected_before_relative_assets(self):
+        body = b"<!doctype html><html><head><title>fnAudio</title></head></html>"
+        rewritten = cgi_proxy.inject_cgi_base(body)
+        self.assertIn(b'<base href="/cgi/ThirdParty/fnaudio/index.cgi/">', rewritten)
+        self.assertLess(rewritten.index(b"<base "), rewritten.index(b"<title>"))
+
+    def test_existing_base_is_not_duplicated(self):
+        body = b'<html><head><base href="/custom/"></head></html>'
+        self.assertEqual(cgi_proxy.inject_cgi_base(body), body)
+
 
 if __name__ == "__main__":
     unittest.main()

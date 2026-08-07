@@ -3,20 +3,21 @@
 > 更新日期：2026-08-07  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
-> 当前可识别发布版本：`0.1.163`  
+> 当前可识别发布版本：`0.1.164`  
 > 文档目的：为后续开发、排障、测试和发布提供可复用上下文
 
-## 最新状态：`0.1.163` 修复 Android 入口、保存密码并重做历史连接
+## 最新状态：`0.1.164` 修复 WebView 资源鉴权并统一 Android/FPK 启动图标
 
-- fnOS 源码位于 `C:\path\to\fnAudio\src`，Android 客户端源码位于 `C:\path\to\fnAudio\android-client`；根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 均为 `0.1.163`。
-- `artifacts/0.1.163/fnaudio-0.1.163.fpk` 大小 `4,882,182` 字节，SHA-256 `DA31F9DFF9974A416CBB088CD30C8530D00D1AAF25BD6AC4DCFC04D0933856C2`。
-- `artifacts/0.1.163/fnaudio-android-0.1.163-debug.apk` 大小 `10,071,583` 字节，SHA-256 `7DD22857DE994B89E8877FE38890A5972733938CA2A989219B8F4E660C4ED053`；包名 `com.fnaudio.client`，min SDK 26，target SDK 36。
+- fnOS 源码位于 `C:\path\to\fnAudio\src`，Android 客户端源码位于 `C:\path\to\fnAudio\android-client`；根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 均为 `0.1.164`。
+- `artifacts/0.1.164/fnaudio-0.1.164.fpk` 大小 `4,882,412` 字节，SHA-256 `C114A0F9360F9E6D12C3487D2543F751F958B3E1B8E42362E4273591F66D62F5`。
+- `artifacts/0.1.164/fnaudio-android-0.1.164-debug.apk` 大小 `10,078,542` 字节，SHA-256 `81831D01106DADAB2A2C39DCDA305228F7F809BD7D44FFC7126D16F23500B089`；包名 `com.fnaudio.client`，min SDK 26，target SDK 36。
 - Android 客户端通过 fnOS `/websocket?type=main` 登录，支持地址、端口、HTTPS、自签名证书兼容、账号/密码和多连接历史；地址、账号、密码、token/longToken 统一进入 Android Keystore AES-GCM 加密载荷，应用数据禁止系统备份。
 - 登录页只显示一个“历史连接”按钮；选择、编辑和删除在独立页面完成。令牌失效时会自动尝试已加密保存的密码。
 - 登录后 WebView 直接加载 `/cgi/ThirdParty/fnaudio/index.cgi/`。网页存在 `FnAudioNative` 时，把完整队列和控制交给 Media3 `MediaSessionService + ExoPlayer`，不再依赖后台冻结的 HTML `<audio>` 自动切歌。
-- fnAudio 页面检测到 `/index.cgi` 后会在加载 CSS/脚本前写入正确的 `<base>`，修复 Android WebView 只显示无样式 HTML 的问题；CGI 同源 token Cookie 和普通浏览器 HTML audio 路径保持不变。
-- 本地已通过 53 个 Python 测试、3 个 Node 回归脚本、JavaScript/Python 语法检查、Android Lint 和 Debug APK 构建；FPK 外层 21 个条目、内层 `app.tgz` 110 个条目已核对。
-- 当前没有连接 Android 设备，本轮尚未完成 APK 安装、真实 fnOS 登录令牌交接、后台/息屏连续播放、自签名 HTTPS、多连接切换和厂商后台策略验证。`0.1.163` 仍是开发测试版，不是正式签名发布版。
+- fnAudio 页面检测到 `/index.cgi` 后会在加载 CSS/脚本前写入正确的 `<base>`，修复 Android WebView 只显示无样式 HTML 的问题；Android 同源 GET 子资源由 OkHttp 重新附加会话 Header/Cookie，CGI 入口增加 `/index.cgi/` 基准路径和资源路径兜底重写。
+- Android 登录页和历史页继续采用参考 `FN_Media.apk` 的卡片式布局、加密密码与历史连接交互；启动图标改为与 FPK `ICON_256.PNG` 一致的白底蓝色音符，并缩小前景安全边距以避免被自适应图标蒙版裁剪。
+- 本地已通过 55 个 Python 测试、3 个 Node 回归脚本、JavaScript/Python 语法检查、Android Lint 和 Debug APK 构建；FPK 外层 21 个条目、内层 `app.tgz` 110 个条目已核对。
+- 当前没有连接 Android 设备，本轮尚未完成 APK 安装、真实 fnOS 登录令牌交接、后台/息屏连续播放、自签名 HTTPS、多连接切换和厂商后台策略验证。`0.1.164` 仍是开发测试版，不是正式签名发布版。
 - 不要将任何 FPK 解包目录当作开发源码或下一次发布起点。新功能只改 `src/`；每次测试/发布包都须单独创建、记录并验证。
 - 已缓存第三方 `FNOS-API` 固定提交作为外部设备验收与运维参考，评估见 `references/FNOS_API_EVALUATION.md`。它是 `trim-cli` 的高权限 REST 包装，不是官方 SDK，也不应接入 fnAudio 运行时。
 
@@ -36,12 +37,12 @@
 ## 1. 分析范围与结论
 
 - `E:\Codex` 不是 Git 仓库，工作区内没有 `.git`，无法通过提交历史判断文件来源、变更归属和发布对应关系。
-- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.163`。
+- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.164`。
 - `fnaudio/` 是约 `0.1.2` 的旧版；`fnaudio-0.1.3/` 至 `fnaudio-0.1.6/`、根目录 `builds/` 及多个打包暂存目录均属于历史材料，不应直接作为当前源码修改。
 - 本项目是面向 fnOS 的本地音乐库和多目标播放器。它不是纯前端网页，也不是单一 DLNA 控制器，而是同时承担音乐库、媒体流、转码、本机播放、DLNA Control Point、MediaServer 和 MediaRenderer 等职责。
-- 当前工作目录以 `0.1.163` 为开发基线；除既有 Web/fnOS 能力外，新增 Android 登录壳、历史连接、加密会话、直达 fnAudio 和原生后台播放链路。
-- 当前配套产物位于 `artifacts/0.1.163/`。历史 `0.1.149` 完成过 fnOS 升级冒烟，但不能替代本轮 Android 与 token 交接验证。
-- 真实 fnOS 测试设备最近一次已确认运行 `fnaudio 0.1.153`；`0.1.163` 的 FPK 和 APK 都尚未安装到真实设备。
+- 当前工作目录以 `0.1.164` 为开发基线；除既有 Web/fnOS 能力外，新增 Android 登录壳、历史连接、加密会话、直达 fnAudio 和原生后台播放链路。
+- 当前配套产物位于 `artifacts/0.1.164/`。历史 `0.1.149` 完成过 fnOS 升级冒烟，但不能替代本轮 Android 与 token 交接验证。
+- 真实 fnOS 测试设备最近一次已确认运行 `fnaudio 0.1.153`；`0.1.164` 的 FPK 和 APK 都尚未安装到真实设备。
 
 ## 2. 项目整体架构
 
@@ -174,11 +175,11 @@ flowchart TD
 | `fnaudio-0.1.4/` | 历史阶段源码。 |
 | `fnaudio-0.1.5/` | 历史阶段源码。 |
 | `fnaudio-0.1.6/` | 历史阶段源码。 |
-| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.163`。 |
+| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.164`。 |
 | `fnaudio-android-shell/` | 已被 `C:\path\to\fnAudio\android-client` 替代的 Android 试验壳，只读参考。 |
 | `fnaudio-pack-stage-*/` | 旧版本 FPK 暂存结构，用于历史打包。 |
 | `fnOS Skill/` | fnOS API、CLI 和开发流程参考材料，不进入产品运行时。 |
-| `references/` | Volumio、moOde、MPD、upmpdcli 等第三方参考源码，只用于研究。 |
+| `references/` | Volumio、moOde、MPD、upmpdcli 等第三方参考源码，只用于研究；`FNAPP/` 缓存官方飞牛媒体 APK 与解包目录，已加入 Git 忽略，不进入产品运行时。 |
 | `tmp-fnaudio-fpk-*/` | FPK 解包和验证目录。 |
 
 根目录的 `.fpk`、`fnpack.exe`、Android SDK 压缩包和预览资源均为工具或构建产物，不是当前应用源文件。
@@ -332,7 +333,7 @@ flowchart TD
 
 1. 工作区和发布可追溯性仍不完整
    
-   当前已有根 README、`.gitignore`、源码哈希清单、`0.1.163` FPK/APK 和校验记录，以及本地 Git 基线；但仍没有远程备份、LICENSE、CI、正式 Android 签名或统一自动化发布脚本。
+   当前已有根 README、`.gitignore`、源码哈希清单、`0.1.164` FPK/APK 和校验记录，以及本地 Git 基线；但仍没有远程备份、LICENSE、CI、正式 Android 签名或统一自动化发布脚本。
 
 2. 核心文件过大
    
@@ -396,14 +397,14 @@ flowchart TD
 python -B -m unittest discover -s tests -v
 ```
 
-- 结果：53 个 Python 测试、3 个 Node 前端回归脚本、Android `lintDebug` 与 `assembleDebug` 全部通过。
+- 结果：55 个 Python 测试、3 个 Node 前端回归脚本、Android `lintDebug` 与 `assembleDebug` 全部通过。
 - 覆盖：ALSA 能力、配置、DLNA 诊断与协议、音乐库缓存和 SQLite、元数据服务、状态存储、转码缓存及当前曲目缓存优先级。
 - `node --check app/ui/app.js` 通过。
-- Android Debug APK 通过 v2 签名验证，manifest 为 `com.fnaudio.client / 0.1.163 / minSdk 26 / targetSdk 36`。
-- `0.1.163` FPK 外层和内层可读取，外层 21 个条目、运行时 `app.tgz` 110 个条目；manifest 为 `fnaudio / 0.1.163 / x86`。
+- Android Debug APK 通过 v2 签名验证，manifest 为 `com.fnaudio.client / 0.1.164 / minSdk 26 / targetSdk 36`。
+- `0.1.164` FPK 外层和内层可读取，外层 21 个条目、运行时 `app.tgz` 110 个条目；manifest 为 `fnaudio / 0.1.164 / x86`。
 - 使用 Python AST 解析当前 `src/` 中 39 个 Python 文件，全部通过。
 - 初始整理时，`src/` 的 136 个文件与原 `0.1.148` 来源逐一比对，缺失 0、哈希差异 0；当前工作状态的完整哈希以 `SOURCE_MANIFEST.sha256` 为准。
-- `SOURCE_MANIFEST.sha256` 含 175 条 fnOS/Android 源码与构建入口记录；排除 Gradle/build 产物、local.properties、FPK 和 APK。
+- `SOURCE_MANIFEST.sha256` 含 176 条 fnOS/Android 源码与构建入口记录；排除 Gradle/build 产物、local.properties、FPK 和 APK。
 - 使用 `fnpack 1.2.3` 从 `src/` 构建 `artifacts/0.1.148/fnaudio-0.1.148.fpk` 成功。包大小为 4,878,142 字节，SHA-256 为 `856088E19DD926F0ACE2F07C0BB0E76526BB129F6A3A807A27EB2E27686EB4E1`。
 - 以 `src` 的完整副本构建仅版本号为 `0.1.149` 的测试包并升级到真实 fnOS x86 设备成功。升级后应用运行正常，服务端口仍为 `18081`，音乐库为 228 首（5 首 DSD），MPD `0.23.12` 正常；CGI 页面及健康、音乐库、播放核心、播放目标和 MPD 状态 API 均通过冒烟检查。
 - 使用 `tar` 校验 FPK 外层和内层 `app.tgz` 均可读取；包内 `manifest` 为 `fnaudio / 0.1.148 / x86`，运行时负载含 server、ui、私有 MPD 和动态库，未包含 tests、历史 builds、转码缓存、Python 字节码或本地数据库。详细记录在 `artifacts/0.1.148/VALIDATION.md`。
@@ -424,7 +425,7 @@ python -B -m unittest discover -s tests -v
 ### 第一阶段：建立可信基线
 
 1. 将本地 `main` 基线推送至受控私有远程仓库，并为 FPK 建立外部制品备份；LICENSE 与版本策略仍需确认。
-2. 已明确 `0.1.163` 的 fnOS/Android 配套源码和手动可复现构建流程；下一步应固化为统一构建脚本和 CI。
+2. 已明确 `0.1.164` 的 fnOS/Android 配套源码和手动可复现构建流程；下一步应固化为统一构建脚本和 CI。
 3. 将历史 `builds/`、旧版本、解包目录、第三方参考和 Android SDK 移出源码仓库或转为只读归档。
 4. 保留当前 53 个 Python测试和 3 个 Node 回归脚本作为迁移基线，新增最小 HTTP smoke test 和 FPK 包结构检查。
 
@@ -453,7 +454,7 @@ python -B -m unittest discover -s tests -v
 
 ### 第五阶段：完成真机验收
 
-1. 先在 fnOS 安装 `0.1.163` FPK，再在 Android 安装配套 Debug APK，验证登录后不进入桌面而是直接进入 fnAudio。
+1. 先在 fnOS 安装 `0.1.164` FPK，再在 Android 安装配套 Debug APK，验证登录后不进入桌面而是直接进入 fnAudio。
 2. 用至少两首歌曲验证前台、后台、息屏、自动下一首、暂停恢复、锁屏通知、耳机拔出和蓝牙媒体键；至少等待跨曲一次。
 3. 验证历史连接独立页面、密码加密保存、过期 token 自动密码登录、自签名 HTTPS 和错误地址提示；全程确认日志不含密码/token。
 4. 补充 WAV、DFF 和高规格 PCM 样本，验证解码、seek、时长、封面和输出格式。
@@ -462,7 +463,7 @@ python -B -m unittest discover -s tests -v
 ## 9. 后续接手约定
 
 - 项目根目录：`C:\path\to\fnAudio`；fnOS 工作目录为 `C:\path\to\fnAudio\src`，Android 工作目录为 `C:\path\to\fnAudio\android-client`。
-- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.163` 为准。
+- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.164` 为准。
 - 根目录当前文档的优先级高于 `docs/history/` 中的阶段记录；历史文档只用于追溯。
 - 不要直接从根 `builds/`、旧版本目录或 FPK 解包目录复制文件到当前源码；先确认来源、差异和目标版本。
 - 修改播放逻辑时，保持 `PlaybackCore -> output plugin` 边界，不要把 SOAP、ALSA 或 FFmpeg 细节重新放回前端。
