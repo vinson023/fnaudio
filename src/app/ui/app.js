@@ -2222,7 +2222,10 @@ function applyConfirmedQueue(queue, core) {
 async function commitQueue(queue, currentId = "", options = {}) {
   const response = await fetch("api/playback/queue", {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: {
+      "Content-Type": "application/json",
+      "X-FnAudio-Path": "/api/playback/queue",
+    },
     body: JSON.stringify({
       queue: queue.map(item => String(item?.id || "")).filter(Boolean),
       current_id: currentId,
@@ -2230,9 +2233,14 @@ async function commitQueue(queue, currentId = "", options = {}) {
       shuffle: options.shuffle ?? state.shuffle,
     }),
   });
-  const data = await response.json().catch(() => ({}));
+  const raw = await response.text().catch(() => "");
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch (error) {}
   if (!response.ok || !data.ok) {
-    throw new Error(data.message || data.error || `播放队列保存失败（HTTP ${response.status}）`);
+    const looksLikeHtml = /<\s*html|<!doctype/i.test(raw);
+    throw new Error(data.message || data.error || (looksLikeHtml
+      ? `播放队列请求返回了错误页面（HTTP ${response.status}），请重新打开 fnAudio。`
+      : `播放队列保存失败（HTTP ${response.status}）`));
   }
   applyConfirmedQueue(queue, data.core);
   if (nativePlaybackAvailable() && String(state.nativePlayback.mediaId || "") === String(currentItem()?.id || "")) {
@@ -4187,6 +4195,54 @@ $("deviceBtn").onclick = () => { $("deviceDialog").showModal(); loadDevices(); }
 function closeLyrics() {
   $("lyricsView").hidden = true;
 }
+function closeTopDialog() {
+  const dialogs = [...document.querySelectorAll("dialog[open]")];
+  const dialog = dialogs[dialogs.length - 1];
+  if (!dialog) return false;
+  dialog.close();
+  return true;
+}
+function goBackFromNestedLibraryView() {
+  if (state.view === "folders" && state.folderPath) {
+    const parts = String(state.folderPath).split("/").filter(Boolean);
+    parts.pop();
+    state.folderPath = parts.join("/");
+    state.folderPage = 1;
+  }
+  else if (state.view === "folders" && state.folderRoot && !hasSingleFolderRoot()) {
+    state.folderRoot = "";
+    state.folderPath = "";
+    state.folderPage = 1;
+  }
+  else if (isCreatorAllTracksView()) setCurrentCreatorAllTracks(false);
+  else if (isCreatorView() && state.groupName) state.groupName = "";
+  else if (isCreatorView() && currentCreatorName()) clearCurrentCreator();
+  else if (state.groupName) state.groupName = "";
+  else return false;
+  state.page = 1;
+  state.pageItems = [];
+  resetLibraryScrollPosition();
+  Promise.resolve(loadPagedLibrary(1, false)).finally(() => requestAnimationFrame(resetLibraryScrollPosition));
+  return true;
+}
+window.fnAudioHandleAndroidBack = () => {
+  if (closeTopDialog()) return true;
+  const contextMenu = $("trackContextMenu");
+  if (contextMenu && !contextMenu.hidden) {
+    closeTrackContextMenu();
+    return true;
+  }
+  const sidebar = document.querySelector(".sidebar");
+  if (sidebar?.classList.contains("mobile-open")) {
+    setMobileNavigation(false);
+    return true;
+  }
+  if (!$("lyricsView").hidden) {
+    closeLyrics();
+    return true;
+  }
+  return goBackFromNestedLibraryView();
+};
 function toggleLyrics() {
   if (!$("lyricsView").hidden) {
     closeLyrics();

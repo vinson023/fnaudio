@@ -54,6 +54,25 @@ class CgiProxyAuthTests(unittest.TestCase):
         body = b'<html><head><base href="/custom/"></head></html>'
         self.assertEqual(cgi_proxy.inject_cgi_base(body), body)
 
+    def test_request_uri_suffix_wins_over_script_only_path_info(self):
+        self.assertEqual(
+            cgi_proxy.normalize_path_info(
+                "/cgi/ThirdParty/fnaudio/index.cgi",
+                "/cgi/ThirdParty/fnaudio/index.cgi/api/playback/queue",
+            ),
+            "/api/playback/queue",
+        )
+
+    def test_explicit_route_header_wins_when_cgi_paths_are_script_only(self):
+        self.assertEqual(
+            cgi_proxy.normalize_path_info(
+                "/cgi/ThirdParty/fnaudio/index.cgi",
+                "/cgi/ThirdParty/fnaudio/index.cgi/",
+                "/api/playback/queue",
+            ),
+            "/api/playback/queue",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

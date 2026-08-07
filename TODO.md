@@ -1,6 +1,6 @@
 # fnAudio 待办
 
-> 当前源码版本：`0.1.165`  
+> 当前源码版本：`0.1.166`  
 > 本文件是当前唯一有效待办列表。`docs/history/` 中的 checklist 只用于追溯。
 
 ## P0：安全边界
@@ -19,7 +19,7 @@
 - [x] 在 `C:\path\to\fnAudio` 初始化 Git，创建 `main` 分支；每个发布版本以独立提交和标签记录。
 - [ ] 确认项目许可证、维护者和版本策略。
 - [ ] 建立单一 FPK 构建脚本，禁止从历史 builds 或解包目录组装发布包。
-- [x] 生成 `artifacts/0.1.165/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
+- [x] 生成 `artifacts/0.1.166/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
 - [x] 同版本真机替换策略：已在用户授权下构建仅版本号不同的 `0.1.149` 测试包，并成功完成设备端覆盖升级；其记录见 `artifacts/0.1.149/VALIDATION.md`。
 - [ ] 自动化验证全新安装、覆盖升级、改端口、停止、保留数据卸载和清除数据卸载。
 - [ ] 确认应用中心 `python312`、发布者和端口字段显示正确。
@@ -37,6 +37,7 @@
 - [ ] 为登录协议、连接资料序列化、队列 JSON 和原生状态回传增加自动化测试。
 - [ ] 增加播放错误、网络切换、断线重试、URL 过期和服务进程重建的用户可见状态。
 - [ ] 评估 Android Auto、蓝牙 AVRCP 元数据、耳机按键和音频路由切换兼容性。
+- [ ] 在 Android 真机验证返回键顺序：先关闭对话框/侧栏/歌词/分类详情，根页面进入后台，重新打开仍停留在 fnAudio 而不是登录页。
 
 ## P1：可靠性与可观测性
 
@@ -84,7 +85,8 @@
 - [ ] 使用 WAV 样本验证解析、时长、seek、封面和 MPD/浏览器播放。
 - [ ] 使用 DFF 样本验证解析、DSD 转 WAV、seek 和 DAC 输出。
 - [ ] 在真实飞牛移动 WebView 验证前后台切换、Media Session、收藏/队列同步和恢复。
-- [ ] 安装 `0.1.165` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面，且 CSS/脚本资源加载正常。
+- [ ] 安装 `0.1.166` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面，且 CSS/脚本资源加载正常。
+- [ ] 在真实 fnOS CGI 中验证大队列 POST：即使 `PATH_INFO` 只有脚本路径，也能通过 `REQUEST_URI` 或 `X-FnAudio-Path` 到达 `/api/playback/queue`，响应为 JSON 而不是 HTTP 200 HTML。
 - [ ] 用至少两首歌曲验证 Android 前台、后台、息屏、自动下一首、通知控制、锁屏控制、耳机拔出和蓝牙媒体键。
 - [ ] 验证历史连接切换、过期 token 回退密码、自签名 HTTPS、HTTP、错误端口、IPv6 和外网反向代理。
 - [ ] 继续验收输入法直接覆盖固定播放器、键盘弹出/收起流畅度及不支持 Virtual Keyboard API 时的降级行为。
