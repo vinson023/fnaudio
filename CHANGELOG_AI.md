@@ -1,5 +1,15 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.165` Android 刘海安全区、默认端口与大队列播放修复
+
+- 目标：修复登录界面顶部空间不足、fnAudio 主页面与状态栏/前置摄像头区域重叠，以及大音乐库播放时弹出“播放队列保存失败”。
+- Android 窗口：新增 `WindowInsetsHelper`，登录页、历史连接页和主 WebView 宿主根据系统状态栏、导航栏与 `displayCutout` 自动增加安全内边距；主页面使用浅色状态栏图标，登录/历史页保持深色状态栏。
+- 登录页：端口输入框默认直接显示 `5666`，移除“HTTP 常用 5666、HTTPS 常用 5667”的提示；切换 HTTPS 时仅在当前端口仍为默认值时切换到 `5667`，避免覆盖用户手动输入。
+- 播放队列：前端 `/api/playback/queue` 只发送歌曲 ID，不再发送完整歌曲对象；服务端同时兼容 ID 列表和历史对象格式。这样“从当前开始播放所有歌曲”在大曲库/CGI 网关下的请求体显著减小，失败提示也会显示 HTTP 状态或服务端返回消息。
+- 测试：新增紧凑队列 ID 的服务端单元测试和 Android bridge 静态回归检查；57 个 Python 单元测试、3 个 Node 回归脚本、Android `lintDebug` 与 `assembleDebug` 全部通过。
+- 版本与产物：统一升级为 `0.1.165`。`artifacts/0.1.165/fnaudio-0.1.165.fpk` 为 `4,880,353` 字节，SHA-256 `7D134D517321F6C8A247A1F75D5B2B1FCE2AB3BB897FA5E2AE6651281A6C2E97`；`fnaudio-android-0.1.165-debug.apk` 为 `10,079,754` 字节，SHA-256 `569B0A1F6D6FB21A186B5C477920EE01CE7D94FA0775DDC4B8BF5A6B4EBFBDE5`。
+- 待验证：尚未安装到真实 Android/fnOS 设备；需重点确认不同刘海/挖孔机型的登录和主页面顶部位置，以及大队列播放、自动下一曲和后台息屏播放。
+
 ## 2026-08-07：`0.1.164` WebView 子资源鉴权与 FPK/Android 图标统一
 
 - 目标：修复 Android 登录后页面只显示无样式 HTML、CSS/JS/封面和 GET API 资源无法携带 fnOS 会话的问题，并处理启动图标中间音符过大被裁剪、Android 图标与 FPK 不一致的问题。

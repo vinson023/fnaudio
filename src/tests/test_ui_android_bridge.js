@@ -15,6 +15,8 @@ requireText('state.playSourceKind = "native"', "Native playback mode is not sele
 requireText('nativePlaybackCall("seekTo", seconds)', "Native seek handoff is missing");
 requireText('nativePlaybackCall("setVolume", value)', "Native volume handoff is missing");
 requireText("const nativeCurrentId = String(state.nativePlayback.mediaId", "Native current track must win during page restore");
+requireText('queue: queue.map(item => String(item?.id || "")).filter(Boolean)', "Playback queue POST must send compact track IDs");
+requireText('播放队列保存失败（HTTP ${response.status}）', "Queue failures must expose the HTTP status");
 
 if (!cgi.includes('"fnaudio_trim_token"') || !cgi.includes('os.environ.get("HTTP_COOKIE"')) {
   throw new Error("CGI Android session-cookie fallback is missing");

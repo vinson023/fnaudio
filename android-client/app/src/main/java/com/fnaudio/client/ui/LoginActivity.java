@@ -13,6 +13,7 @@ import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.WindowCompat;
 
 import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
@@ -45,6 +46,7 @@ public final class LoginActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         configureSystemBars();
         setContentView(R.layout.activity_login);
+        WindowInsetsHelper.applySafePadding(findViewById(R.id.loginRoot));
         store = new SecureProfileStore(this);
         bindViews();
         renderHistoryButton();
@@ -76,13 +78,16 @@ public final class LoginActivity extends AppCompatActivity {
         progressRow = findViewById(R.id.loginProgressRow);
         loginStatus = findViewById(R.id.loginStatus);
 
-        port.setHint("端口号（HTTP 常用 5666，HTTPS 常用 5667）");
+        if (port.getText().toString().trim().isEmpty()) port.setText("5666");
         loginButton.setOnClickListener(view -> loginWithPassword());
         historyButton.setOnClickListener(view -> startActivityForResult(
                 new Intent(this, ConnectionHistoryActivity.class), REQUEST_HISTORY));
         useHttps.setOnCheckedChangeListener((button, checked) -> {
             trustSelfSigned.setEnabled(checked);
-            if (port.getText().toString().trim().isEmpty()) port.setText(checked ? "5667" : "5666");
+            String currentPort = port.getText().toString().trim();
+            if (currentPort.isEmpty() || (!checked && "5667".equals(currentPort)) || (checked && "5666".equals(currentPort))) {
+                port.setText(checked ? "5667" : "5666");
+            }
         });
         trustSelfSigned.setEnabled(useHttps.isChecked());
     }
@@ -195,6 +200,7 @@ public final class LoginActivity extends AppCompatActivity {
     }
 
     private void configureSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(0xff071326);
         getWindow().setNavigationBarColor(0xff071326);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

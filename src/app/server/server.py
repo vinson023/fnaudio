@@ -1376,7 +1376,17 @@ def restore_playback_session(config):
 
 
 def playback_queue(config, payload):
-    tracks = payload.get("queue") if isinstance(payload.get("queue"), list) else []
+    source = payload.get("queue") if isinstance(payload.get("queue"), list) else []
+    tracks = []
+    for item in source:
+        if isinstance(item, dict):
+            track_id = str(item.get("id") or item.get("track_id") or "").strip()
+            if track_id:
+                tracks.append(item)
+            continue
+        track_id = str(item or "").strip()
+        if track_id:
+            tracks.append({"id": track_id})
     current = payload.get("current_id") or payload.get("current")
     if isinstance(current, dict):
         current = current.get("id")

@@ -33,6 +33,7 @@ import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.WindowCompat;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.Player;
@@ -102,8 +103,10 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        configureSystemBars();
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         setContentView(R.layout.activity_main);
+        WindowInsetsHelper.applySafePadding(findViewById(R.id.mainRoot));
 
         profile = resolveProfile();
         if (profile == null || profile.token.isEmpty()) {
@@ -136,6 +139,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         errorMessage = findViewById(R.id.errorMessage);
         findViewById(R.id.retryButton).setOnClickListener(view -> loadFnAudio());
         findViewById(R.id.switchConnectionButton).setOnClickListener(view -> openConnectionChooser());
+    }
+
+    private void configureSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(0xffffffff);
+        getWindow().setNavigationBarColor(0xffffffff);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = getWindow().getDecorView().getSystemUiVisibility() | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        }
     }
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
