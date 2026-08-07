@@ -19,7 +19,7 @@
 - [x] 在 `C:\path\to\fnAudio` 初始化 Git，创建 `main` 分支；每个发布版本以独立提交和标签记录。
 - [ ] 确认项目许可证、维护者和版本策略。
 - [ ] 建立单一 FPK 构建脚本，禁止从历史 builds 或解包目录组装发布包。
-- [x] 生成 `artifacts/0.1.170/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
+- [x] 生成 `artifacts/0.1.171/` 的 FPK/APK 摘要与 SHA-256，验证 FPK manifest、APK badging、APK v2 签名和关键包内文件哈希；仍需自动化。
 - [x] 为 Android Media3 通知和无封面歌曲增加白色播放圆环；占位图使用单一私有文件 URI，避免大队列重复位图数据。
 - [x] 实现桌面歌曲右键和移动端 550ms 长按的固定四项菜单，并对移动、滚动取消及长按后误点击增加回归保护。
 - [x] 同版本真机替换策略：已在用户授权下构建仅版本号不同的 `0.1.149` 测试包，并成功完成设备端覆盖升级；其记录见 `artifacts/0.1.149/VALIDATION.md`。
