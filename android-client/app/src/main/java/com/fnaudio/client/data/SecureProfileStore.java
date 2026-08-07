@@ -12,7 +12,8 @@ import org.json.JSONObject;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 
 import javax.crypto.Cipher;
@@ -42,7 +43,7 @@ public final class SecureProfileStore {
                 if (row != null) profiles.add(ConnectionProfile.fromJson(row));
             }
         }
-        profiles.sort(Comparator.comparingLong((ConnectionProfile item) -> item.updatedAt).reversed());
+        Collections.sort(profiles, (left, right) -> Long.compare(right.updatedAt, left.updatedAt));
         return profiles;
     }
 
@@ -66,7 +67,7 @@ public final class SecureProfileStore {
     public synchronized void upsert(ConnectionProfile profile, boolean makeActive) {
         JSONObject state = readState();
         List<ConnectionProfile> profiles = list();
-        profiles.removeIf(item -> item.id.equals(profile.id));
+        removeProfile(profiles, profile.id);
         profiles.add(profile);
         writeProfiles(state, profiles);
         if (makeActive) stateSafePut(state, "activeId", profile.id);
@@ -82,7 +83,7 @@ public final class SecureProfileStore {
     public synchronized void remove(String id) {
         JSONObject state = readState();
         List<ConnectionProfile> profiles = list();
-        profiles.removeIf(item -> item.id.equals(id));
+        removeProfile(profiles, id);
         writeProfiles(state, profiles);
         if (id != null && id.equals(state.optString("activeId"))) stateSafePut(state, "activeId", "");
         writeState(state);
@@ -97,6 +98,13 @@ public final class SecureProfileStore {
             }
         }
         stateSafePut(state, "profiles", rows);
+    }
+
+    private static void removeProfile(List<ConnectionProfile> profiles, String id) {
+        Iterator<ConnectionProfile> iterator = profiles.iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next().id.equals(id)) iterator.remove();
+        }
     }
 
     private JSONObject readState() {

@@ -1,5 +1,14 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.173` USB DAC、远程队列、DSD 与 Android 会话恢复
+
+- 后端以 MPD 状态事件处理 USB DAC 自然结束和自动下一曲，显式停止/换曲加入事件抑制，避免误推进。
+- Playback Core 不再在输出失败时乐观发布播放状态；直接 ALSA 启动补齐成功返回值。
+- 前端远程 load 去重；恢复跨浏览器/Android 播放会话时读取服务端状态而不重复开播；MPD 自动下一曲不再依赖前端计时器。
+- DSD DLNA 推送改为一致的 96kHz/24bit WAV PCM 资源声明，并尝试预装下一曲。
+- Android 启动前验证并刷新 token，支持 longToken/保存密码回退；最低系统调整为 Android 6.0，兼容实现通过 Lint。
+- 本地验证通过：62 个 Python 测试、3 个 Node 回归脚本、Android `lintDebug` 与 `assembleDebug`。未进行 fnOS、USB DAC、DLNA Renderer 或 Android 真机验收。
+
 ## 2026-08-07：`0.1.172` PC 右键菜单与文件夹定位语义修复
 
 - 目标：PC 端右键菜单取消“播放”和“插播所选项目”，同时不影响移动端四项长按菜单和歌曲操作对话框。

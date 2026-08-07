@@ -48,6 +48,7 @@ import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.HttpClientFactory;
+import com.fnaudio.client.network.FnOsAuthClient;
 import com.fnaudio.client.playback.PlaybackRuntimeConfig;
 import com.fnaudio.client.playback.PlaybackService;
 import com.fnaudio.client.web.NativePlaybackBridge;
@@ -118,20 +119,14 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         WindowInsetsHelper.applySafePadding(findViewById(R.id.mainRoot));
 
         profile = resolveProfile();
-        if (profile == null || profile.token.isEmpty()) {
+        bindViews();
+        installBackHandler();
+        if (profile == null || (profile.token.isEmpty() && profile.longToken.isEmpty() && profile.password.isEmpty())) {
             openConnectionChooser();
             return;
         }
-
-        boolean switchingServer = PlaybackRuntimeConfig.activate(profile);
-        if (switchingServer) stopService(new Intent(this, PlaybackService.class));
-        new SecureProfileStore(this).setActive(profile.id);
-
-        bindViews();
-        configureWebView();
-        connectMediaController();
-        requestNotificationPermission();
-        installBackHandler();
+        pageProgress.setVisibility(View.VISIBLE);
+        authenticateBeforeLoading(profile, false);
     }
 
     @Override
@@ -148,6 +143,33 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         errorMessage = findViewById(R.id.errorMessage);
         findViewById(R.id.retryButton).setOnClickListener(view -> loadFnAudio());
         findViewById(R.id.switchConnectionButton).setOnClickListener(view -> openConnectionChooser());
+    }
+
+    private void authenticateBeforeLoading(ConnectionProfile candidate, boolean passwordFallback) {
+        String password = passwordFallback ? candidate.password : null;
+        new FnOsAuthClient().authenticate(candidate, password, new FnOsAuthClient.Callback() {
+            @Override
+            public void onSuccess(ConnectionProfile authenticatedProfile) {
+                if (isFinishing() || isDestroyed()) return;
+                SecureProfileStore store = new SecureProfileStore(MainActivity.this);
+                store.upsert(authenticatedProfile, true);
+                profile = authenticatedProfile;
+                boolean switchingServer = PlaybackRuntimeConfig.activate(profile);
+                if (switchingServer) stopService(new Intent(MainActivity.this, PlaybackService.class));
+                configureWebView();
+                connectMediaController();
+                requestNotificationPermission();
+            }
+
+            @Override
+            public void onError(String message) {
+                if (!passwordFallback && !candidate.password.isEmpty()) {
+                    authenticateBeforeLoading(candidate, true);
+                    return;
+                }
+                showError("登录令牌已失效，且自动恢复失败：" + message);
+            }
+        });
     }
 
     private void configureSystemBars() {
