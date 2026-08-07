@@ -1,6 +1,19 @@
 # fnAudio 项目上下文
 
-## 0.1.173 当前开发状态（2026-08-07）
+## 0.1.174 当前状态（2026-08-07）
+
+- 当前统一版本：`0.1.174`；源码目录：`C:\path\to\fnAudio\src`；Android 源码：`C:\path\to\fnAudio\android-client`。
+- 本轮修复：fnOS 启停脚本会清理旧版本遗留的 fnAudio `server.py`，避免 18080/18081 双实例、重复 MPD 和播放状态互相覆盖；停止流程同时清理匹配 fnAudio MPD 的残留进程。
+- 真机部署：已在 `198.51.100.24` 通过 SSH 可回滚部署正式 0.1.174 代码，运行时端口为 `18081`；当前仅 1 个 fnAudio server、1 个 MPD，无 zombie 进程，仅监听 18081。
+- 真机验证：健康检查、音乐库（228 首，5 首 DSD）、浏览器队列/加载/暂停、服务重启后的队列与播放目标持久化、DSD WAV 媒体头均通过；DSD 输出确认 `audio/wav`、96 kHz、24 bit。
+- 受限项：测试机没有可发现的 USB DAC 或 UPnP Renderer，无法完成真实 DAC/Renderer 硬件连续播放；Android APK 仍需用户在目标手机安装验证。App Center 的非交互 CLI 对第三方依赖/向导升级返回 UI-only 限制，因此本轮使用 SSH 备份后覆盖部署，并保留备份：`/vol1/1000/fnaudio-backup-0.1.172-before-0.1.174-20260807.tgz`。
+- 构建产物：`artifacts/0.1.174/`；正式 FPK/APK 哈希见该目录 `SHA256SUMS`，测试专用无向导包不作为发布物。
+
+## 测试环境注意
+
+- NAS 进程日志时间显示为 2026-08-08，而当前开发基准日期为 2026-08-07；若出现会话时间、缓存过期或日志排序异常，先核对 NAS 系统时钟/时区。
+
+## 0.1.173 历史开发状态（2026-08-07）
 
 - 当前统一版本为 `0.1.173`；fnOS 源码在 `C:\path\to\fnAudio\src`，Android 源码在 `C:\path\to\fnAudio\android-client`。
 - USB DAC 的主播放链路是 fnAudio 私有 MPD -> ALSA。MPD `idle` 监听现在负责识别自然结束并在服务端推进 fnAudio 队列，网页或 WebView 进入后台后不再是 USB DAC 下一曲的必要条件。
@@ -16,10 +29,10 @@
 > 更新日期：2026-08-07  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
-> 当前可识别发布版本：`0.1.173`  
+> 历史可识别发布版本：`0.1.173`  
 > 文档目的：为后续开发、排障、测试和发布提供可复用上下文
 
-## 最新状态：`0.1.172` PC 右键菜单与文件夹定位修复
+## 历史状态：`0.1.172` PC 右键菜单与文件夹定位修复
 
 - fnOS 源码位于 `C:\path\to\fnAudio\src`，Android 客户端源码位于 `C:\path\to\fnAudio\android-client`；根 `VERSION`、FPK manifest、前端缓存键和 Android `versionName` 均为 `0.1.172`。
 - PC 桌面歌曲右键使用 `desktopTrackContextActionButtons()`，分组（文件夹/专辑等）右键也移除“播放”和“插播所选项目”；移动端长按继续使用 `trackContextActionButtons()` 的四项快捷菜单，歌曲操作对话框仍使用完整 `trackActionButtons()`。

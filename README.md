@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.173`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.174`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,18 +8,18 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.173` |
-| 平台 | fnOS x86；Android 8.0（API 26）及以上 |
+| 版本 | `0.1.174` |
+| 平台 | fnOS x86；Android 6.0（API 23）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
 | 原始来源 | `E:\Codex\fnaudio-0.1.7` |
 | HTTP 端口 | `18080` |
 | Python | fnOS `python312` |
-| 测试基线 | 59 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
+| 测试基线 | 62 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.173` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.174` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 

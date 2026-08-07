@@ -62,6 +62,38 @@ check_process() {
   kill -0 "$1" 2>/dev/null
 }
 
+stop_pid() {
+  candidate="$1"
+  wait_seconds="${2:-10}"
+  case "${candidate}" in
+    ''|*[!0-9]*|"$$") return 0 ;;
+  esac
+  if check_process "${candidate}"; then
+    kill -TERM "${candidate}" 2>/dev/null || true
+    for i in $(seq 1 "${wait_seconds}"); do
+      check_process "${candidate}" || break
+      sleep 1
+    done
+    check_process "${candidate}" && kill -KILL "${candidate}" 2>/dev/null || true
+  fi
+}
+
+cleanup_stale_servers() {
+  keep_pid="${1:-}"
+  for proc in /proc/[0-9]*; do
+    [ -r "${proc}/cmdline" ] || continue
+    candidate="${proc##*/}"
+    [ "${candidate}" = "${keep_pid}" ] && continue
+    cmdline="$(tr '\000' ' ' < "${proc}/cmdline" 2>/dev/null)"
+    case "${cmdline}" in
+      *"@appcenter/fnaudio/"*"server.py"*)
+        log_msg "Stopping stale fnAudio server PID ${candidate}"
+        stop_pid "${candidate}" 10
+        ;;
+    esac
+  done
+}
+
 port_ready() {
   "${PYTHON_BIN}" - "$1" <<'PY' >/dev/null 2>&1
 import socket, sys
@@ -81,8 +113,18 @@ status() {
 }
 
 start_process() {
-  if status; then return 0; fi
   mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
+  active_pid=""
+  if [ -f "${PID_FILE}" ]; then
+    active_pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+    check_process "${active_pid}" || active_pid=""
+  fi
+  # Older packages stored their PID and config under the application tree.
+  # Upgrading could therefore leave the old server listening on its previous
+  # port. Keep the currently supervised process, but remove every other
+  # fnAudio server before deciding whether a new one is needed.
+  cleanup_stale_servers "${active_pid}"
+  if status; then return 0; fi
   if [ ! -x "${PYTHON_BIN}" ]; then
     log_msg "Python runtime not found: ${PYTHON_BIN}"
     return 1
@@ -115,36 +157,19 @@ stop_process() {
   # this script is trying to terminate the existing child process.
   if [ -f "${PID_FILE}" ]; then
     pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-    if check_process "${pid}"; then
-      kill -TERM "${pid}" 2>/dev/null || true
-      for i in $(seq 1 10); do
-        check_process "${pid}" || break
-        sleep 1
-      done
-      check_process "${pid}" && kill -KILL "${pid}" 2>/dev/null || true
-    fi
+    stop_pid "${pid}" 10
     rm -f "${PID_FILE}"
   fi
 
-  stop_mpd_pid() {
-    candidate="$1"
-    case "${candidate}" in
-      ''|*[!0-9]*) return 0 ;;
-    esac
-    if kill -0 "${candidate}" 2>/dev/null; then
-      kill -TERM "${candidate}" 2>/dev/null || true
-      for i in $(seq 1 5); do
-        kill -0 "${candidate}" 2>/dev/null || break
-        sleep 1
-      done
-      kill -KILL "${candidate}" 2>/dev/null || true
-    fi
-  }
+  # PID files moved from the legacy application directory to @appdata. Sweep
+  # matching server command lines as a migration-safe fallback so an upgrade
+  # cannot leave two playback supervisors running at once.
+  cleanup_stale_servers ""
 
   mpd_pid_file="${TRIM_APPDEST}/share/mpd/mpd.pid"
   if [ -f "${mpd_pid_file}" ]; then
     mpd_pid="$(head -n 1 "${mpd_pid_file}" | tr -d '[:space:]')"
-    stop_mpd_pid "${mpd_pid}"
+    stop_pid "${mpd_pid}" 5
   fi
 
   # A stale PID file must not leave a private MPD process playing after the
@@ -154,7 +179,7 @@ stop_process() {
     [ -r "${proc}/cmdline" ] || continue
     cmdline="$(tr '\000' ' ' < "${proc}/cmdline" 2>/dev/null)"
     case "${cmdline}" in
-      *"mpd"*"fnaudio"*"mpd.conf"*) stop_mpd_pid "${proc##*/}" ;;
+      *"mpd"*"fnaudio"*"mpd.conf"*) stop_pid "${proc##*/}" 5 ;;
     esac
   done
   rm -f "${mpd_pid_file}" 2>/dev/null || true

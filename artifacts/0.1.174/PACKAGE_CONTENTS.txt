@@ -1,0 +1,9 @@
+正式发布物：
+- fnaudio-0.1.174.fpk（fnOS x86）
+- fnaudio-android-0.1.174-debug.apk（Android Debug）
+
+FPK 校验：外层 21 项，app.tgz 内层 110 项；不包含 .pyc 或 __pycache__。
+
+测试辅助包（不作为发布物）：
+- fnaudio-0.1.174-test-upgrade.fpk
+- 该包移除了安装向导和 python312 依赖声明，仅用于绕过 App Center CLI 的 UI-only 检查，测试完成后不应分发。

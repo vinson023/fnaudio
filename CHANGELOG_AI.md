@@ -1,5 +1,13 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.174` 服务生命周期与真机验收
+
+- 修复 `src/cmd/main`：启动前清理旧版本遗留的 fnAudio `server.py`，停止时清理当前及遗留 MPD，防止旧 18080 与新 18081 双实例并存。
+- 版本统一为 `0.1.174`，同步 FPK manifest、前端缓存键和 Android versionCode/versionName。
+- 本地验证：62 个 Python 测试、3 个 Node 回归脚本、shell 语法、Android Lint/Debug 构建通过；正式 FPK 内层无 `.pyc`。
+- 真机验证：单 server/单 MPD/无 zombie；健康、音乐库、浏览器控制、跨重启队列恢复、DSD WAV 96 kHz/24 bit 通过。
+- 未完成：真实 USB DAC、DLNA Renderer 和多机 Android 安装矩阵仍需硬件/设备验收。
+
 ## 2026-08-07：`0.1.173` USB DAC、远程队列、DSD 与 Android 会话恢复
 
 - 后端以 MPD 状态事件处理 USB DAC 自然结束和自动下一曲，显式停止/换曲加入事件抑制，避免误推进。
