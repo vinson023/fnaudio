@@ -11,6 +11,29 @@ import subprocess
 
 
 CGI_APP_BASE = "/cgi/ThirdParty/fnaudio/index.cgi/"
+CGI_ENTRY_MARKER = "/index.cgi"
+
+
+def normalize_path_info(path_info="", request_uri="", routed_path=""):
+    """Resolve PATH_INFO consistently across CGI hosts.
+
+    Some fnOS CGI setups expose PATH_INFO as only the script path while the
+    actual suffix is present in REQUEST_URI. A trusted same-origin caller can
+    also provide an explicit routed_path fallback. Prefer those sources so
+    POST API calls are not proxied to the HTML entry point with HTTP 200.
+    """
+    candidates = [str(routed_path or ""), str(request_uri or ""), str(path_info or "")]
+    root_seen = False
+    for candidate in candidates:
+        raw = candidate.split("?", 1)[0]
+        if CGI_ENTRY_MARKER in raw:
+            suffix = raw.split(CGI_ENTRY_MARKER, 1)[1] or "/"
+            if suffix != "/":
+                return suffix if suffix.startswith("/") else "/" + suffix
+            root_seen = True
+        elif raw.startswith("/") and raw != "/":
+            return raw
+    return "/" if root_seen or not candidates else "/"
 
 
 def inject_cgi_base(body):
@@ -271,17 +294,11 @@ def write_service_unavailable(port, error):
 
 
 def main():
-    path_info = header("PATH_INFO", "")
-    request_uri = header("REQUEST_URI", "")
-    if not path_info:
-        path_info = request_uri
-    marker = "/index.cgi"
-    if marker in path_info:
-        path_info = path_info.split(marker, 1)[1] or "/"
-    if not path_info.startswith("/"):
-        path_info = "/" + path_info
-    if not path_info.startswith("/"):
-        path_info = "/" + path_info
+    path_info = normalize_path_info(
+        header("PATH_INFO", ""),
+        header("REQUEST_URI", ""),
+        header("HTTP_X_FNAUDIO_PATH", ""),
+    )
 
     if path_info == "/api/fnos/auth-debug":
         names = ("TRIM_API_TOKEN", "HTTP_TRIM_TOKEN", "HTTP_X_TRIM_TOKEN", "HTTP_AUTHORIZATION", "HTTP_X_FNAUDIO_TRIM_TOKEN")

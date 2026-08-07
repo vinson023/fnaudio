@@ -1,5 +1,16 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.166` CGI 队列路由与 Android 返回修复
+
+- 目标：修复播放时出现“播放队列保存失败（HTTP 200）”，以及 Android 系统返回键进入登录页的问题。
+- CGI 路由：`cgi_proxy.py` 新增统一路径恢复，按显式 `X-FnAudio-Path`、`REQUEST_URI`、`PATH_INFO` 的顺序提取 `/index.cgi` 后的真实 API 后缀。播放队列 POST 主动携带 `/api/playback/queue` 路由 Header，即使 fnOS 只提供脚本级 `PATH_INFO`，也不会误代理到 HTML 首页。
+- 前端诊断：队列响应先读取文本再解析 JSON；如果 CGI 回退返回 HTML，会显示“播放队列请求返回了错误页面”，不再把 HTTP 200 伪装成普通接口失败。
+- Android 返回：登录成功启动 `MainActivity` 后立即结束 `LoginActivity`。系统返回键先调用网页 `fnAudioHandleAndroidBack()`，依次关闭对话框、上下文菜单、移动侧栏、歌词和嵌套分类；根页面只把应用任务移到后台，不调用可能进入 fnOS 登录/系统入口的 `WebView.goBack()`。
+- 测试：新增 CGI `REQUEST_URI` 和显式路由 Header 回归；Android bridge 脚本同时检查网页返回入口、`MainActivity` 后台化逻辑与登录 Activity 出栈。59 个 Python 单元测试、3 个 Node 回归脚本、`node --check`、Android `lintDebug` 与 `assembleDebug` 全部通过。
+- 版本与产物：统一为 `0.1.166`。`artifacts/0.1.166/fnaudio-0.1.166.fpk` 为 `4,883,638` 字节，SHA-256 `03993A17CA0E87BA063BFBE6764847B0650A0743BA6D5B5827C9913DA95FBD53`；`fnaudio-android-0.1.166-debug.apk` 为 `10,105,834` 字节，SHA-256 `84A476C8F62A68955A52A385A37D4E4DF71103A8FED514452753CF042F8B3909`。
+- 包验证：FPK manifest 为 `fnaudio / 0.1.166 / x86`，外层 21 个条目、`app.tgz` 110 个条目且无 Python 字节码缓存；APK 为 `com.fnaudio.client / 0.1.166 / minSdk 26 / targetSdk 36`，Android Debug 证书的 v2 签名通过。
+- 待验证：当前未连接 fnOS 或 Android 真机；必须在配套安装 FPK/APK 后确认真实 CGI POST 返回 JSON、队列播放成功、返回键顺序正确、重新打开应用仍保持 fnAudio 页面，以及后台/息屏跨曲不回归。
+
 ## 2026-08-07：`0.1.165` Android 刘海安全区、默认端口与大队列播放修复
 
 - 目标：修复登录界面顶部空间不足、fnAudio 主页面与状态栏/前置摄像头区域重叠，以及大音乐库播放时弹出“播放队列保存失败”。

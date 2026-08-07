@@ -1,6 +1,6 @@
 # fnAudio Android 客户端
 
-这是 fnAudio `0.1.165` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
+这是 fnAudio `0.1.166` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有播放队列和音频输出。
 
 ## 已实现
 
@@ -12,6 +12,7 @@
 - WebView 通过 `FnAudioNative` 桥把队列、播放、暂停、切歌、seek、音量、循环和随机发送给 Media3。
 - `MediaSessionService + ExoPlayer` 负责完整队列、自动下一首、通知、媒体按键、音频焦点、耳机拔出和唤醒锁。
 - HTTP、HTTPS 和用户明确允许的自签名证书连接；原生媒体请求携带同一 fnOS 会话。
+- Android 返回键优先交给网页关闭对话框、侧栏、歌词和分类详情；位于 fnAudio 根页面时仅把应用任务移到后台。登录成功后登录 Activity 会退出返回栈，不会被返回键重新打开。
 
 ## 构建
 
@@ -27,7 +28,7 @@ $env:ANDROID_SDK_ROOT = 'E:\Codex\android-sdk'
 
 ## 与 fnAudio 服务端的配套要求
 
-必须安装 `fnAudio 0.1.165` 或更新版本。该版本会为 CGI 入口修正网页静态资源基准路径，并从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token；网页桥也会在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。登录和主页面会根据状态栏/刘海 Insets 自动留出安全区域。
+必须安装 `fnAudio 0.1.166` 或更新版本。该版本会为 CGI 入口修正网页静态资源基准路径，并通过 `REQUEST_URI` 与显式路由 Header 可靠恢复播放队列 POST 的 API 路径；同时从同源 `fnaudio_trim_token` Cookie 恢复 fnOS token。网页桥在 Android 客户端存在时停止使用 HTML `<audio>`，避免网页和原生播放器同时出声。登录和主页面会根据状态栏/刘海 Insets 自动留出安全区域。
 
 ## 尚待真机确认
 

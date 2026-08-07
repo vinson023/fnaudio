@@ -91,6 +91,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private boolean pageLoaded;
     private volatile boolean sessionCookiesReady;
+    private boolean webBackDispatchInFlight;
 
     private final Runnable playbackStateTicker = new Runnable() {
         @Override
@@ -483,10 +484,25 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                if (webView != null && webView.canGoBack()) webView.goBack();
-                else finish();
+                dispatchBackToFnAudio();
             }
         });
+    }
+
+    private void dispatchBackToFnAudio() {
+        if (webBackDispatchInFlight) return;
+        if (webView == null) {
+            moveTaskToBack(true);
+            return;
+        }
+        webBackDispatchInFlight = true;
+        webView.evaluateJavascript(
+                "Boolean(window.fnAudioHandleAndroidBack && window.fnAudioHandleAndroidBack())",
+                handled -> {
+                    webBackDispatchInFlight = false;
+                    if (!"true".equals(handled)) moveTaskToBack(true);
+                }
+        );
     }
 
     private void requestNotificationPermission() {

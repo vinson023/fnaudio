@@ -1,6 +1,6 @@
 # fnAudio 技术决策
 
-> 当前源码版本：`0.1.165`  
+> 当前源码版本：`0.1.166`  
 > 规则：本文记录已经形成并会影响后续开发的决策。新决策追加编号，不重写历史。
 
 ## 决策列表
@@ -216,7 +216,14 @@
 - 状态：已确认，待真机验证
 - 背景：部分 Android WebView 会把 `/cgi/ThirdParty/fnaudio/index.cgi` 作为最终主文档 URL，进而把 `app.css`、`app.js` 和 API 相对路径解析到 CGI 同级目录，导致 HTML 出现但样式和脚本未加载。
 - 决策：页面检测到路径包含 `/index.cgi` 时，在首个样式请求前写入以 `/index.cgi/` 结尾的 `<base>`；直接访问本地 TCP Web 服务时不写入，保留原有根路径行为。
-- 影响：FPK 和 Android APK 必须从 `0.1.165` 起配套测试；今后修改入口路径时需同步更新基准路径回归检查。
+- 影响：FPK 和 Android APK 必须从 `0.1.166` 起配套测试；今后修改入口路径时需同步更新基准路径回归检查。
+
+### D-034：CGI API 路由使用多来源恢复，Android 返回不进入系统历史页
+
+- 状态：已实现，待真机验证
+- 背景：部分 fnOS CGI 环境只把脚本路径放入 `PATH_INFO`，导致播放队列 POST 被代理到 HTML 首页并返回 HTTP 200；Android WebView 历史栈还可能保留 fnOS 登录或系统入口，系统返回键会误进入这些页面。
+- 决策：CGI 按显式 `X-FnAudio-Path`、`REQUEST_URI`、`PATH_INFO` 的顺序恢复真实 API 后缀；播放队列 POST 主动携带显式路由 Header。Android 返回键先调用网页返回处理器关闭弹层、歌词、侧栏和嵌套分类，根页面仅把任务移到后台；登录成功后移除登录 Activity。
+- 影响：FPK 与 APK 必须配套升级。以后新增关键 CGI POST 路由应评估是否需要同样的显式 Header；不得恢复为直接调用 `WebView.goBack()`，除非先证明历史项只包含 fnAudio 内部页面。
 
 ## 新决策模板
 

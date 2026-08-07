@@ -126,6 +126,7 @@ public final class LoginActivity extends AppCompatActivity {
                 Intent intent = new Intent(LoginActivity.this, MainActivity.class);
                 intent.putExtra(MainActivity.EXTRA_PROFILE_ID, authenticatedProfile.id);
                 startActivity(intent);
+                finish();
             }
 
             @Override
