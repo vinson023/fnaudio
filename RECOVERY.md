@@ -9,8 +9,8 @@
 3. 涉及系统边界时查看 `ARCHITECTURE.md`，涉及取舍时查看 `DECISIONS.md`。
 4. 查看 `CHANGELOG_AI.md` 的最新记录，确认上次修改和未验证内容。
 5. 在 `C:\path\to\fnAudio` 运行 `git status --short`，确认是否有未提交工作。
-6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.171`。
-7. 阅读 `artifacts/0.1.171/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
+6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.172`。
+7. 阅读 `artifacts/0.1.172/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
 8. 运行基线测试和源码清单校验。
 
 ```powershell
@@ -31,7 +31,7 @@ Get-FileHash src\manifest,src\app\server\server.py,src\app\ui\app.js -Algorithm 
 新建 AI 会话时可以直接使用以下提示：
 
 ```text
-请接手 C:\path\to\fnAudio 项目。当前配套基线是 0.1.171，fnOS 源码在 C:\path\to\fnAudio\src，Android 源码在 C:\path\to\fnAudio\android-client。
+请接手 C:\path\to\fnAudio 项目。当前配套基线是 0.1.172，fnOS 源码在 C:\path\to\fnAudio\src，Android 源码在 C:\path\to\fnAudio\android-client。
 开始前请完整阅读 PROJECT_CONTEXT.md、RECOVERY.md、TODO.md、ARCHITECTURE.md、
 DECISIONS.md 和 CHANGELOG_AI.md，并核对 src/manifest 与 SOURCE_MANIFEST.sha256。
 docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\builds 或旧版本目录覆盖源码。
@@ -56,22 +56,22 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 | 项目 | 值 |
 | --- | --- |
 | 产品 | fnAudio |
-| 基线版本 | `0.1.171` |
+| 基线版本 | `0.1.172` |
 | 整理日期 | 2026-08-06 |
 | 原始源码 | `E:\Codex\fnaudio-0.1.7` |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
-| Git 基线 | `main` 分支；当前发布标签 `v0.1.171` |
-| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.171\fnaudio-0.1.171.fpk` |
+| Git 基线 | `main` 分支；当前发布标签 `v0.1.172` |
+| 已构建 FPK | `C:\path\to\fnAudio\artifacts\0.1.172\fnaudio-0.1.172.fpk` |
 | FPK SHA-256 | `3996D1E8E4E693EF889B46845F3ED59D677C5BD2B2A3295345485DDDD4FA7493` |
-| Android Debug APK | `C:\path\to\fnAudio\artifacts\0.1.171\fnaudio-android-0.1.171-debug.apk` |
+| Android Debug APK | `C:\path\to\fnAudio\artifacts\0.1.172\fnaudio-android-0.1.172-debug.apk` |
 | APK SHA-256 | `1D4CE15B07B46289DC277A4EB26CCB7FFCA29488A6A1E29D41EC812C171A41BF` |
 | 已验证测试包 | `C:\path\to\fnAudio\artifacts\0.1.149\fnaudio-0.1.149.fpk`（仅升级验证） |
 | 测试包 SHA-256 | `B7FD239E26D69AC16CE8C1F4B788AE6528F47E2DBA479FCC33B1CD9B0B507AA0` |
 | manifest 原始 SHA-256 | `9170B93C59BE249579805E7075FAD6DFE5A8F99511BEA5488DE3B0AA5D9140EA` |
 | server.py 原始 SHA-256 | `37E82F89827A95987F6481079945E8A09270C72DF1CD0CC818CA2B137A961093` |
 | app.js 原始 SHA-256 | `8ED763723EB02C97B4CCB918EA452E48DCE2984A24A72724C86078D0D599BBF6` |
-| 当前测试基线 | 59 个 Python 测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过；`0.1.171` 通知封面、菜单、文件定位、多连接、原生认证和返回流程待真机安装 |
+| 当前测试基线 | 59 个 Python 测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过；`0.1.172` PC 菜单和文件夹跳转仍待目标 fnOS/Android 真机安装 |
 
 完整源码哈希见 `SOURCE_MANIFEST.sha256`。上述三个关键哈希用于快速判断是否仍是初始整理基线；后续正常开发会改变它们，变更必须记录在 `CHANGELOG_AI.md`。
 
@@ -85,8 +85,8 @@ docs/history 只用于追溯，不是当前需求来源；不要从 E:\Codex\bui
 - fnAudio 同时实现 DLNA Control Point、MediaServer 和 MediaRenderer。
 - `android-client/` 是当前正式开发目录，不要再使用 `E:\Codex\fnaudio-android-shell` 的历史试验文件。
 - Android 采用 WebView UI + Media3 原生播放；登录走 fnOS WebSocket，Keystore 加密地址、账号、密码和 token/longToken，历史连接通过独立页面管理。
-- Android 客户端必须与 `0.1.171` 或更新 FPK 配套，当前产物和校验记录位于 `artifacts\0.1.171\`。
-- `0.1.171` 的媒体卡片规则：通知小图标为白色播放圆环；无真实 artwork 时引用应用私有目录的一份透明底白色 PNG；真实封面通过认证缓存加载，禁止为每个队列项目嵌入重复位图字节。
+- Android 客户端必须与 `0.1.172` 或更新 FPK 配套，当前产物和校验记录位于 `artifacts\0.1.172\`。
+- `0.1.172` 的媒体卡片规则：通知小图标为白色播放圆环；无真实 artwork 时引用应用私有目录的一份透明底白色 PNG；真实封面通过认证缓存加载，禁止为每个队列项目嵌入重复位图字节。
 - `0.1.169` 的歌曲行菜单规则：桌面右键、移动端 550ms 长按，共享固定四项；长按移动超过 10px 或列表滚动即取消，成功后必须拦截松手合成点击。“收藏歌曲”只添加，“从当前开始播放所有歌曲”必须读取完整当前上下文。
 - 多连接历史的关键规则：host、端口、协议或账号变化默认新增；历史页“编辑”才覆盖；“新增连接”清空表单。若列表仍只有一项，先检查 `profileIdForForm()` 是否错误复用了活动 UUID。
 - `0.1.167` 的关键修复是原生认证非 GET API：真实 HTTP 200 队列错误的响应体是 fnOS nginx 返回的 `invalid token`，不是 fnAudio JSON。排障时先确认网页调用 `apiFetch()`、Android 桥存在 `requestJson()`，再检查原生请求是否携带 token Header/Cookie。

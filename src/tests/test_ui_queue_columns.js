@@ -116,9 +116,16 @@ expectedContextActions.forEach(label => {
 });
 assert.doesNotMatch(contextMenuFunctions, /插播所选项目|歌曲信息|打开包含的文件夹|分享外部链接|从当前队列移除|从收藏移除|从此播放列表移除/);
 assert.match(source, /openTrackContextMenu\(trackId, x, y, mobile = false\)/);
-assert.match(source, /const actions = mobile \? trackContextActionButtons\(trackId\) : trackActionButtons\(trackId\)/);
+assert.match(source, /function desktopTrackContextActionButtons\(trackId\)/);
+assert.match(source, /const actions = mobile \? trackContextActionButtons\(trackId\) : desktopTrackContextActionButtons\(trackId\)/);
+const desktopMenuFunctions = sourceBetween("function desktopTrackContextActionButtons", "function bindTrackActionButtons");
+assert.doesNotMatch(desktopMenuFunctions, /data-track-action="(?:play|insert)"/);
+const groupMenuFunctions = sourceBetween("function groupActionButtons", "function bindGroupActionButtons");
+assert.doesNotMatch(groupMenuFunctions, /groupActionButton\("播放"|groupActionButton\("插播所选项目"/);
+assert.match(source, /openTrackActionDialog\(trackId\)[\s\S]*?trackActionButtons\(trackId\)/);
 assert.match(source, /openTrackContextMenu\(id, x, y, mobile\)/);
-assert.match(source, /sdk\.openFileManager\(path\)/);
+assert.match(source, /sdk\.openFileManager\(folder\)/);
+assert.doesNotMatch(sourceBetween("async function openContainingFolder", "function externalShareDateValue"), /sdk\.openFileManager\(path\)/);
 assert.match(source, /function bindTrackLongPress\(row\)/);
 assert.match(source, /TRACK_LONG_PRESS_DURATION_MS = 550/);
 assert.match(source, /if \(moved > TRACK_LONG_PRESS_MOVE_THRESHOLD_PX\) cancelTrackLongPress\(\)/);
