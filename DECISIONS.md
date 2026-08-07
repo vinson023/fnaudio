@@ -1,6 +1,6 @@
 # fnAudio 技术决策
 
-> 当前源码版本：`0.1.166`  
+> 当前源码版本：`0.1.167`  
 > 规则：本文记录已经形成并会影响后续开发的决策。新决策追加编号，不重写历史。
 
 ## 决策列表
@@ -220,10 +220,24 @@
 
 ### D-034：CGI API 路由使用多来源恢复，Android 返回不进入系统历史页
 
-- 状态：已实现，待真机验证
+- 状态：CGI 路由部分仍有效；根页面后台化已由 D-036 替代
 - 背景：部分 fnOS CGI 环境只把脚本路径放入 `PATH_INFO`，导致播放队列 POST 被代理到 HTML 首页并返回 HTTP 200；Android WebView 历史栈还可能保留 fnOS 登录或系统入口，系统返回键会误进入这些页面。
-- 决策：CGI 按显式 `X-FnAudio-Path`、`REQUEST_URI`、`PATH_INFO` 的顺序恢复真实 API 后缀；播放队列 POST 主动携带显式路由 Header。Android 返回键先调用网页返回处理器关闭弹层、歌词、侧栏和嵌套分类，根页面仅把任务移到后台；登录成功后移除登录 Activity。
-- 影响：FPK 与 APK 必须配套升级。以后新增关键 CGI POST 路由应评估是否需要同样的显式 Header；不得恢复为直接调用 `WebView.goBack()`，除非先证明历史项只包含 fnAudio 内部页面。
+- 决策：CGI 按显式 `X-FnAudio-Path`、`REQUEST_URI`、`PATH_INFO` 的顺序恢复真实 API 后缀；播放队列 POST 主动携带显式路由 Header。Android 返回键不进入 WebView/fnOS 历史，先调用网页处理器关闭弹层、歌词、侧栏和嵌套分类；该版本的根页面后台化行为后来由 D-036 替代。
+- 影响：FPK 与 APK 必须配套升级。不得恢复为直接调用 `WebView.goBack()`，除非先证明历史项只包含 fnAudio 内部页面；关键非 GET API 的认证路径以 D-035 为准，根页面返回行为以 D-036 为准。
+
+### D-035：Android 非 GET API 使用受限的原生认证 HTTP 桥
+
+- 状态：已确认，待 Android 真机验证
+- 背景：真实 fnOS nginx 对未被接受的 WebView POST 返回 HTTP 200 和纯文本 `invalid token`，请求未进入 `cgi_proxy.py`；`shouldInterceptRequest()` 只能可靠代理 GET，无法取得 POST body。官方飞牛媒体 App 同样由原生网络与媒体层持有认证和播放生命周期，而不是依赖 WebView 发起关键请求。
+- 决策：网页保留普通浏览器 Fetch 路径；Android 中当前 NAS 的 fnAudio 非 GET `/api/` 请求通过 `FnAudioNative.requestJson()` 交给 OkHttp。原生层校验同源、CGI API 前缀和方法白名单，附加 token Header/Cookie，异步回传兼容 `status`、`ok`、`text()` 和 `json()` 的响应。
+- 影响：队列、用户状态、播放控制、缓存预热、配置、共享目录同步和设备切换共享同一认证路径。新增非 GET API 应调用 `apiFetch()`；不得全局放开原生桥访问任意 URL。
+
+### D-036：根页面采用两次返回进入登录页
+
+- 状态：已确认，待 Android 真机验证
+- 背景：把任务直接移到后台不符合当前交互要求；直接打开登录页又会触发其自动恢复上次连接，造成看似无法退出主页面。
+- 决策：内部页面仍由 `fnAudioHandleAndroidBack()` 优先处理。根页面第一次返回显示“APP 即将退出”提示，2.2 秒内第二次打开登录页并结束主页面；该入口向登录页传递 `EXTRA_SKIP_AUTO_RESUME`，本次不自动重连。
+- 影响：超时或 Activity 暂停后需重新确认。启动器正常进入登录页时仍可自动恢复有效连接；不得重新使用 `moveTaskToBack(true)` 代替该流程。
 
 ## 新决策模板
 

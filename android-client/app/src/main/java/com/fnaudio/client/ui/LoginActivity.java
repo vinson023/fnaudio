@@ -21,6 +21,7 @@ import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.FnOsAuthClient;
 
 public final class LoginActivity extends AppCompatActivity {
+    public static final String EXTRA_SKIP_AUTO_RESUME = "skip_auto_resume";
     private static final int REQUEST_HISTORY = 701;
 
     private EditText profileName;
@@ -53,7 +54,8 @@ public final class LoginActivity extends AppCompatActivity {
 
         ConnectionProfile active = store.active();
         if (active != null) fillForm(active);
-        if (savedInstanceState == null && active != null && (!active.token.isEmpty() || !active.longToken.isEmpty())) {
+        boolean skipAutoResume = getIntent().getBooleanExtra(EXTRA_SKIP_AUTO_RESUME, false);
+        if (!skipAutoResume && savedInstanceState == null && active != null && (!active.token.isEmpty() || !active.longToken.isEmpty())) {
             loginStatus.postDelayed(() -> resumeProfile(active), 220);
         }
     }

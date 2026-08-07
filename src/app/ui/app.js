@@ -188,6 +188,81 @@ function nativePlaybackCall(method, ...args) {
     return false;
   }
 }
+const browserFetch = window.fetch.bind(window);
+const nativeHttpRequests = new Map();
+let nativeHttpRequestSequence = 0;
+function nativeHttpAvailable() {
+  try {
+    return Boolean(window.FnAudioNative && typeof window.FnAudioNative.requestJson === "function");
+  } catch (error) {
+    return false;
+  }
+}
+function isFnAudioApiUrl(url) {
+  return url.origin === window.location.origin
+    && /\/cgi\/ThirdParty\/fnaudio\/(?:index\.cgi\/)?api\//.test(url.pathname);
+}
+function nativeHttpResponse(payload) {
+  const body = String(payload.body || "");
+  const status = Number(payload.status || 0);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: String(payload.statusText || ""),
+    url: String(payload.url || ""),
+    headers: new Headers(payload.headers || {}),
+    text: async () => body,
+    json: async () => JSON.parse(body),
+  };
+}
+window.fnAudioNativeOnHttpResponse = payload => {
+  let result = payload;
+  try { if (typeof payload === "string") result = JSON.parse(payload); }
+  catch (error) { return; }
+  const requestId = String(result?.requestId || "");
+  const pending = nativeHttpRequests.get(requestId);
+  if (!pending) return;
+  nativeHttpRequests.delete(requestId);
+  clearTimeout(pending.timer);
+  if (result.networkError) pending.reject(new TypeError(String(result.networkError)));
+  else pending.resolve(nativeHttpResponse(result));
+};
+function apiFetch(input, init = {}) {
+  const requestMethod = String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
+  let url;
+  try {
+    url = new URL(typeof Request !== "undefined" && input instanceof Request ? input.url : String(input), window.location.href);
+  } catch (error) {
+    return browserFetch(input, init);
+  }
+  if (!nativeHttpAvailable() || ["GET", "HEAD"].includes(requestMethod) || !isFnAudioApiUrl(url)) {
+    return browserFetch(input, init);
+  }
+  if (typeof Request !== "undefined" && input instanceof Request && init.body == null) {
+    return browserFetch(input, init);
+  }
+  const body = init.body == null ? "" : init.body;
+  if (typeof body !== "string") return browserFetch(input, init);
+  const headers = new Headers(typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined);
+  new Headers(init.headers || {}).forEach((value, name) => headers.set(name, value));
+  const headerObject = {};
+  headers.forEach((value, name) => { headerObject[name] = value; });
+  const requestId = `http-${Date.now()}-${++nativeHttpRequestSequence}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      nativeHttpRequests.delete(requestId);
+      reject(new TypeError("原生认证请求超时"));
+    }, 45000);
+    nativeHttpRequests.set(requestId, { resolve, reject, timer });
+    try {
+      window.FnAudioNative.requestJson(requestId, requestMethod, url.href, JSON.stringify(headerObject), body);
+    } catch (error) {
+      nativeHttpRequests.delete(requestId);
+      clearTimeout(timer);
+      reject(error);
+    }
+  });
+}
 function absoluteAppUrl(value) {
   try { return new URL(String(value || ""), window.location.href).href; }
   catch (error) { return String(value || ""); }
@@ -550,7 +625,7 @@ async function saveUserStateNow() {
   if (!state.userStateHydrated || state.userStateSaveInFlight) return;
   state.userStateSaveInFlight = true;
   try {
-    let response = await fetch("api/state/user", {
+    let response = await apiFetch("api/state/user", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(userStatePayload()),
@@ -558,7 +633,7 @@ async function saveUserStateNow() {
     let data = await response.json().catch(() => ({}));
     if (response.status === 409 && data.state) {
       mergeUserState(data.state);
-      response = await fetch("api/state/user", {
+      response = await apiFetch("api/state/user", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(userStatePayload()),
@@ -1110,6 +1185,15 @@ async function stopPlayback() {
 function stopRemoteOnUnload() {
   if (!isRemoteTarget() || isMpdTarget()) return;
   const payload = JSON.stringify({ target_id: state.playTarget, action: "stop", track_id: currentItem()?.id || "" });
+  if (nativeHttpAvailable()) {
+    apiFetch("api/playback/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
+    return;
+  }
   try {
     if (navigator.sendBeacon) {
       navigator.sendBeacon("api/playback/control", new Blob([payload], { type: "application/json" }));
@@ -1164,7 +1248,7 @@ function updateIncomingRendererUi() {
 }
 async function controlIncomingRenderer(action, position = null) {
   try {
-    const response = await fetch("api/playback/control", {
+    const response = await apiFetch("api/playback/control", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({target_id: "mpd", action, position}),
@@ -1248,7 +1332,7 @@ async function coreControl(action, position = null) {
     return { ok: true, native: true };
   }
   const item = currentItem();
-  const response = await fetch("api/playback/control", {
+  const response = await apiFetch("api/playback/control", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ target_id: remoteDeviceId() || "local", action, position, track_id: item?.id || "" }),
@@ -1342,7 +1426,7 @@ function maybeAdvanceRemoteQueue(data) {
 async function remoteControl(action, position = null, quiet = false) {
   if (!isRemoteTarget()) return false;
   const item = currentItem();
-  const response = await fetch("api/playback/control", {
+  const response = await apiFetch("api/playback/control", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ target_id: remoteDeviceId(), action, position, track_id: item?.id || "" }),
@@ -2220,7 +2304,7 @@ function applyConfirmedQueue(queue, core) {
   updateRepeatShuffleButtons();
 }
 async function commitQueue(queue, currentId = "", options = {}) {
-  const response = await fetch("api/playback/queue", {
+  const response = await apiFetch("api/playback/queue", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2548,7 +2632,7 @@ function nextIndex() {
 async function warmCurrentTrackCache(item) {
   if (!item || !shouldTranscodeToMp3(item) || state.transcodeCacheReady || isRemoteTarget()) return false;
   try {
-    const response = await fetch("api/transcode/warm", {
+    const response = await apiFetch("api/transcode/warm", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ track_id: item.id, mode: "mp3" }),
@@ -3227,7 +3311,7 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
     $("folderSaveStatus").textContent = "TCP 端口必须在 1024-65535 之间";
     return false;
   }
-  const response = await fetch("api/config/library", {
+  const response = await apiFetch("api/config/library", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ library_path: paths.join("\n"), server_port: serverPort }),
@@ -3310,7 +3394,7 @@ async function loadMetadataStatus() {
   }
 }
 async function saveMetadataSettings(options = {}) {
-  const response = await fetch("api/config/metadata", {
+  const response = await apiFetch("api/config/metadata", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -3515,7 +3599,7 @@ async function syncAuthorizedFolders() {
   if (button) button.disabled = true;
   $("folderSaveStatus").textContent = "正在同步飞牛授权目录...";
   try {
-    const response = await fetch("api/fnos/shared-folders/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const response = await apiFetch("api/fnos/shared-folders/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) {
       $("folderSaveStatus").textContent = /token/i.test(data.message || "")
@@ -4051,7 +4135,7 @@ async function selectPlaybackTarget(id, name) {
   markCurrentDeviceTarget(nextTarget, true);
   updateDeviceLabel();
   try {
-    const response = await fetch("api/playback/target", {
+    const response = await apiFetch("api/playback/target", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({target_id: nextTarget})
@@ -4080,7 +4164,7 @@ async function selectPlaybackTarget(id, name) {
 }
 async function pushToDevice(deviceId, item = currentItem()) {
   if (!item) return alert("请先选择一首歌曲");
-  const response = await fetch("api/playback/load", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_id:deviceId, track_id:item.id}) });
+  const response = await apiFetch("api/playback/load", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_id:deviceId, track_id:item.id}) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) {
     alert(data.message || data.error || "播放设备接收失败");
