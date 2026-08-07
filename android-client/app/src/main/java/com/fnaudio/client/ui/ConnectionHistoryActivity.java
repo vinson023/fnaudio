@@ -28,6 +28,7 @@ import java.util.Locale;
 public final class ConnectionHistoryActivity extends AppCompatActivity {
     public static final String EXTRA_PROFILE_ID = "profile_id";
     public static final int RESULT_EDIT_PROFILE = RESULT_FIRST_USER + 17;
+    public static final int RESULT_NEW_PROFILE = RESULT_FIRST_USER + 18;
 
     private SecureProfileStore store;
     private LinearLayout historyList;
@@ -43,6 +44,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         historyList = findViewById(R.id.historyList);
         emptyText = findViewById(R.id.historyEmptyText);
         findViewById(R.id.historyBackButton).setOnClickListener(view -> finish());
+        findViewById(R.id.historyAddButton).setOnClickListener(view -> returnNewProfile());
         renderHistory();
     }
 
@@ -170,6 +172,11 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         Intent result = new Intent();
         result.putExtra(EXTRA_PROFILE_ID, profile.id);
         setResult(resultCode, result);
+        finish();
+    }
+
+    private void returnNewProfile() {
+        setResult(RESULT_NEW_PROFILE, new Intent());
         finish();
     }
 

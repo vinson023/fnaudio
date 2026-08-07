@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.167`  
+> 当前源码版本：`0.1.168`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -124,7 +124,7 @@ Android 系统返回键不使用 WebView 的原始历史栈，因为其中可能
   -> /cgi/ThirdParty/fnaudio/index.cgi/
 ```
 
-历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；令牌失效时可自动使用本机加密保存的密码重新登录。需要 HMAC/`si`、2FA 或验证码的固件仍需用真机协议 trace 补齐。
+历史连接先尝试 `user.authToken`，再尝试 `user.tokenLogin`；令牌失效时可自动使用本机加密保存的密码重新登录。连接记录以规范化 host、端口、协议和账号作为身份：普通表单改变身份会新增 UUID，历史页明确“编辑”才保留所选 UUID；“新增连接”返回空白表单。需要 HMAC/`si`、2FA 或验证码的固件仍需用真机协议 trace 补齐。
 
 ### 转码策略
 

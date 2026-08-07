@@ -12,6 +12,15 @@ const nativeBridge = fs.readFileSync(path.join(
 const loginActivity = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "ui", "LoginActivity.java"
 ), "utf8");
+const historyActivity = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "ui", "ConnectionHistoryActivity.java"
+), "utf8");
+const connectionProfile = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "data", "ConnectionProfile.java"
+), "utf8");
+const historyLayout = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "res", "layout", "activity_connection_history.xml"
+), "utf8");
 
 function requireText(text, message) {
   if (!source.includes(text)) throw new Error(message || `Missing app.js text: ${text}`);
@@ -60,6 +69,14 @@ if (!loginActivity.includes("startActivity(intent);\n                finish();")
 }
 if (!loginActivity.includes("EXTRA_SKIP_AUTO_RESUME") || !mainActivity.includes("LoginActivity.EXTRA_SKIP_AUTO_RESUME")) {
   throw new Error("Returning to the login screen must suppress automatic reconnection");
+}
+if (!connectionProfile.includes("matchesConnection(") || !loginActivity.includes("profileIdForForm(")
+    || !loginActivity.includes("editingExistingProfile")) {
+  throw new Error("Changing the server identity must create a new connection unless the user explicitly edits a saved one");
+}
+if (!historyActivity.includes("RESULT_NEW_PROFILE") || !historyActivity.includes("returnNewProfile()")
+    || !loginActivity.includes("clearFormForNewProfile()") || !historyLayout.includes('android:id="@+id/historyAddButton"')) {
+  throw new Error("Connection history must provide an explicit new-connection action");
 }
 
 console.log("Android bridge and CGI auth regression checks passed.");

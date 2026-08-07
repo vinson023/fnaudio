@@ -40,6 +40,7 @@ public final class LoginActivity extends AppCompatActivity {
     private SecureProfileStore store;
     private final FnOsAuthClient authClient = new FnOsAuthClient();
     private String editingProfileId = "";
+    private boolean editingExistingProfile;
     private boolean busy;
 
     @Override
@@ -53,7 +54,7 @@ public final class LoginActivity extends AppCompatActivity {
         renderHistoryButton();
 
         ConnectionProfile active = store.active();
-        if (active != null) fillForm(active);
+        if (active != null) fillForm(active, false);
         boolean skipAutoResume = getIntent().getBooleanExtra(EXTRA_SKIP_AUTO_RESUME, false);
         if (!skipAutoResume && savedInstanceState == null && active != null && (!active.token.isEmpty() || !active.longToken.isEmpty())) {
             loginStatus.postDelayed(() -> resumeProfile(active), 220);
@@ -108,7 +109,7 @@ public final class LoginActivity extends AppCompatActivity {
 
     private void resumeProfile(ConnectionProfile profile) {
         if (busy) return;
-        fillForm(profile);
+        fillForm(profile, false);
         if (profile.token.isEmpty() && profile.longToken.isEmpty() && !profile.password.isEmpty()) {
             authenticate(profile, profile.password, "正在登录 “" + profile.name + "”…", false);
             return;
@@ -117,6 +118,7 @@ public final class LoginActivity extends AppCompatActivity {
     }
 
     private void authenticate(ConnectionProfile profile, @Nullable String clearPassword, String status, boolean resume) {
+        boolean preserveExplicitEdit = editingExistingProfile && store.find(profile.id) != null;
         setBusy(true, status);
         hideKeyboard();
         authClient.authenticate(profile, clearPassword, new FnOsAuthClient.Callback() {
@@ -138,7 +140,7 @@ public final class LoginActivity extends AppCompatActivity {
                     return;
                 }
                 setBusy(false, "");
-                fillForm(profile);
+                fillForm(profile, preserveExplicitEdit);
                 password.requestFocus();
                 Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
                 showKeyboard(password);
@@ -171,7 +173,7 @@ public final class LoginActivity extends AppCompatActivity {
             return null;
         }
         return ConnectionProfile.create(
-                editingProfileId,
+                profileIdForForm(hostValue, portValue, useHttps.isChecked(), usernameValue),
                 profileName.getText().toString(),
                 hostValue,
                 portValue,
@@ -182,8 +184,21 @@ public final class LoginActivity extends AppCompatActivity {
         );
     }
 
-    private void fillForm(ConnectionProfile profile) {
+    private String profileIdForForm(String hostValue, int portValue, boolean httpsValue, String usernameValue) {
+        ConnectionProfile selected = store.find(editingProfileId);
+        if (selected != null && (editingExistingProfile
+                || selected.matchesConnection(hostValue, portValue, httpsValue, usernameValue))) {
+            return selected.id;
+        }
+        for (ConnectionProfile profile : store.list()) {
+            if (profile.matchesConnection(hostValue, portValue, httpsValue, usernameValue)) return profile.id;
+        }
+        return "";
+    }
+
+    private void fillForm(ConnectionProfile profile, boolean explicitEdit) {
         editingProfileId = profile.id;
+        editingExistingProfile = explicitEdit;
         profileName.setText(profile.name);
         host.setText(profile.host);
         port.setText(String.valueOf(profile.port));
@@ -193,6 +208,23 @@ public final class LoginActivity extends AppCompatActivity {
         username.setText(profile.username);
         password.setText(profile.password);
         savePassword.setChecked(true);
+    }
+
+    private void clearFormForNewProfile() {
+        editingProfileId = "";
+        editingExistingProfile = false;
+        profileName.setText("");
+        host.setText("");
+        useHttps.setChecked(false);
+        trustSelfSigned.setChecked(false);
+        trustSelfSigned.setEnabled(false);
+        port.setText("5666");
+        username.setText("");
+        password.setText("");
+        savePassword.setChecked(true);
+        loginStatus.setText("");
+        host.requestFocus();
+        showKeyboard(host);
     }
 
     private void renderHistoryButton() {
@@ -247,14 +279,19 @@ public final class LoginActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_HISTORY || data == null) return;
+        if (requestCode != REQUEST_HISTORY) return;
+        if (resultCode == ConnectionHistoryActivity.RESULT_NEW_PROFILE) {
+            clearFormForNewProfile();
+            return;
+        }
+        if (data == null) return;
         String profileId = data.getStringExtra(ConnectionHistoryActivity.EXTRA_PROFILE_ID);
         ConnectionProfile selected = store.find(profileId);
         if (selected == null) return;
-        fillForm(selected);
         if (resultCode == RESULT_OK) {
             resumeProfile(selected);
         } else if (resultCode == ConnectionHistoryActivity.RESULT_EDIT_PROFILE) {
+            fillForm(selected, true);
             host.requestFocus();
             showKeyboard(host);
         }
