@@ -10,6 +10,49 @@ import urllib.request
 import subprocess
 
 
+CGI_APP_BASE = "/cgi/ThirdParty/fnaudio/index.cgi/"
+
+
+def inject_cgi_base(body):
+    if not body or b"<base " in body[:4096].lower():
+        return body
+    marker = b"<head>"
+    index = body.lower().find(marker)
+    if index < 0:
+        return body
+    insert_at = index + len(marker)
+    tag = ('\n  <base href="%s">' % CGI_APP_BASE).encode("utf-8")
+    return body[:insert_at] + tag + body[insert_at:]
+
+
+def write_proxy_response(response, path_info):
+    content_type = str(response.headers.get("Content-Type") or "")
+    rewrite_index = path_info in ("/", "/index.html") and "text/html" in content_type.lower()
+    body = inject_cgi_base(response.read()) if rewrite_index else None
+    sys.stdout.write("Status: %s %s\r\n" % (response.status, response.reason))
+    for key, value in response.headers.items():
+        lower = key.lower()
+        if lower in ("connection", "transfer-encoding", "server"):
+            continue
+        if rewrite_index and lower == "content-length":
+            continue
+        sys.stdout.write("%s: %s\r\n" % (key, value))
+    if rewrite_index:
+        sys.stdout.write("Content-Length: %s\r\n" % len(body))
+    sys.stdout.write("\r\n")
+    sys.stdout.flush()
+    if rewrite_index:
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
+        return
+    while True:
+        chunk = response.read(256 * 1024)
+        if not chunk:
+            break
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+
+
 def header(name, default=""):
     return os.environ.get(name, default)
 
@@ -327,18 +370,7 @@ def main():
 
     try:
         response = urllib.request.urlopen(build_request(), timeout=60)
-        sys.stdout.write("Status: %s %s\r\n" % (response.status, response.reason))
-        for key, value in response.headers.items():
-            if key.lower() not in ("connection", "transfer-encoding", "server"):
-                sys.stdout.write("%s: %s\r\n" % (key, value))
-        sys.stdout.write("\r\n")
-        sys.stdout.flush()
-        while True:
-            chunk = response.read(256 * 1024)
-            if not chunk:
-                break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+        write_proxy_response(response, path_info)
     except urllib.error.HTTPError as exc:
         sys.stdout.write("Status: %s %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" % (exc.code, exc.reason))
         sys.stdout.write("fnAudio service error: %s" % exc.reason)
@@ -347,18 +379,7 @@ def main():
         if start_ok and wait_for_service(port):
             try:
                 response = urllib.request.urlopen(build_request(), timeout=60)
-                sys.stdout.write("Status: %s %s\r\n" % (response.status, response.reason))
-                for key, value in response.headers.items():
-                    if key.lower() not in ("connection", "transfer-encoding", "server"):
-                        sys.stdout.write("%s: %s\r\n" % (key, value))
-                sys.stdout.write("\r\n")
-                sys.stdout.flush()
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.buffer.flush()
+                write_proxy_response(response, path_info)
                 return
             except Exception as retry_exc:
                 write_service_unavailable(port, "%s; auto-start retry failed: %s" % (exc, retry_exc))

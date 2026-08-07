@@ -1,5 +1,16 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.164` WebView 子资源鉴权与 FPK/Android 图标统一
+
+- 目标：修复 Android 登录后页面只显示无样式 HTML、CSS/JS/封面和 GET API 资源无法携带 fnOS 会话的问题，并处理启动图标中间音符过大被裁剪、Android 图标与 FPK 不一致的问题。
+- WebView 资源：`MainActivity` 对同源 GET 子资源通过 OkHttp 重新请求，统一附加 `Authorization`、`X-Fnaudio-Trim-Token` 和兼容 token Header；响应 `Set-Cookie` 同步回 WebView CookieManager；对 `/cgi/ThirdParty/fnaudio/app.css` 等缺少 `/index.cgi/` 的路径增加兜底重写。
+- CGI 入口：`cgi_proxy.py` 在 HTML 入口服务端注入 `<base href="/cgi/ThirdParty/fnaudio/index.cgi/">`，防止不同 WebView 对内联脚本/CSP 的处理差异导致相对资源解析到错误目录。
+- 登录与历史页：保留参考 `FN_Media.apk` 的卡片式深色布局、独立历史连接页面、保存密码和删除确认交互；参考 APK 只用于行为和字段设计，没有复制其商业素材。
+- 图标：Android 普通图标和 adaptive icon 改为白色圆角底 + 蓝色音符，与 FPK `src/ICON_256.PNG` 保持一致；前景音符缩放到 `0.68`，留出自适应图标安全区域。
+- 版本与产物：统一升级为 `0.1.164`。`artifacts/0.1.164/fnaudio-0.1.164.fpk` 为 `4,882,412` 字节，SHA-256 `C114A0F9360F9E6D12C3487D2543F751F958B3E1B8E42362E4273591F66D62F5`；`fnaudio-android-0.1.164-debug.apk` 为 `10,078,542` 字节，SHA-256 `81831D01106DADAB2A2C39DCDA305228F7F809BD7D44FFC7126D16F23500B089`。
+- 验证：55 个 Python 单元测试、3 个 Node 回归脚本、Android `lintDebug` 与 `assembleDebug` 通过；FPK 外层 21 个条目、内层 `app.tgz` 110 个条目可读取；APK manifest 为 `com.fnaudio.client / 0.1.164 / minSdk 26 / targetSdk 36`，v2 Debug 签名验证通过。
+- 待验证：尚未安装到真实 fnOS/Android 设备；需重点确认启动器图标显示、登录后 CSS/脚本/封面加载、保存密码与历史切换，以及后台/息屏跨曲播放。
+
 ## 2026-08-07：`0.1.163` Android 登录、历史连接、启动图标与 WebView 资源修复
 
 - 目标：按真机截图修复 Android 启动图标白色外框、登录后 fnAudio 只显示无样式 HTML 的问题；允许安全保存密码，并把历史连接从登录页移到独立选择页面。

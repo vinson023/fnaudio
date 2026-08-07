@@ -44,6 +44,7 @@ import com.fnaudio.client.BuildConfig;
 import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
+import com.fnaudio.client.network.HttpClientFactory;
 import com.fnaudio.client.playback.PlaybackRuntimeConfig;
 import com.fnaudio.client.playback.PlaybackService;
 import com.fnaudio.client.web.NativePlaybackBridge;
@@ -52,12 +53,27 @@ import com.google.common.util.concurrent.ListenableFuture;
 import org.json.JSONObject;
 import org.json.JSONArray;
 
+import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URLEncoder;
+import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutionException;
+
+import okhttp3.Headers;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends AppCompatActivity implements NativePlaybackBridge.ControllerProvider {
@@ -68,10 +84,12 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private View errorPanel;
     private TextView errorMessage;
     private ConnectionProfile profile;
+    private OkHttpClient webResourceClient;
     private ListenableFuture<MediaController> controllerFuture;
     private MediaController mediaController;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private boolean pageLoaded;
+    private volatile boolean sessionCookiesReady;
 
     private final Runnable playbackStateTicker = new Runnable() {
         @Override
@@ -135,10 +153,15 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         settings.setUserAgentString(settings.getUserAgentString() + " fnAudio-Android/" + BuildConfig.VERSION_NAME);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
+        webResourceClient = HttpClientFactory.create(profile);
+
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setAcceptThirdPartyCookies(webView, false);
-        installSessionCookies(cookies);
+        installSessionCookies(cookies, () -> {
+            sessionCookiesReady = true;
+            maybeLoadFnAudio();
+        });
 
         webView.addJavascriptInterface(new NativePlaybackBridge(this), "FnAudioNative");
         webView.setWebChromeClient(new WebChromeClient() {
@@ -165,6 +188,12 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 if (path != null && !path.contains("/cgi/ThirdParty/fnaudio/index.cgi")) {
                     showError("fnOS 没有接受当前会话，页面被转到了系统入口。请返回连接页重新登录。 ");
                 }
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse response = interceptAuthenticatedGet(request);
+                return response == null ? super.shouldInterceptRequest(view, request) : response;
             }
 
             @Override
@@ -204,13 +233,129 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         });
     }
 
-    private void installSessionCookies(CookieManager cookies) {
+    private void installSessionCookies(CookieManager cookies, Runnable onComplete) {
         String encoded = encodeCookie(profile.token);
         String flags = "; Path=/; SameSite=Lax" + (profile.https ? "; Secure" : "");
-        for (String name : new String[]{"fnaudio_trim_token", "trim_token", "token"}) {
-            cookies.setCookie(profile.httpOrigin(), name + "=" + encoded + flags);
+        String[] names = {"fnaudio_trim_token", "trim_token", "token"};
+        AtomicInteger remaining = new AtomicInteger(names.length);
+        for (String name : names) {
+            cookies.setCookie(profile.httpOrigin(), name + "=" + encoded + flags, ignored -> {
+                if (remaining.decrementAndGet() == 0) {
+                    cookies.flush();
+                    webView.post(onComplete);
+                }
+            });
         }
-        cookies.flush();
+    }
+
+    @Nullable
+    private WebResourceResponse interceptAuthenticatedGet(@Nullable WebResourceRequest request) {
+        if (request == null || request.isForMainFrame()
+                || !"GET".equalsIgnoreCase(request.getMethod())
+                || !sameServer(request.getUrl()) || webResourceClient == null) return null;
+        Uri uri = canonicalFnAudioResourceUri(request.getUrl());
+        Request.Builder builder = new Request.Builder().url(uri.toString()).get();
+        for (Map.Entry<String, String> header : request.getRequestHeaders().entrySet()) {
+            String name = header.getKey();
+            if (name == null || header.getValue() == null) continue;
+            String lower = name.toLowerCase(Locale.ROOT);
+            if (lower.equals("host") || lower.equals("connection") || lower.equals("content-length")
+                    || lower.equals("accept-encoding") || lower.equals("cookie")
+                    || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")) continue;
+            builder.header(name, header.getValue());
+        }
+        builder.header("Authorization", "Bearer " + profile.token);
+        builder.header("X-Fnaudio-Trim-Token", profile.token);
+        builder.header("Cookie", authenticatedCookie(request.getRequestHeaders().get("Cookie")));
+        try {
+            Response response = webResourceClient.newCall(builder.build()).execute();
+            if (response.code() >= 400 && isCriticalUiAsset(uri)) {
+                uiHandler.post(() -> showError("fnAudio 界面资源加载失败（HTTP " + response.code() + "）。请确认 NAS 已安装配套版本的 FPK。"));
+            }
+            syncResponseCookies(response.headers("Set-Cookie"));
+            ResponseBody body = response.body();
+            InputStream stream = new ResponseClosingInputStream(
+                    body == null ? new ByteArrayInputStream(new byte[0]) : body.byteStream(), response);
+            MediaType mediaType = body == null ? null : body.contentType();
+            String contentType = mediaType == null ? guessContentType(uri) : mediaType.toString();
+            String mime = contentType;
+            String charset = null;
+            int semicolon = contentType.indexOf(';');
+            if (semicolon >= 0) mime = contentType.substring(0, semicolon).trim();
+            if (mediaType != null && mediaType.charset() != null) charset = "UTF-8";
+            if (charset == null && isTextMime(mime)) charset = "UTF-8";
+            WebResourceResponse webResponse = new WebResourceResponse(mime, charset, stream);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                webResponse.setStatusCodeAndReasonPhrase(response.code(), response.message().isEmpty() ? reason(response.code()) : response.message());
+                webResponse.setResponseHeaders(responseHeaders(response.headers()));
+            }
+            return webResponse;
+        } catch (IOException exception) {
+            return null;
+        }
+    }
+
+    private String authenticatedCookie(@Nullable String existing) {
+        String value = existing == null ? "" : existing.trim();
+        String encoded = encodeCookie(profile.token);
+        String auth = "fnaudio_trim_token=" + encoded + "; trim_token=" + encoded + "; token=" + encoded;
+        return value.isEmpty() ? auth : value + "; " + auth;
+    }
+
+    private Uri canonicalFnAudioResourceUri(Uri original) {
+        String path = original.getEncodedPath();
+        String prefix = "/cgi/ThirdParty/fnaudio/";
+        String cgiPrefix = prefix + "index.cgi/";
+        if (path != null && path.startsWith(prefix) && !path.startsWith(cgiPrefix)
+                && !path.equals(prefix + "index.cgi")) {
+            return original.buildUpon().encodedPath(cgiPrefix + path.substring(prefix.length())).build();
+        }
+        return original;
+    }
+
+    private boolean isCriticalUiAsset(Uri uri) {
+        String path = uri.getPath();
+        return path != null && (path.endsWith("/app.css") || path.endsWith("/app.js"));
+    }
+
+    private void syncResponseCookies(List<String> setCookies) {
+        if (setCookies == null || setCookies.isEmpty() || webView == null) return;
+        webView.post(() -> {
+            CookieManager manager = CookieManager.getInstance();
+            for (String cookie : setCookies) manager.setCookie(profile.httpOrigin(), cookie);
+            manager.flush();
+        });
+    }
+
+    private Map<String, String> responseHeaders(Headers headers) {
+        Map<String, String> result = new HashMap<>();
+        for (String name : headers.names()) {
+            String lower = name.toLowerCase(Locale.ROOT);
+            if (lower.equals("connection") || lower.equals("transfer-encoding")
+                    || lower.equals("content-encoding") || lower.equals("content-length")
+                    || lower.equals("set-cookie")) continue;
+            result.put(name, headers.get(name));
+        }
+        return result;
+    }
+
+    private String guessContentType(Uri uri) {
+        String guessed = URLConnection.guessContentTypeFromName(uri.getPath());
+        return guessed == null ? "application/octet-stream" : guessed;
+    }
+
+    private boolean isTextMime(String mime) {
+        String lower = mime == null ? "" : mime.toLowerCase(Locale.ROOT);
+        return lower.startsWith("text/") || lower.contains("javascript") || lower.contains("json")
+                || lower.contains("xml") || lower.contains("svg");
+    }
+
+    private String reason(int status) {
+        return status == 200 ? "OK" : "HTTP " + status;
+    }
+
+    private void maybeLoadFnAudio() {
+        if (sessionCookiesReady && mediaController != null && webView != null && webView.getUrl() == null) loadFnAudio();
     }
 
     private void loadFnAudio() {
@@ -242,7 +387,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     }
                 });
                 pushPlaybackStateToWeb();
-                if (webView != null && webView.getUrl() == null) loadFnAudio();
+                maybeLoadFnAudio();
             } catch (ExecutionException | InterruptedException exception) {
                 if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
                 showError("原生播放服务启动失败：" + String.valueOf(exception.getCause() == null ? exception.getMessage() : exception.getCause().getMessage()));
@@ -379,6 +524,30 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             webView.destroy();
             webView = null;
         }
+        if (webResourceClient != null) {
+            webResourceClient.dispatcher().cancelAll();
+            webResourceClient.connectionPool().evictAll();
+            webResourceClient.dispatcher().executorService().shutdown();
+            webResourceClient = null;
+        }
         super.onDestroy();
+    }
+
+    private static final class ResponseClosingInputStream extends FilterInputStream {
+        private final Response response;
+
+        ResponseClosingInputStream(InputStream stream, Response response) {
+            super(stream);
+            this.response = response;
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                super.close();
+            } finally {
+                response.close();
+            }
+        }
     }
 }

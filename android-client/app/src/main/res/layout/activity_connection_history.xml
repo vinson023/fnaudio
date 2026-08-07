@@ -2,7 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/fnaudio_surface"
+    android:background="@drawable/login_background"
     android:orientation="vertical">
 
     <LinearLayout
@@ -22,7 +22,7 @@
             android:minWidth="0dp"
             android:text="‹"
             android:textAllCaps="false"
-            android:textColor="@color/fnaudio_text"
+            android:textColor="#FFFFFFFF"
             android:textSize="32sp" />
 
         <LinearLayout
@@ -35,15 +35,15 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="历史连接"
-                android:textColor="@color/fnaudio_text"
+                android:textColor="#FFFFFFFF"
                 android:textSize="20sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="选择要连接的飞牛 NAS"
-                android:textColor="#64748B"
+                android:text="选择一个登录记录继续进入 fnAudio"
+                android:textColor="#FFBFD0E4"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
@@ -69,8 +69,8 @@
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:paddingTop="72dp"
-                android:text="还没有保存的连接"
-                android:textColor="#64748B"
+                android:text="暂无登录记录\n登录成功后会自动保存在这里"
+                android:textColor="#FFD6E2F2"
                 android:textSize="15sp"
                 android:visibility="gone" />
 

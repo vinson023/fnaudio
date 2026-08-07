@@ -1,6 +1,8 @@
 package com.fnaudio.client.ui;
 
 import android.content.Intent;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -18,6 +20,9 @@ import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 
 import java.util.List;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 public final class ConnectionHistoryActivity extends AppCompatActivity {
     public static final String EXTRA_PROFILE_ID = "profile_id";
@@ -30,6 +35,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        configureSystemBars();
         setContentView(R.layout.activity_connection_history);
         store = new SecureProfileStore(this);
         historyList = findViewById(R.id.historyList);
@@ -47,12 +53,15 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
     private void renderHistory() {
         if (historyList == null || store == null) return;
         List<ConnectionProfile> profiles = store.list();
+        ConnectionProfile active = store.active();
         historyList.removeAllViews();
         emptyText.setVisibility(profiles.isEmpty() ? View.VISIBLE : View.GONE);
-        for (ConnectionProfile profile : profiles) historyList.addView(historyRow(profile));
+        for (ConnectionProfile profile : profiles) {
+            historyList.addView(historyRow(profile, active != null && active.id.equals(profile.id)));
+        }
     }
 
-    private View historyRow(ConnectionProfile profile) {
+    private View historyRow(ConnectionProfile profile, boolean active) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackgroundResource(R.drawable.history_item);
@@ -64,12 +73,34 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         cardParams.bottomMargin = dp(10);
         card.setLayoutParams(cardParams);
 
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView nasIcon = new TextView(this);
+        nasIcon.setText("NAS");
+        nasIcon.setTextColor(0xffffffff);
+        nasIcon.setTextSize(10);
+        nasIcon.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        nasIcon.setGravity(Gravity.CENTER);
+        GradientDrawable iconBackground = new GradientDrawable();
+        iconBackground.setShape(GradientDrawable.OVAL);
+        iconBackground.setColor(getColor(R.color.fnaudio_blue));
+        nasIcon.setBackground(iconBackground);
+        header.addView(nasIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams labelsParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        labelsParams.leftMargin = dp(12);
+        labels.setLayoutParams(labelsParams);
+
         TextView title = new TextView(this);
         title.setText(profile.name);
         title.setTextColor(getColor(R.color.fnaudio_text));
         title.setTextSize(17);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        card.addView(title);
+        labels.addView(title);
 
         TextView endpoint = new TextView(this);
         endpoint.setText((profile.https ? "https://" : "http://") + profile.host + ":" + profile.port);
@@ -77,7 +108,23 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         endpoint.setTextSize(13);
         endpoint.setPadding(0, dp(4), 0, 0);
         endpoint.setMaxLines(1);
-        card.addView(endpoint);
+        labels.addView(endpoint);
+        header.addView(labels);
+
+        if (active) {
+            TextView activeBadge = new TextView(this);
+            activeBadge.setText("当前使用");
+            activeBadge.setTextColor(getColor(R.color.fnaudio_blue));
+            activeBadge.setTextSize(11);
+            activeBadge.setGravity(Gravity.CENTER);
+            GradientDrawable badgeBackground = new GradientDrawable();
+            badgeBackground.setColor(0xffeaf2ff);
+            badgeBackground.setCornerRadius(dp(20));
+            activeBadge.setBackground(badgeBackground);
+            activeBadge.setPadding(dp(9), dp(4), dp(9), dp(4));
+            header.addView(activeBadge);
+        }
+        card.addView(header);
 
         TextView account = new TextView(this);
         account.setText("账号：" + profile.username + (profile.password.isEmpty() ? " · 未保存密码" : " · 密码已加密保存"));
@@ -87,12 +134,19 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         account.setMaxLines(1);
         card.addView(account);
 
+        TextView lastLogin = new TextView(this);
+        lastLogin.setText("最后登录：" + new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(new Date(profile.updatedAt)));
+        lastLogin.setTextColor(0xff94a3b8);
+        lastLogin.setTextSize(11);
+        lastLogin.setPadding(0, dp(3), 0, 0);
+        card.addView(lastLogin);
+
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         actions.setPadding(0, dp(6), 0, 0);
 
-        Button connect = compactButton("连接");
+        Button connect = compactButton("登录");
         connect.setTextColor(getColor(R.color.fnaudio_blue));
         connect.setOnClickListener(view -> returnProfile(profile, RESULT_OK));
         actions.addView(connect);
@@ -119,14 +173,25 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
 
     private void confirmDelete(ConnectionProfile profile) {
         new AlertDialog.Builder(this)
-                .setTitle("删除连接记录？")
-                .setMessage("将删除本机加密保存的地址、账号、密码和登录令牌，不会更改 NAS。")
+                .setTitle("删除这条登录记录？")
+                .setMessage("将移除当前手机中加密保存的地址、账号、密码和登录令牌，不会影响 NAS 上的数据。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (dialog, which) -> {
                     store.remove(profile.id);
                     renderHistory();
                 })
                 .show();
+    }
+
+    private void configureSystemBars() {
+        getWindow().setStatusBarColor(0xff071326);
+        getWindow().setNavigationBarColor(0xff071326);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = getWindow().getDecorView().getSystemUiVisibility();
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        }
     }
 
     private Button compactButton(String text) {

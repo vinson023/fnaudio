@@ -39,6 +39,7 @@ tmp-*/
 # Cached third-party repositories; their fixed revisions are documented in references/.
 references/FNOS-API-upstream/
 references/libmpdclient/
+references/FNAPP/
 
 # Editor and OS
 .idea/
