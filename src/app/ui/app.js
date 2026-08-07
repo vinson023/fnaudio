@@ -2224,14 +2224,16 @@ async function commitQueue(queue, currentId = "", options = {}) {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
-      queue,
+      queue: queue.map(item => String(item?.id || "")).filter(Boolean),
       current_id: currentId,
       repeat: options.repeat ?? state.repeat,
       shuffle: options.shuffle ?? state.shuffle,
     }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.message || "播放队列保存失败");
+  if (!response.ok || !data.ok) {
+    throw new Error(data.message || data.error || `播放队列保存失败（HTTP ${response.status}）`);
+  }
   applyConfirmedQueue(queue, data.core);
   if (nativePlaybackAvailable() && String(state.nativePlayback.mediaId || "") === String(currentItem()?.id || "")) {
     nativeLoadQueue(isPlayingNow(), currentSeconds(), true);

@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.164`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.165`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,18 +8,18 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.164` |
+| 版本 | `0.1.165` |
 | 平台 | fnOS x86；Android 8.0（API 26）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
 | 原始来源 | `E:\Codex\fnaudio-0.1.7` |
 | HTTP 端口 | `18080` |
 | Python | fnOS `python312` |
-| 测试基线 | 55 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
+| 测试基线 | 57 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.164` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.165` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 
@@ -43,7 +43,7 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.164 fnOS 可继续开发源码
+├── src/                       # 0.1.165 fnOS 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
@@ -89,10 +89,10 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前配套产物位于 `artifacts/0.1.164/`：
+当前配套产物位于 `artifacts/0.1.165/`：
 
-- `fnaudio-0.1.164.fpk`：SHA-256 `C114A0F9360F9E6D12C3487D2543F751F958B3E1B8E42362E4273591F66D62F5`。
-- `fnaudio-android-0.1.164-debug.apk`：SHA-256 `81831D01106DADAB2A2C39DCDA305228F7F809BD7D44FFC7126D16F23500B089`。
+- `fnaudio-0.1.165.fpk`：SHA-256 `7D134D517321F6C8A247A1F75D5B2B1FCE2AB3BB897FA5E2AE6651281A6C2E97`。
+- `fnaudio-android-0.1.165-debug.apk`：SHA-256 `569B0A1F6D6FB21A186B5C477920EE01CE7D94FA0775DDC4B8BF5A6B4EBFBDE5`。
 
 Android 客户端支持多连接登录、Keystore 加密保存密码和 token、独立历史连接页、登录后直达 fnAudio，并由 Media3 前台服务负责队列和后台播放。配套 FPK 修正 CGI 页面静态资源基准路径，并让 CGI 接受同源 token Cookie。
 

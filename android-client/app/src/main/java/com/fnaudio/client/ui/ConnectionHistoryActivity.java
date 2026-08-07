@@ -14,6 +14,7 @@ import android.widget.TextView;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.WindowCompat;
 
 import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
@@ -37,6 +38,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         configureSystemBars();
         setContentView(R.layout.activity_connection_history);
+        WindowInsetsHelper.applySafePadding(findViewById(R.id.historyRoot));
         store = new SecureProfileStore(this);
         historyList = findViewById(R.id.historyList);
         emptyText = findViewById(R.id.historyEmptyText);
@@ -184,6 +186,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
     }
 
     private void configureSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(0xff071326);
         getWindow().setNavigationBarColor(0xff071326);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
