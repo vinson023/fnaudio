@@ -1,23 +1,22 @@
 # fnAudio 待办
 
-> 当前源码版本：`0.1.174`  
+> 当前源码版本：`0.1.175`  
 > 本文件是当前唯一有效待办列表。`docs/history/` 中的 checklist 只用于追溯。
 
-## 0.1.173 后续最高优先级
+## 0.1.175 后续最高优先级
 
-## 0.1.174 后续最高优先级
+- [ ] 使用支持原生 DSD 的真实 DLNA Renderer 验证 DSF/DFF 源码直推、采样率保持和自动下一曲。
+- [ ] 为不支持原生 DSD 的 Renderer 增加明确的“设备不支持源码 DSD”错误提示；不自动转码。
 
 - [ ] 使用真实 USB DAC 验证首帧、停止、切歌、息屏后台连续播放至少 20 首。
-- [ ] 使用至少一个真实 DLNA Renderer 验证 `SetNextAVTransportURI`、不支持 NextURI 时的自动推进，以及 DSD 96 kHz/24 bit PCM 播放。
-- [ ] 在多种 Android 设备安装 0.1.174 APK，收集“解析错误”设备型号、Android 版本和安装日志；Debug 签名不能替代正式发布签名。
+- [ ] 使用至少一个真实 DLNA Renderer 验证 `SetNextAVTransportURI` 和不支持 NextURI 时的自动推进。
+- [ ] 在多种 Android 设备安装 0.1.175 APK，收集“解析错误”设备型号、Android 版本和安装日志；Debug 签名不能替代正式发布签名。
 - [ ] 验证 Android 远程输出时通知栏/锁屏封面与控制状态；USB DAC 模式保持 MediaSession 通知可见。
 - [ ] 修复/记录 App Center 第三方包升级的 UI-only 依赖/向导限制，避免后续只能 SSH 覆盖部署。
 
-- [ ] 在真实 fnOS + USB DAC 上验证首次播放只有一次 open、停止后不会恢复播放、切歌状态稳定、息屏后连续播放至少 20 首。
 - [ ] 为不支持 `SetNextAVTransportURI` 的外部 DLNA Renderer 增加服务端常驻 transport 监控和自动推进，彻底移除对前端后台计时器的依赖。
 - [ ] Android 远程输出模式增加只负责展示和控制的 MediaSession/通知实现，不能让 ExoPlayer 同时从手机扬声器出声。
-- [ ] 收集出现 APK“解析错误”的设备型号、Android 版本和安装日志；当前 APK 已支持 Android 6.0+，但 Debug 签名仍不适合作为正式发布签名。
-- [ ] 建立 USB DAC/DSD 测试矩阵：DSF、DFF、DoP、Native DSD、PCM fallback、44.1/48kHz 家族、96/192kHz 和设备热插拔。
+- [ ] 建立 USB DAC/DSD 测试矩阵：DSF、DFF、DoP、Native DSD、44.1/48kHz 家族、96/192kHz 和设备热插拔；DLNA DSD 不允许自动 PCM fallback。
 
 ## P0：安全边界
 

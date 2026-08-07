@@ -1,6 +1,14 @@
 # fnAudio 项目上下文
 
-## 0.1.174 当前状态（2026-08-07）
+## 0.1.175 当前状态（2026-08-07）
+
+- 当前统一版本：`0.1.175`；正式构建产物位于 `artifacts/0.1.175/`。
+- DSD DLNA 推送改为原始 DSF/DFF 直出：URL 使用源文件扩展名，MIME 使用 `audio/x-dsf` 或 `audio/x-dff`，资源大小使用源文件大小，不再生成或推送 WAV PCM。
+- DLNA MediaServer 的 DSD 资源和推送 Renderer 均强制使用 `original` 媒体模式；浏览器播放仍可显式请求 `dsd_wav` 转码。
+- 设备能力不再触发静默 DSD 转码；不支持原生 DSD 的 Renderer 可能拒绝播放，这是符合“源码推送”要求的预期行为。
+- 本地 63 个 Python 测试和 3 个 Node 回归脚本通过；新增测试确认 DSF/DFF URL、MIME、协议与源文件大小均保持原始格式，且转码回调不会被调用。
+
+## 0.1.174 历史状态（2026-08-07）
 
 - 当前统一版本：`0.1.174`；源码目录：`C:\path\to\fnAudio\src`；Android 源码：`C:\path\to\fnAudio\android-client`。
 - 本轮修复：fnOS 启停脚本会清理旧版本遗留的 fnAudio `server.py`，避免 18080/18081 双实例、重复 MPD 和播放状态互相覆盖；停止流程同时清理匹配 fnAudio MPD 的残留进程。
@@ -73,10 +81,10 @@
 ## 1. 分析范围与结论
 
 - `E:\Codex` 不是 Git 仓库，工作区内没有 `.git`，无法通过提交历史判断文件来源、变更归属和发布对应关系。
-- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.173`。
+- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.175`。
 - `fnaudio/` 是约 `0.1.2` 的旧版；`fnaudio-0.1.3/` 至 `fnaudio-0.1.6/`、根目录 `builds/` 及多个打包暂存目录均属于历史材料，不应直接作为当前源码修改。
 - 本项目是面向 fnOS 的本地音乐库和多目标播放器。它不是纯前端网页，也不是单一 DLNA 控制器，而是同时承担音乐库、媒体流、转码、本机播放、DLNA Control Point、MediaServer 和 MediaRenderer 等职责。
-- 当前工作目录以 `0.1.173` 为开发基线；本轮增加 MPD 服务端自动推进、远程 load 去重、DSD 推送一致性和 Android token 启动验证。
+- 当前工作目录以 `0.1.175` 为开发基线；DSD 的 DLNA 路径使用原始 DSF/DFF 直推，浏览器兼容转码保持独立。
 - 当前配套产物位于 `artifacts/0.1.173/`。历史版本仅用于追溯，不能替代本轮 USB DAC、DLNA 和 Android 真机验证。
 - 真实 fnOS 测试设备已确认安装 `fnaudio 0.1.166`。对实际 CGI 的诊断表明：缺少网关认可 token 时返回 HTTP 200 `invalid token`；携带原生认证 Header/Cookie 的队列 POST 返回 JSON。`0.1.172` 尚未安装到 fnOS 或 Android 真机。
 
@@ -499,7 +507,7 @@ python -B -m unittest discover -s tests -v
 ## 9. 后续接手约定
 
 - 项目根目录：`C:\path\to\fnAudio`；fnOS 工作目录为 `C:\path\to\fnAudio\src`，Android 工作目录为 `C:\path\to\fnAudio\android-client`。
-- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.173` 为准。
+- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.175` 为准。
 - 根目录当前文档的优先级高于 `docs/history/` 中的阶段记录；历史文档只用于追溯。
 - 不要直接从根 `builds/`、旧版本目录或 FPK 解包目录复制文件到当前源码；先确认来源、差异和目标版本。
 - 修改播放逻辑时，保持 `PlaybackCore -> output plugin` 边界，不要把 SOAP、ALSA 或 FFmpeg 细节重新放回前端。
