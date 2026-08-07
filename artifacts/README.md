@@ -14,6 +14,7 @@ artifacts/
 │   ├── fnaudio-0.1.172.fpk
 │   ├── fnaudio-android-0.1.172-debug.apk
 │   ├── PACKAGE_CONTENTS.txt
+│   ├── RELEASE_NOTES.md
 │   ├── SHA256SUMS
 │   └── VALIDATION.md
 ├── 0.1.171/
