@@ -46,7 +46,8 @@ def upnp_resource_mime(item: Dict[str, Any]) -> str:
     if item.get("cue_track"):
         return "audio/flac"
     if item.get("is_dsd"):
-        return "audio/wav"
+        ext = os.path.splitext(item.get("path") or "")[1].lower()
+        return "audio/x-dsf" if ext == ".dsf" else "audio/x-dff" if ext == ".dff" else item.get("mime") or "audio/dsd"
     ext = os.path.splitext(item["path"])[1].lower()
     if ext == ".dsf":
         return "audio/x-dsf"
@@ -64,7 +65,8 @@ def upnp_media_url(
     if item.get("cue_track"):
         filename = safe_filename(item.get("title") or os.path.basename(item["path"])) + ".flac"
     elif item.get("is_dsd"):
-        filename = safe_filename(item.get("title") or os.path.splitext(os.path.basename(item["path"]))[0]) + ".wav"
+        source_ext = os.path.splitext(item.get("path") or "")[1].lower() or ".dsf"
+        filename = safe_filename(item.get("title") or os.path.splitext(os.path.basename(item["path"]))[0]) + source_ext
     else:
         filename = os.path.basename(item["path"])
     url = "%s/upnp/media/%s/%s" % (
@@ -72,8 +74,6 @@ def upnp_media_url(
         item["id"],
         urllib.parse.quote(filename),
     )
-    if item.get("is_dsd"):
-        url += "?transcode=dsd_wav"
     return url
 
 
@@ -86,8 +86,7 @@ def upnp_resource_size(item: Dict[str, Any], config: Dict[str, Any], transcode_t
             return 0
     if item.get("is_dsd"):
         try:
-            target, _ = transcode_to_audio(item, config, "dsd_wav")
-            return os.path.getsize(target)
+            return os.path.getsize(item["path"])
         except Exception:
             return 0
     try:

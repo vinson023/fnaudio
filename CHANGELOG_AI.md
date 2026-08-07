@@ -1,5 +1,12 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.175` DSD 源码直推
+
+- DLNA DSD 资源不再强制转码为 96 kHz/24 bit WAV。
+- DSF/DFF URL、MIME、扩展名、资源大小均来自原始文件；MediaServer 和 Renderer Push 强制 `original` 媒体模式。
+- 浏览器播放仍保留显式 `dsd_wav` 转码能力，避免影响手机/浏览器兼容播放。
+- 新增回归测试，确认 DSD 推送不会调用转码回调。
+
 ## 2026-08-07：`0.1.174` 服务生命周期与真机验收
 
 - 修复 `src/cmd/main`：启动前清理旧版本遗留的 fnAudio `server.py`，停止时清理当前及遗留 MPD，防止旧 18080 与新 18081 双实例并存。

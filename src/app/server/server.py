@@ -1113,7 +1113,9 @@ class Handler(BaseHTTPRequestHandler):
         if not item or not os.path.isfile(item["path"]):
             self.record_dlna("media_missing", item_id=item_id)
             return self.send_error(404)
-        mode = media_mode(item, query, self)
+        # DLNA DSD pushes must expose the original DSF/DFF bytes. Browser
+        # playback may still request server-side conversion explicitly.
+        mode = "original" if item.get("is_dsd") else media_mode(item, query, self)
         self.record_dlna(
             "media",
             item_id=item_id,
