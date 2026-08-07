@@ -28,7 +28,7 @@ android-client/local.properties
 android-client/**/build/
 artifacts/*/*.fpk
 artifacts/*/stage/
-artifacts/*/_inspect/
+artifacts/*/_inspect*/
 artifacts/excluded-generated-cache/
 
 # Local inspection output
