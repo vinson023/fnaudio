@@ -80,6 +80,10 @@ const trackRenderContext = {
   escapeHtml: value => String(value || ""),
 };
 vm.runInNewContext(`${sourceBetween("function trackRowSelectionKey", "function renderGroups")}; this.track = { renderTrack };`, trackRenderContext);
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
+assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: true }), /◈/);
+trackRenderContext.coverUrl = () => "https://example.test/cover.jpg";
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden/);
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /正在播放|is-current/);
 trackRenderContext.state.view = "queue";
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two", __queueIndex: 1 }), /正在播放|is-current/);
@@ -111,7 +115,10 @@ expectedContextActions.forEach(label => {
   previousActionIndex = index;
 });
 assert.doesNotMatch(contextMenuFunctions, /插播所选项目|歌曲信息|打开包含的文件夹|分享外部链接|从当前队列移除|从收藏移除|从此播放列表移除/);
-assert.match(source, /openTrackContextMenu[\s\S]*?trackContextActionButtons\(trackId\)\.join\(""\)/);
+assert.match(source, /openTrackContextMenu\(trackId, x, y, mobile = false\)/);
+assert.match(source, /const actions = mobile \? trackContextActionButtons\(trackId\) : trackActionButtons\(trackId\)/);
+assert.match(source, /openTrackContextMenu\(id, x, y, mobile\)/);
+assert.match(source, /sdk\.openFileManager\(path\)/);
 assert.match(source, /function bindTrackLongPress\(row\)/);
 assert.match(source, /TRACK_LONG_PRESS_DURATION_MS = 550/);
 assert.match(source, /if \(moved > TRACK_LONG_PRESS_MOVE_THRESHOLD_PX\) cancelTrackLongPress\(\)/);

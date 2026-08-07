@@ -12,6 +12,9 @@ const nativeBridge = fs.readFileSync(path.join(
 const playbackService = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "playback", "PlaybackService.java"
 ), "utf8");
+const artworkLoader = fs.readFileSync(path.join(
+  __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "playback", "AuthenticatedBitmapLoader.java"
+), "utf8");
 const notificationIcon = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "res", "drawable", "ic_notification.xml"
 ), "utf8");
@@ -72,6 +75,11 @@ if (!playbackService.includes("notificationProvider.setSmallIcon(R.drawable.ic_n
     || !nativeBridge.includes("paint.setColor(Color.WHITE)")
     || !notificationIcon.includes('android:strokeColor="#FFFFFFFF"')) {
   throw new Error("The native media notification must use a white fallback icon when track artwork is missing");
+}
+if (!playbackService.includes("setBitmapLoader(bitmapLoader)")
+    || !artworkLoader.includes("X-Fnaudio-Trim-Token")
+    || !artworkLoader.includes("media-artwork")) {
+  throw new Error("Android media notifications must load authenticated artwork through the private cache");
 }
 if (!mainActivity.includes("dispatchBackToFnAudio()") || !mainActivity.includes("handleRootBackPress()")
     || !mainActivity.includes("APP 即将退出，再按一次返回登录界面") || mainActivity.includes("moveTaskToBack(true)")) {

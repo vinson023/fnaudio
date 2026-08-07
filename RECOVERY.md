@@ -9,8 +9,8 @@
 3. 涉及系统边界时查看 `ARCHITECTURE.md`，涉及取舍时查看 `DECISIONS.md`。
 4. 查看 `CHANGELOG_AI.md` 的最新记录，确认上次修改和未验证内容。
 5. 在 `C:\path\to\fnAudio` 运行 `git status --short`，确认是否有未提交工作。
-6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.170`。
-7. 阅读 `artifacts/0.1.170/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
+6. 核对根 `VERSION`、`src/manifest` 和 `android-client/app/build.gradle` 必须统一为 `0.1.171`。
+7. 阅读 `artifacts/0.1.171/VALIDATION.md`，确认当前 FPK/APK 的本地验收；更低版本目录都是历史记录。
 8. 运行基线测试和源码清单校验。
 
 ```powershell

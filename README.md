@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.170`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.171`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,7 +8,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.170` |
+| 版本 | `0.1.171` |
 | 平台 | fnOS x86；Android 8.0（API 26）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
@@ -19,7 +19,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.170` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.1.171` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 
@@ -43,7 +43,7 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.170 fnOS 可继续开发源码
+├── src/                       # 0.1.171 fnOS 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
@@ -89,12 +89,9 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前配套产物位于 `artifacts/0.1.170/`：
+当前配套产物位于 `artifacts/0.1.171/`：构建说明和哈希见该目录的 `VALIDATION.md` 与 `SHA256SUMS`。
 
-- `fnaudio-0.1.170.fpk`：SHA-256 `3996D1E8E4E693EF889B46845F3ED59D677C5BD2B2A3295345485DDDD4FA7493`。
-- `fnaudio-android-0.1.170-debug.apk`：SHA-256 `1D4CE15B07B46289DC277A4EB26CCB7FFCA29488A6A1E29D41EC812C171A41BF`。
-
-`0.1.170` 修复 Android 无封面歌曲在桌面/锁屏媒体卡片中显示黑色默认播放图标的问题：通知小图标和无封面占位图均改为白色播放圆环，真实封面仍优先。`0.1.169` 的歌曲右键/移动长按四项菜单、完整列表加载、Keystore 多连接历史、原生认证 HTTP 桥、双击返回登录页和 Media3 后台播放保持不变。
+`0.1.171` 恢复 PC 端完整右键菜单并与移动长按菜单分离；文件管理入口传入完整文件路径以便直接定位；歌曲列表有封面时隐藏音乐符号、无封面统一显示 `♫`；Android 通知封面通过带 fnOS 认证头的本地缓存加载器获取，真实封面与白色无封面占位图均可交给 Media3。
 
 两份产物已完成本地构建、Lint、单元/回归测试、包结构、哈希和 APK 签名检查，但尚未安装到真实 fnOS 与 Android 设备。当前 APK 使用 Android Debug 证书；真机 token 交接、后台/息屏跨曲、自签名 HTTPS、多连接切换和厂商省电限制未验证，不能标记为正式发布。
 

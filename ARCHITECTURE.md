@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.170`  
+> 当前源码版本：`0.1.171`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
