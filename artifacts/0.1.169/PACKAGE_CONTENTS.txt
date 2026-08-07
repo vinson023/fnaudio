@@ -1,0 +1,23 @@
+fnAudio 0.1.169 package summary
+
+FPK outer archive: 21 entries.
+FPK app.tgz runtime payload: 110 entries.
+No __pycache__ directories or .pyc files.
+
+Web track context menu:
+- desktop right-click and mobile 550 ms long-press entry points
+- movement over 10 px or list scrolling cancels long-press
+- post-long-press synthetic click is suppressed
+- menu actions, in order: play all from current track, add to queue, favorite, add to playlist
+- favorite action is additive and never removes an existing favorite
+- play-all-from-current still resolves the complete current list context
+
+Android APK:
+- package: com.fnaudio.client
+- versionCode: 169
+- versionName: 0.1.169
+- minSdk: 26
+- targetSdk: 36
+- encrypted multi-connection history
+- native authenticated HTTP bridge and Media3 PlaybackService
+- APK Signature Scheme v2, Android Debug certificate

@@ -97,4 +97,27 @@ assert.equal(coreSnapshotContext.core.applyCoreSnapshot({ current: "two" }, fals
 assert.equal(coreSnapshotContext.state.index, 1);
 assert.equal(coreSnapshotContext.previousQueueIndex, 0);
 
+const contextMenuFunctions = sourceBetween("function trackContextActionButtons", "function bindTrackActionButtons");
+const expectedContextActions = [
+  "从当前开始播放所有歌曲",
+  "加入当前队列",
+  "收藏歌曲",
+  "加入播放列表",
+];
+let previousActionIndex = -1;
+expectedContextActions.forEach(label => {
+  const index = contextMenuFunctions.indexOf(label);
+  assert.ok(index > previousActionIndex, `Missing or out-of-order context action: ${label}`);
+  previousActionIndex = index;
+});
+assert.doesNotMatch(contextMenuFunctions, /插播所选项目|歌曲信息|打开包含的文件夹|分享外部链接|从当前队列移除|从收藏移除|从此播放列表移除/);
+assert.match(source, /openTrackContextMenu[\s\S]*?trackContextActionButtons\(trackId\)\.join\(""\)/);
+assert.match(source, /function bindTrackLongPress\(row\)/);
+assert.match(source, /TRACK_LONG_PRESS_DURATION_MS = 550/);
+assert.match(source, /if \(moved > TRACK_LONG_PRESS_MOVE_THRESHOLD_PX\) cancelTrackLongPress\(\)/);
+assert.match(source, /row\.oncontextmenu = event => \{[\s\S]*?openTrackMenuForRow\(row, event\.clientX, event\.clientY, mobile\)/);
+assert.match(source, /\$\("trackList"\)\.addEventListener\("scroll", \(\) => \{\s*cancelTrackLongPress\(\);\s*closeTrackContextMenu\(\);/);
+assert.match(source, /else if \(action === "play-from-current"\) playFromCurrentTrack\(trackId\)/);
+assert.match(source, /tracks = await allTracksForCurrentContext\(\)/);
+
 console.log("UI queue and album-column regression checks passed.");

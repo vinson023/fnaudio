@@ -72,6 +72,10 @@ const TRACK_COLUMNS_STORE_KEY = "fnaudio.trackColumns.v3";
 const TRACK_COLUMN_WIDTHS_STORE_KEY = "fnaudio.trackColumnWidths.v1";
 const LEGACY_TRACK_COLUMNS_STORE_KEY = "fnaudio.trackColumns.v2";
 const OLDER_TRACK_COLUMNS_STORE_KEY = "fnaudio.trackColumns.v1";
+const TRACK_LONG_PRESS_DURATION_MS = 550;
+const TRACK_LONG_PRESS_MOVE_THRESHOLD_PX = 10;
+let activeTrackLongPress = null;
+let suppressedTrackClick = { rowKey: "", until: 0 };
 const TRACK_COLUMN_DEFINITIONS = {
   title: { label: "标题", width: 420, sort: "title" },
   track_no: { label: "序号", width: 64, sort: "track_no" },
@@ -2068,6 +2072,12 @@ function render() {
     playById(button.dataset.play);
   });
   document.querySelectorAll("[data-track-row-key]").forEach(row => {
+    row.addEventListener("click", event => {
+      const rowKey = String(row.dataset.trackRowKey || "");
+      if (!shouldSuppressTrackClick(rowKey)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
     row.onclick = event => {
       if (!event.ctrlKey || window.matchMedia("(max-width: 760px)").matches) return;
       event.preventDefault();
@@ -2079,13 +2089,14 @@ function render() {
       setTrackSelection([]);
     });
     row.oncontextmenu = event => {
-      if (window.matchMedia("(max-width: 760px)").matches) return;
       event.preventDefault();
-      const id = String(row.dataset.trackId || "");
+      const mobile = window.matchMedia("(max-width: 760px)").matches;
       const rowKey = String(row.dataset.trackRowKey || "");
-      if (!state.selectedTrackRowKeys.has(rowKey)) setTrackSelection([rowKey]);
-      openTrackContextMenu(id, event.clientX, event.clientY);
+      if (mobile && shouldSuppressTrackClick(rowKey)) return;
+      cancelTrackLongPress();
+      openTrackMenuForRow(row, event.clientX, event.clientY, mobile);
     };
+    bindTrackLongPress(row);
   });
   document.querySelectorAll("[data-delete-playlist]").forEach(b => b.onclick = () => deletePlaylist(b.dataset.deletePlaylist));
   document.querySelectorAll("[data-clear-queue]").forEach(b => b.onclick = clearQueue);
@@ -3698,6 +3709,65 @@ function closeTrackContextMenu() {
   menu.hidden = true;
   menu.innerHTML = "";
 }
+function cancelTrackLongPress() {
+  if (!activeTrackLongPress) return;
+  window.clearTimeout(activeTrackLongPress.timer);
+  activeTrackLongPress = null;
+}
+function suppressTrackClick(rowKey) {
+  suppressedTrackClick = { rowKey: String(rowKey || ""), until: Date.now() + 900 };
+}
+function shouldSuppressTrackClick(rowKey) {
+  return suppressedTrackClick.rowKey === String(rowKey || "") && Date.now() < suppressedTrackClick.until;
+}
+function openTrackMenuForRow(row, x, y, mobile = false) {
+  const id = String(row?.dataset.trackId || "");
+  const rowKey = String(row?.dataset.trackRowKey || "");
+  if (!id) return;
+  if (mobile) {
+    setTrackSelection([]);
+    suppressTrackClick(rowKey);
+  } else if (!state.selectedTrackRowKeys.has(rowKey)) {
+    setTrackSelection([rowKey]);
+  }
+  openTrackContextMenu(id, x, y);
+}
+function bindTrackLongPress(row) {
+  row.addEventListener("pointerdown", event => {
+    if (!window.matchMedia("(max-width: 760px)").matches || event.pointerType === "mouse" || event.button !== 0) return;
+    cancelTrackLongPress();
+    const gesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: 0,
+      triggered: false,
+    };
+    gesture.timer = window.setTimeout(() => {
+      if (activeTrackLongPress !== gesture) return;
+      gesture.triggered = true;
+      openTrackMenuForRow(row, gesture.startX, gesture.startY, true);
+    }, TRACK_LONG_PRESS_DURATION_MS);
+    activeTrackLongPress = gesture;
+  });
+  row.addEventListener("pointermove", event => {
+    const gesture = activeTrackLongPress;
+    if (!gesture || gesture.pointerId !== event.pointerId || gesture.triggered) return;
+    const moved = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+    if (moved > TRACK_LONG_PRESS_MOVE_THRESHOLD_PX) cancelTrackLongPress();
+  });
+  const finish = event => {
+    const gesture = activeTrackLongPress;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const triggered = gesture.triggered;
+    cancelTrackLongPress();
+    if (!triggered) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  row.addEventListener("pointerup", finish);
+  row.addEventListener("pointercancel", finish);
+}
 function groupActionButton(label, action) {
   return `<button class="track-action-choice" data-group-action="${action}">${label}</button>`;
 }
@@ -3781,6 +3851,15 @@ function trackActionButtons(trackId) {
   if (state.view === "favorites") actions.push(actionButton("从收藏移除", "remove-favorite", true));
   if (isPlaylistView()) actions.push(actionButton("从此播放列表移除", "remove-playlist", true));
   return actions;
+}
+function trackContextActionButtons(trackId) {
+  const multiple = selectedTrackIds(trackId).length > 1;
+  return [
+    actionButton("从当前开始播放所有歌曲", "play-from-current", false, multiple),
+    actionButton("加入当前队列", "queue"),
+    actionButton("收藏歌曲", "favorite-add"),
+    actionButton("加入播放列表", "playlist"),
+  ];
 }
 function bindTrackActionButtons(container) {
   container.querySelectorAll("[data-track-action]").forEach(button => button.onclick = () => runTrackAction(button.dataset.trackAction));
@@ -3965,7 +4044,7 @@ function openTrackContextMenu(trackId, x, y) {
   const menu = $("trackContextMenu");
   if (!item || !menu) return;
   state.actionTrackId = String(trackId);
-  menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${trackActionButtons(trackId).join("")}</div>`;
+  menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${trackContextActionButtons(trackId).join("")}</div>`;
   menu.hidden = false;
   menu.style.left = `${Math.max(8, x)}px`;
   menu.style.top = `${Math.max(8, y)}px`;
@@ -3986,6 +4065,7 @@ function runTrackAction(action) {
   else if (action === "play-from-current") playFromCurrentTrack(trackId);
   else if (action === "queue" || action === "queue-play") addSelectedToQueue(selected);
   else if (action === "favorite") toggleSelectedFavorites(selected);
+  else if (action === "favorite-add") addSelectedFavorites(selected);
   else if (action === "playlist") openPlaylistDialogForTracks(selected);
   else if (action === "insert") insertSelectedTracks(selected);
   else if (action === "info") showTrackInformation(trackId);
@@ -4095,6 +4175,17 @@ function toggleSelectedFavorites(ids = []) {
     const additions = valid.filter(id => !isFavorite(id));
     state.favorites = [...additions, ...state.favorites];
   }
+  saveFavorites();
+  updateFavoriteControls();
+  render();
+}
+function addSelectedFavorites(ids = []) {
+  const valid = (ids || []).map(String).filter(id => itemById(id));
+  if (!valid.length) return;
+  const existing = new Set(state.favorites.map(String));
+  const additions = valid.filter(id => !existing.has(id));
+  if (!additions.length) return;
+  state.favorites = [...additions, ...state.favorites];
   saveFavorites();
   updateFavoriteControls();
   render();
@@ -4265,8 +4356,15 @@ window.addEventListener("focus", clearTransientListSelection);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) clearTransientListSelection();
 });
-$("libraryScroll").addEventListener("scroll", closeTrackContextMenu, { passive: true });
-$("trackList").addEventListener("scroll", updateMobilePagerVisibility, { passive: true });
+$("libraryScroll").addEventListener("scroll", () => {
+  cancelTrackLongPress();
+  closeTrackContextMenu();
+}, { passive: true });
+$("trackList").addEventListener("scroll", () => {
+  cancelTrackLongPress();
+  closeTrackContextMenu();
+  updateMobilePagerVisibility();
+}, { passive: true });
 $("refreshBtn").onclick = () => loadLibrary(true);
 $("modeBtn").onclick = () => {
   state.mp3Transcode = !state.mp3Transcode;
