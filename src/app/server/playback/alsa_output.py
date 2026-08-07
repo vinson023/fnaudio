@@ -616,6 +616,7 @@ def start_dac_playback(device_id, item, config, start=0):
     with DAC_LOCK:
         stop_dac_locked()
         DAC_STATE.update({"device_id": device_id, "item_id": item["id"], "processes": processes, "playing": True, "started_at": time.time(), "offset": safe_float(start), "duration": safe_float(item.get("duration")), "strategy": strategy})
+    return True, "ok"
 
 
 def dac_control(action, position=None, item=None, config=None):

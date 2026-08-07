@@ -41,6 +41,10 @@ tmp-*/
 references/FNOS-API-upstream/
 references/libmpdclient/
 references/FNAPP/
+references/volumio3-backend/
+references/volumio2-ui/
+references/moode/
+references/moOde/
 
 # Editor and OS
 .idea/

@@ -8,10 +8,10 @@ android {
 
     defaultConfig {
         applicationId "com.fnaudio.client"
-        minSdk 26
+        minSdk 23
         targetSdk 36
-        versionCode 172
-        versionName "0.1.172"
+        versionCode 173
+        versionName "0.1.173"
     }
 
     buildFeatures {

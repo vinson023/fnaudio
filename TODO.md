@@ -1,7 +1,15 @@
 # fnAudio 待办
 
-> 当前源码版本：`0.1.172`  
+> 当前源码版本：`0.1.173`  
 > 本文件是当前唯一有效待办列表。`docs/history/` 中的 checklist 只用于追溯。
+
+## 0.1.173 后续最高优先级
+
+- [ ] 在真实 fnOS + USB DAC 上验证首次播放只有一次 open、停止后不会恢复播放、切歌状态稳定、息屏后连续播放至少 20 首。
+- [ ] 为不支持 `SetNextAVTransportURI` 的外部 DLNA Renderer 增加服务端常驻 transport 监控和自动推进，彻底移除对前端后台计时器的依赖。
+- [ ] Android 远程输出模式增加只负责展示和控制的 MediaSession/通知实现，不能让 ExoPlayer 同时从手机扬声器出声。
+- [ ] 收集出现 APK“解析错误”的设备型号、Android 版本和安装日志；当前 APK 已支持 Android 6.0+，但 Debug 签名仍不适合作为正式发布签名。
+- [ ] 建立 USB DAC/DSD 测试矩阵：DSF、DFF、DoP、Native DSD、PCM fallback、44.1/48kHz 家族、96/192kHz 和设备热插拔。
 
 ## P0：安全边界
 
@@ -90,7 +98,7 @@
 - [ ] 使用 WAV 样本验证解析、时长、seek、封面和 MPD/浏览器播放。
 - [ ] 使用 DFF 样本验证解析、DSD 转 WAV、seek 和 DAC 输出。
 - [ ] 在真实飞牛移动 WebView 验证前后台切换、Media Session、收藏/队列同步和恢复。
-- [ ] 安装 `0.1.172` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面，且 CSS/脚本资源加载正常。
+- [ ] 安装 `0.1.173` FPK 与配套 Android APK，确认登录后直接进入 fnAudio、不进入 fnOS 桌面，并执行 USB DAC、DLNA/DSD、跨端恢复和通知栏专项验收。
 - [ ] 在 Android 真机分别播放无封面和有封面歌曲：确认媒体卡片/通知使用白色占位图、真实封面仍优先，并检查切歌、后台和息屏更新。
 - [ ] 在桌面浏览器和 Android WebView 验证歌曲右键/长按菜单：四项顺序正确，滚动不误触，松手不播放，完整上下文入队，收藏只添加，加入队列/歌单均成功。
 - [ ] 在 Android 真机验证原生认证队列 POST：响应为 JSON，不再出现 HTTP 200 `invalid token`；同时抽查用户状态保存、播放控制和设置保存。

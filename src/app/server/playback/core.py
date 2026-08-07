@@ -83,8 +83,10 @@ class PlaybackCore:
                 result = {"shuffle": self.state.shuffle}
             else:
                 result = self._plugin().command(command, self.state, command.context)
-            self._apply_command(command)
-            if isinstance(result, dict) and result.get("ok") is False:
+            succeeded = not (isinstance(result, dict) and result.get("ok") is False)
+            if succeeded:
+                self._apply_command(command)
+            else:
                 self.state.playing = False
                 self.state.error = str(result.get("message") or result.get("error") or "")
             self.state.touch()

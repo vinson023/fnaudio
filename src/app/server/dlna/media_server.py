@@ -45,6 +45,8 @@ class DlnaMediaServer:
 def upnp_resource_mime(item: Dict[str, Any]) -> str:
     if item.get("cue_track"):
         return "audio/flac"
+    if item.get("is_dsd"):
+        return "audio/wav"
     ext = os.path.splitext(item["path"])[1].lower()
     if ext == ".dsf":
         return "audio/x-dsf"
@@ -61,19 +63,30 @@ def upnp_media_url(
 ) -> str:
     if item.get("cue_track"):
         filename = safe_filename(item.get("title") or os.path.basename(item["path"])) + ".flac"
+    elif item.get("is_dsd"):
+        filename = safe_filename(item.get("title") or os.path.splitext(os.path.basename(item["path"]))[0]) + ".wav"
     else:
         filename = os.path.basename(item["path"])
-    return "%s/upnp/media/%s/%s" % (
+    url = "%s/upnp/media/%s/%s" % (
         upnp_base_url(handler),
         item["id"],
         urllib.parse.quote(filename),
     )
+    if item.get("is_dsd"):
+        url += "?transcode=dsd_wav"
+    return url
 
 
 def upnp_resource_size(item: Dict[str, Any], config: Dict[str, Any], transcode_to_audio: Callable) -> int:
     if item.get("cue_track"):
         try:
             target, _ = transcode_to_audio(item, config, "cue_flac")
+            return os.path.getsize(target)
+        except Exception:
+            return 0
+    if item.get("is_dsd"):
+        try:
+            target, _ = transcode_to_audio(item, config, "dsd_wav")
             return os.path.getsize(target)
         except Exception:
             return 0
@@ -90,6 +103,7 @@ def soap_push(
     safe_filename: Callable[[str], str],
     upnp_base_url: Callable[[Any], str],
     transcode_to_audio: Callable,
+    next_item: Dict[str, Any] | None = None,
 ):
     control = device.get("control_url")
     if not control:
@@ -141,6 +155,31 @@ def soap_push(
             soap_request(control, "urn:schemas-upnp-org:service:AVTransport:1", action, args)
         except Exception as exc:
             return False, str(exc)
+        if action == "SetAVTransportURI" and next_item:
+            try:
+                next_uri = upnp_media_url(handler, next_item, safe_filename, upnp_base_url)
+                next_mime = upnp_resource_mime(next_item)
+                next_protocol = protocol_info({**next_item, "mime": next_mime}, device)
+                next_title = "%s - %s" % (next_item.get("artist") or "", next_item.get("title") or "")
+                next_metadata = (
+                    '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" '
+                    'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+                    'xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
+                    '<item id="2" parentID="0" restricted="1"><dc:title>%s</dc:title>'
+                    '<upnp:class>object.item.audioItem.musicTrack</upnp:class>'
+                    '<res protocolInfo="%s">%s</res></item></DIDL-Lite>'
+                ) % (html.escape(next_title), html.escape(next_protocol, quote=True), html.escape(next_uri, quote=True))
+                soap_request(
+                    control,
+                    "urn:schemas-upnp-org:service:AVTransport:1",
+                    "SetNextAVTransportURI",
+                    "<InstanceID>0</InstanceID><NextURI>%s</NextURI><NextURIMetaData>%s</NextURIMetaData>"
+                    % (html.escape(next_uri, quote=True), html.escape(next_metadata, quote=True)),
+                )
+            except Exception:
+                # SetNextAVTransportURI is optional on many renderers. The
+                # current track must still start when preloading is rejected.
+                pass
     return True, "pushed and started"
 
 

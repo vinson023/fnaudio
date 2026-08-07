@@ -128,6 +128,9 @@ state.remoteWasPlaying = false;
 state.remoteAutoAdvanceAt = 0;
 state.remoteSnapshotAt = 0;
 state.remoteBaseSeconds = 0;
+state.remoteLoadPromise = null;
+state.remoteLoadedKey = "";
+state.remoteLoadedAt = 0;
 state.remoteCueSegment = false;
 state.libraryLoading = false;
 state.libraryLoaded = 0;
@@ -753,6 +756,12 @@ async function restorePlaybackSession(playback) {
   updateDeviceLabel();
   restoreLibraryNowPlaying();
   syncLyricsForCurrentTrack(currentItem());
+  if (isRemoteTarget() && state.queue.length) {
+    await refreshRemoteStatus({ allowAdvance: false });
+    const remoteCore = state.remoteStatus?.core;
+    if (remoteCore) applyCoreSnapshot(remoteCore, false);
+    updateRemoteUi();
+  }
 }
 function isPlaylistView(view = state.view) { return String(view || "").startsWith("playlist:"); }
 function isPlaylistLibraryView(view = state.view) {
@@ -1395,7 +1404,7 @@ function setupMediaSession() {
     commitSeek(Math.max(0, Math.min(duration, target)) / duration * 100);
   });
 }
-async function refreshRemoteStatus() {
+async function refreshRemoteStatus(options = {}) {
   if (!isRemoteTarget()) return;
   try {
     const response = await fetch(`api/playback/status?target_id=${encodeURIComponent(remoteDeviceId())}`);
@@ -1404,12 +1413,15 @@ async function refreshRemoteStatus() {
     state.remoteStatus = data;
     state.remoteSnapshotAt = Date.now();
     state.remoteBaseSeconds = Number(data?.position?.rel_seconds || 0);
-    maybeAdvanceRemoteQueue(data);
+    if (options.allowAdvance !== false) maybeAdvanceRemoteQueue(data);
     updateRemoteUi();
   } catch (error) {
   }
 }
 function maybeAdvanceRemoteQueue(data) {
+  // MPD/USB DAC progression is owned by the server-side idle listener so it
+  // continues while browsers and WebViews are suspended in the background.
+  if (isMpdTarget()) return;
   const transport = (data?.transport?.state || "").toUpperCase();
   const position = data?.position || {};
   const item = currentItem();
@@ -4264,30 +4276,44 @@ async function selectPlaybackTarget(id, name) {
 }
 async function pushToDevice(deviceId, item = currentItem()) {
   if (!item) return alert("请先选择一首歌曲");
-  const response = await apiFetch("api/playback/load", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_id:deviceId, track_id:item.id}) });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) {
-    alert(data.message || data.error || "播放设备接收失败");
-    return;
+  const loadKey = `${deviceId}:${item.id}`;
+  if (state.remoteLoadPromise && state.remoteLoadedKey === loadKey) return state.remoteLoadPromise;
+  if (state.remoteLoadedKey === loadKey && Date.now() - state.remoteLoadedAt < 2500) return true;
+  state.remoteLoadedKey = loadKey;
+  state.remoteLoadedAt = Date.now();
+  state.remoteLoadPromise = (async () => {
+    const response = await apiFetch("api/playback/load", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({target_id:deviceId, track_id:item.id}) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      state.remoteLoadedKey = "";
+      alert(data.message || data.error || "播放设备接收失败");
+      return false;
+    }
+    state.remoteCueSegment = Boolean(data.cue_segment || (item?.cue_track && !isDacTarget(deviceId)));
+    if (state.remoteCueSegment) {
+      state.remoteStatus = {
+        ...(state.remoteStatus || {}),
+        transport: { ...(state.remoteStatus?.transport || {}), state: "PLAYING" },
+        position: { ...(state.remoteStatus?.position || {}), rel_seconds: 0, duration_seconds: Number(item.duration || 0) || state.remoteStatus?.position?.duration_seconds || 0 },
+      };
+      state.remoteBaseSeconds = 0;
+      state.remoteSnapshotAt = Date.now();
+      updateRemoteUi();
+    }
+    state.dacStrategy = data.strategy || null;
+    if (isDacTarget(deviceId) && item) {
+      $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)} · ${state.playTargetName}`;
+      updateNowMarquee();
+    }
+    updateDeviceLabel();
+    $("deviceDialog").close();
+    return true;
+  })();
+  try {
+    return await state.remoteLoadPromise;
+  } finally {
+    state.remoteLoadPromise = null;
   }
-  state.remoteCueSegment = Boolean(data.cue_segment || (item?.cue_track && !isDacTarget(deviceId)));
-  if (state.remoteCueSegment) {
-    state.remoteStatus = {
-      ...(state.remoteStatus || {}),
-      transport: { ...(state.remoteStatus?.transport || {}), state: "PLAYING" },
-      position: { ...(state.remoteStatus?.position || {}), rel_seconds: 0, duration_seconds: Number(item.duration || 0) || state.remoteStatus?.position?.duration_seconds || 0 },
-    };
-    state.remoteBaseSeconds = 0;
-    state.remoteSnapshotAt = Date.now();
-    updateRemoteUi();
-  }
-  state.dacStrategy = data.strategy || null;
-  if (isDacTarget(deviceId) && item) {
-    $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)} · ${state.playTargetName}`;
-    updateNowMarquee();
-  }
-  updateDeviceLabel();
-  $("deviceDialog").close();
 }
 document.querySelectorAll(".nav-item[data-view]").forEach(button => button.onclick = () => {
   if (button.dataset.view === "queue") openCurrentQueue();

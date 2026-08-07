@@ -1,9 +1,22 @@
 # fnAudio 项目上下文
 
+## 0.1.173 当前开发状态（2026-08-07）
+
+- 当前统一版本为 `0.1.173`；fnOS 源码在 `C:\path\to\fnAudio\src`，Android 源码在 `C:\path\to\fnAudio\android-client`。
+- USB DAC 的主播放链路是 fnAudio 私有 MPD -> ALSA。MPD `idle` 监听现在负责识别自然结束并在服务端推进 fnAudio 队列，网页或 WebView 进入后台后不再是 USB DAC 下一曲的必要条件。
+- MPD 显式 Stop 和换曲时会抑制对应的 STOPPED 事件，避免被误判成自然结束；Playback Core 仅在输出命令成功后发布播放状态，修复按钮闪烁、进度回跳及失败后仍显示播放的问题。
+- 网页对同一远程目标/歌曲的短时间重复 load 已去重；恢复 NAS 播放会话时先读取服务端远程状态，不会重新推送当前歌曲。
+- DLNA DSD 推送统一转换并声明为 WAV PCM 96kHz/24bit，URL、MIME、扩展名和资源大小保持一致；支持 `SetNextAVTransportURI` 的 Renderer 会预装下一曲，不支持时自动降级。
+- Android 在加载 WebView 前先验证现有 token，失败后依次尝试 longToken 和已保存密码；成功后更新加密连接资料、Cookie、请求头和播放服务运行配置。
+- Android `minSdk` 从 26 调整为 23（Android 6.0），并移除 API 24 才可用的集合方法；Debug Lint 与 APK 构建通过。
+- 本轮本地验证：62 个 Python 测试、3 个 Node 回归脚本、JavaScript/Python 语法检查、Android Lint 和 Debug APK 构建通过。
+- 尚未真机确认：USB DAC 首帧/停止行为、DLNA 不支持 NextURI 时的后台连续播放、Android 远程输出模式的通知栏/锁屏媒体卡片、具体“解析错误”手机及 DSD 设备矩阵。不得把本地测试描述为真机通过。
+- Volumio 与 moOde 参考源码缓存在 `C:\path\to\fnAudio\references\volumio3-backend`、`volumio2-ui`、`moode`；固定提交与分析见 `references/README.md` 和 `references/FNAUDIO_REFERENCE_ANALYSIS.md`，第三方仓库不进入 FPK/APK 或产品提交。
+
 > 更新日期：2026-08-07  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
-> 当前可识别发布版本：`0.1.172`  
+> 当前可识别发布版本：`0.1.173`  
 > 文档目的：为后续开发、排障、测试和发布提供可复用上下文
 
 ## 最新状态：`0.1.172` PC 右键菜单与文件夹定位修复
@@ -47,11 +60,11 @@
 ## 1. 分析范围与结论
 
 - `E:\Codex` 不是 Git 仓库，工作区内没有 `.git`，无法通过提交历史判断文件来源、变更归属和发布对应关系。
-- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.172`。
+- 当前 fnOS 源码是 `C:\path\to\fnAudio\src`，Android 源码是 `C:\path\to\fnAudio\android-client`。初始整理基线为 `0.1.148`，当前统一版本为 `0.1.173`。
 - `fnaudio/` 是约 `0.1.2` 的旧版；`fnaudio-0.1.3/` 至 `fnaudio-0.1.6/`、根目录 `builds/` 及多个打包暂存目录均属于历史材料，不应直接作为当前源码修改。
 - 本项目是面向 fnOS 的本地音乐库和多目标播放器。它不是纯前端网页，也不是单一 DLNA 控制器，而是同时承担音乐库、媒体流、转码、本机播放、DLNA Control Point、MediaServer 和 MediaRenderer 等职责。
-- 当前工作目录以 `0.1.172` 为开发基线；PC 与移动菜单已分离，并修复列表封面 fallback、Android 认证通知封面加载、PC 菜单项目和文件夹路径语义。
-- 当前配套产物位于 `artifacts/0.1.172/`。历史版本仅用于追溯，不能替代本轮菜单和文件夹跳转的真机验证。
+- 当前工作目录以 `0.1.173` 为开发基线；本轮增加 MPD 服务端自动推进、远程 load 去重、DSD 推送一致性和 Android token 启动验证。
+- 当前配套产物位于 `artifacts/0.1.173/`。历史版本仅用于追溯，不能替代本轮 USB DAC、DLNA 和 Android 真机验证。
 - 真实 fnOS 测试设备已确认安装 `fnaudio 0.1.166`。对实际 CGI 的诊断表明：缺少网关认可 token 时返回 HTTP 200 `invalid token`；携带原生认证 Header/Cookie 的队列 POST 返回 JSON。`0.1.172` 尚未安装到 fnOS 或 Android 真机。
 
 ## 2. 项目整体架构
@@ -185,7 +198,7 @@ flowchart TD
 | `fnaudio-0.1.4/` | 历史阶段源码。 |
 | `fnaudio-0.1.5/` | 历史阶段源码。 |
 | `fnaudio-0.1.6/` | 历史阶段源码。 |
-| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.172`。 |
+| `fnaudio-0.1.7/` | 历史来源目录；迁入 `src/` 时版本为 `0.1.148`，当前活跃源码版本为 `0.1.173`。 |
 | `fnaudio-android-shell/` | 已被 `C:\path\to\fnAudio\android-client` 替代的 Android 试验壳，只读参考。 |
 | `fnaudio-pack-stage-*/` | 旧版本 FPK 暂存结构，用于历史打包。 |
 | `fnOS Skill/` | fnOS API、CLI 和开发流程参考材料，不进入产品运行时。 |
@@ -464,7 +477,7 @@ python -B -m unittest discover -s tests -v
 
 ### 第五阶段：完成真机验收
 
-1. 在 fnOS 安装 `0.1.172` FPK，并在 Android 安装配套 Debug APK；复验 PC 右键菜单、文件夹父目录跳转、移动长按菜单、连接历史、队列 POST、返回键和后台播放。
+1. 在 fnOS 安装 `0.1.173` FPK，并在 Android 安装配套 Debug APK；重点复验 USB DAC 首帧、停止、自动下一曲、跨端恢复、DSD 推送、token 恢复和旧手机安装。
 2. 用至少两首歌曲验证前台、后台、息屏、自动下一首、暂停恢复、锁屏通知、耳机拔出和蓝牙媒体键；至少等待跨曲一次。
 3. 验证历史连接独立页面、密码加密保存、过期 token 自动密码登录、自签名 HTTPS 和错误地址提示；全程确认日志不含密码/token。
 4. 补充 WAV、DFF 和高规格 PCM 样本，验证解码、seek、时长、封面和输出格式。
@@ -473,7 +486,7 @@ python -B -m unittest discover -s tests -v
 ## 9. 后续接手约定
 
 - 项目根目录：`C:\path\to\fnAudio`；fnOS 工作目录为 `C:\path\to\fnAudio\src`，Android 工作目录为 `C:\path\to\fnAudio\android-client`。
-- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.172` 为准。
+- 当前配套版本以根 `VERSION`、`src/manifest` 和 Android `versionName` 的 `0.1.173` 为准。
 - 根目录当前文档的优先级高于 `docs/history/` 中的阶段记录；历史文档只用于追溯。
 - 不要直接从根 `builds/`、旧版本目录或 FPK 解包目录复制文件到当前源码；先确认来源、差异和目标版本。
 - 修改播放逻辑时，保持 `PlaybackCore -> output plugin` 边界，不要把 SOAP、ALSA 或 FFmpeg 细节重新放回前端。

@@ -41,6 +41,17 @@ class MpdService:
         self._idle_state: Dict[str, Any] = {"last_event": 0.0, "changed": [], "error": ""}
         self._status_lock = threading.Lock()
         self._status_cache: Dict[str, Any] = {}
+        self._status_listener = None
+        self._last_transport = ""
+        self._suppress_stop_until = 0.0
+
+    def set_status_listener(self, callback) -> None:
+        """Receive stable MPD transport transitions from the idle listener."""
+        self._status_listener = callback
+
+    def suppress_stop_transition(self, seconds: float = 2.0) -> None:
+        """Mark an upcoming STOPPED event as command-driven, not track end."""
+        self._suppress_stop_until = max(self._suppress_stop_until, time.monotonic() + max(0.1, seconds))
 
     def _find_binary(self) -> str:
         candidates = [
@@ -387,6 +398,17 @@ class MpdService:
                             "transport": ((refreshed.get("status") or {}).get("transport") or {}).get("state", ""),
                         }
                     )
+                transport = str((((refreshed.get("status") or {}).get("transport") or {}).get("state") or "")).upper()
+                previous = self._last_transport
+                self._last_transport = transport
+                suppressed_stop = transport == "STOPPED" and time.monotonic() <= self._suppress_stop_until
+                if suppressed_stop:
+                    self._suppress_stop_until = 0.0
+                if self._status_listener and transport and transport != previous and not suppressed_stop:
+                    try:
+                        self._status_listener(previous, transport, refreshed)
+                    except Exception:
+                        pass
             except Exception as exc:
                 with self._idle_lock:
                     self._idle_state["error"] = str(exc)

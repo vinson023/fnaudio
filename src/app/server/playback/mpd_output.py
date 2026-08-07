@@ -80,6 +80,8 @@ class MpdOutput(OutputPlugin):
             if not output_ready.get("ok"):
                 return {"ok": False, "message": output_ready.get("message") or "没有检测到本机音频输出设备", "target_id": state.target_id}
             cue_start = float(item.get("cue_start") or 0) if item.get("cue_track") else 0.0
+            if self.service and hasattr(self.service, "suppress_stop_transition"):
+                self.service.suppress_stop_transition()
             if self.service and hasattr(self.service, "uri_for_path"):
                 result = self._load_uri_with_retry(self.service.uri_for_path(path), cue_start)
             else:
@@ -104,6 +106,8 @@ class MpdOutput(OutputPlugin):
             started = self.start_service()
             if started.get("available") is False or (started.get("ok") is False and not started.get("running")):
                 return {"ok": False, "message": started.get("message") or "MPD 不可用", "target_id": state.target_id}
+            if command.action == "stop" and self.service and hasattr(self.service, "suppress_stop_transition"):
+                self.service.suppress_stop_transition()
             result = mpd_control(command.action, command.position, **self._connection())
             if self.service and hasattr(self.service, "refresh_status"):
                 self.service.refresh_status()

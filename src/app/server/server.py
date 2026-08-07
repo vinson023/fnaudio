@@ -336,8 +336,8 @@ def upnp_resource_size(item, config):
     return dlna_resource_size(item, config, transcode_to_audio)
 
 
-def soap_push(device, item, handler):
-    return dlna_soap_push(device, item, handler, safe_filename, upnp_base_url, transcode_to_audio)
+def soap_push(device, item, handler, next_item=None):
+    return dlna_soap_push(device, item, handler, safe_filename, upnp_base_url, transcode_to_audio, next_item)
 
 
 def dlna_output_open(track, state, context):
@@ -348,7 +348,16 @@ def dlna_output_open(track, state, context):
         return {"ok": False, "message": "missing request context"}
     if not device:
         return {"ok": False, "message": "device not found"}
-    ok, message = soap_push(device, item, handler)
+    next_item = None
+    if state.queue and state.current_index >= 0:
+        next_index = state.current_index + 1
+        if next_index >= len(state.queue) and state.repeat == "all":
+            next_index = 0
+        if 0 <= next_index < len(state.queue):
+            next_ref = state.queue[next_index]
+            resolver = context.get("resolve_track")
+            next_item = resolver(next_ref.track_id) if callable(resolver) else next_ref.item
+    ok, message = soap_push(device, item, handler, next_item)
     return {
         "ok": ok,
         "message": message,
@@ -1405,6 +1414,7 @@ def playback_load_selected(handler, target_id, item, position=0):
         "config": handler.server.config,
         "item": item,
         "position": safe_float(position),
+        "resolve_track": lambda track_id: find_library_item(handler.server.config, track_id),
     }
     core_result = PLAYBACK_CORE.dispatch(PlaybackCommand("load", track=TrackRef.from_mapping(item), context=context))
     output_result = core_result.get("result") or {}
@@ -1634,6 +1644,32 @@ def main():
     config = load_config(args.config)
     MPD_SERVICE = MpdService(config, app_root=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     MPD_OUTPUT.configure(MPD_SERVICE)
+    mpd_advance_guard = {"at": 0.0, "track_id": ""}
+
+    def on_mpd_transport(previous, current, _probe):
+        if previous != "PLAYING" or current != "STOPPED":
+            return
+        snapshot = PLAYBACK_CORE.state
+        if snapshot.target_kind != "mpd" or not snapshot.playing:
+            return
+        now = time.time()
+        if mpd_advance_guard["track_id"] == snapshot.current_track_id and now - mpd_advance_guard["at"] < 3.0:
+            return
+        mpd_advance_guard.update({"track_id": snapshot.current_track_id, "at": now})
+        result = PLAYBACK_CORE.dispatch(
+            PlaybackCommand(
+                "next",
+                context={
+                    "config": config,
+                    "resolve_track": lambda track_id: find_library_item(config, track_id),
+                },
+            )
+        )
+        if not (result.get("result") or {}).get("ok", False):
+            snapshot.playing = False
+        save_current_playback_session(config)
+
+    MPD_SERVICE.set_status_listener(on_mpd_transport)
     try:
         started_mpd = MPD_OUTPUT.start_service()
         if started_mpd.get("ok") is False and not started_mpd.get("running"):
