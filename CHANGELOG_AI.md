@@ -1,5 +1,14 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.172` PC 右键菜单与文件夹定位语义修复
+
+- 目标：PC 端右键菜单取消“播放”和“插播所选项目”，同时不影响移动端四项长按菜单和歌曲操作对话框。
+- 修改文件：`src/app/ui/app.js`、`src/tests/test_ui_queue_columns.js`、版本与发布上下文文档。
+- 菜单行为：新增 `desktopTrackContextActionButtons()`，桌面歌曲右键从完整歌曲操作中过滤 `play`/`insert`；文件夹/专辑等分组右键同步移除“播放”和“插播所选项目”；`trackContextActionButtons()` 继续只提供移动端四项快捷操作；`openTrackActionDialog()` 仍使用完整 `trackActionButtons()`。
+- 文件定位：`openContainingFolder()` 继续读取 `api/library/location`，但只调用 `sdk.openFileManager(folder)`。fnOS 宿主的 `openFileManager` 接口接收目录路径；传入 `/vol1/.../歌曲.mp3` 这类完整文件路径会被解释为打开文件。当前未确认公开接口支持“打开父目录并自动选中文件”的额外参数，因此不伪造选中行为。
+- 验证：`node --check app/ui/app.js`、`node tests/test_ui_queue_columns.js` 通过；真机 fnOS 文件管理视觉定位和 Android 安装尚未验证。
+- 版本：统一到 `0.1.172`，后续产物记录在 `artifacts/0.1.172/`。
+
 ## 2026-08-07：`0.1.171` PC/移动菜单分离、文件定位、封面 fallback 与 Android 通知封面
 
 - PC 端右键恢复完整歌曲操作菜单；移动端长按继续使用四项快捷菜单。

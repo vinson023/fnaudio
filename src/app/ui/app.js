@@ -3779,10 +3779,8 @@ function groupActionButtons(groupKey) {
   const selected = selectedGroupDescriptors(groupKey);
   const multiple = selected.length > 1;
   return [
-    groupActionButton("播放", "play"),
     groupActionButton("加入当前队列", "queue"),
     groupActionButton("加入播放列表", "playlist"),
-    groupActionButton("插播所选项目", "insert"),
     `<button class="track-action-choice" data-group-action="open" ${multiple ? "disabled" : ""}>打开</button>`,
   ];
 }
@@ -3865,6 +3863,11 @@ function trackContextActionButtons(trackId) {
     actionButton("加入播放列表", "playlist"),
   ];
 }
+function desktopTrackContextActionButtons(trackId) {
+  return trackActionButtons(trackId).filter(button =>
+    !/data-track-action="(?:play|insert)"/.test(button)
+  );
+}
 function bindTrackActionButtons(container) {
   container.querySelectorAll("[data-track-action]").forEach(button => button.onclick = () => runTrackAction(button.dataset.trackAction));
 }
@@ -3894,15 +3897,14 @@ async function resolveTrackLocation(trackId) {
 async function openContainingFolder(trackId) {
   try {
     const location = await resolveTrackLocation(trackId);
-    const path = String(location.path || "");
     const folder = String(location.folder || "");
-    if (!path || !folder) throw new Error("无法获取歌曲文件路径");
+    if (!folder) throw new Error("无法获取歌曲所在文件夹");
     const sdk = await getTrimSdk();
     if (!sdk || typeof sdk.openFileManager !== "function") throw new Error("unsupported");
     if (typeof sdk.ready === "function") await sdk.ready();
     if (sdk.isStandaloneWeb) return alert("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开，才能跳转到文件管理");
-    // fnOS 的文件管理入口接收目标路径；传入完整文件路径时会打开所在目录并直接定位该文件。
-    Promise.resolve(sdk.openFileManager(path)).catch(error => {
+    // fnOS 的文件管理入口接收目录路径；传入完整文件路径会被宿主当作“打开文件”处理。
+    Promise.resolve(sdk.openFileManager(folder)).catch(error => {
       console.warn("openFileManager failed", error);
       alert("飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
     });
@@ -4050,7 +4052,7 @@ function openTrackContextMenu(trackId, x, y, mobile = false) {
   const menu = $("trackContextMenu");
   if (!item || !menu) return;
   state.actionTrackId = String(trackId);
-  const actions = mobile ? trackContextActionButtons(trackId) : trackActionButtons(trackId);
+  const actions = mobile ? trackContextActionButtons(trackId) : desktopTrackContextActionButtons(trackId);
   menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${actions.join("")}</div>`;
   menu.hidden = false;
   menu.style.left = `${Math.max(8, x)}px`;

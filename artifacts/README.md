@@ -1,6 +1,6 @@
 # 构建产物策略
 
-`0.1.171/` 保存当前可追溯的 fnOS FPK 和 Android Debug APK。该版本恢复 PC 完整右键并与移动长按分开、支持文件直接定位、统一无封面 `♫` 占位，并使用带认证的 Android 通知封面缓存；历史版本目录仍仅用于追溯。
+`0.1.172/` 保存当前可追溯的 fnOS FPK 和 Android Debug APK。该版本让 PC 右键移除“播放/插播所选项目”，保持移动端菜单与歌曲操作对话框独立，并把“打开包含的文件夹”恢复为父目录跳转；历史版本目录仍仅用于追溯。
 
 `0.1.148/` 是整理阶段从当时源码重建的历史 FPK，不再代表当前源码版本。
 
@@ -10,6 +10,12 @@
 
 ```text
 artifacts/
+├── 0.1.172/
+│   ├── fnaudio-0.1.172.fpk
+│   ├── fnaudio-android-0.1.172-debug.apk
+│   ├── PACKAGE_CONTENTS.txt
+│   ├── SHA256SUMS
+│   └── VALIDATION.md
 ├── 0.1.171/
 │   ├── fnaudio-0.1.171.fpk
 │   ├── fnaudio-android-0.1.171-debug.apk
@@ -142,4 +148,4 @@ artifacts/
 
 各版本的 `_inspect/` 是本地包结构校验时从 FPK 解出的派生检查副本，不是源码、构建输入或待上传文件；需要节省空间时可直接删除这些目录，不影响 FPK、哈希或验证记录。
 
-每个版本目录的 `VALIDATION.md` 记录构建命令、源码身份、manifest/versionName、包哈希和验证结果。`0.1.171` 是当前配套 FPK/APK，已完成本地构建和结构校验，待 fnOS/Android 真机安装；更低版本仅作历史追溯。
+每个版本目录的 `VALIDATION.md` 记录构建命令、源码身份、manifest/versionName、包哈希和验证结果。`0.1.172` 是当前配套 FPK/APK，已完成本地构建和结构校验，待 fnOS/Android 真机安装；更低版本仅作历史追溯。
