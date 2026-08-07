@@ -11,9 +11,11 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.session.DefaultMediaNotificationProvider;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
+import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.HttpClientFactory;
@@ -31,6 +33,10 @@ public final class PlaybackService extends MediaSessionService {
     @Override
     public void onCreate() {
         super.onCreate();
+        DefaultMediaNotificationProvider notificationProvider = new DefaultMediaNotificationProvider(this);
+        notificationProvider.setSmallIcon(R.drawable.ic_notification);
+        setMediaNotificationProvider(notificationProvider);
+
         ConnectionProfile profile = PlaybackRuntimeConfig.activeProfile();
         if (profile == null) profile = new SecureProfileStore(this).active();
 

@@ -1,5 +1,15 @@
 # fnAudio AI 修改记录
 
+## 2026-08-07：`0.1.170` Android 媒体卡片白色占位图标
+
+- 目标：按截图把 Android 桌面/锁屏媒体卡片左侧的黑色默认播放图标改成白色，同时不覆盖真实歌曲封面。
+- 通知图标：`PlaybackService` 显式配置 `DefaultMediaNotificationProvider`，将小图标设置为新增的白色描边播放圆环 `R.drawable.ic_notification`。
+- 无封面占位：`NativePlaybackBridge` 在应用私有目录生成一次透明底、白色播放圆环的 512×512 PNG；无真实 `artwork` 时用文件 URI 写入 Media3 元数据，真实封面 URL 仍优先。
+- 大队列保护：没有把 PNG 字节直接写进每一个 `MediaItem`，避免数千首队列重复携带位图并触发内存放大或 Binder 事务过大。
+- 验证：59 个 Python 测试、3 个 Node 回归脚本、JavaScript 语法、Android Java 编译、Lint 和 Debug APK 构建全部通过。APK 资源表包含 `drawable/ic_notification`，manifest 为 `0.1.170 / versionCode 170`，v2 Debug 签名有效；FPK 外层/内层为 21/110 项且无 Python 字节码。
+- 产物：FPK `4,885,020` 字节，SHA-256 `3996D1E8E4E693EF889B46845F3ED59D677C5BD2B2A3295345485DDDD4FA7493`；APK `10,085,880` 字节，SHA-256 `1D4CE15B07B46289DC277A4EB26CCB7FFCA29488A6A1E29D41EC812C171A41BF`。
+- 待验证：本轮没有连接 Android 真机；需分别播放无封面和有封面歌曲，确认媒体卡片/通知白色图标、真实封面优先、切歌更新以及后台/息屏行为。
+
 ## 2026-08-07：`0.1.169` 歌曲右键/长按四项菜单
 
 - 目标：歌曲列表在桌面右键和移动端长按时，只显示“从当前开始播放所有歌曲、加入当前队列、收藏歌曲、加入播放列表”四项，并保持指定顺序。

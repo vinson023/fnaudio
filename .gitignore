@@ -24,6 +24,7 @@ config.json
 *.tar.gz
 *.apk
 android-client/.gradle/
+android-client/.media3-inspect/
 android-client/local.properties
 android-client/**/build/
 artifacts/*/*.fpk

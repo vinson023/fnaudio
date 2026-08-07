@@ -1,0 +1,22 @@
+fnAudio 0.1.170 package summary
+
+FPK outer archive: 21 entries.
+FPK app.tgz runtime payload: 110 entries.
+No __pycache__ directories or .pyc files.
+
+Android media-card icon fix:
+- custom Media3 notification small icon: white outlined play circle
+- tracks without artwork use a transparent PNG with a white play circle
+- the fallback image is stored once in the app private files directory and referenced by file URI
+- artwork bytes are not duplicated into every queued MediaItem
+- real track artwork remains preferred when available
+
+Android APK:
+- package: com.fnaudio.client
+- versionCode: 170
+- versionName: 0.1.170
+- minSdk: 26
+- targetSdk: 36
+- encrypted multi-connection history
+- native authenticated HTTP bridge and Media3 PlaybackService
+- APK Signature Scheme v2, Android Debug certificate
