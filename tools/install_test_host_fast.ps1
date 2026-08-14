@@ -7,6 +7,13 @@ param(
 
     [string]$UserName = 'root',
 
+    [ValidateRange(1, 65535)]
+    [int]$SshPort = 22,
+
+    [switch]$UseSudo,
+
+    [string]$RemotePackageDirectory = '/vol1/1000/fnaudio',
+
     [Parameter(Mandatory)]
     [string]$Password,
 
@@ -31,7 +38,11 @@ foreach ($tool in @($plink, $pscp)) {
 }
 
 $packageName = [IO.Path]::GetFileName($Package)
-$remotePackage = "/vol1/1000/fnaudio/$packageName"
+$remotePackageDirectory = $RemotePackageDirectory.TrimEnd('/')
+if (-not $remotePackageDirectory.StartsWith('/')) {
+    throw "RemotePackageDirectory must be an absolute POSIX path: $RemotePackageDirectory"
+}
+$remotePackage = "$remotePackageDirectory/$packageName"
 
 # Keep the full deployment transaction on the NAS. The rollback trap restores
 # both fnOS control files and application payload if a post-swap check fails.
@@ -46,6 +57,7 @@ PKGVAR=/vol1/@appdata/fnaudio
 BACKUP_ROOT=/vol1/1000/fnaudio/fast-deploy-backups
 RUN_ROOT=/vol1/1000/fnaudio
 STAMP="$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_ROOT"
 RUN_DIR="$(mktemp -d "$RUN_ROOT/.fnaudio-fast-deploy.XXXXXX")"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP"
 APP_MOVED=0
@@ -135,8 +147,14 @@ echo "FAST_DEPLOY_OK version=$VERSION port=$PORT backup=$BACKUP_DIR"
 
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteScript))
 
-& $pscp -batch -hostkey $HostKey -l $UserName -pw $Password $Package "${HostName}:$remotePackage"
+& $pscp -batch -hostkey $HostKey -P $SshPort -l $UserName -pw $Password $Package "${HostName}:$remotePackage"
 if ($LASTEXITCODE -ne 0) { throw "Package upload failed with exit code $LASTEXITCODE" }
 
-& $plink -batch -hostkey $HostKey -l $UserName -pw $Password $HostName "echo $encoded | base64 -d | bash -s -- '$remotePackage'"
+if ($UseSudo) {
+    $remoteCommand = "printf '%s\n' '$Password' | sudo -S -p '' bash -c `"echo '$encoded' | base64 -d | bash -s -- '$remotePackage'`""
+}
+else {
+    $remoteCommand = "echo $encoded | base64 -d | bash -s -- '$remotePackage'"
+}
+& $plink -batch -hostkey $HostKey -P $SshPort -l $UserName -pw $Password $HostName $remoteCommand
 if ($LASTEXITCODE -ne 0) { throw "Fast deployment failed with exit code $LASTEXITCODE" }
