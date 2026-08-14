@@ -1080,6 +1080,11 @@ authoritative `stop` command to the backend before its state is persisted.
 - 修复：远程输出监控器在曲目开始时保留库中的真实时长；只有当前 URI 匹配、Renderer 持续 `PLAYING`/`TRANSITIONING`、位置与时长均为零、并超过该时长 2 秒后，才执行一次队列推进。正常上报进度、暂停或 URI 不匹配的 Renderer 不会触发该兜底。
 - 外网机已部署 `0.2.7`。使用 10.826 秒 `Airport Take Off` 接 76.12 秒 `Intro` 的真实电视端队列，第一首自然结束后设备 URI、fnAudio 当前曲目和传输状态均切换至第二首 `PLAYING`。证据：`/vol1/1000/fnaudio/external-dlna-autonext-0.2.7-20260814-190912/report.json`；恢复校验通过。
 
+## 0.2.7 外网服务重启恢复验收（2026-08-14）
+
+- 外网机通过正常生命周期脚本停止并启动 fnAudio 后，播放核心的 536 首队列、当前曲目、循环、随机和 TEAC UD-301 DAC 目标均与重启前一致。
+- 重启前后传输状态均为 `STOPPED`、`playing=false`，验证启动仅恢复会话而不自动播放；`/api/health` 同时确认 MPD、媒体库、元数据、转码和 DLNA 服务健康。证据：`/vol1/1000/fnaudio/external-restart-20260814-191146/report.json`。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
