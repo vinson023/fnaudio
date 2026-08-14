@@ -5,6 +5,7 @@
 - `/api/health` and the support snapshot now expose only severe MPD playback errors. Recoverable warnings such as `queue_stale` remain available in the detailed MPD diagnostic payload but no longer make the service health category look failed.
 - `0.2.11` was built with fnpack and deployed to the authorized external host: `artifacts/0.2.11/fnaudio-0.2.11-fnpack.fpk`, SHA-256 `EC2C3CA4C21AEBB7EA4E6A5A7035A869D552DC9326C3293F742B36269B3930CD`.
 - Live post-upgrade proof: `/vol1/1000/fnaudio/external-health-0.2.11.json` and `external-core-0.2.11.json` show MPD running, empty health error category, the selected TEAC DAC, the preserved 536-item queue and `STOPPED` transport.
+- Real TEAC repeat-one acceptance used a 2-second PCM WAV fixture and waited beyond two track boundaries. MPD reported `repeat=1`, queue position `0`, and `PLAYING`; PlaybackCore still named the same track. Evidence: `/vol1/1000/fnaudio/external-repeat-one-0.2.11-pAsWFF/report.json` (`repeat_one_verified=true`). The test trap restored the prior DAC target, queue and library roots.
 
 ## 0.2.10 Real-device Automation Authentication Repair (2026-08-14)
 
