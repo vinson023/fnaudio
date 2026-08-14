@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, "app/server")
 
-from server import DLNA_MONITOR_GUARD, _dlna_stop_is_suppressed, _upnp_track_id_from_uri, dlna_output_open
+from server import (DLNA_MONITOR_GUARD, _dlna_stalled_track_expired,
+                    _dlna_stop_is_suppressed, _upnp_track_id_from_uri,
+                    dlna_output_open)
 
 
 class RemoteOutputMonitorTests(unittest.TestCase):
@@ -26,6 +28,16 @@ class RemoteOutputMonitorTests(unittest.TestCase):
         finally:
             DLNA_MONITOR_GUARD.clear()
             DLNA_MONITOR_GUARD.update(original)
+
+    def test_stalled_renderer_advances_only_after_known_track_duration(self):
+        args = ("track-1", "track-1", "PLAYING", 0, 0, 100.0, 12.0)
+        self.assertFalse(_dlna_stalled_track_expired(*args, now=113.9))
+        self.assertTrue(_dlna_stalled_track_expired(*args, now=114.0))
+
+    def test_stalled_renderer_guard_ignores_progress_pause_and_foreign_uri(self):
+        self.assertFalse(_dlna_stalled_track_expired("track-1", "track-1", "PAUSED_PLAYBACK", 0, 0, 100, 12, now=120))
+        self.assertFalse(_dlna_stalled_track_expired("track-1", "track-1", "PLAYING", 1, 0, 100, 12, now=120))
+        self.assertFalse(_dlna_stalled_track_expired("track-1", "track-2", "PLAYING", 0, 0, 100, 12, now=120))
 
     def test_dlna_open_does_not_preload_next_uri(self):
         track = SimpleNamespace(track_id="track-1", item={"id": "track-1"})

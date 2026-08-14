@@ -1933,6 +1933,23 @@ def _dlna_stop_is_suppressed(target_id, transport, now=None):
     )
 
 
+def _dlna_stalled_track_expired(current_track_id, backend_track_id, transport,
+                                reported_position, reported_duration,
+                                track_started_at, expected_duration, now=None):
+    """Detect renderers which never report elapsed time or a STOPPED state."""
+    expected = safe_float(expected_duration)
+    if not current_track_id or backend_track_id != current_track_id or expected < 5.0:
+        return False
+    if str(transport or "").upper() not in ("PLAYING", "TRANSITIONING"):
+        return False
+    if safe_float(reported_position) > 0.0 or safe_float(reported_duration) > 0.0:
+        return False
+    started = safe_float(track_started_at)
+    if started <= 0.0:
+        return False
+    return (time.monotonic() if now is None else float(now)) >= started + expected + 2.0
+
+
 def start_remote_output_monitor(server):
     """Keep external Renderer playback alive without a foreground UI.
 
@@ -1949,6 +1966,8 @@ def start_remote_output_monitor(server):
         "managed_key": "",
         "managed_playing": False,
         "start_pending_at": 0.0,
+        "track_started_at": 0.0,
+        "stalled_advance_at": 0.0,
         "missing_count": 0,
     }
     handler = SimpleNamespace(server=server, headers={})
@@ -1957,7 +1976,7 @@ def start_remote_output_monitor(server):
         while not stop_event.wait(1.25):
             snapshot = PLAYBACK_CORE.state
             if snapshot.target_kind != "dlna_push" or not snapshot.target_id:
-                monitor.update({"target": "", "transport": "", "track": "", "managed_key": "", "managed_playing": False, "start_pending_at": 0.0, "missing_count": 0})
+                monitor.update({"target": "", "transport": "", "track": "", "managed_key": "", "managed_playing": False, "start_pending_at": 0.0, "track_started_at": 0.0, "stalled_advance_at": 0.0, "missing_count": 0})
                 continue
             device = find_upnp_device(snapshot.target_id)
             if not device:
@@ -1980,6 +1999,8 @@ def start_remote_output_monitor(server):
             if snapshot.playing and (managed_key != monitor.get("managed_key") or not monitor.get("managed_playing")):
                 monitor["managed_key"] = managed_key
                 monitor["start_pending_at"] = time.monotonic()
+                monitor["track_started_at"] = time.monotonic()
+                monitor["stalled_advance_at"] = 0.0
             monitor["managed_playing"] = bool(snapshot.playing)
             if transport in ("PLAYING", "TRANSITIONING", "PAUSED_PLAYBACK"):
                 monitor["start_pending_at"] = 0.0
@@ -2010,6 +2031,41 @@ def start_remote_output_monitor(server):
                 if monitor.get("track") == guard_track and now - safe_float(monitor.get("advance_at")) < 3.0:
                     continue
                 monitor.update({"track": guard_track, "advance_at": now})
+                result = PLAYBACK_CORE.dispatch(
+                    PlaybackCommand(
+                        "next",
+                        context={
+                            "handler": handler,
+                            "config": server.config,
+                            "resolve_track": lambda track_id: find_library_item(server.config, track_id),
+                        },
+                    )
+                )
+                output = result.get("result") or {}
+                if output.get("ok") is False:
+                    PLAYBACK_CORE.sync_output_status("dlna_push", "STOPPED", error=str(output.get("message") or ""))
+                save_current_playback_session(server.config)
+                continue
+
+            # Some TV renderers keep AVTransport at PLAYING and return
+            # 00:00:00 for both position fields forever. Their end event is
+            # otherwise unobservable, so advance only after the known source
+            # duration has elapsed and the reported URI still matches.
+            stalled_expired = _dlna_stalled_track_expired(
+                snapshot.current_track_id,
+                backend_track_id,
+                transport,
+                safe_float(position_payload.get("rel_seconds")),
+                safe_float(position_payload.get("duration_seconds")),
+                safe_float(monitor.get("track_started_at")),
+                safe_float(snapshot.duration),
+            )
+            if stalled_expired and managed_playing:
+                now = time.time()
+                guard_track = snapshot.current_track_id
+                if monitor.get("track") == guard_track and now - safe_float(monitor.get("stalled_advance_at")) < 3.0:
+                    continue
+                monitor.update({"track": guard_track, "stalled_advance_at": now})
                 result = PLAYBACK_CORE.dispatch(
                     PlaybackCommand(
                         "next",
