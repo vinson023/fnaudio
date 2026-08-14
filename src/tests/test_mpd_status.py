@@ -5,7 +5,7 @@ from unittest import mock
 sys.path.insert(0, "app/server")
 
 from playback.mpd_client import mpd_replace_queue, mpd_status
-from playback.mpd_errors import classify_mpd_exception, classify_mpd_log_errors
+from playback.mpd_errors import classify_mpd_exception, classify_mpd_log_errors, health_error_category
 from services.mpd_service import classify_decoder_errors, device_presence_transition, normalized_transport
 
 
@@ -125,6 +125,21 @@ class MpdStatusTests(unittest.TestCase):
         self.assertEqual(error["category"], "queue_stale")
         self.assertEqual(error["domain"], "queue")
         self.assertTrue(error["retryable"])
+
+    def test_health_only_reports_severe_playback_errors(self):
+        summary = classify_mpd_log_errors(
+            "flac: invalid sync code\n"
+            "exception: No such song\n"
+        )
+
+        self.assertEqual(summary["last_category"], "queue_stale")
+        self.assertEqual(health_error_category(summary), "source_corrupt")
+
+    def test_health_omits_recoverable_queue_warning(self):
+        summary = classify_mpd_log_errors("exception: No such song\n")
+
+        self.assertEqual(summary["last_category"], "queue_stale")
+        self.assertEqual(health_error_category(summary), "")
 
     def test_common_flac_and_alsa_variants_do_not_collapse_into_generic_decoder_error(self):
         result = classify_mpd_log_errors(

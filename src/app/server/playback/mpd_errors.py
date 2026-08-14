@@ -198,6 +198,14 @@ def legacy_decoder_error_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def health_error_category(summary: Dict[str, Any]) -> str:
+    """Return the latest severe playback error suitable for service health."""
+    for item in reversed(list((summary or {}).get("items") or [])):
+        if str(item.get("severity") or "").lower() == "error":
+            return str(item.get("category") or "")
+    return ""
+
+
 def classify_mpd_exception(error: Any) -> Dict[str, Any]:
     message = str(error or "").strip()
     item = classify_mpd_log_line(message)
@@ -211,6 +219,7 @@ __all__ = [
     "classify_mpd_log_errors",
     "classify_mpd_log_line",
     "empty_mpd_error_summary",
+    "health_error_category",
     "legacy_decoder_error_summary",
     "mpd_error",
 ]

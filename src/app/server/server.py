@@ -86,6 +86,7 @@ from playback.http_contract import (
     target_kind as playback_target_kind,
 )
 from playback.mpd_client import mpd_control, mpd_load_uri, mpd_status
+from playback.mpd_errors import health_error_category
 from playback.alsa_output import (
     DAC_LOCK,
     DAC_STATE,
@@ -598,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
                     "mpd": {
                         "running": bool(mpd.get("running")),
                         "fault": (mpd.get("fault") or {}).get("state", ""),
-                        "error_category": (mpd.get("playback_errors") or {}).get("last_category", ""),
+                        "error_category": health_error_category(mpd.get("playback_errors") or {}),
                     },
                     "library": {
                         "scanning": bool(SCAN_STATE.get("running")),
