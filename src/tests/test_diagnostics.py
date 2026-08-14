@@ -24,6 +24,23 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertNotIn("path", str(snapshot))
         self.assertEqual(snapshot["metrics"]["token"], "[REDACTED]")
 
+    def test_snapshot_does_not_degrade_health_for_recoverable_playback_warning(self):
+        snapshot = support_snapshot(
+            server_name="fnAudio test",
+            mpd={
+                "running": True,
+                "fault": {"state": "IDLE"},
+                "playback_errors": {
+                    "last_category": "queue_stale",
+                    "items": [{"category": "queue_stale", "severity": "warning"}],
+                },
+            },
+            scan_state={}, metadata={}, transcode={}, dlna_available=False,
+            renderer_count=0, metrics={}, playback={},
+        )
+
+        self.assertEqual(snapshot["components"]["mpd"]["error_category"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

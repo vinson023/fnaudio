@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from observability import redact
+from playback.mpd_errors import health_error_category
 from version import APP_VERSION
 
 
@@ -30,7 +31,7 @@ def support_snapshot(*, server_name, mpd, scan_state, metadata, transcode, dlna_
             "mpd": {
                 "running": bool((mpd or {}).get("running")),
                 "fault": str(fault.get("state") or ""),
-                "error_category": str(playback_errors.get("last_category") or ""),
+                "error_category": health_error_category(playback_errors),
             },
             "library": {
                 "scanning": bool((scan_state or {}).get("running")),
