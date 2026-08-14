@@ -7,6 +7,7 @@
 - Live post-upgrade proof: `/vol1/1000/fnaudio/external-health-0.2.11.json` and `external-core-0.2.11.json` show MPD running, empty health error category, the selected TEAC DAC, the preserved 536-item queue and `STOPPED` transport.
 - Real TEAC repeat-one acceptance used a 2-second PCM WAV fixture and waited beyond two track boundaries. MPD reported `repeat=1`, queue position `0`, and `PLAYING`; PlaybackCore still named the same track. Evidence: `/vol1/1000/fnaudio/external-repeat-one-0.2.11-pAsWFF/report.json` (`repeat_one_verified=true`). The test trap restored the prior DAC target, queue and library roots.
 - Real TEAC repeat-all acceptance used both 2-second PCM fixtures. Its sampled native MPD positions were `0,1,1,0,1,1,0,1,1`, proving the complete `0 -> 1 -> 0` wrap-around while playback remained active. Evidence: `/vol1/1000/fnaudio/external-repeat-all-0.2.11-QFp9py/report.json` (`repeat_all_verified=true`); prior DAC and library configuration were restored.
+- Real TEAC shuffle mapping acceptance set the two-track queue to `shuffle=true`, then issued an idempotent `next`. PlaybackCore reported `shuffle=true`, MPD reported native `random=1`, and transport stayed `PLAYING`. Evidence: `/vol1/1000/fnaudio/external-shuffle-0.2.11-uySE1e/report.json`. With only two tracks this validates control/state convergence, not statistical random distribution; the prior session was restored.
 
 ## 0.2.10 Real-device Automation Authentication Repair (2026-08-14)
 
