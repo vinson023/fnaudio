@@ -1061,6 +1061,13 @@ start audio. The persisted playback state is normalized to `STOPPED` during
 restore. A local stop always clears the browser/native media and sends the same
 authoritative `stop` command to the backend before its state is persisted.
 
+## 0.2.5 外网真实 DAC 回归（2026-08-14）
+
+- 外网测试机 `vinson023.eu.org:3100` 正在运行 `fnAudio 0.2.5`（服务端口 `18080`）。真实输出设备为 `TEAC UD-301`，稳定设备 ID 为 `usb:0644:804a:00160000386ca1d14e45282720120016:dev0`。
+- 在该设备上使用隔离的短时队列实际验证了 DSF（`Simple Man`）与 DFF（`分手說愛你`）：两次 MPD 状态均为 `PLAY`、`format=dsd64:2`、`dsd=true`、`bitperfect_candidate=true`，没有 PCM 回退。
+- 同一轮已实际执行暂停、恢复、seek 和下一首；暂停状态为 `PAUSE`，恢复与 seek 后均回到 `PLAY`。证据目录：`/vol1/1000/fnaudio/external-dsd-smoke-20260814-185513/`，其中 `report.json` 为汇总。
+- 测试退出时通过 API 恢复原 536 首播放队列、当前曲目、循环、随机、DAC 目标与 `STOPPED` 传输状态；`restore-verification.json` 记录 `restore_verified=true`。仍未替代物理热插拔、DoP-only DAC、DLNA Renderer、AirPlay 和 Android 多设备验收。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
