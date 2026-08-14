@@ -1,5 +1,14 @@
 # fnAudio 项目上下文
 
+## 0.2.9 External Playback Health Regression (2026-08-14)
+
+- The MPD startup notice for an unavailable WildMidi decoder is now ignored only when it explicitly reports a missing Timidity configuration file. fnAudio does not currently expose MIDI playback and the external music library contains no `.mid` or `.midi` tracks, so this optional, unused decoder must not degrade playback health. Ordinary WildMidi and all other decoder failures remain classified as decoder errors.
+- `0.2.9` was built directly by `tools/fnpack.exe build` through `tools/build_release.ps1`: `artifacts/0.2.9/fnaudio-0.2.9-fnpack.fpk`, SHA-256 `8457852983C32F378E308D4D90795B34D9D1606D9B7CB870DDDB2AA98F3B2496`.
+- The authorized external host was transactionally upgraded through SSH port `3100`; the service stayed on `18080`. Its original 536-item queue, selected TEAC UD-301 DAC and stopped transport persisted across the upgrade.
+- Real DAC smoke evidence: `/vol1/1000/fnaudio/external-dac-smoke-0.2.9-l2pPlF/`. The TEAC DAC reached `PLAYING` and `5.988s`; after the bounded run, queue/current/repeat/shuffle/target/STOPPED all matched the pre-test snapshot (`restore_verified=true`). Health reported an empty MPD error category and no WildMidi playback error.
+- Companion upgrade-health evidence: `/vol1/1000/fnaudio/external-wildmidi-0.2.9-EgmiRo/`.
+- Remaining physical-device acceptance stays open: physical DAC unplug/replug, DoP-only DAC DSD, native DSD over DLNA Renderer, AirPlay, and Android multi-device foreground/background/network-switch tests.
+
 ## Release and Documentation Baseline (2026-08-14)
 
 - The current source version is `0.2.5`. Current-state documentation was synchronized across README, architecture, decisions, recovery, Android client README and docs index; historical documents remain read-only.

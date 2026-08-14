@@ -61,6 +61,16 @@ class MpdStatusTests(unittest.TestCase):
         )
         self.assertEqual(result["last_category"], "decoder_unavailable")
 
+    def test_unused_wildmidi_startup_notice_does_not_degrade_playback_health(self):
+        result = classify_mpd_log_errors(
+            "decoder: Decoder plugin 'wildmidi' is unavailable: "
+            "configuration file does not exist: /etc/timidity/timidity.cfg\n"
+            "player: played healthy.flac\n"
+        )
+
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["occurrences"], 0)
+
     def test_decoder_error_limit_is_bounded(self):
         result = classify_decoder_errors("invalid frame header\n" * 5, limit=2)
 

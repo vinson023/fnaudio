@@ -26,10 +26,21 @@ def _contains_any(text: str, needles) -> bool:
     return any(needle in text for needle in needles)
 
 
+def _is_optional_decoder_startup_notice(text: str) -> bool:
+    """Ignore known MPD startup notices for decoders fnAudio does not expose."""
+    return (
+        "wildmidi" in text
+        and _contains_any(text, ("unavailable", "not found", "missing"))
+        and _contains_any(text, ("configuration file", "timidity", "timidity.cfg"))
+    )
+
+
 def classify_mpd_log_line(message: str) -> Dict[str, Any]:
     line = str(message or "").strip()
     lower = line.casefold()
     if not line:
+        return {}
+    if _is_optional_decoder_startup_notice(lower):
         return {}
 
     category = ""
