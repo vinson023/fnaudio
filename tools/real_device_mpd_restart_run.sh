@@ -7,6 +7,10 @@ LOG="${1:-/vol1/1000/fnaudio-mpd-restart.log}"
 BEFORE="${LOG}.before.json"
 AFTER="${LOG}.after.json"
 
+api() {
+  curl -fsS -H 'X-Fnaudio-Internal: 1' "$@"
+}
+
 restore() {
   code=$?
   trap - EXIT INT TERM
@@ -18,11 +22,11 @@ print(json.dumps({"target_id": s.get("target_id", "local")}))
 print(json.dumps({"queue": s.get("queue", []), "current_id": s.get("current"), "repeat": s.get("repeat", "off"), "shuffle": bool(s.get("shuffle"))}))
 print(json.dumps({"action": "play" if s.get("transport") == "PLAYING" else "stop", "target_id": s.get("target_id", "local")}))
 PY
-  sed -n '1p' "${BEFORE}.restore.jsonl" | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/target" >/dev/null || code=1
-  sed -n '2p' "${BEFORE}.restore.jsonl" | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >/dev/null || code=1
-  sed -n '3p' "${BEFORE}.restore.jsonl" | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >/dev/null || code=1
+  sed -n '1p' "${BEFORE}.restore.jsonl" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/target" >/dev/null || code=1
+  sed -n '2p' "${BEFORE}.restore.jsonl" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >/dev/null || code=1
+  sed -n '3p' "${BEFORE}.restore.jsonl" | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >/dev/null || code=1
   rm -f "${BEFORE}.restore.jsonl"
-  curl -fsS "$BASE/api/playback/core" > "$AFTER" || code=1
+  api "$BASE/api/playback/core" > "$AFTER" || code=1
   python3 - "$BEFORE" "$AFTER" >> "$LOG" 2>&1 <<'PY' || code=1
 import json, sys
 before = json.load(open(sys.argv[1], encoding="utf-8"))["state"]
@@ -38,7 +42,7 @@ PY
 }
 
 trap restore EXIT INT TERM
-curl -fsS "$BASE/api/playback/core" > "$BEFORE"
+api "$BASE/api/playback/core" > "$BEFORE"
 TRACK="$(python3 - "$BEFORE" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1], encoding="utf-8"))["state"]
@@ -52,7 +56,7 @@ PY
 )"
 [ -n "$TRACK" ] || { echo "empty queue" >&2; exit 2; }
 printf '{"target_id":"%s","track_id":"%s","position":0}\n' "$TARGET" "$TRACK" \
-  | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
+  | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
 sleep 2
 PID="$(pgrep -f '/target/bin/mpd --no-daemon' | head -n 1)"
 [ -n "$PID" ] || { echo "MPD PID not found" >&2; exit 2; }
@@ -60,7 +64,7 @@ printf 'killed_pid=%s\n' "$PID" >> "$LOG"
 kill -TERM "$PID"
 for sample in $(seq 1 30); do
   sleep 1
-  STATUS="$(curl -fsS "$BASE/api/playback/core")"
+  STATUS="$(api "$BASE/api/playback/core")"
   printf 'sample=%s %s\n' "$sample" "$STATUS" >> "$LOG"
   printf '%s' "$STATUS" | grep -q '"transport": "PLAYING"' && break
 done

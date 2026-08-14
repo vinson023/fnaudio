@@ -28,7 +28,8 @@ class RealDeviceAutomationScriptTests(unittest.TestCase):
     def test_dynamic_dac_runner_snapshots_and_verifies_the_real_queue(self):
         root = pathlib.Path(__file__).resolve().parents[2]
         script = (root / "tools" / "real_device_dac_queue_run.sh").read_text(encoding="utf-8")
-        self.assertIn('curl -fsS "$BASE/api/playback/core" > "$SNAPSHOT"', script)
+        self.assertIn("X-Fnaudio-Internal: 1", script)
+        self.assertIn('api "$BASE/api/playback/core" > "$SNAPSHOT"', script)
         self.assertIn('"queue": state["queue"]', script)
         self.assertIn('"restore_verified="', script)
         self.assertNotIn("ORIGINAL_QUEUE=", script)
@@ -40,6 +41,16 @@ class RealDeviceAutomationScriptTests(unittest.TestCase):
         self.assertIn('range(expected)', script)
         self.assertIn('queue_positions_complete_at_sample=', script)
         self.assertIn('seen_positions=', script)
+
+    def test_all_real_device_scripts_use_loopback_internal_authentication(self):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        for name in (
+            "real_device_dac_queue_run.sh",
+            "real_device_mpd_restart_run.sh",
+            "real_device_usb_hotplug_capture.sh",
+        ):
+            script = (root / "tools" / name).read_text(encoding="utf-8")
+            self.assertIn("X-Fnaudio-Internal: 1", script, name)
 
 
 if __name__ == "__main__":
