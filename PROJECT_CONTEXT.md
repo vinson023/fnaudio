@@ -1074,6 +1074,12 @@ authoritative `stop` command to the backend before its state is persisted.
 - 已发现真实电视端 Renderer，并对 `奇异果TV官方投屏(51)` 做了实际 FLAC 推送。设备接收的 URI 为 `http://198.51.100.68:18080/upnp/media/...`；加载、暂停、恢复和 seek 的控制请求均成功，seek 后设备与核心状态均为 `PLAYING`。证据：`/vol1/1000/fnaudio/external-dlna-pcm-20260814-190010/report.json`，恢复校验通过。
 - 该 Renderer 的 `ConnectionManager` 协议信息明确 `supports_dsd=false`，故不能作为原生 DSD 推送、采样率保持或自动下一首的验收设备。继续等待兼容 Renderer；不能以电视端 PCM 结果代替该项。
 
+## 0.2.7 外网 DLNA 自动下一首修复（2026-08-14）
+
+- 真机复现：`奇异果TV官方投屏(51)` 在短 FLAC 结束后仍持续上报 `PLAYING`，且位置/时长永久为 `00:00:00`。旧监控器仅依赖 `PLAYING -> STOPPED`，所以队列停在第一首。
+- 修复：远程输出监控器在曲目开始时保留库中的真实时长；只有当前 URI 匹配、Renderer 持续 `PLAYING`/`TRANSITIONING`、位置与时长均为零、并超过该时长 2 秒后，才执行一次队列推进。正常上报进度、暂停或 URI 不匹配的 Renderer 不会触发该兜底。
+- 外网机已部署 `0.2.7`。使用 10.826 秒 `Airport Take Off` 接 76.12 秒 `Intro` 的真实电视端队列，第一首自然结束后设备 URI、fnAudio 当前曲目和传输状态均切换至第二首 `PLAYING`。证据：`/vol1/1000/fnaudio/external-dlna-autonext-0.2.7-20260814-190912/report.json`；恢复校验通过。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
