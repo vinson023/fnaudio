@@ -28,6 +28,8 @@
             android:name=".ui.ConnectionHistoryActivity"
             android:exported="false" />
 
+        <activity android:name=".ui.FnConnectActivity" android:exported="false" />
+
         <activity
             android:name=".ui.LoginActivity"
             android:exported="true">

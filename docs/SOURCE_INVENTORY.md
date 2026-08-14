@@ -1,14 +1,14 @@
 # fnAudio 源码范围清单
 
-> 整理日期：2026-08-06  
-> 当前源码版本：`0.1.161`  
+> 初次整理日期：2026-08-06  
+> 当前源码版本：`0.1.223`  
 > 来源：`E:\Codex\fnaudio-0.1.7`
 
 ## 1. 已纳入 `src/`
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/manifest` | 当前 FPK manifest，版本 `0.1.161` |
+| `src/manifest` | 当前 FPK manifest，版本 `0.1.223` |
 | `src/app/server/` | Python 后端及 playback、dlna、services 子包 |
 | `src/app/ui/` | HTML、CSS、JavaScript、CGI、图标和 fnOS vendor 脚本 |
 | `src/app/target/bin/` | 私有 MPD 可执行文件 |
@@ -18,10 +18,10 @@
 | `src/cmd/` | fnOS 生命周期脚本 |
 | `src/config/` | fnOS 权限和资源声明 |
 | `src/wizard/` | 安装、配置和卸载向导 |
-| `src/tests/` | 9 个 Python 测试文件、2 个 Node 前端回归脚本及人工 UI 验证截图/DOM 记录 |
+| `src/tests/` | Python 单元/集成测试、Node UI 回归和本地媒体夹具 |
 | `src/ICON*.PNG`、`src/logo*.svg` | 应用图标和历史 logo 资源 |
 
-整理时统计：
+初次整理时统计（仅为历史来源证据，不代表当前规模）：
 
 - 当前源码共 138 个文件，约 11.9 MB。
 - 其中 Python 文件 39 个。
@@ -58,7 +58,7 @@
 
 ## 5. 完整性验证
 
-`SOURCE_MANIFEST.sha256` 包含 `src/` 下每个文件的 SHA-256 和相对路径。`RECOVERY.md` 保留初次整理时的三个关键文件哈希，用于追溯与原始 `0.1.148` 来源的差异；后续已修改源码时，以当前清单和 `CHANGELOG_AI.md` 为准。
+`SOURCE_MANIFEST.sha256` 包含 `src/` 与 Android 权威源码/构建定义的 SHA-256 和相对路径，排除 build、Gradle 缓存、`.media3-inspect`、字节码和 APK/FPK 等派生物。运行 `tools/update_source_manifest.ps1` 可复现生成；后续以当前清单、可执行源码和 `CHANGELOG_AI.md` 为准。
 
 当文件清单变化时，应同时：
 

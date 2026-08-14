@@ -8,6 +8,8 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterable
 
+from file_permissions import secure_directory, secure_sqlite_files
+
 
 class StateConflict(Exception):
     pass
@@ -25,12 +27,15 @@ def state_db_path(config: Dict[str, Any]) -> str:
 
 @contextmanager
 def state_db_connect(config: Dict[str, Any]):
-    os.makedirs(str(config["cache_dir"]), exist_ok=True)
-    conn = sqlite3.connect(state_db_path(config), timeout=15)
+    secure_directory(str(config["cache_dir"]))
+    db_path = state_db_path(config)
+    conn = sqlite3.connect(db_path, timeout=15)
     try:
+        secure_sqlite_files(db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=15000")
         conn.execute("PRAGMA journal_mode=WAL")
+        secure_sqlite_files(db_path)
         conn.execute("PRAGMA synchronous=NORMAL")
         ensure_state_schema(conn)
         yield conn
@@ -40,6 +45,7 @@ def state_db_connect(config: Dict[str, Any]):
         raise
     finally:
         conn.close()
+        secure_sqlite_files(db_path)
 
 
 def ensure_state_schema(conn: sqlite3.Connection) -> None:
@@ -146,6 +152,39 @@ def _ui_preferences(payload: Any) -> Dict[str, Any]:
     return {"track_columns": result, "track_column_widths": width_result}
 
 
+def _playlists(payload: Any) -> list[Dict[str, Any]]:
+    source = payload if isinstance(payload, list) else []
+    playlists = []
+    seen = set()
+    for entry in source:
+        if not isinstance(entry, dict):
+            continue
+        playlist_id = str(entry.get("id") or "").strip()[:512]
+        name = str(entry.get("name") or "").strip()[:160]
+        if not playlist_id or not name or playlist_id in seen:
+            continue
+        seen.add(playlist_id)
+        playlists.append({
+            "id": playlist_id,
+            "name": name,
+            "trackIds": _strings(entry.get("trackIds") if isinstance(entry.get("trackIds"), list) else [], 10000),
+        })
+        if len(playlists) >= 1000:
+            break
+    return playlists
+
+
+def _state_changes(payload: Any) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "favorites_add": _strings(payload.get("favorites_add") if isinstance(payload.get("favorites_add"), list) else [], 50000),
+        "favorites_remove": _strings(payload.get("favorites_remove") if isinstance(payload.get("favorites_remove"), list) else [], 50000),
+        "playlist_upserts": _playlists(payload.get("playlist_upserts")),
+        "playlist_delete": _strings(payload.get("playlist_delete") if isinstance(payload.get("playlist_delete"), list) else [], 1000),
+    }
+
+
 def load_user_state(config: Dict[str, Any]) -> Dict[str, Any]:
     with _STATE_WRITE_LOCK, state_db_connect(config) as conn:
         favorites = [row["track_id"] for row in conn.execute("SELECT track_id FROM favorites ORDER BY created_at DESC, rowid DESC")]
@@ -170,20 +209,8 @@ def load_user_state(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def save_user_state(config: Dict[str, Any], payload: Dict[str, Any], expected_revision: int | None = None) -> Dict[str, Any]:
     favorites = _strings(payload.get("favorites") if isinstance(payload.get("favorites"), list) else [], 50000)
-    source_playlists = payload.get("playlists") if isinstance(payload.get("playlists"), list) else []
-    playlists = []
-    seen = set()
-    for entry in source_playlists:
-        if not isinstance(entry, dict):
-            continue
-        playlist_id = str(entry.get("id") or "").strip()
-        name = str(entry.get("name") or "").strip()[:160]
-        if not playlist_id or not name or playlist_id in seen:
-            continue
-        seen.add(playlist_id)
-        playlists.append({"id": playlist_id, "name": name, "trackIds": _strings(entry.get("trackIds") if isinstance(entry.get("trackIds"), list) else [], 10000)})
-        if len(playlists) >= 1000:
-            break
+    playlists = _playlists(payload.get("playlists"))
+    changes = _state_changes(payload.get("changes"))
     playback = payload.get("playback") if isinstance(payload.get("playback"), dict) else {}
     ui = _ui_preferences(payload.get("ui"))
     now = int(time.time())
@@ -191,16 +218,37 @@ def save_user_state(config: Dict[str, Any], payload: Dict[str, Any], expected_re
         conn.execute("BEGIN IMMEDIATE")
         current_revision = _revision(conn)
         if expected_revision is not None and expected_revision != current_revision:
-            raise StateConflict("state changed by another client")
-        conn.execute("DELETE FROM favorites")
-        conn.executemany("INSERT INTO favorites(track_id, created_at) VALUES (?, ?)", [(track_id, now - index) for index, track_id in enumerate(favorites)])
-        conn.execute("DELETE FROM playlist_tracks")
-        conn.execute("DELETE FROM playlists")
-        for index, playlist in enumerate(playlists):
-            conn.execute("INSERT INTO playlists(id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", (playlist["id"], playlist["name"], now + index, now))
-            conn.executemany("INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)", [(playlist["id"], track_id, position) for position, track_id in enumerate(playlist["trackIds"])])
-        conn.execute("INSERT OR REPLACE INTO playback_sessions(id, payload, updated_at) VALUES (?, ?, ?)", ("default", json.dumps(playback, ensure_ascii=False, separators=(",", ":")), now))
-        conn.execute("INSERT OR REPLACE INTO ui_preferences(id, payload, updated_at) VALUES (?, ?, ?)", ("default", json.dumps(ui, ensure_ascii=False, separators=(",", ":")), now))
+            if changes is None:
+                raise StateConflict("state changed by another client")
+            conn.executemany("DELETE FROM favorites WHERE track_id = ?", [(track_id,) for track_id in changes["favorites_remove"]])
+            conn.executemany(
+                "INSERT OR IGNORE INTO favorites(track_id, created_at) VALUES (?, ?)",
+                [(track_id, now + index) for index, track_id in enumerate(changes["favorites_add"])],
+            )
+            for playlist_id in changes["playlist_delete"]:
+                conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+                conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+            for index, playlist in enumerate(changes["playlist_upserts"]):
+                existing = conn.execute("SELECT created_at FROM playlists WHERE id = ?", (playlist["id"],)).fetchone()
+                if existing:
+                    conn.execute("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?", (playlist["name"], now, playlist["id"]))
+                else:
+                    conn.execute("INSERT INTO playlists(id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", (playlist["id"], playlist["name"], now + index, now))
+                conn.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist["id"],))
+                conn.executemany(
+                    "INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)",
+                    [(playlist["id"], track_id, position) for position, track_id in enumerate(playlist["trackIds"])],
+                )
+        else:
+            conn.execute("DELETE FROM favorites")
+            conn.executemany("INSERT INTO favorites(track_id, created_at) VALUES (?, ?)", [(track_id, now - index) for index, track_id in enumerate(favorites)])
+            conn.execute("DELETE FROM playlist_tracks")
+            conn.execute("DELETE FROM playlists")
+            for index, playlist in enumerate(playlists):
+                conn.execute("INSERT INTO playlists(id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", (playlist["id"], playlist["name"], now + index, now))
+                conn.executemany("INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)", [(playlist["id"], track_id, position) for position, track_id in enumerate(playlist["trackIds"])])
+            conn.execute("INSERT OR REPLACE INTO playback_sessions(id, payload, updated_at) VALUES (?, ?, ?)", ("default", json.dumps(playback, ensure_ascii=False, separators=(",", ":")), now))
+            conn.execute("INSERT OR REPLACE INTO ui_preferences(id, payload, updated_at) VALUES (?, ?, ?)", ("default", json.dumps(ui, ensure_ascii=False, separators=(",", ":")), now))
         _next_revision(conn)
     return load_user_state(config)
 

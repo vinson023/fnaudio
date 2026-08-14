@@ -1,3 +1,10 @@
+# 工作区整理补充
+
+- `0.x.y/`：可安装的正式发布包、对应 APK 与发布验证证据，保留用于回滚。
+- `_scratch/YYYY-MM-DD/`：历史封包检查、临时构建和调试输出；不参与发布，也不纳入 Git。
+- 根目录不保留临时 FPK、解包目录或一次性设备调试文件。
+- 测试缓存（`.android-avd`、`.gradle-cache`）保留在仓库根目录的隐藏目录中，以便复用 Android 自动化环境；需要释放空间时可单独清理，清理后会在下次构建或测试时重新下载或创建。
+
 # 构建产物策略
 
 `0.1.173/` 是当前配套发布候选，包含 USB DAC/MPD 服务端自动推进、远程 load 去重、DSD 96kHz/24bit PCM 推送、Android token 启动恢复和 Android 6.0+ 安装兼容调整。详见该目录的 `RELEASE_NOTES.md` 与 `VALIDATION.md`。

@@ -103,13 +103,36 @@ class LibrarySqliteTests(unittest.TestCase):
             config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
             inside = self._item("inside", os.path.join(music_root, "album", "inside.flac"), "Inside", 1)
             outside = self._item("outside", os.path.join(outside_root, "outside.flac"), "Outside", 2)
+            os.makedirs(os.path.dirname(inside["path"]))
+            with open(inside["path"], "wb"):
+                pass
+            with open(outside["path"], "wb"):
+                pass
             save_items_to_sqlite(config, [inside, outside], "test")
 
             location = query_library_item_location(config, "inside")
-            self.assertEqual(location["path"], inside["path"])
-            self.assertEqual(location["folder"], os.path.dirname(inside["path"]))
+            self.assertEqual(location["path"], os.path.realpath(inside["path"]))
+            self.assertEqual(location["folder"], os.path.dirname(os.path.realpath(inside["path"])))
             self.assertIsNone(query_library_item_location(config, "outside"))
             self.assertIsNone(query_library_item_location(config, "missing"))
+
+    def test_item_location_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as root:
+            music_root = os.path.join(root, "music")
+            outside_root = os.path.join(root, "outside")
+            os.makedirs(music_root)
+            os.makedirs(outside_root)
+            outside_file = os.path.join(outside_root, "secret.flac")
+            with open(outside_file, "wb"):
+                pass
+            link = os.path.join(music_root, "linked.flac")
+            try:
+                os.symlink(outside_file, link)
+            except OSError as exc:
+                self.skipTest("symlinks are unavailable: %s" % exc)
+            config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            save_items_to_sqlite(config, [self._item("escape", link, "Escape", 1)], "test")
+            self.assertIsNone(query_library_item_location(config, "escape"))
 
     def test_incremental_group_and_folder_refresh_handles_changes(self):
         with tempfile.TemporaryDirectory() as root:

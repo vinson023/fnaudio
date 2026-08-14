@@ -6,15 +6,24 @@ import threading
 import time
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Tuple
 from urllib.parse import quote, unquote
 from xml.etree import ElementTree as ET
+from .network import fetch_lan, lan_http_url, optional_lan_http_url
+from version import APP_VERSION
 
 
 AVTRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
 RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1"
 CONNECTION_MANAGER = "urn:schemas-upnp-org:service:ConnectionManager:1"
 CONTENT_DIRECTORY = "urn:schemas-upnp-org:service:ContentDirectory:1"
+
+
+class UpnpActionError(ValueError):
+    def __init__(self, code: int, description: str):
+        super().__init__(description)
+        self.code = int(code)
 
 
 def _tag_name(tag: str) -> str:
@@ -139,6 +148,7 @@ class DlnaEventService:
     def __init__(self):
         self._lock = threading.RLock()
         self._subscriptions: Dict[str, Dict[str, Any]] = {}
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fnaudio-gena")
 
     def subscribe(self, role: str, service: str, callback: str, sid: str, timeout_header: str) -> Tuple[str, int]:
         if role != "renderer" or service not in ("avtransport", "rendering"):
@@ -152,6 +162,8 @@ class DlnaEventService:
                 item["expires"] = time.time() + timeout
                 return sid, timeout
             endpoint = self._callback_url(callback)
+            if len(self._subscriptions) >= 64:
+                raise ValueError("too many event subscriptions")
             sid = "uuid:%s" % uuid.uuid4()
             self._subscriptions[sid] = {"role": role, "service": service, "callback": endpoint, "expires": time.time() + timeout, "sequence": 0}
         return sid, timeout
@@ -170,7 +182,7 @@ class DlnaEventService:
         for sid, item in subscriptions:
             body = self._body(item["service"], state)
             sequence = int(item.get("sequence") or 0)
-            threading.Thread(target=self._send, args=(sid, item, sequence, body), daemon=True).start()
+            self._executor.submit(self._send, sid, item, sequence, body)
 
     @staticmethod
     def _timeout(value: str) -> int:
@@ -182,9 +194,7 @@ class DlnaEventService:
     def _callback_url(value: str) -> str:
         match = re.search(r"<([^>]+)>", str(value or ""))
         endpoint = match.group(1).strip() if match else ""
-        if not endpoint.startswith(("http://", "https://")):
-            raise ValueError("invalid callback URL")
-        return endpoint
+        return lan_http_url(endpoint)
 
     @staticmethod
     def _body(service: str, state: Dict[str, Any]) -> bytes:
@@ -203,7 +213,7 @@ class DlnaEventService:
             request.add_header("NTS", "upnp:propchange")
             request.add_header("SID", sid)
             request.add_header("SEQ", str(sequence))
-            urllib.request.urlopen(request, timeout=3).read(1)
+            fetch_lan(request, timeout=3, max_bytes=4096)
             with self._lock:
                 current = self._subscriptions.get(sid)
                 if current:
@@ -227,6 +237,8 @@ class DlnaProtocolService:
         library_roots: Callable[[], Iterable[Dict[str, Any]]] | None = None,
         library_folders: Callable[[str, str], Iterable[Dict[str, Any]]] | None = None,
         output_capabilities: Callable[[], Dict[str, Any]] | None = None,
+        library_item: Callable[[str], Dict[str, Any] | None] | None = None,
+        system_update_id: Callable[[], int] | None = None,
     ):
         self.base_url = base_url
         self.renderer = renderer
@@ -236,6 +248,8 @@ class DlnaProtocolService:
         self.library_roots = library_roots or (lambda: [])
         self.library_folders = library_folders or (lambda parent, root: [])
         self.output_capabilities = output_capabilities or (lambda: {})
+        self.library_item = library_item or (lambda item_id: None)
+        self.system_update_id = system_update_id or (lambda: 1)
         self.events = DlnaEventService()
         self.renderer.add_state_listener(self.events.notify_renderer)
 
@@ -260,8 +274,8 @@ class DlnaProtocolService:
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion>'
-            "<device><deviceType>urn:schemas-upnp-org:device:%s</deviceType><friendlyName>%s</friendlyName><manufacturer>fnaudio</manufacturer><modelName>fnAudio</modelName><modelNumber>0.1</modelNumber><UDN>uuid:%s</UDN><serviceList>%s</serviceList></device></root>"
-            % (device_type, friendly, udn, "".join(rows))
+            "<device><deviceType>urn:schemas-upnp-org:device:%s</deviceType><friendlyName>%s</friendlyName><manufacturer>fnaudio</manufacturer><modelName>fnAudio</modelName><modelNumber>%s</modelNumber><UDN>uuid:%s</UDN><serviceList>%s</serviceList></device></root>"
+            % (device_type, friendly, APP_VERSION, udn, "".join(rows))
         ).encode("utf-8")
 
     def control(self, role: str, service_name: str, raw: bytes, header: str = "") -> Tuple[int, bytes]:
@@ -270,6 +284,8 @@ class DlnaProtocolService:
             service = self._service_for(role, service_name)
             values = self._dispatch(role, service, action, args)
             return 200, _soap_envelope(service, action, values)
+        except UpnpActionError as exc:
+            return 500, soap_fault(exc.code, str(exc))
         except ValueError as exc:
             return 500, soap_fault(402, str(exc))
         except Exception as exc:
@@ -300,16 +316,16 @@ class DlnaProtocolService:
             if action == "GetSortCapabilities":
                 return {"SortCaps": "dc:title,upnp:artist,upnp:album"}
             if action == "GetSystemUpdateID":
-                return {"Id": "1"}
+                return {"Id": str(self._update_id())}
         if role != "renderer":
             raise ValueError("unsupported MediaServer action")
         state = self.renderer.snapshot()
         if service == AVTRANSPORT:
             if action == "SetAVTransportURI":
-                self.renderer.set_uri(args.get("CurrentURI", ""), args.get("CurrentURIMetaData", ""))
+                self.renderer.set_uri(optional_lan_http_url(args.get("CurrentURI", "")), args.get("CurrentURIMetaData", ""))
                 return {}
             if action == "SetNextAVTransportURI":
-                self.renderer.set_next_uri(args.get("NextURI", ""), args.get("NextURIMetaData", ""))
+                self.renderer.set_next_uri(optional_lan_http_url(args.get("NextURI", "")), args.get("NextURIMetaData", ""))
                 return {}
             if action == "Play":
                 return self._result(self.renderer.command("play"))
@@ -343,8 +359,7 @@ class DlnaProtocolService:
             if action == "GetMute":
                 return {"CurrentMute": "1" if state["muted"] else "0"}
             if action == "SetMute":
-                self.renderer.set_mute(args.get("DesiredMute", "0") not in ("0", "false", "False"))
-                return {}
+                return self._result(self.renderer.set_mute(args.get("DesiredMute", "0") not in ("0", "false", "False")))
             if action == "ListPresets":
                 return {"CurrentPresetNameList": "FactoryDefaults"}
             if action == "SelectPreset":
@@ -359,48 +374,159 @@ class DlnaProtocolService:
 
     def _browse(self, args: Dict[str, str]) -> Dict[str, Any]:
         object_id = str(args.get("ObjectID") or "0")
-        start = max(0, int(args.get("StartingIndex") or 0))
-        requested = max(0, int(args.get("RequestedCount") or 100)) or 100
+        browse_flag = str(args.get("BrowseFlag") or "BrowseDirectChildren")
+        if browse_flag not in ("BrowseMetadata", "BrowseDirectChildren"):
+            raise UpnpActionError(402, "Invalid BrowseFlag")
+        try:
+            start = int(args.get("StartingIndex") or 0)
+            requested_value = int(args.get("RequestedCount") or 0)
+        except (TypeError, ValueError):
+            raise UpnpActionError(402, "Invalid paging arguments")
+        if start < 0 or requested_value < 0:
+            raise UpnpActionError(402, "Invalid paging arguments")
+        # UPnP defines RequestedCount=0 as all remaining entries. Keep the
+        # response bounded while still returning every child for small
+        # containers; clients can continue from NumberReturned for large ones.
+        requested = min(500, requested_value or 500)
+        filter_fields = self._filter_fields(args.get("Filter", "*"))
+        sort_key, sort_dir = self._sort_criteria(args.get("SortCriteria", ""))
+        if browse_flag == "BrowseMetadata":
+            xml = self._metadata_for_object(object_id, filter_fields)
+            didl = self._didl(xml)
+            return {"Result": didl, "NumberReturned": "1", "TotalMatches": "1", "UpdateID": str(self._update_id())}
+        if object_id.startswith(("albums:", "artists:", "genres:", "folders-root:", "folder:")):
+            self._metadata_for_object(object_id, filter_fields)
         returned = None
         if object_id == "0":
             entries = [("music", "Music", "object.container"), ("albums", "Albums", "object.container.album.musicAlbum"), ("artists", "Artists", "object.container.person.musicArtist"), ("genres", "Genres", "object.container.genre.musicGenre"), ("folders", "Folders", "object.container.storageFolder")]
-            xml = "".join('<container id="%s" parentID="0" restricted="1"><dc:title>%s</dc:title><upnp:class>%s</upnp:class></container>' % (item_id, html.escape(title), kind) for item_id, title, kind in entries)
+            entries = self._sort_rows(entries, sort_key, sort_dir, lambda row, key: row[1])
+            page = entries[start:start + requested]
+            xml = "".join(self._container(item_id, "0", title, kind) for item_id, title, kind in page)
             total = len(entries)
         elif object_id in ("albums", "artists", "genres"):
             groups = list(self.library_groups(object_id))
+            groups = self._sort_rows(groups, sort_key, sort_dir, lambda row, key: row.get({"title": "name", "artist": "artist", "album": "name"}.get(key, "name")) or "")
             page = groups[start:start + requested]
-            xml = "".join('<container id="%s:%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>object.container</upnp:class></container>' % (object_id, quote(str(row.get("name") or ""), safe=""), object_id, html.escape(str(row.get("name") or ""))) for row in page)
+            xml = "".join(self._container("%s:%s" % (object_id, quote(str(row.get("name") or ""), safe="")), object_id, str(row.get("name") or ""), "object.container") for row in page)
             total = len(groups)
         elif object_id == "folders":
             roots = list(self.library_roots())
+            roots = self._sort_rows(roots, sort_key, sort_dir, lambda row, key: row.get("name") or row.get("root") or "")
             page = roots[start:start + requested]
             xml = "".join(self._folder_container("folders-root:%s" % quote(str(row.get("root") or row.get("path") or ""), safe=""), "folders", str(row.get("name") or row.get("root") or "Music")) for row in page)
             total = len(roots)
         elif object_id.startswith("folders-root:") or object_id.startswith("folder:"):
-            root, parent = self._folder_target(object_id)
+            try:
+                root, parent = self._folder_target(object_id)
+            except ValueError:
+                raise UpnpActionError(701, "No such object")
             folders = list(self.library_folders(parent, root))
+            folders = self._sort_rows(folders, sort_key, sort_dir, lambda row, key: row.get("name") or "")
             page_folders = folders[start:start + requested]
             xml = "".join(self._folder_container("folder:%s:%s" % (quote(root, safe=""), quote(str(row.get("path") or ""), safe="")), object_id, str(row.get("name") or "Folder")) for row in page_folders)
             track_offset = max(0, start - len(folders))
             remaining = max(0, requested - len(page_folders))
-            item_page = self.library_page({"view": "folders", "root": root, "folder": parent, "limit": max(1, remaining), "offset": track_offset}) if remaining else {"items": [], "count": 0}
+            item_page = self.library_page({"view": "folders", "root": root, "folder": parent, "sort": sort_key, "dir": sort_dir, "limit": max(1, remaining), "offset": track_offset}) if remaining else {"items": [], "count": 0}
             tracks = item_page.get("items") or []
             # A folder can contain subfolders and tracks. Direct children are
             # always returned in that order, consistent with fnAudio's UI.
-            xml += "".join(self._didl_item(item) for item in tracks)
+            xml += "".join(self._didl_item(item, object_id, filter_fields) for item in tracks)
             total = len(folders) + int(item_page.get("count") or len(tracks))
             returned = len(page_folders) + len(tracks)
-        else:
-            params: Dict[str, Any] = {"view": "all", "limit": requested, "offset": start}
-            if object_id.startswith(("albums:", "artists:", "genres:")):
+        elif object_id == "music" or object_id.startswith(("albums:", "artists:", "genres:")):
+            params: Dict[str, Any] = {"view": "all", "sort": sort_key, "dir": sort_dir, "limit": requested, "offset": start}
+            if object_id != "music":
                 view, group = object_id.split(":", 1)
                 params.update({"view": view, "group": unquote(group)})
             page = self.library_page(params)
             items = page.get("items") or []
-            xml = "".join(self._didl_item(item) for item in items)
+            xml = "".join(self._didl_item(item, object_id, filter_fields) for item in items)
             total = int(page.get("count") or len(items))
-        didl = '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">%s</DIDL-Lite>' % xml
-        return {"Result": didl, "NumberReturned": str(returned if returned is not None else min(requested, max(0, total - start))), "TotalMatches": str(total), "UpdateID": "1"}
+        elif self.library_item(object_id):
+            raise UpnpActionError(710, "Object is not a container")
+        else:
+            raise UpnpActionError(701, "No such object")
+        didl = self._didl(xml)
+        return {"Result": didl, "NumberReturned": str(returned if returned is not None else min(requested, max(0, total - start))), "TotalMatches": str(total), "UpdateID": str(self._update_id())}
+
+    @staticmethod
+    def _didl(xml: str) -> str:
+        return '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">%s</DIDL-Lite>' % xml
+
+    @staticmethod
+    def _filter_fields(value: str) -> set[str]:
+        fields = {entry.strip().lower() for entry in str(value or "*").split(",") if entry.strip()}
+        return fields or {"*"}
+
+    @staticmethod
+    def _sort_criteria(value: str) -> Tuple[str, str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return "title", "asc"
+        criteria = [entry.strip() for entry in raw.split(",") if entry.strip()]
+        if len(criteria) != 1:
+            raise UpnpActionError(709, "Unsupported SortCriteria")
+        match = re.fullmatch(r"([+-]?)(dc:title|upnp:artist|upnp:album)", criteria[0], re.I)
+        if not match:
+            raise UpnpActionError(709, "Unsupported SortCriteria")
+        key = {"dc:title": "title", "upnp:artist": "artist", "upnp:album": "album"}[match.group(2).lower()]
+        return key, "desc" if match.group(1) == "-" else "asc"
+
+    @staticmethod
+    def _sort_rows(rows, key: str, direction: str, value):
+        return sorted(rows, key=lambda row: str(value(row, key) or "").casefold(), reverse=direction == "desc")
+
+    def _update_id(self) -> int:
+        try:
+            return max(0, min(0xFFFFFFFF, int(self.system_update_id())))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _container(item_id: str, parent_id: str, title: str, kind: str) -> str:
+        return '<container id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>%s</upnp:class></container>' % (html.escape(item_id, quote=True), html.escape(parent_id, quote=True), html.escape(title), html.escape(kind))
+
+    def _metadata_for_object(self, object_id: str, filter_fields: set[str]) -> str:
+        static = {
+            "0": ("-1", "fnAudio", "object.container"),
+            "music": ("0", "Music", "object.container"),
+            "albums": ("0", "Albums", "object.container.album.musicAlbum"),
+            "artists": ("0", "Artists", "object.container.person.musicArtist"),
+            "genres": ("0", "Genres", "object.container.genre.musicGenre"),
+            "folders": ("0", "Folders", "object.container.storageFolder"),
+        }
+        if object_id in static:
+            parent, title, kind = static[object_id]
+            return self._container(object_id, parent, title, kind)
+        if object_id.startswith(("albums:", "artists:", "genres:")):
+            parent, name = object_id.split(":", 1)
+            decoded_name = unquote(name)
+            if not any(str(row.get("name") or "") == decoded_name for row in self.library_groups(parent)):
+                raise UpnpActionError(701, "No such object")
+            return self._container(object_id, parent, decoded_name, "object.container")
+        if object_id.startswith("folders-root:") or object_id.startswith("folder:"):
+            try:
+                root, folder = self._folder_target(object_id)
+            except ValueError:
+                raise UpnpActionError(701, "No such object")
+            if object_id.startswith("folders-root:"):
+                row = next((row for row in self.library_roots() if str(row.get("root") or row.get("path") or "") == root), None)
+                if not row:
+                    raise UpnpActionError(701, "No such object")
+                title = str(row.get("name") or root or "Music")
+                parent = "folders"
+            else:
+                parent_folder, _, title = folder.rpartition("/")
+                title = title or folder or "Music"
+                row = next((row for row in self.library_folders(parent_folder, root) if str(row.get("path") or "") == folder), None)
+                if not row:
+                    raise UpnpActionError(701, "No such object")
+                parent = "folders-root:%s" % quote(root, safe="") if not parent_folder else "folder:%s:%s" % (quote(root, safe=""), quote(parent_folder, safe=""))
+            return self._folder_container(object_id, parent, title)
+        item = self.library_item(object_id)
+        if item:
+            return self._didl_item(item, "music", filter_fields)
+        raise UpnpActionError(701, "No such object")
 
     @staticmethod
     def _folder_container(item_id: str, parent_id: str, title: str) -> str:
@@ -447,21 +573,28 @@ class DlnaProtocolService:
         _, root, folder = object_id.split(":", 2)
         return unquote(root), unquote(folder)
 
-    def _didl_item(self, item: Dict[str, Any]) -> str:
+    def _didl_item(self, item: Dict[str, Any], parent_id: str = "music", filter_fields: set[str] | None = None) -> str:
+        fields = filter_fields or {"*"}
+        include_all = "*" in fields
+        include = lambda name: include_all or name.lower() in fields
         item_id = str(item.get("id") or "")
         title = html.escape(str(item.get("title") or "Unknown title"))
         artist = html.escape(str(item.get("artist") or ""))
         album = html.escape(str(item.get("album") or ""))
         mime = html.escape(self.media_mime(item), quote=True)
-        resource_path = "%s/upnp/media/%s/%s" % (self.base_url(), item_id, quote(str(item.get("title") or "track")))
+        resource_path = "%s/upnp/media/%s/%s" % (self.base_url(), quote(item_id, safe=""), quote(str(item.get("title") or "track")))
         uri = html.escape(resource_path, quote=True)
         art = html.escape("%s/cover/%s" % (self.base_url(), quote(item_id, safe="")), quote=True)
         duration = _duration(item.get("duration"))
-        resources = '<res protocolInfo="http-get:*:%s:*" duration="%s">%s</res>' % (mime, duration, uri)
+        resources = '<res protocolInfo="http-get:*:%s:*" duration="%s">%s</res>' % (mime, duration, uri) if include("res") or any(name.startswith("res@") for name in fields) else ""
         # Offer a separate, explicit fallback instead of changing the primary
         # resource. Renderers that support FLAC/DSD keep direct playback;
         # constrained clients may select this MP3 resource themselves.
-        if str(item.get("format") or "").upper() != "MP3" and not item.get("cue_track"):
+        if resources and str(item.get("format") or "").upper() != "MP3" and not item.get("cue_track"):
             fallback = html.escape(resource_path + "?transcode=mp3", quote=True)
             resources += '<res protocolInfo="http-get:*:audio/mpeg:*" duration="%s">%s</res>' % (duration, fallback)
-        return '<item id="%s" parentID="music" restricted="1"><dc:title>%s</dc:title><dc:creator>%s</dc:creator><upnp:artist>%s</upnp:artist><upnp:album>%s</upnp:album><upnp:albumArtURI>%s</upnp:albumArtURI><upnp:class>object.item.audioItem.musicTrack</upnp:class>%s</item>' % (html.escape(item_id, quote=True), title, artist, artist, album, art, resources)
+        creator_xml = "<dc:creator>%s</dc:creator>" % artist if include("dc:creator") else ""
+        artist_xml = "<upnp:artist>%s</upnp:artist>" % artist if include("upnp:artist") else ""
+        album_xml = "<upnp:album>%s</upnp:album>" % album if include("upnp:album") else ""
+        art_xml = "<upnp:albumArtURI>%s</upnp:albumArtURI>" % art if include("upnp:albumarturi") else ""
+        return '<item id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title>%s%s%s%s<upnp:class>object.item.audioItem.musicTrack</upnp:class>%s</item>' % (html.escape(item_id, quote=True), html.escape(parent_id, quote=True), title, creator_xml, artist_xml, album_xml, art_xml, resources)

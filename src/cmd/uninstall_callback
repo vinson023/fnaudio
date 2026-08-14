@@ -1,7 +1,26 @@
 #!/bin/bash
 # Default uninstall keeps configuration, cache and user-selected music folders.
 # If fnOS passes wizard_uninstall_mode=purge, fnAudio app data is removed too.
+safe_remove_app_data() {
+  target="${1:-}"
+  [ -n "${target}" ] || return 1
+  resolved="$(readlink -f -- "${target}" 2>/dev/null)" || return 1
+  case "${resolved}" in
+    /var/apps/fnaudio/etc|/var/apps/fnaudio/var|/var/apps/fnaudio/data|/var/apps/@appdata/fnaudio|/var/apps/@appdata/fnaudio/etc|/var/apps/@appdata/fnaudio/var|/var/apps/@appdata/fnaudio/data|/var/apps/@appconf/fnaudio)
+      rm -rf -- "${resolved}" 2>/dev/null || return 1
+      ;;
+    *)
+      if [[ "${resolved}" =~ ^/(vol|volume)[0-9]+/@appdata/fnaudio(/(etc|var|data))?$ ]]; then
+        rm -rf -- "${resolved}" 2>/dev/null || return 1
+      else
+        echo "Refusing to purge unexpected fnAudio data path: ${resolved}" >&2
+        return 1
+      fi
+      ;;
+  esac
+}
 if [ "${wizard_uninstall_mode:-keep}" = "purge" ] || [ "${FNAUDIO_PURGE:-0}" = "1" ]; then
-  rm -rf "${TRIM_PKGETC}" "${TRIM_PKGVAR}" 2>/dev/null || true
+  safe_remove_app_data "${TRIM_PKGETC}" || true
+  safe_remove_app_data "${TRIM_PKGVAR}" || true
 fi
 exit 0

@@ -1,9 +1,51 @@
 #!/bin/bash
-mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
-chmod +x "${TRIM_APPDEST}/target/ui/index.cgi" "${TRIM_APPDEST}/target/ui/cgi_proxy.py" 2>/dev/null || true
+umask 077
+install -d -m 700 "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
+UI_ROOT="${TRIM_APPDEST}/target/ui"
+if [ ! -d "${UI_ROOT}" ] && [ -d "${TRIM_APPDEST}/ui" ]; then
+  UI_ROOT="${TRIM_APPDEST}/ui"
+fi
+chmod 755 "${UI_ROOT}/index.cgi" "${UI_ROOT}/cgi_proxy.py" 2>/dev/null || true
 
 PYTHON_BIN="/var/apps/python312/target/bin/python3"
 config_path="${TRIM_PKGETC}/config.json"
+legacy_config="$(dirname "$(dirname "${TRIM_APPDEST}")")/@appconf/fnaudio/config.json"
+if [ -f "${legacy_config}" ]; then
+  export FNAUDIO_CONFIG_PATH="${config_path}"
+  export FNAUDIO_LEGACY_CONFIG_PATH="${legacy_config}"
+  export FNAUDIO_DEFAULT_LIBRARY_PATH="${TRIM_APPDEST}/share/music"
+  "${PYTHON_BIN}" - <<'PY'
+import json, os
+
+target = os.environ["FNAUDIO_CONFIG_PATH"]
+legacy = os.environ["FNAUDIO_LEGACY_CONFIG_PATH"]
+default_library = os.environ["FNAUDIO_DEFAULT_LIBRARY_PATH"]
+try:
+    current = json.load(open(target, encoding="utf-8"))
+except Exception:
+    current = {}
+try:
+    previous = json.load(open(legacy, encoding="utf-8"))
+except Exception:
+    previous = {}
+if not isinstance(current, dict): current = {}
+if not isinstance(previous, dict): previous = {}
+current_paths = current.get("library_paths") or [current.get("library_path")]
+current_paths = [str(value).strip() for value in current_paths if str(value or "").strip()]
+previous_paths = previous.get("library_paths") or [previous.get("library_path")]
+previous_paths = [str(value).strip() for value in previous_paths if str(value or "").strip()]
+if previous_paths and (not current_paths or current_paths == [default_library]):
+    port = current.get("server_port")
+    merged = dict(previous)
+    merged.update(current)
+    merged["library_path"] = "\n".join(previous_paths)
+    merged["library_paths"] = previous_paths
+    if port is not None:
+        merged["server_port"] = port
+    with open(target, "w", encoding="utf-8") as handle:
+        json.dump(merged, handle, ensure_ascii=False)
+PY
+fi
 existing_library_path=""
 existing_server_port=""
 if [ -f "${config_path}" ]; then
@@ -23,9 +65,9 @@ PY
   existing_server_port="$("${PYTHON_BIN}" - "${config_path}" <<'PY'
 import json, sys
 try:
-    print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("server_port") or 18080))
+    print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("server_port") or 53199))
 except Exception:
-    print(18080)
+    print(53199)
 PY
 )"
 fi
@@ -38,40 +80,32 @@ for index in $(seq 1 20); do
   fi
 done
 library_path="${library_path:-${TRIM_APPDEST}/share/music}"
-server_port="${wizard_server_port:-18080}"
+server_port="${wizard_server_port:-${existing_server_port:-53199}}"
 case "${server_port}" in
-  ''|*[!0-9]*) server_port="18080" ;;
+  ''|*[!0-9]*)
+    echo "服务端口必须是数字。"
+    exit 1
+    ;;
 esac
 if [ "${server_port}" -lt 1024 ] || [ "${server_port}" -gt 65535 ]; then
-  server_port="18080"
+  echo "服务端口必须在 1024 到 65535 之间。"
+  exit 1
 fi
 
-server_port="$("${PYTHON_BIN}" - "${server_port}" <<'PY'
+"${PYTHON_BIN}" - "${server_port}" <<'PY'
 import socket
 import sys
 
-requested = int(sys.argv[1])
-
-def available(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("0.0.0.0", int(port)))
-            return True
-        except OSError:
-            return False
-
-if available(requested):
-    print(requested)
-    raise SystemExit(0)
-
-for port in range(max(1024, requested + 1), 65536):
-    if available(port):
-        print(port)
-        raise SystemExit(0)
-print(requested)
+port = int(sys.argv[1])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("0.0.0.0", port))
+    except OSError:
+        print("服务端口 %s 已被占用，请返回并选择其他端口。" % port)
+        raise SystemExit(1)
 PY
-)"
+[ "$?" -eq 0 ] || exit 1
 
 if [ -n "${existing_library_path}" ]; then
   default_install_path="${TRIM_APPDEST}/share/music"
@@ -79,10 +113,6 @@ if [ -n "${existing_library_path}" ]; then
     library_path="${existing_library_path}"
   fi
 fi
-if [ -n "${existing_server_port}" ] && [ "${server_port}" = "18080" ] && [ "${existing_server_port}" != "18080" ]; then
-  server_port="${existing_server_port}"
-fi
-
 if [ "${library_path}" = "auto" ]; then
   library_path=""
   for candidate in /vol*/1000/music /volume*/1000/music; do
@@ -91,7 +121,9 @@ if [ "${library_path}" = "auto" ]; then
   library_path="${library_path:-${TRIM_APPDEST}/share/music}"
 fi
 
-printf '{"server_port":%s}\n' "${server_port}" > "${TRIM_APPDEST}/target/ui/service_port.json" 2>/dev/null || true
+mkdir -p "${UI_ROOT}" 2>/dev/null || true
+printf '{"server_port":%s}\n' "${server_port}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
+chmod 644 "${UI_ROOT}/service_port.json" 2>/dev/null || true
 
 export FNAUDIO_LIBRARY_PATHS="${library_path}"
 export FNAUDIO_SERVER_PORT="${server_port}"
@@ -105,35 +137,25 @@ for path in paths:
         os.makedirs(path, exist_ok=True)
     except OSError:
         pass
-payload = {"library_path": "\n".join(paths), "library_paths": paths, "server_name": "fnAudio", "server_port": int(os.environ.get("FNAUDIO_SERVER_PORT") or 18080)}
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+except (OSError, ValueError, TypeError):
+    payload = {}
+if not isinstance(payload, dict):
+    payload = {}
+# An upgrade/reinstall must retain output, MPD, DLNA and user preferences.
+# Only fields owned by the install wizard are replaced here.
+payload.update({
+    "library_path": "\n".join(paths),
+    "library_paths": paths,
+    "server_name": payload.get("server_name") or "fnAudio",
+    "server_port": int(os.environ.get("FNAUDIO_SERVER_PORT") or 53199),
+})
 with open(config_path, "w", encoding="utf-8") as fh:
     json.dump(payload, fh, ensure_ascii=False)
 PY
-for manifest in /var/apps/fnaudio/manifest "${TRIM_APPDEST}/manifest"; do
-  if [ -f "${manifest}" ]; then
-    "${PYTHON_BIN}" - "${manifest}" "${server_port}" <<'PY'
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-port = int(sys.argv[2])
-try:
-    lines = path.read_text(encoding="utf-8").splitlines(True)
-except OSError:
-    raise SystemExit(0)
-updated = False
-out = []
-for line in lines:
-    if line.lstrip().startswith("service_port"):
-        newline = "\r\n" if line.endswith("\r\n") else "\n"
-        out.append(f"service_port          = {port}{newline}")
-        updated = True
-    else:
-        out.append(line)
-if not updated:
-    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
-    out.append(f"service_port          = {port}{newline}")
-path.write_text("".join(out), encoding="utf-8")
-PY
-  fi
-done
+chmod 600 "${config_path}" 2>/dev/null || true
+# Do not rewrite manifest.service_port: fnAudio uses CGI and independently
+# discovers its private backend port.
 exit 0

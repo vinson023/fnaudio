@@ -49,6 +49,10 @@ def upnp_resource_mime(item: Dict[str, Any]) -> str:
         ext = os.path.splitext(item.get("path") or "")[1].lower()
         return "audio/x-dsf" if ext == ".dsf" else "audio/x-dff" if ext == ".dff" else item.get("mime") or "audio/dsd"
     ext = os.path.splitext(item["path"])[1].lower()
+    # APE is served through the lossless FLAC compatibility resource.  The
+    # DIDL metadata must describe the bytes the renderer will actually get.
+    if ext == ".ape":
+        return "audio/flac"
     if ext == ".dsf":
         return "audio/x-dsf"
     if ext == ".dff":
@@ -64,6 +68,8 @@ def upnp_media_url(
 ) -> str:
     if item.get("cue_track"):
         filename = safe_filename(item.get("title") or os.path.basename(item["path"])) + ".flac"
+    elif os.path.splitext(item.get("path") or "")[1].lower() == ".ape":
+        filename = safe_filename(item.get("title") or os.path.splitext(os.path.basename(item["path"]))[0]) + ".flac"
     elif item.get("is_dsd"):
         source_ext = os.path.splitext(item.get("path") or "")[1].lower() or ".dsf"
         filename = safe_filename(item.get("title") or os.path.splitext(os.path.basename(item["path"]))[0]) + source_ext
@@ -107,6 +113,18 @@ def soap_push(
     control = device.get("control_url")
     if not control:
         return False, "device has no AVTransport service"
+
+    # Do not silently hand a DSD source to a renderer that explicitly
+    # advertises no DSD sink profile.  Volumio treats this as a capability
+    # negotiation failure instead of falling back to PCM; fnAudio follows the
+    # same bit-perfect rule.  An empty/unknown capability probe remains
+    # permissive so older renderers can still be tried and diagnosed by the
+    # transport layer.
+    if item.get("is_dsd"):
+        capabilities = device.get("capabilities") or {}
+        protocol = capabilities.get("protocol_info") or {}
+        if protocol and not bool(protocol.get("supports_dsd")):
+            return False, "设备不支持源码 DSD，已阻止 PCM 转码"
 
     uri = upnp_media_url(handler, item, safe_filename, upnp_base_url)
     resource_mime = upnp_resource_mime(item)
@@ -154,7 +172,9 @@ def soap_push(
             soap_request(control, "urn:schemas-upnp-org:service:AVTransport:1", action, args)
         except Exception as exc:
             return False, str(exc)
-        if action == "SetAVTransportURI" and next_item:
+        advertised_actions = set(((device.get("capabilities") or {}).get("actions") or []))
+        can_set_next = not advertised_actions or "SetNextAVTransportURI" in advertised_actions
+        if action == "SetAVTransportURI" and next_item and can_set_next:
             try:
                 next_uri = upnp_media_url(handler, next_item, safe_filename, upnp_base_url)
                 next_mime = upnp_resource_mime(next_item)

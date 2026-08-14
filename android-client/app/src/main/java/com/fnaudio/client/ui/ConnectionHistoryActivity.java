@@ -107,7 +107,9 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         labels.addView(title);
 
         TextView endpoint = new TextView(this);
-        endpoint.setText((profile.https ? "https://" : "http://") + profile.host + ":" + profile.port);
+        boolean fnConnect = profile.name.startsWith("FN Connect - ");
+        endpoint.setText(fnConnect ? profile.name.substring("FN Connect - ".length())
+                : (profile.https ? "https://" : "http://") + profile.host + ":" + profile.port);
         endpoint.setTextColor(0xff64748b);
         endpoint.setTextSize(13);
         endpoint.setPadding(0, dp(4), 0, 0);

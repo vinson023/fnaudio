@@ -9,8 +9,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Optional
 from xml.etree import ElementTree as ET
+from .network import fetch_lan, lan_http_url
 
 UPNP_CACHE = {"stamp": 0, "items": [], "refreshing": False}
+UPNP_CAPABILITY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 class DlnaControlPoint:
@@ -33,16 +35,27 @@ class DlnaControlPoint:
 
 
 def find_service_url(root, description_url, name):
+    service = find_service(root, description_url, name)
+    return service.get("control_url") if service else None
+
+
+def find_service(root, description_url, name):
     for node in root.iter():
         if not node.tag.endswith("service"):
             continue
         text = {child.tag.split("}")[-1]: (child.text or "") for child in node}
         if name in text.get("serviceType", ""):
-            return urllib.parse.urljoin(description_url, text.get("controlURL", ""))
+            return {
+                "service_type": text.get("serviceType", ""),
+                "control_url": urllib.parse.urljoin(description_url, text.get("controlURL", "")),
+                "event_url": urllib.parse.urljoin(description_url, text.get("eventSubURL", "")),
+                "scpd_url": urllib.parse.urljoin(description_url, text.get("SCPDURL", "")),
+            }
     return None
 
 
 def soap_request(control, service, action, args=""):
+    control = lan_http_url(control)
     envelope = (
         '<?xml version="1.0" encoding="utf-8"?><s:Envelope '
         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" '
@@ -59,8 +72,7 @@ def soap_request(control, service, action, args=""):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=6) as response:
-        return response.read()
+    return fetch_lan(request, timeout=6)
 
 
 def soap_text(response, tag):
@@ -155,16 +167,77 @@ def upnp_control(device, action, position=None):
     return True, "ok"
 
 
-def device_supports_dsd(control):
+def device_protocol_info(control):
     if not control:
-        return False
+        return {"source": [], "sink": [], "mime_types": [], "supports_dsd": False}
     service = "urn:schemas-upnp-org:service:ConnectionManager:1"
     try:
         response = soap_request(control, service, "GetProtocolInfo")
-        text = response.decode("utf-8", "ignore").lower()
-        return any(x in text for x in ("audio/dsd", "audio/x-dsd", "audio/dsf", "audio/x-dsf", "audio/x-dff"))
+        source = [value.strip() for value in soap_text(response, "Source").split(",") if value.strip()]
+        sink = [value.strip() for value in soap_text(response, "Sink").split(",") if value.strip()]
+        mime_types = sorted(
+            {
+                parts[2].lower()
+                for value in sink
+                for parts in [value.split(":", 3)]
+                if len(parts) >= 3 and parts[2]
+            }
+        )
+        dsd_mimes = {"audio/dsd", "audio/x-dsd", "audio/dsf", "audio/x-dsf", "audio/x-dff"}
+        return {
+            "source": source,
+            "sink": sink,
+            "mime_types": mime_types,
+            "supports_dsd": bool(dsd_mimes.intersection(mime_types)),
+        }
     except Exception:
-        return False
+        return {"source": [], "sink": [], "mime_types": [], "supports_dsd": False}
+
+
+def device_supports_dsd(control):
+    return bool(device_protocol_info(control).get("supports_dsd"))
+
+
+def scpd_actions(url):
+    if not url:
+        return []
+    try:
+        body = fetch_lan(url, timeout=3)
+        root = ET.fromstring(body)
+        return sorted(
+            {
+                (child.text or "").strip()
+                for action in root.iter()
+                if action.tag.endswith("action")
+                for child in action
+                if child.tag.endswith("name") and (child.text or "").strip()
+            }
+        )
+    except Exception:
+        return []
+
+
+def probe_device_capabilities(device):
+    cache_key = str(device.get("location") or device.get("id") or "")
+    cached = UPNP_CAPABILITY_CACHE.get(cache_key) or {}
+    if cached and time.time() - float(cached.get("probed_at") or 0) < 300:
+        return dict(cached)
+    protocol = device_protocol_info(device.get("connection_url"))
+    actions = scpd_actions(device.get("avtransport_scpd_url"))
+    capabilities = {
+        "probed_at": time.time(),
+        "protocol_info": protocol,
+        "actions": actions,
+        "set_next_uri": "SetNextAVTransportURI" in actions,
+        "seek_rel_time": "Seek" in actions,
+        "next": "Next" in actions,
+        "previous": "Previous" in actions,
+        "pause": "Pause" in actions,
+        "eventing": bool(device.get("avtransport_event_url")),
+    }
+    if cache_key:
+        UPNP_CAPABILITY_CACHE[cache_key] = dict(capabilities)
+    return capabilities
 
 
 
@@ -196,6 +269,10 @@ def discover_upnp():
                     headers[key.lower()] = value.strip()
             location = headers.get("location")
             if location:
+                try:
+                    location = lan_http_url(location)
+                except ValueError:
+                    continue
                 found[location] = {
                     "id": hashlib.sha1(location.encode()).hexdigest()[:16],
                     "location": location,
@@ -206,13 +283,17 @@ def discover_upnp():
     devices = []
     for device in found.values():
         try:
-            body = urllib.request.urlopen(device["location"], timeout=3).read()
+            body = fetch_lan(device["location"], timeout=3)
             root = ET.fromstring(body)
             names = [x.text for x in root.iter() if x.tag.endswith("friendlyName") and x.text]
             udns = [x.text for x in root.iter() if x.tag.endswith("UDN") and x.text]
             device["name"] = names[0] if names else "UPnP 播放器"
-            device["control_url"] = find_avtransport_url(root, device["location"])
-            device["connection_url"] = find_service_url(root, device["location"], "ConnectionManager")
+            avtransport = find_service(root, device["location"], "AVTransport") or {}
+            connection = find_service(root, device["location"], "ConnectionManager") or {}
+            device["control_url"] = avtransport.get("control_url")
+            device["avtransport_scpd_url"] = avtransport.get("scpd_url")
+            device["avtransport_event_url"] = avtransport.get("event_url")
+            device["connection_url"] = connection.get("control_url")
             # The local responder receives its own M-SEARCH request. It is an
             # input endpoint, so it must never be shown as a push destination.
             is_local_renderer = (
@@ -221,7 +302,8 @@ def discover_upnp():
             )
             if is_local_renderer:
                 continue
-            device["supports_dsd"] = device_supports_dsd(device["connection_url"])
+            device["capabilities"] = probe_device_capabilities(device)
+            device["supports_dsd"] = bool((device["capabilities"].get("protocol_info") or {}).get("supports_dsd"))
             device["online"] = bool(device["control_url"])
             devices.append(device)
         except Exception:

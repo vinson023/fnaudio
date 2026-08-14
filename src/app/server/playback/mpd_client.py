@@ -149,6 +149,9 @@ def mpd_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, 
         song = {}
     elapsed = safe_float(payload.get("elapsed"))
     duration = safe_float(payload.get("duration") or song.get("duration"))
+    audio_format = str(payload.get("audio") or song.get("Format") or "")
+    audio_parts = audio_format.split(":") if audio_format else []
+    dsd_output = bool(audio_parts and audio_parts[0].lower().startswith("dsd"))
     return {
         "available": True,
         "state": str(payload.get("state") or "stop").upper(),
@@ -160,6 +163,14 @@ def mpd_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, 
         },
         "transport": {
             "state": "PLAYING" if payload.get("state") == "play" else ("PAUSED" if payload.get("state") == "pause" else "STOPPED")
+        },
+        "stream": {
+            "format": audio_format,
+            "sample_rate": 0 if dsd_output else safe_int(audio_parts[0]) if audio_parts else 0,
+            "bit_depth": 0 if dsd_output else safe_int(audio_parts[1]) if len(audio_parts) > 1 else 0,
+            "channels": safe_int(audio_parts[-1]) if len(audio_parts) > 1 else 0,
+            "dsd": dsd_output,
+            "bitperfect_candidate": dsd_output or bool(audio_format),
         },
     }
 
@@ -239,6 +250,100 @@ def mpd_load_uri(uri: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, s
     return {"ok": True, "uri": uri, "song_id": song_id, "start": safe_float(start)}
 
 
+def mpd_replace_queue(
+    entries: Iterable[Dict[str, Any]],
+    current_track_id: str = "",
+    start: float = 0.0,
+    repeat: str = "off",
+    shuffle: bool = False,
+    play: bool = True,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> Dict[str, Any]:
+    """Atomically replace MPD's execution queue and start the selected item.
+
+    fnAudio remains the owner of the logical queue, while MPD receives a
+    mirrored execution queue so it can keep ALSA open and perform gapless
+    transitions. The returned song id mapping is retained by MpdService and
+    used to reconcile autonomous MPD track changes back into PlaybackCore.
+    """
+    normalized = [
+        {
+            "track_id": str(entry.get("track_id") or ""),
+            "uri": str(entry.get("uri") or ""),
+        }
+        for entry in entries
+        if str(entry.get("track_id") or "") and str(entry.get("uri") or "")
+    ]
+    if not normalized:
+        raise MpdError("MPD queue is empty")
+    selected_track_id = str(current_track_id or normalized[0]["track_id"])
+    song_ids: Dict[str, str] = {}
+    with MpdConnection(host, port) as mpd:
+        mpd.command("clear")
+        for entry in normalized:
+            response = mpd.command("addid", entry["uri"])
+            song_id = next(
+                (line.split(": ", 1)[1] for line in response if line.startswith("Id: ")),
+                "",
+            )
+            if not song_id:
+                raise MpdError("MPD did not return a song id for %s" % entry["uri"])
+            song_ids[entry["track_id"]] = song_id
+        _set_playback_modes(mpd, repeat, shuffle)
+        selected_song_id = song_ids.get(selected_track_id) or next(iter(song_ids.values()))
+        if play:
+            mpd.command("playid", selected_song_id)
+        if play and safe_float(start) > 0:
+            mpd.command("seekid", selected_song_id, max(0, safe_float(start)))
+    return {
+        "ok": True,
+        "song_ids": song_ids,
+        "current_track_id": selected_track_id,
+        "current_song_id": song_ids.get(selected_track_id, ""),
+        "count": len(song_ids),
+        "start": safe_float(start),
+        "playing": bool(play),
+    }
+
+
+def mpd_play_queue_item(
+    song_id: str,
+    start: float = 0.0,
+    repeat: str = "off",
+    shuffle: bool = False,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> Dict[str, Any]:
+    if not str(song_id or ""):
+        raise MpdError("MPD song id is required")
+    with MpdConnection(host, port) as mpd:
+        _set_playback_modes(mpd, repeat, shuffle)
+        mpd.command("playid", song_id)
+        if safe_float(start) > 0:
+            mpd.command("seekid", song_id, max(0, safe_float(start)))
+    return {"ok": True, "song_id": str(song_id), "start": safe_float(start)}
+
+
+def mpd_set_playback_modes(
+    repeat: str = "off",
+    shuffle: bool = False,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> Dict[str, Any]:
+    with MpdConnection(host, port) as mpd:
+        _set_playback_modes(mpd, repeat, shuffle)
+    return {"ok": True, "repeat": repeat, "shuffle": bool(shuffle)}
+
+
+def _set_playback_modes(mpd: MpdConnection, repeat: str, shuffle: bool) -> None:
+    repeat_mode = str(repeat or "off").lower()
+    mpd.command("random", 1 if shuffle else 0)
+    mpd.command("repeat", 1 if repeat_mode in ("all", "one") else 0)
+    mpd.command("single", 1 if repeat_mode == "one" else 0)
+    mpd.command("consume", 0)
+
+
 def mpd_control(action: str, position: Optional[float] = None, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, Any]:
     action = str(action or "").lower()
     with MpdConnection(host, port) as mpd:
@@ -266,3 +371,10 @@ def safe_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0

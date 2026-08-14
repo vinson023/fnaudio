@@ -37,7 +37,50 @@ class OutputPlugin(ABC):
             "playing": state.playing,
             "position": state.position,
             "duration": state.duration,
+            "transport": state.transport,
+            "owns_audio_device": self.owns_audio_device(state),
         }
+
+    def status(self, state: Optional[PlaybackState] = None) -> Dict[str, Any]:
+        """Return normalized backend status when the output can provide it.
+
+        Older callback outputs intentionally inherit this conservative state
+        projection. Concrete asynchronous outputs can override it without
+        forcing every plugin to implement a second status API immediately.
+        """
+        if state is None:
+            return {"transport": {"state": "UNKNOWN"}}
+        return {
+            "transport": {"state": state.transport},
+            "position": {
+                "rel_seconds": state.position,
+                "duration_seconds": state.duration,
+            },
+            "error": state.error,
+        }
+
+    def supports_action(self, action: str) -> bool:
+        action = str(action or "").lower()
+        capabilities = self.capabilities()
+        mapping = {
+            "seek": "seek",
+            "pause": "pause",
+            "stop": "stop",
+            "next": "next_previous",
+            "previous": "next_previous",
+            "volume": "volume",
+        }
+        capability = mapping.get(action)
+        return True if not capability else bool(capabilities.get(capability))
+
+    def owns_audio_device(self, state: Optional[PlaybackState] = None) -> bool:
+        return self.target_kind in ("alsa", "mpd")
+
+    def preload_next(self, track: TrackRef, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {"ok": False, "supported": False}
+
+    def recover(self, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {"ok": False, "supported": False}
 
 
 class OutputRegistry:

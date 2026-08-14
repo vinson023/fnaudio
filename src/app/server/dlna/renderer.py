@@ -196,6 +196,14 @@ class DlnaRenderer:
 
     def set_volume(self, volume: int) -> Dict[str, Any]:
         volume = max(0, min(100, int(volume)))
+        with self._lock:
+            muted = self.state.muted
+        if muted:
+            with self._lock:
+                self.state.volume = volume
+                self.state.updated_at = time.time()
+            self._notify()
+            return {"ok": True, "deferred": True}
         result = self._control("volume", float(volume))
         if result.get("ok") is not False:
             with self._lock:
@@ -204,11 +212,19 @@ class DlnaRenderer:
             self._notify()
         return result
 
-    def set_mute(self, muted: bool) -> None:
+    def set_mute(self, muted: bool) -> Dict[str, Any]:
+        muted = bool(muted)
         with self._lock:
-            self.state.muted = bool(muted)
-            self.state.updated_at = time.time()
-        self._notify()
+            if self.state.muted == muted:
+                return {"ok": True}
+            target_volume = 0 if muted else self.state.volume
+        result = self._control("volume", float(target_volume))
+        if result.get("ok") is not False:
+            with self._lock:
+                self.state.muted = muted
+                self.state.updated_at = time.time()
+            self._notify()
+        return result
 
     def snapshot(self) -> Dict[str, Any]:
         notify = False

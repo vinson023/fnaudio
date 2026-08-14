@@ -1,0 +1,46 @@
+name: Verify fnAudio
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/browser-e2e/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install browser test dependencies
+        working-directory: tools/browser-e2e
+        run: |
+          npm ci
+          npx playwright install chromium
+
+      - name: Run server and browser regressions
+        shell: pwsh
+        run: .\tools\test_offline.ps1 -Browser
+
+      - name: Build Android debug client
+        shell: pwsh
+        run: .\android-client\gradlew.bat :app:assembleDebug
+
+      - name: Build and inspect fnpack release
+        shell: pwsh
+        run: .\tools\build_release.ps1

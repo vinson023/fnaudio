@@ -1,5 +1,18 @@
 # fnAudio 文档索引
 
+- `OFFLINE_ENGINEERING_0.1.222.md`：九项连续离线加固的完成范围、验证入口与硬件边界。
+- `RESOURCE_LIMITS_20260811.md`：扫描、元数据、缓存和 FFmpeg 的资源预算、取消语义与恢复验证。
+- `PLAYBACK_ERROR_TAXONOMY.md`：MPD/FLAC/seek/decoder/ALSA 错误类别、兼容字段与恢复策略。
+- `PLAYBACK_API_COMPATIBILITY.md`：权威播放接口、旧 player/UPnP/DAC 入口的弃用策略与大模块拆分顺序。
+- `LARGE_LIBRARY_BENCHMARK.md`：10 万曲 SQLite 分页与内存基准方法。
+- `LIBRARY_CHANGE_DETECTION.md`：inotify、generation、溢出回退与符号链接边界。
+- `PLAYBACK_OUTPUT_POLICY.md`：输出适配器、upmpdcli 角色、硬件 Mixer 与 DSD 策略。
+- `ANDROID_HTTPS_PINNING.md`：Android 自签名 HTTPS 的按连接 TOFU 指纹固定。
+- `ANDROID_EMULATOR_TESTING.md`：Android API 35 模拟器的连接记录、TLS 固定与 Media3 自动化入口及验收边界。
+- `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`：私有/公开 mode、原子写、删除白名单与降权边界。
+- `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
+- `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。
+
 ## 当前权威文档
 
 | 文档 | 作用 |

@@ -6,6 +6,8 @@ import time
 import uuid
 from typing import Callable, Iterable
 
+from version import UPNP_SERVER
+
 
 MULTICAST = ("239.255.255.250", 1900)
 
@@ -53,7 +55,7 @@ class SsdpService:
         usn = "uuid:%s" % self._uuid(role)
         if target != usn:
             usn += "::" + target
-        return ("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: %s\r\nNT: %s\r\nNTS: %s\r\nSERVER: fnOS/1.0 UPnP/1.1 fnAudio/0.1\r\nUSN: %s\r\n\r\n" % (self._location(role), target, nts, usn)).encode("utf-8")
+        return ("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: %s\r\nNT: %s\r\nNTS: %s\r\nSERVER: %s\r\nUSN: %s\r\n\r\n" % (self._location(role), target, nts, UPNP_SERVER, usn)).encode("utf-8")
 
     def _announce(self, nts: str) -> None:
         try:
@@ -98,7 +100,7 @@ class SsdpService:
                         usn = "uuid:%s" % self._uuid(role)
                         if response_target != usn:
                             usn += "::" + response_target
-                        response = ("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\nLOCATION: %s\r\nSERVER: fnOS/1.0 UPnP/1.1 fnAudio/0.1\r\nST: %s\r\nUSN: %s\r\n\r\n" % (self._location(role), response_target, usn)).encode("utf-8")
+                        response = ("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\nLOCATION: %s\r\nSERVER: %s\r\nST: %s\r\nUSN: %s\r\n\r\n" % (self._location(role), UPNP_SERVER, response_target, usn)).encode("utf-8")
                         sock.sendto(response, address)
         finally:
             sock.close()
