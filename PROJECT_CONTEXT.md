@@ -26,6 +26,12 @@
 - A six-second server-initiated DAC smoke playback entered `PLAYING` and advanced to `7.105s / 224.809s`. The pre-test 536-item queue, current item, repeat=`all`, shuffle=true, DAC target and stopped transport were restored automatically. Evidence JSON is retained on the host under `/vol1/1000/fnaudio/external-dac-test-*` and `external-dac-restore-*`.
 - `tools/install_test_host_fast.ps1` now supports non-default `SshPort`, an explicit `UseSudo` execution path and a temporary `RemotePackageDirectory`; the default root/LAN workflow is unchanged.
 
+## External Native DSD and DAC Control Test (2026-08-14)
+
+- The external TEAC UD-301 played both library DSD samples: DSF `Simple Man` and DFF `分手說愛你`. Each entered `PLAYING`; MPD reported `format=dsd64:2`, two channels, `dsd=true` and `bitperfect_candidate=true`, proving no PCM fallback in this output chain.
+- A two-track DAC control test passed real `pause` (`PAUSED`), `play`, seek (observed `21.191s` after a 20-second request) and `next` transitions. The expected second track was playing after `next`.
+- The test snapshots and restoration data are retained on the host under `/vol1/1000/fnaudio/external-dsd-*`, `external-dff-*` and `external-dac-controls-*`. A post-restore immediate and delayed check confirmed the original 536-item queue, original current id `b2feef28c42d7070`, repeat=`all`, shuffle=true, DAC target and stopped transport.
+
 ## 0.2.4 Mobile Album Detail Fix (2026-08-14)
 
 - Mobile album detail no longer uses a nested fixed-height scroll owner. The outer library viewport owns vertical scrolling on phones, preventing the detail track list from collapsing after an album is opened.
