@@ -1105,6 +1105,11 @@ authoritative `stop` command to the backend before its state is persisted.
 - 在真实 TEAC UD-301 上直接通过 MPD 协议发送 `play 0`、`pause 1`、`pause 0`、`stop`，不经 fnAudio 播放控制 API。
 - fnAudio 的 MPD 状态监听依次将权威播放核心收敛至 `PLAYING`、`PAUSED`、`PLAYING`、`STOPPED`，当前曲目保持一致。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-mpd-outofband-20260814-191837/report.json`。
 
+## 0.2.8 外网 DAC 逻辑重枚举与目标刷新回归（2026-08-14）
+
+- 真机复现并修复：TEAC UD-301 从 USB 总线逻辑解绑后，旧版本的 `/api/playback/targets?refresh=1` 仍从 MPD/ALSA 能力缓存显示该 DAC 在线。`0.2.8` 将强制目标刷新连接至同步 ALSA 能力重建，且不再被正在进行的后台刷新返回旧缓存。
+- 在精确 USB 节点 `1-4`（VID/PID `0644:804a`、序列号匹配）上验证：解绑时 ALSA 卡消失且 API 不再返回 MPD DAC；重新绑定后同一稳定 ID 恢复、仍被选中，播放核心保持 `STOPPED`，服务健康。该逻辑重枚举不替代后续物理热插拔验收。证据：`/vol1/1000/fnaudio/external-dac-reenumerate-0.2.8-20260814-192342/report.json`。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
