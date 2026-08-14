@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.222`  
+> 当前源码版本：`0.2.5`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -31,7 +31,7 @@ flowchart TD
     SERVICE --> MEDIA
 
     FNOS["fnOS 应用中心"] --> CGI["index.cgi / cgi_proxy.py"]
-    CGI --> HTTP["ThreadingHTTPServer :18080"]
+    CGI --> HTTP["ThreadingHTTPServer :configured port"]
     DIRECT["局域网直连端口（受保护 API 拒绝）"] --> HTTP
 
     HTTP --> UI["原生 Web UI"]
@@ -197,5 +197,6 @@ localStorage 兼容数据
 - `dlna/profiles.py` 可基于真实互操作问题增加设备 profile。
 - `MetadataProviders` 可增加新的元数据提供商，但必须保留缓存、超时和匹配评分。
 - 音乐库 schema 变更需同时处理迁移、`METADATA_VERSION` 和索引重建。
+- UI 的纯展示规则按模块拆分：`ui/view_presentation.js` 管理视图标题，`ui/track_presentation.js` 管理曲目字段、占位符与行标识；`app.js` 保留状态、DOM 和 API 编排。所有 UI 模块都必须在 `build_release.ps1` 的内容哈希中登记。
 
 详细风险和技术债见 `PROJECT_CONTEXT.md`，未完成工作见 `TODO.md`。

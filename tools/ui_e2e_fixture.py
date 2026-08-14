@@ -107,6 +107,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if path == "/api/library":
             search = str((query.get("search") or [""])[0]).casefold()
             rows = [item for item in TRACKS if not search or search in " ".join(str(item.get(key) or "") for key in ("title", "artist", "album")).casefold()]
+            view = str((query.get("view") or ["all"])[0])
+            group = str((query.get("group") or [""])[0])
+            if group and view in ("albums", "artists", "composers", "genres"):
+                key = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}[view]
+                rows = [item for item in rows if str(item.get(key) or "未分类") == group]
             offset = max(0, int((query.get("offset") or [0])[0]))
             limit = max(1, min(500, int((query.get("limit") or [120])[0])))
             return self.send_json({"items": rows[offset:offset + limit], "count": len(rows), "limit": limit, "offset": offset}, head_only=head_only)

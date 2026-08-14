@@ -1,5 +1,24 @@
 # fnAudio AI 修改记录
 
+## 工程化：正式 Android 发布链路与文档归档 (2026-08-14)
+
+- 新增 `tools/build_android_release.ps1` 和 `docs/ANDROID_RELEASE.md`：正式 APK 构建强制要求四项签名变量，验证 APK 签名和版本，并将 SHA-256 归档到发布目录。
+- 使用一次性临时 keystore 完成离线端到端烟雾验证，确认 Release APK 的 v1/v2 签名、`versionName` 与 `VERSION` 和产物哈希均正确；该临时密钥不是正式发布身份。
+- 同步根 README、架构、决策、恢复和 Android 客户端文档的当前版本与端口模型；重新生成 `SOURCE_MANIFEST.sha256`。
+
+## 0.2.5 (2026-08-14)
+
+- 重新发布移动端控制栏布局：顶部保留播放设备与 MP3 转码，底部随机播放位于上一曲前、循环播放位于下一曲后；移动端不再显示桌面底栏操作组。
+- 增加浏览器回归，验证上述按钮在手机视口可见、隐藏与相对位置；发布构建以内容哈希写入静态资源地址，强制浏览器与 WebView 获取本次 CSS/JS。
+- 验证通过：282 项 Python 测试、Node/UI 回归、3 项 Playwright E2E、Android Debug 构建与原生 fnpack 包检查。FPK：`artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`，SHA-256 `DD32D95F2E41DA780DE1DB091041991DCC3945F7F328D22201064C5E7591FA19`；Android Debug APK：`artifacts/0.2.5/fnaudio-android-0.2.5-debug.apk`，SHA-256 `FFCC86EACBFD272A662247D96CE0F2286D02A41150F22CFA3714F1C062162162`。
+- 已使用可回滚快速部署脚本安装到内网测试机 `198.51.100.24:18083`。运行 manifest 与 `Server` 头均为 `0.2.5`；手机视口实测当前 CSS 地址为 `app.css?v=0.2.5-a09869333741`，四个移动端控制按钮及其相对位置符合预期。
+
+## 0.2.4 (2026-08-14)
+
+- 修复移动端专辑详情页歌曲区域被嵌套固定高度滚动容器压缩，点开专辑后现在由音乐库主滚动区域承载列表，歌曲可见且可继续上下滑动。
+- 增加移动端专辑详情 Playwright 回归：使用真实的 `view=albums&group=...` 分页请求，验证专辑歌曲渲染、可见高度与无横向溢出。
+- 验证通过：282 项 Python 测试、Node/UI 回归、3 项 Playwright E2E、Android Debug 构建与原生 fnpack 包检查。FPK：`artifacts/0.2.4/fnaudio-0.2.4-fnpack.fpk`，SHA-256 `A8F64357451DDD531DE63AB2EE4675645EF754C2D6E8DF612CEC5EB840BAAB5A`；Android Debug APK：`artifacts/0.2.4/fnaudio-android-0.2.4-debug.apk`，SHA-256 `E325F73154A4413C090B40A7698421A3E0C37355E7C983C3AB6C05B0C991FB33`。
+
 ## 0.2.3 (2026-08-14)
 
 - 从 `app.js` 抽取顶部标题/副标题的纯展示规则至 `view_presentation.js`，减少视图渲染函数的职责并建立前端模块边界。
@@ -1008,6 +1027,12 @@
 - Fixed the FPK lifecycle-command permissions that caused fnOS App Center to mark fnAudio as abnormal after an update. Windows builds now repack the outer FPK with `cmd/*` at `755`, and the release validator rejects packages whose `cmd/main` is not executable.
 - Hardened the LAN fast-deployment path with the same explicit lifecycle-command permission restoration before it swaps application control files.
 - Verified on `198.51.100.24`: `cmd/main`, `install_callback`, and `upgrade_callback` are all mode `755`; direct `main status` and `/api/health` succeed after deployment. FPK SHA-256: `989AF478E9AC0EF563E665E94CDB9E7130FF390A578C49BC7C32D396E196B8FE`.
+
+## UI Track Presentation Boundary - 2026-08-14
+
+- Extracted pure track quality, date, column display and row-key rules into `app/ui/track_presentation.js`; `app.js` retains state and DOM orchestration.
+- Added a standalone Node regression, release-hash coverage and package assertions for the new asset so same-version browser/WebView updates cannot reuse an older presentation module.
+- Full offline verification passed: 283 Python tests, all Node/UI regressions, 3 Playwright E2E tests and native fnpack package inspection. FPK SHA-256: `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
 
 ## 0.1.257 - 2026-08-14
 

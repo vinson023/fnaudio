@@ -9,6 +9,7 @@
 - `PLAYBACK_OUTPUT_POLICY.md`：输出适配器、upmpdcli 角色、硬件 Mixer 与 DSD 策略。
 - `ANDROID_HTTPS_PINNING.md`：Android 自签名 HTTPS 的按连接 TOFU 指纹固定。
 - `ANDROID_EMULATOR_TESTING.md`：Android API 35 模拟器的连接记录、TLS 固定与 Media3 自动化入口及验收边界。
+- `ANDROID_RELEASE.md`：正式 Android 签名构建、产物校验和密钥保管边界。
 - `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`：私有/公开 mode、原子写、删除白名单与降权边界。
 - `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
 - `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。

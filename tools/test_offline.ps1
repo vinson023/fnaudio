@@ -14,12 +14,15 @@ try {
 
     node --check app\ui\app.js
     if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax check failed" }
+    node --check app\ui\track_presentation.js
+    if ($LASTEXITCODE -ne 0) { throw "Track presentation syntax check failed" }
     foreach ($test in @(
         "tests\test_ui_android_bridge.js",
         "tests\test_ui_mobile_layout.js",
         "tests\test_ui_queue_columns.js",
         "tests\test_ui_lyrics_priority.js",
         "tests\test_ui_user_state.js"
+        "tests\test_track_presentation.js"
     )) {
         node $test
         if ($LASTEXITCODE -ne 0) { throw "Node regression failed: $test" }

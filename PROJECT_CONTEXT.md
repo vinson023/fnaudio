@@ -1,5 +1,30 @@
 # fnAudio 项目上下文
 
+## Release and Documentation Baseline (2026-08-14)
+
+- The current source version is `0.2.5`. Current-state documentation was synchronized across README, architecture, decisions, recovery, Android client README and docs index; historical documents remain read-only.
+- `tools/build_android_release.ps1` is the formal APK release entry point. It requires an externally supplied keystore, runs `assembleRelease`, verifies the signed APK with `apksigner`, checks `versionName` with `aapt`, and writes SHA-256 into the version artifact directory. A disposable local key proved the chain works; a real release key and its offline backup remain owner-controlled requirements.
+- A static release-script test now protects the signing, verification, version and checksum contract. `SOURCE_MANIFEST.sha256` was regenerated for the current source tree.
+
+## UI Track Presentation Boundary (2026-08-14)
+
+- `app/ui/track_presentation.js` now owns pure track quality, date, column-value and row-key rendering rules. `app.js` injects its existing display/escaping helpers and remains the owner of application state, DOM mutation and API calls.
+- The module has a standalone Node regression test and is included in both syntax verification and the release asset hash. The compatibility fallback in `app.js` exists only for isolated legacy source-slice tests; packaged browser execution loads the dedicated module first.
+- Full offline verification passed: 283 Python tests, all Node/UI regressions including the new presentation test, 3 Playwright E2E tests and native fnpack payload inspection. Current FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
+
+## 0.2.5 Mobile Control Layout Cache Recovery (2026-08-14)
+
+- Mobile controls are explicitly covered by browser E2E: top device and MP3 controls remain visible; desktop player actions are hidden; shuffle precedes previous and repeat follows next.
+- Releases use a content-derived asset build marker, so a package upgrade cannot retain an older WebView CSS/JS layout from the pre-0.2.2 cache strategy.
+- Verification passed: 282 Python tests, Node/UI regressions, 3 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `DD32D95F2E41DA780DE1DB091041991DCC3945F7F328D22201064C5E7591FA19`. Android Debug APK: `artifacts/0.2.5/fnaudio-android-0.2.5-debug.apk`, SHA-256 `FFCC86EACBFD272A662247D96CE0F2286D02A41150F22CFA3714F1C062162162`.
+- LAN deployment evidence: `tools/install_test_host_fast.ps1` deployed the FPK to `198.51.100.24`, retaining backup `/vol1/1000/fnaudio/fast-deploy-backups/20260814-172218`. The live manifest and `Server` header report `0.2.5`; direct mobile-viewport inspection loaded `app.css?v=0.2.5-a09869333741` and verified the restored control layout. Screenshot: `artifacts/0.2.5/test-host-mobile-controls.png`. The test library was empty, so this validates layout and assets only, not track playback.
+
+## 0.2.4 Mobile Album Detail Fix (2026-08-14)
+
+- Mobile album detail no longer uses a nested fixed-height scroll owner. The outer library viewport owns vertical scrolling on phones, preventing the detail track list from collapsing after an album is opened.
+- Browser E2E now covers mobile Albums -> album detail and asserts that the scoped paged song list is present, visible, vertically sized, and free from horizontal overflow.
+- Verification passed: 282 Python tests, Node/UI regressions, 3 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.4/fnaudio-0.2.4-fnpack.fpk`, SHA-256 `A8F64357451DDD531DE63AB2EE4675645EF754C2D6E8DF612CEC5EB840BAAB5A`. Android Debug APK: `artifacts/0.2.4/fnaudio-android-0.2.4-debug.apk`, SHA-256 `E325F73154A4413C090B40A7698421A3E0C37355E7C983C3AB6C05B0C991FB33`.
+
 ## 0.2.3 Frontend Presentation Boundary (2026-08-14)
 
 - The pure topbar title/subtitle mapping was extracted from `app.js` into `ui/view_presentation.js`. The release asset hash now covers this module alongside CSS and the main UI script.
