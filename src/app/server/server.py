@@ -1438,6 +1438,11 @@ def public_item(item, config=None):
 
 
 def playback_targets_payload(force_refresh=False):
+    mpd_service = getattr(MPD_OUTPUT, "service", None)
+    if force_refresh and mpd_service and hasattr(mpd_service, "output_capabilities"):
+        # Target discovery is explicitly user initiated. Do not show a
+        # disconnected USB DAC from the normal low-latency status cache.
+        mpd_service.output_capabilities(force=True)
     mpd = MPD_OUTPUT.status()
     mpd_caps = mpd.get("output_capabilities") or {}
     mpd_devices = mpd_caps.get("devices") or []

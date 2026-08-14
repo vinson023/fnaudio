@@ -117,6 +117,35 @@ class PlaybackRestoreTests(unittest.TestCase):
         self.assertFalse(payload["current_target_available"])
         self.assertEqual(payload["targets"][0]["id"], "local")
 
+    def test_forced_target_refresh_rebuilds_mpd_output_capabilities(self):
+        class CapabilityService:
+            def __init__(self):
+                self.calls = []
+
+            def output_capabilities(self, force=False):
+                self.calls.append(force)
+                return {"devices": []}
+
+        service = CapabilityService()
+        output = mock.Mock()
+        output.service = service
+        output.status.return_value = {"available": False, "output_capabilities": {"devices": []}}
+        fake_core = mock.Mock()
+        fake_core.snapshot.return_value = {"target_id": "local"}
+        fake_plugin = mock.Mock()
+        fake_plugin.capabilities.return_value = {}
+        fake_core.registry.get.return_value = fake_plugin
+        fake_core.registry.describe.return_value = []
+        cache = {"items": [], "stamp": __import__("time").time(), "refreshing": False}
+        with mock.patch.object(server, "PLAYBACK_CORE", fake_core), mock.patch.object(
+            server, "MPD_OUTPUT", output
+        ), mock.patch.object(server, "UPNP_CACHE", cache), mock.patch.object(
+            server, "upmpdcli_probe", return_value={}
+        ), mock.patch.object(server, "airplay_probe", return_value={}):
+            server.playback_targets_payload(force_refresh=True)
+
+        self.assertEqual(service.calls, [True])
+
     def test_playback_control_persists_stop_state_for_restart(self):
         handler = mock.Mock()
         handler.server.config = {}

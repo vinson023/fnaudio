@@ -836,7 +836,7 @@ class MpdService:
                     self._output_caps_refreshing = True
                     threading.Thread(target=self._refresh_output_capabilities, name="fnaudio-alsa-caps", daemon=True).start()
                 return cached
-            if refreshing and cached:
+            if refreshing and cached and not force:
                 return cached
             self._output_caps_refreshing = True
         try:
