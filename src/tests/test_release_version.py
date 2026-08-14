@@ -28,6 +28,7 @@ class ReleaseVersionTests(unittest.TestCase):
             self.assertEqual(version_module._manifest_version(), "9.8.7")
         self.assertIn("server_version = APP_USER_AGENT", server)
         self.assertIn("app.css?v=__FNAUDIO_ASSET_BUILD__", index)
+        self.assertIn("view_presentation.js?v=__FNAUDIO_ASSET_BUILD__", index)
         self.assertIn("app.js?v=__FNAUDIO_ASSET_BUILD__", index)
         self.assertIn(f'versionName "{version}"', gradle)
         version_code = re.search(r"(?m)^\s*versionCode\s+(\d+)\s*$", gradle)
