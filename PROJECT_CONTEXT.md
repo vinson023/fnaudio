@@ -17,6 +17,7 @@
 - Companion upgrade-health evidence: `/vol1/1000/fnaudio/external-wildmidi-0.2.9-EgmiRo/`.
 - Native DSD regression evidence: `/vol1/1000/fnaudio/external-dsd-0.2.9-7Q3taM/`. The selected TEAC reached `PLAYING` with `format=dsd64:2` and `native_dsd=true`; the bounded run restored the exact prior session (`restore_verified=true`).
 - A fresh target refresh found only the current browser target and the TEAC DAC; no DLNA/UPnP Renderer was online. `shairport-sync` and `nqptp` are inactive on the host, and local ADB discovery is empty, so Renderer, AirPlay and Android acceptance cannot be truthfully performed in this environment yet.
+- The external `0.2.10` payload itself does not include `shairport-sync` or `nqptp`; the host has neither binary installed. AirPlay is therefore an unavailable backend dependency on this host, not a failed real playback result. Do not report AirPlay acceptance until an actual receiver backend and sender are present.
 - Remaining physical-device acceptance stays open: physical DAC unplug/replug, DoP-only DAC DSD, native DSD over DLNA Renderer, AirPlay, and Android multi-device foreground/background/network-switch tests.
 
 ## Release and Documentation Baseline (2026-08-14)
