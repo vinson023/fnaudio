@@ -1967,6 +1967,7 @@ def start_remote_output_monitor(server):
         "managed_playing": False,
         "start_pending_at": 0.0,
         "track_started_at": 0.0,
+        "expected_duration": 0.0,
         "stalled_advance_at": 0.0,
         "missing_count": 0,
     }
@@ -1976,7 +1977,7 @@ def start_remote_output_monitor(server):
         while not stop_event.wait(1.25):
             snapshot = PLAYBACK_CORE.state
             if snapshot.target_kind != "dlna_push" or not snapshot.target_id:
-                monitor.update({"target": "", "transport": "", "track": "", "managed_key": "", "managed_playing": False, "start_pending_at": 0.0, "track_started_at": 0.0, "stalled_advance_at": 0.0, "missing_count": 0})
+                monitor.update({"target": "", "transport": "", "track": "", "managed_key": "", "managed_playing": False, "start_pending_at": 0.0, "track_started_at": 0.0, "expected_duration": 0.0, "stalled_advance_at": 0.0, "missing_count": 0})
                 continue
             device = find_upnp_device(snapshot.target_id)
             if not device:
@@ -2000,6 +2001,7 @@ def start_remote_output_monitor(server):
                 monitor["managed_key"] = managed_key
                 monitor["start_pending_at"] = time.monotonic()
                 monitor["track_started_at"] = time.monotonic()
+                monitor["expected_duration"] = safe_float(snapshot.duration)
                 monitor["stalled_advance_at"] = 0.0
             monitor["managed_playing"] = bool(snapshot.playing)
             if transport in ("PLAYING", "TRANSITIONING", "PAUSED_PLAYBACK"):
@@ -2012,6 +2014,13 @@ def start_remote_output_monitor(server):
                 if PLAYBACK_CORE.state.current_track_id != before:
                     save_current_playback_session(server.config)
 
+            reported_position = safe_float(position_payload.get("rel_seconds"))
+            reported_duration = safe_float(position_payload.get("duration_seconds"))
+            # Retain the library duration when a Renderer exposes a valid
+            # URI but permanently returns 00:00:00 for both time fields.
+            # Otherwise the monitor loses the only reliable end boundary.
+            effective_duration = reported_duration or safe_float(monitor.get("expected_duration"))
+
             ended = previous in ("PLAYING", "TRANSITIONING") and transport in ("STOPPED", "NO_MEDIA_PRESENT")
             managed_playing = bool(snapshot.playing)
             stop_suppressed = _dlna_stop_is_suppressed(snapshot.target_id, transport)
@@ -2021,8 +2030,8 @@ def start_remote_output_monitor(server):
                 PLAYBACK_CORE.sync_output_status(
                     "dlna_push",
                     "STOPPED",
-                    safe_float(position_payload.get("rel_seconds")),
-                    safe_float(position_payload.get("duration_seconds")),
+                    reported_position,
+                    effective_duration,
                 )
                 continue
             if ended and managed_playing:
@@ -2055,10 +2064,10 @@ def start_remote_output_monitor(server):
                 snapshot.current_track_id,
                 backend_track_id,
                 transport,
-                safe_float(position_payload.get("rel_seconds")),
-                safe_float(position_payload.get("duration_seconds")),
+                reported_position,
+                reported_duration,
                 safe_float(monitor.get("track_started_at")),
-                safe_float(snapshot.duration),
+                safe_float(monitor.get("expected_duration")),
             )
             if stalled_expired and managed_playing:
                 now = time.time()
@@ -2093,8 +2102,8 @@ def start_remote_output_monitor(server):
                 PLAYBACK_CORE.sync_output_status(
                     "dlna_push",
                     "ERROR",
-                    safe_float(position_payload.get("rel_seconds")),
-                    safe_float(position_payload.get("duration_seconds")),
+                    reported_position,
+                    effective_duration,
                     "Renderer accepted Play but did not enter PLAYING; source format may be unsupported",
                 )
                 continue
@@ -2102,8 +2111,8 @@ def start_remote_output_monitor(server):
             PLAYBACK_CORE.sync_output_status(
                 "dlna_push",
                 transport,
-                safe_float(position_payload.get("rel_seconds")),
-                safe_float(position_payload.get("duration_seconds")),
+                reported_position,
+                effective_duration,
             )
 
     thread = threading.Thread(target=loop, name="fnaudio-renderer-monitor", daemon=True)
