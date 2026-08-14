@@ -14,6 +14,10 @@ TARGET="${FNAUDIO_DAC_TARGET:-}"
 SAMPLES="${FNAUDIO_QUEUE_SAMPLES:-360}"
 INTERVAL="${FNAUDIO_QUEUE_INTERVAL:-5}"
 
+api() {
+  curl -fsS -H 'X-Fnaudio-Internal: 1' "$@"
+}
+
 restore() {
   code=$?
   trap - EXIT INT TERM
@@ -21,13 +25,13 @@ restore() {
     printf 'restore_started=%s\n' "$(date -Iseconds)" >> "$LOG"
     if [ -n "$TARGET" ]; then
       printf '{"action":"stop","target_id":"%s"}\n' "$TARGET" \
-        | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
+        | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
     else
       printf '{"action":"stop"}\n' \
-        | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
+        | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
     fi
     printf '\n' >> "$LOG"
-    python3 - "$SNAPSHOT" <<'PY' | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG" || true
+    python3 - "$SNAPSHOT" <<'PY' | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG" || true
 import json
 import sys
 snapshot = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -40,7 +44,7 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
     printf '\n' >> "$LOG"
-    curl -fsS "$BASE/api/playback/core" > "$AFTER" || true
+    api "$BASE/api/playback/core" > "$AFTER" || true
     if python3 - "$SNAPSHOT" "$AFTER" >> "$LOG" 2>&1 <<'PY'
 import json
 import sys
@@ -65,7 +69,7 @@ PY
 
 trap restore EXIT INT TERM
 printf 'started=%s samples=%s interval_seconds=%s\n' "$(date -Iseconds)" "$SAMPLES" "$INTERVAL" > "$LOG"
-curl -fsS "$BASE/api/playback/core" > "$SNAPSHOT"
+api "$BASE/api/playback/core" > "$SNAPSHOT"
 
 CURRENT="$(python3 - "$SNAPSHOT" "$TEST_QUEUE" <<'PY'
 import json
@@ -89,13 +93,13 @@ PY
 )"
 
 printf '{"queue":%s,"current_id":"%s","repeat":"off","shuffle":false}\n' "$TEST_QUEUE" "$CURRENT" \
-  | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG"
+  | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG"
 printf '\n' >> "$LOG"
 if [ -n "$TARGET" ]; then
   printf '{"target_id":"%s","track_id":"%s","position":0}\n' "$TARGET" "$CURRENT"
 else
   printf '{"track_id":"%s","position":0}\n' "$CURRENT"
-fi | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
+fi | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
 printf '\n' >> "$LOG"
 
 last=""
@@ -103,7 +107,7 @@ changes=0
 seen_positions=""
 printf 'expected_queue_length=%s expected_track_ids=%s\n' "$EXPECTED_COUNT" "$TEST_QUEUE" >> "$LOG"
 for sample in $(seq 1 "$SAMPLES"); do
-  status="$(curl -fsS "$BASE/api/mpd/status")"
+  status="$(api "$BASE/api/mpd/status")"
   printf 'sample=%s at=%s %s\n' "$sample" "$(date -Iseconds)" "$status" >> "$LOG"
   current="$(printf '%s' "$status" | sed -n 's/.*"songid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   if [ -n "$current" ] && [ "$current" != "$last" ]; then

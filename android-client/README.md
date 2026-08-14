@@ -1,6 +1,6 @@
 ﻿# fnAudio Android 客户端
 
-这是 fnAudio `0.2.9` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。
+这是 fnAudio `0.2.10` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。
 
 ## 已实现
 
@@ -58,7 +58,7 @@ $env:FNAUDIO_RELEASE_KEY_PASSWORD = '...'
 
 ## 与 fnAudio 服务端的配套要求
 
-必须安装 `fnAudio 0.2.9` 或更新版本。该版本包含 MPD/DLNA 服务端状态同步、Renderer 后台自动推进、DSD 原始推送、远程 MediaSession、启动 token 刷新、API scope 授权和播放快照契约。网页桥在选择当前设备时使用 ExoPlayer；选择 USB DAC、MPD 或 DLNA 时切换为仅镜像状态和转发控制的远程播放器。
+必须安装 `fnAudio 0.2.10` 或更新版本。该版本包含 MPD/DLNA 服务端状态同步、Renderer 后台自动推进、DSD 原始推送、远程 MediaSession、启动 token 刷新、API scope 授权和播放快照契约。网页桥在选择当前设备时使用 ExoPlayer；选择 USB DAC、MPD 或 DLNA 时切换为仅镜像状态和转发控制的远程播放器。
 
 ## 尚待真机确认
 

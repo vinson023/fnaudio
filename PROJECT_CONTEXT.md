@@ -1,5 +1,11 @@
 # fnAudio 项目上下文
 
+## 0.2.10 Real-device Automation Authentication Repair (2026-08-14)
+
+- The DAC queue traversal, controlled MPD restart, and physical USB hot-plug capture scripts now use `X-Fnaudio-Internal: 1` exclusively for their NAS-loopback API calls. The application correctly protects these APIs even from plain loopback requests; without this header, the old scripts received HTTP 401 and could not be used as acceptance evidence. This does not change external API authorization.
+- `0.2.10` was built with fnpack and deployed to the authorized external host: `artifacts/0.2.10/fnaudio-0.2.10-fnpack.fpk`, SHA-256 `B317A18AC7C61ADE4CC75FC1B1BE638E25611A1456338891460A2301E08D82FA`.
+- The repaired DAC runner was copied to `/vol1/1000/fnaudio/real_device_dac_queue_run-0.2.10.sh` and executed against the real TEAC UD-301. It reached PCM `PLAYING`, observed its one-item queue position, completed queue traversal and restored the prior 536-item stopped session (`restore_verified=1`). Evidence: `/vol1/1000/fnaudio/external-dac-runner-0.2.10-20260814-193651.log` and companion `*.before.json` / `*.after.json` files.
+
 ## 0.2.9 External Playback Health Regression (2026-08-14)
 
 - The MPD startup notice for an unavailable WildMidi decoder is now ignored only when it explicitly reports a missing Timidity configuration file. fnAudio does not currently expose MIDI playback and the external music library contains no `.mid` or `.midi` tracks, so this optional, unused decoder must not degrade playback health. Ordinary WildMidi and all other decoder failures remain classified as decoder errors.
