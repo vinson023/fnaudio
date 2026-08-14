@@ -1,6 +1,7 @@
 package com.fnaudio.client.web;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -16,6 +17,9 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.Player;
 import androidx.media3.session.MediaController;
+import androidx.core.content.ContextCompat;
+
+import com.fnaudio.client.playback.PlaybackService;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -38,11 +42,13 @@ public final class NativePlaybackBridge {
 
     private final ControllerProvider provider;
     private final HttpRequestHandler httpRequestHandler;
+    private final Context context;
     @Nullable
     private final Uri fallbackArtworkUri;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public NativePlaybackBridge(Context context, ControllerProvider provider, HttpRequestHandler httpRequestHandler) {
+        this.context = context.getApplicationContext();
         this.fallbackArtworkUri = createFallbackArtworkUri(context.getApplicationContext());
         this.provider = provider;
         this.httpRequestHandler = httpRequestHandler;
@@ -51,6 +57,43 @@ public final class NativePlaybackBridge {
     @JavascriptInterface
     public boolean isAvailable() {
         return true;
+    }
+
+    /** Switches the native MediaSession to a metadata/control-only remote player. */
+    @JavascriptInterface
+    public void enterRemoteMode(String targetId, String targetName, String queueJson, int currentIndex,
+                                 double positionSeconds, double durationSeconds, boolean playing,
+                                 String repeat, boolean shuffle) {
+        Intent intent = new Intent(context, PlaybackService.class)
+                .setAction(PlaybackService.ACTION_REMOTE_ENABLE)
+                .putExtra(PlaybackService.EXTRA_TARGET_ID, targetId == null ? "" : targetId)
+                .putExtra(PlaybackService.EXTRA_TARGET_NAME, targetName == null ? "" : targetName)
+                .putExtra(PlaybackService.EXTRA_QUEUE_JSON, queueJson == null ? "[]" : queueJson)
+                .putExtra(PlaybackService.EXTRA_INDEX, currentIndex)
+                .putExtra(PlaybackService.EXTRA_POSITION_MS, Math.max(0L, Math.round(positionSeconds * 1000d)))
+                .putExtra(PlaybackService.EXTRA_DURATION_MS, Math.max(0L, Math.round(durationSeconds * 1000d)))
+                .putExtra(PlaybackService.EXTRA_PLAYING, playing)
+                .putExtra(PlaybackService.EXTRA_REPEAT_MODE, repeatMode(repeat))
+                .putExtra(PlaybackService.EXTRA_SHUFFLE, shuffle);
+        startPlaybackService(intent, true);
+    }
+
+    @JavascriptInterface
+    public void updateRemoteState(String targetId, int currentIndex, double positionSeconds,
+                                  double durationSeconds, boolean playing) {
+        Intent intent = new Intent(context, PlaybackService.class)
+                .setAction(PlaybackService.ACTION_REMOTE_UPDATE)
+                .putExtra(PlaybackService.EXTRA_TARGET_ID, targetId == null ? "" : targetId)
+                .putExtra(PlaybackService.EXTRA_INDEX, currentIndex)
+                .putExtra(PlaybackService.EXTRA_POSITION_MS, Math.max(0L, Math.round(positionSeconds * 1000d)))
+                .putExtra(PlaybackService.EXTRA_DURATION_MS, Math.max(0L, Math.round(durationSeconds * 1000d)))
+                .putExtra(PlaybackService.EXTRA_PLAYING, playing);
+        startPlaybackService(intent, true);
+    }
+
+    @JavascriptInterface
+    public void exitRemoteMode() {
+        startPlaybackService(new Intent(context, PlaybackService.class).setAction(PlaybackService.ACTION_LOCAL_ENABLE), false);
     }
 
     @JavascriptInterface
@@ -221,5 +264,13 @@ public final class NativePlaybackBridge {
         if ("one".equalsIgnoreCase(repeat)) return Player.REPEAT_MODE_ONE;
         if ("all".equalsIgnoreCase(repeat)) return Player.REPEAT_MODE_ALL;
         return Player.REPEAT_MODE_OFF;
+    }
+
+    private void startPlaybackService(Intent intent, boolean foreground) {
+        // A remote output has no local decoder. It still needs a MediaSession
+        // immediately, including while the renderer is paused, connecting, or
+        // awaiting its first authoritative SSE snapshot.
+        if (foreground) ContextCompat.startForegroundService(context, intent);
+        else context.startService(intent);
     }
 }

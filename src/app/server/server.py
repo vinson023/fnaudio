@@ -14,24 +14,31 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
+from types import SimpleNamespace
 import urllib.parse
 import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 
-from config import load_config, save_config, save_proxy_port, save_manifest_port
-from fnos_api import FnosApiError, del_shared_accessible_folder, get_shared_accessible_folders
+from config import load_config, save_config, save_proxy_port
 from library import (
     FS_CACHE,
     MUSIC_CACHE,
     SCAN_LOCK,
     SCAN_STATE,
+    apply_library_paths,
+    cancel_library_refresh,
+    canonical_library_path,
+    is_allowed_library_path,
     library_items,
     library_status,
+    load_items_from_sqlite,
+    is_library_item_path,
     list_music_directories,
     load_library_cache,
+    merge_library_paths,
+    normalize_library_paths,
     query_library_folders,
     query_library_item_by_id,
     query_library_item_location,
@@ -68,6 +75,16 @@ from dlna.service import DlnaProtocolService, scpd as dlna_scpd
 from dlna.ssdp import SsdpService
 from dlna.upmpdcli_renderer import upmpdcli_probe
 from playback import AlsaOutput, DlnaPushOutput, MpdOutput, PlaybackCommand, PlaybackCore, TrackRef
+from playback.http_contract import (
+    apply_legacy_player_state,
+    legacy_control_payload,
+    legacy_load_payload,
+    legacy_response_headers,
+    normalize_queue_tracks,
+    normalize_target_id,
+    playback_event_payload,
+    target_kind as playback_target_kind,
+)
 from playback.mpd_client import mpd_control, mpd_load_uri, mpd_status
 from playback.alsa_output import (
     DAC_LOCK,
@@ -80,10 +97,20 @@ from playback.alsa_output import (
     start_dac_playback,
 )
 from services.mpd_service import MpdService
+from services.audio_output_lease import AUDIO_OUTPUT_LEASE
+from services.airplay_service import AirplayService, airplay_probe
 from state_store import StateConflict, load_user_state, save_playback_session, save_user_state
 from metadata_service import MetadataService
+from api_auth import authorize_api, requires_resource_auth
+from fnos_api import FnosApiError, call_trim_api
+from observability import OBSERVABILITY, request_id
+from diagnostics import support_snapshot
+from version import APP_USER_AGENT
+from cover_cache import (cached_thumbnail_for_item, cover_is_known_missing, cover_source_version,
+                         normalized_cover_size, prewarm_thumbnails, thumbnail_asset_bytes,
+                         thumbnail_asset_id_for_item, prewarm_library_thumbnails,
+                         shutdown_library_thumbnail_prewarm)
 
-ALLOWED_LIBRARY_PREFIXES = ("/vol", "/volume", "/mnt", "/share", "/var/apps/fnaudio/share")
 STATE = {"queue": [], "current": None, "playing": False}
 PLAYBACK_CORE = PlaybackCore()
 MPD_OUTPUT = MpdOutput()
@@ -91,11 +118,72 @@ MPD_SERVICE = None
 DLNA_PROTOCOL = None
 DLNA_SSDP = None
 METADATA_SERVICE = None
+AIRPLAY_SERVICE = None
 DLNA_DIAGNOSTICS = DlnaDiagnostics()
 CUE_AUTO_ADVANCE = {"track_id": "", "at": 0.0}
+DLNA_MONITOR_GUARD = {"target_id": "", "suppress_stop_until": 0.0}
+PLAYBACK_COMMAND_LOCK = threading.RLock()
+PLAYBACK_COMMAND_RESULTS = {}
+PLAYBACK_COMMAND_TTL_SECONDS = 30.0
 TRANSPARENT_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lR4YJwAAAABJRU5ErkJggg=="
 )
+COVER_CACHE_LOCK = threading.RLock()
+COVER_CACHE = {}
+COVER_CACHE_MAX_ENTRIES = 512
+
+
+def cached_cover_for_item(item, config):
+    """Cache extracted local artwork by its on-disk version.
+
+    Library rows often share one embedded or sidecar cover. Without this
+    cache a mobile page can ask the service to parse that same image dozens
+    of times concurrently before its HTTP cache has a chance to help.
+    """
+    path = str((item or {}).get("path") or "")
+    modified = safe_int((item or {}).get("modified_ns") or (item or {}).get("modified"))
+    key = (path, modified)
+    with COVER_CACHE_LOCK:
+        cached = COVER_CACHE.get(key)
+        if cached is not None:
+            return cached
+    value = read_cover_for_item(item, config)
+    with COVER_CACHE_LOCK:
+        if len(COVER_CACHE) >= COVER_CACHE_MAX_ENTRIES:
+            COVER_CACHE.pop(next(iter(COVER_CACHE)), None)
+        COVER_CACHE[key] = value
+    return value
+
+
+def parse_single_byte_range(size, header=""):
+    size = int(size)
+    if size <= 0:
+        return 200, 0, -1
+    value = str(header or "").strip()
+    if not value:
+        return 200, 0, size - 1
+    if not value.lower().startswith("bytes=") or "," in value:
+        raise ValueError("unsupported byte range")
+    spec = value[6:].strip()
+    left, separator, right = spec.partition("-")
+    if not separator or (not left and not right):
+        raise ValueError("invalid byte range")
+    try:
+        if left:
+            start = int(left)
+            end = int(right) if right else size - 1
+        else:
+            suffix = int(right)
+            if suffix <= 0:
+                raise ValueError("invalid byte range")
+            start = max(0, size - suffix)
+            end = size - 1
+    except (TypeError, ValueError):
+        raise ValueError("invalid byte range")
+    end = min(end, size - 1)
+    if start < 0 or start >= size or start > end:
+        raise ValueError("unsatisfiable byte range")
+    return 206, start, end
 
 
 
@@ -116,63 +204,6 @@ def is_tcp_port_available(port, current_port=0):
         return False
     finally:
         probe.close()
-
-
-def is_allowed_library_path(path):
-    if os.name == "nt":
-        return True
-    root = os.path.abspath(os.path.expanduser(path or ""))
-    if re.match(r"^/vol\d+(/|$)", root):
-        return True
-    return any(root == prefix or root.startswith(prefix + os.sep) for prefix in ALLOWED_LIBRARY_PREFIXES)
-
-
-def normalize_library_paths(config):
-    values = []
-    raw_paths = config.get("library_paths")
-    if isinstance(raw_paths, list):
-        values.extend(raw_paths)
-    raw = config.get("library_path", "")
-    if isinstance(raw, str):
-        values.extend(re.split(r"[\r\n;]+", raw))
-    paths = []
-    seen = set()
-    for value in values:
-        raw_value = str(value or "").strip()
-        if not raw_value:
-            continue
-        path = os.path.abspath(os.path.expanduser(raw_value))
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths or [os.path.abspath(os.path.expanduser(config.get("library_path", ".")))]
-
-
-def merge_library_paths(current_paths, extra_paths):
-    paths = []
-    seen = set()
-    for value in list(current_paths or []) + list(extra_paths or []):
-        raw = str(value or "").strip()
-        if not raw:
-            continue
-        path = os.path.abspath(os.path.expanduser(raw))
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths
-
-
-def apply_library_paths(config, paths):
-    config["library_path"] = "\n".join(paths)
-    config["library_paths"] = paths
-
-
-
-
-
-
 
 
 def find_free_tcp_port():
@@ -302,8 +333,10 @@ from transcode import (
     transcode_cache_target,
     transcode_command,
     transcode_to_audio,
+    transcode_resource_status,
     warm_transcode_cache,
 )
+from resource_limits import ResourceLimitError, ffmpeg_slot
 
 
 def public_base_url(handler):
@@ -348,16 +381,12 @@ def dlna_output_open(track, state, context):
         return {"ok": False, "message": "missing request context"}
     if not device:
         return {"ok": False, "message": "device not found"}
-    next_item = None
-    if state.queue and state.current_index >= 0:
-        next_index = state.current_index + 1
-        if next_index >= len(state.queue) and state.repeat == "all":
-            next_index = 0
-        if 0 <= next_index < len(state.queue):
-            next_ref = state.queue[next_index]
-            resolver = context.get("resolve_track")
-            next_item = resolver(next_ref.track_id) if callable(resolver) else next_ref.item
-    ok, message = soap_push(device, item, handler, next_item)
+    # Some renderers advance a preloaded NextURI themselves while others
+    # expose STOPPED first.  Combining that renderer-owned transition with
+    # the monitor's authoritative queue advance can replay the just-finished
+    # item.  Keep DLNA progression in one place: the monitor loads exactly
+    # one next queue item after it observes a completed track.
+    ok, message = soap_push(device, item, handler)
     return {
         "ok": ok,
         "message": message,
@@ -371,6 +400,10 @@ def dlna_output_command(command, state, context):
     device = find_upnp_device(state.target_id)
     if not device:
         return {"ok": False, "message": "device not found"}
+    if command.action == "stop":
+        DLNA_MONITOR_GUARD.update(
+            {"target_id": state.target_id, "suppress_stop_until": time.monotonic() + 5.0}
+        )
     ok, message = upnp_control(device, command.action, command.position)
     return {"ok": ok, "message": message, "target_id": state.target_id}
 
@@ -380,6 +413,9 @@ def dlna_output_close(state):
     if not device:
         return
     try:
+        DLNA_MONITOR_GUARD.update(
+            {"target_id": state.target_id, "suppress_stop_until": time.monotonic() + 5.0}
+        )
         upnp_control(device, "stop", None)
     except Exception:
         pass
@@ -388,7 +424,12 @@ def dlna_output_close(state):
 def alsa_output_open(track, state, context):
     config = context.get("config") or {}
     item = context.get("item") or track.item
+    lease = AUDIO_OUTPUT_LEASE.acquire("alsa-direct", state.target_id)
+    if not lease.get("ok"):
+        return {"ok": False, "message": lease.get("message"), "target_id": state.target_id}
     ok, message = start_dac_playback(state.target_id, item, config, safe_float(context.get("position")))
+    if not ok:
+        AUDIO_OUTPUT_LEASE.release("alsa-direct")
     with DAC_LOCK:
         strategy = dict(DAC_STATE.get("strategy") or {})
     return {
@@ -418,6 +459,7 @@ def alsa_output_close(state):
         dac_control("stop", None, None, {})
     except Exception:
         pass
+    AUDIO_OUTPUT_LEASE.release("alsa-direct")
 
 
 PLAYBACK_CORE.registry.register(
@@ -438,17 +480,42 @@ PLAYBACK_CORE.registry.register(MPD_OUTPUT)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "fnAudio/0.1.14"
+    server_version = APP_USER_AGENT
 
     def log_message(self, fmt, *args):
         return
 
-    def send_json(self, payload, status=200):
+    def current_request_id(self):
+        if not getattr(self, "_request_id", ""):
+            self._request_id = request_id(self.headers.get("X-Request-ID"))
+        return self._request_id
+
+    def record_request(self, status):
+        status = int(status)
+        OBSERVABILITY.count("http_requests_total")
+        OBSERVABILITY.count("http_status_%sxx" % max(1, min(5, status // 100)))
+        config = getattr(self.server, "config", {}) or {}
+        OBSERVABILITY.write(
+            config.get("structured_log_path") or os.path.join(os.path.dirname(getattr(self.server, "config_path", "") or "."), "fnaudio.jsonl"),
+            "http_request",
+            request_id=self.current_request_id(),
+            method=self.command,
+            route=urllib.parse.urlparse(self.path).path,
+            status=status,
+        )
+
+    def send_json(self, payload, status=200, extra_headers=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("X-Request-ID", self.current_request_id())
+        for name, value in (extra_headers or {}).items():
+            self.send_header(str(name), str(value))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.record_request(status)
+        if self.command == "HEAD":
+            return
         try:
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
@@ -465,7 +532,24 @@ class Handler(BaseHTTPRequestHandler):
             if value.lower().startswith("bearer "):
                 value = value.split(None, 1)[1].strip()
             return value
-            return None
+        return ""
+
+    def authorize_api_request(self, method, path):
+        # Requests relayed by our own CGI entry point never receive an fnOS
+        # token on some fnOS releases. They are still confined to loopback;
+        # allow that explicit internal channel for local settings such as
+        # manually configured music roots.
+        if (self.headers.get("X-Fnaudio-Internal") == "1"
+                and self.client_address[0] in ("127.0.0.1", "::1")):
+            return True
+        scopes = (self.headers.get("X-Fnaudio-Scopes") or "").split(",")
+        allowed, status, scope, message = authorize_api(
+            self.client_address[0], method, path, self.trim_api_token(), scopes
+        )
+        if allowed:
+            return True
+        self.send_json({"ok": False, "error": message, "required_scope": scope}, status)
+        return False
 
     def send_xml(self, body, status=200, content_type="text/xml; charset=utf-8", head_only=False):
         body = body if isinstance(body, bytes) else str(body).encode("utf-8")
@@ -498,8 +582,57 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if path.startswith("/dlna/"):
             return self.handle_dlna_get(path, head_only)
+        if path.startswith("/api/") and not self.authorize_api_request("HEAD" if head_only else "GET", path):
+            return
+        if requires_resource_auth(path) and not self.authorize_api_request("HEAD" if head_only else "GET", path):
+            return
         if path == "/api/health":
-            return self.send_json({"ok": True, "name": self.server.config["server_name"], "fnos_api_token": bool(os.environ.get("TRIM_API_TOKEN"))})
+            mpd = MPD_SERVICE.status() if MPD_SERVICE else {}
+            metadata = METADATA_SERVICE.status() if METADATA_SERVICE else {}
+            transcode = transcode_resource_status(self.server.config)
+            return self.send_json({
+                "ok": True,
+                "name": self.server.config["server_name"],
+                "request_id": self.current_request_id(),
+                "components": {
+                    "mpd": {
+                        "running": bool(mpd.get("running")),
+                        "fault": (mpd.get("fault") or {}).get("state", ""),
+                        "error_category": (mpd.get("playback_errors") or {}).get("last_category", ""),
+                    },
+                    "library": {
+                        "scanning": bool(SCAN_STATE.get("running")),
+                        "cancelled": bool(SCAN_STATE.get("cancelled")),
+                        "timed_out": bool(SCAN_STATE.get("timed_out")),
+                        "errors": len(SCAN_STATE.get("errors") or []),
+                    },
+                    "metadata": {
+                        "running": bool(metadata.get("running")),
+                        "pending": int(metadata.get("pending") or 0),
+                        "pending_limit": int(metadata.get("pending_limit") or 0),
+                        "dropped": int(metadata.get("dropped") or 0),
+                        "artwork_bytes": int(metadata.get("artwork_bytes") or 0),
+                        "artwork_limit_bytes": int(metadata.get("artwork_limit_bytes") or 0),
+                    },
+                    "transcode": transcode,
+                    "dlna": {"running": bool(DLNA_PROTOCOL), "renderers": len(UPNP_CACHE.get("items") or [])},
+                },
+                "metrics": OBSERVABILITY.snapshot(),
+            })
+        if path == "/api/diagnostics":
+            mpd = MPD_SERVICE.status() if MPD_SERVICE else {}
+            metadata = METADATA_SERVICE.status() if METADATA_SERVICE else {}
+            return self.send_json(support_snapshot(
+                server_name=self.server.config.get("server_name"),
+                mpd=mpd,
+                scan_state=SCAN_STATE,
+                metadata=metadata,
+                transcode=transcode_resource_status(self.server.config),
+                dlna_available=bool(DLNA_PROTOCOL),
+                renderer_count=len(UPNP_CACHE.get("items") or []),
+                metrics=OBSERVABILITY.snapshot(),
+                playback=PLAYBACK_CORE.snapshot(),
+            ))
         if path == "/api/access":
             return self.send_json(public_access(self))
         if path == "/api/state/user":
@@ -509,14 +642,16 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get("refresh") == ["1"]:
                     library_items(self.server.config, True)
                 page = query_library_page(self.server.config, query)
-                page["items"] = [public_item(x) for x in page.get("items", [])]
+                prewarm_thumbnails(page.get("items"), self.server.config, cached_cover_for_item)
+                page["items"] = [public_item(x, self.server.config) for x in page.get("items", [])]
                 return self.send_json(page)
             compat_query = dict(query)
             compat_query.setdefault("paged", ["1"])
             compat_query.setdefault("limit", ["120"])
             compat_query.setdefault("offset", ["0"])
             page = query_library_page(self.server.config, compat_query)
-            page["items"] = [public_item(x) for x in page.get("items", [])]
+            prewarm_thumbnails(page.get("items"), self.server.config, cached_cover_for_item)
+            page["items"] = [public_item(x, self.server.config) for x in page.get("items", [])]
             page["message"] = "Use paged=1 for large libraries"
             return self.send_json(page)
         if path == "/api/library/groups":
@@ -547,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/library/items":
             raw_ids = (query.get("ids") or [""])[0]
             ids = [x.strip() for x in raw_ids.split(",") if x.strip()]
-            return self.send_json({"items": [public_item(x) for x in query_library_items_by_ids(self.server.config, ids)]})
+            return self.send_json({"items": [public_item(x, self.server.config) for x in query_library_items_by_ids(self.server.config, ids)]})
         if path == "/api/library/location":
             item_id = (query.get("id") or [""])[0]
             location = query_library_item_location(self.server.config, item_id)
@@ -559,10 +694,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(library_status(self.server.config))
         if path == "/api/metadata/status":
             return self.send_json(METADATA_SERVICE.status() if METADATA_SERVICE else {"ok": False, "running": False})
+        if path == "/api/metadata/track":
+            track_id = (query.get("track_id") or [""])[0]
+            if not track_id:
+                return self.send_json({"ok": False, "message": "Missing track_id"}, HTTPStatus.BAD_REQUEST)
+            return self.send_json(METADATA_SERVICE.track_match(track_id) if METADATA_SERVICE else {"ok": False, "message": "Metadata service is not running"})
         if path.startswith("/metadata/artwork/"):
             asset_id = path.rsplit("/", 1)[-1]
             return self.serve_metadata_artwork(asset_id, head_only)
-        if path == "/api/fnos/shared-folders":
+        if False and path == "/api/fnos/shared-folders":
             token = self.trim_api_token()
             try:
                 paths, raw = get_shared_accessible_folders(token)
@@ -606,6 +746,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(MPD_OUTPUT.status())
         if path == "/api/upmpdcli/status":
             return self.send_json(upmpdcli_probe())
+        if path == "/api/airplay/status":
+            payload = AIRPLAY_SERVICE.status() if AIRPLAY_SERVICE else airplay_probe(self.server.config, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+            return self.send_json(payload)
         if path == "/api/dlna/renderer/status":
             if not DLNA_PROTOCOL:
                 return self.send_json({"available": False, "message": "DLNA renderer is not initialized"}, 503)
@@ -627,6 +770,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/playback/status":
             payload, status = playback_status(query)
             return self.send_json(payload, status)
+        if path == "/api/playback/events":
+            return self.stream_playback_events(query)
         if path == "/api/playback/core":
             return self.send_json(
                 {
@@ -654,7 +799,9 @@ class Handler(BaseHTTPRequestHandler):
             _, mime, ready = transcode_cache_ready(item, self.server.config, mode)
             return self.send_json({"ready": ready, "mode": mode, "mime": mime})
         if path.startswith("/cover/"):
-            return self.serve_cover(path.split("/", 2)[2], head_only)
+            return self.serve_cover(path.split("/", 2)[2], query, head_only)
+        if path.startswith("/cover-asset/"):
+            return self.serve_cover_asset(path.split("/", 2)[2], query, head_only)
         if path.startswith("/upnp/media/"):
             return self.serve_upnp_media(path[len("/upnp/media/"):], query, head_only)
         if path.startswith("/media/"):
@@ -665,11 +812,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return self.handle_post()
         except Exception as exc:
-            try:
-                with open("/var/log/apps/fnaudio.log", "a", encoding="utf-8") as fh:
-                    fh.write("\n[fnAudio] POST %s failed: %s\n%s\n" % (self.path, exc, traceback.format_exc()))
-            except Exception:
-                pass
+            config = getattr(self.server, "config", {}) or {}
+            OBSERVABILITY.write(
+                config.get("structured_log_path")
+                or os.path.join(os.path.dirname(getattr(self.server, "config_path", "") or "."), "fnaudio.jsonl"),
+                "http_post_error",
+                request_id=self.current_request_id(),
+                route=urllib.parse.urlparse(self.path).path,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             message = str(exc) or "playback request failed"
             return self.send_json({"ok": False, "message": message, "error": message}, 500)
 
@@ -678,6 +830,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_UNSUBSCRIBE(self):
         return self.handle_dlna_subscription(True)
+
+    def stream_playback_events(self, query):
+        """Stream authoritative playback snapshots without polling an output.
+
+        Backend monitors already merge MPD/DAC/renderer changes into
+        ``PLAYBACK_CORE``.  This endpoint only waits for that state version to
+        change, keeping one output owner even with several Web UIs connected.
+        """
+        raw_target = (query.get("target_id") or [""])[0]
+        requested_target = str(raw_target or "")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        last_version = -1
+        try:
+            while True:
+                # ``wait_for_version`` blocks until a backend monitor or
+                # control command changes state. A timeout merely emits an
+                # SSE heartbeat, so idle clients consume no polling loop.
+                PLAYBACK_CORE.wait_for_version(last_version, 15.0)
+                core = PLAYBACK_CORE.snapshot()
+                version = safe_int(core.get("state_version"))
+                if version != last_version:
+                    payload = playback_event_payload(core, requested_target)
+                    wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    self.wfile.write(("id: %s\nevent: playback\ndata: " % version).encode("ascii"))
+                    self.wfile.write(wire)
+                    self.wfile.write(b"\n\n")
+                    self.wfile.flush()
+                    last_version = version
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def handle_dlna_subscription(self, unsubscribe=False):
         if not DLNA_PROTOCOL:
@@ -710,7 +900,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_post(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/") and not self.authorize_api_request("POST", parsed.path):
+            return
         length = int(self.headers.get("Content-Length", "0"))
+        if length > 2 * 1024 * 1024:
+            return self.send_json({"ok": False, "error": "request body is too large"}, 413)
         raw = self.rfile.read(length) if length else b"{}"
         if parsed.path.startswith("/dlna/"):
             return self.handle_dlna_post(parsed.path, raw)
@@ -719,15 +913,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.send_json({"error": "invalid json"}, 400)
         if parsed.path == "/api/player/state":
-            STATE.update(
-                {
-                    "queue": payload.get("queue", STATE["queue"]),
-                    "current": payload.get("current", STATE["current"]),
-                    "playing": payload.get("playing", STATE["playing"]),
-                }
+            return self.send_json(
+                apply_legacy_player_state(payload, STATE, PLAYBACK_CORE),
+                extra_headers=legacy_response_headers(parsed.path),
             )
-            core_state = PLAYBACK_CORE.sync_frontend(payload)
-            return self.send_json({"ok": True, "state": STATE, "core": core_state.to_dict()})
         if parsed.path == "/api/state/user":
             if not isinstance(payload, dict):
                 return self.send_json({"ok": False, "error": "invalid state payload"}, 400)
@@ -737,13 +926,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "state": save_user_state(self.server.config, payload, expected_revision)})
             except StateConflict:
                 return self.send_json({"ok": False, "error": "state conflict", "state": load_user_state(self.server.config)}, 409)
+        if parsed.path == "/api/library/scan/cancel":
+            cancelled = cancel_library_refresh()
+            return self.send_json({"ok": True, "cancelled": cancelled, "status": library_status(self.server.config)})
         if parsed.path == "/api/playback/load":
             response, status = playback_load(self, payload)
             return self.send_json(response, status)
         if parsed.path == "/api/playback/target":
             target_id = str(payload.get("target_id") or "local")
             target_kind = playback_target_kind(target_id)
-            normalized = "local" if target_kind == "browser" else target_id
+            normalized = normalize_target_id(target_id)
             PLAYBACK_CORE.set_target(normalized, target_kind)
             revision = save_current_playback_session(self.server.config)
             return self.send_json({
@@ -753,11 +945,25 @@ class Handler(BaseHTTPRequestHandler):
                 "core": PLAYBACK_CORE.snapshot(),
                 "revision": revision,
             })
+        if parsed.path == "/api/airplay/control":
+            if not AIRPLAY_SERVICE:
+                return self.send_json({"ok": False, "message": "AirPlay service is not initialized"}, 503)
+            action = str(payload.get("action") or "").lower()
+            if action == "start":
+                result = AIRPLAY_SERVICE.start()
+            elif action == "stop":
+                result = AIRPLAY_SERVICE.stop()
+            elif action == "restart":
+                AIRPLAY_SERVICE.stop()
+                result = AIRPLAY_SERVICE.start()
+            else:
+                return self.send_json({"ok": False, "message": "unknown AirPlay action"}, 400)
+            return self.send_json(result, 200 if result.get("ok", True) else 409)
         if parsed.path == "/api/playback/queue":
             response, status = playback_queue(self.server.config, payload)
             return self.send_json(response, status)
         if parsed.path == "/api/playback/control":
-            response, status = playback_control(self, payload)
+            response, status = playback_control_idempotent(self, payload)
             return self.send_json(response, status)
         if parsed.path == "/api/transcode/warm":
             item_id = str(payload.get("track_id") or "")
@@ -771,52 +977,22 @@ class Handler(BaseHTTPRequestHandler):
             queued = False if ready else warm_transcode_cache(item, self.server.config, mode, priority=0)
             return self.send_json({"ok": True, "mode": mode, "mime": mime, "ready": ready, "queued": queued})
         if parsed.path == "/api/upnp/push":
-            response, status = playback_load(
-                self,
-                {
-                    "target_id": payload.get("device_id"),
-                    "track_id": payload.get("track_id"),
-                    "position": payload.get("position", 0),
-                },
-            )
-            return self.send_json(response, status)
+            response, status = playback_load(self, legacy_load_payload(payload))
+            return self.send_json(response, status, legacy_response_headers(parsed.path))
         if parsed.path == "/api/dac/push":
-            response, status = playback_load(
-                self,
-                {
-                    "target_id": payload.get("device_id"),
-                    "track_id": payload.get("track_id"),
-                    "position": payload.get("position", 0),
-                },
-            )
-            return self.send_json(response, status)
+            response, status = playback_load(self, legacy_load_payload(payload))
+            return self.send_json(response, status, legacy_response_headers(parsed.path))
         if parsed.path == "/api/upnp/control":
-            response, status = playback_control(
-                self,
-                {
-                    "target_id": payload.get("device_id"),
-                    "action": payload.get("action"),
-                    "position": payload.get("position"),
-                    "track_id": payload.get("track_id"),
-                },
-            )
-            return self.send_json(response, status)
+            response, status = playback_control(self, legacy_control_payload(payload))
+            return self.send_json(response, status, legacy_response_headers(parsed.path))
         if parsed.path == "/api/dac/control":
             dac_target_id = payload.get("device_id")
             if not dac_target_id:
                 with DAC_LOCK:
                     dac_target_id = DAC_STATE.get("device_id")
-            response, status = playback_control(
-                self,
-                {
-                    "target_id": dac_target_id,
-                    "action": payload.get("action"),
-                    "position": payload.get("position"),
-                    "track_id": payload.get("track_id"),
-                },
-            )
-            return self.send_json(response, status)
-        if parsed.path == "/api/fnos/shared-folders/sync":
+            response, status = playback_control(self, legacy_control_payload(payload, dac_target_id))
+            return self.send_json(response, status, legacy_response_headers(parsed.path))
+        if False and parsed.path == "/api/fnos/shared-folders/sync":
             try:
                 authorized_paths, _ = get_shared_accessible_folders(self.trim_api_token())
             except FnosApiError as exc:
@@ -846,17 +1022,23 @@ class Handler(BaseHTTPRequestHandler):
                     "message": "已同步飞牛授权目录。需要更新时请点击刷新音乐库。",
                 }
             )
-        if parsed.path == "/api/fnos/shared-folders/delete":
-            path_to_delete = os.path.abspath(os.path.expanduser(str(payload.get("path", "")).strip()))
+        if False and parsed.path == "/api/fnos/shared-folders/delete":
+            path_to_delete = os.path.realpath(os.path.abspath(os.path.expanduser(str(payload.get("path", "")).strip())))
             if not path_to_delete:
                 return self.send_json({"ok": False, "message": "缺少要删除的授权目录"}, 400)
+            configured_paths = {os.path.realpath(path) for path in normalize_library_paths(self.server.config)}
+            if path_to_delete not in configured_paths or not is_allowed_library_path(path_to_delete):
+                return self.send_json({"ok": False, "message": "只能删除当前已配置的授权目录"}, 403)
             try:
                 del_shared_accessible_folder(path_to_delete, self.trim_api_token())
             except FnosApiError as exc:
                 return self.send_json({"ok": False, "message": str(exc)}, 400)
             except Exception as exc:
                 return self.send_json({"ok": False, "message": "删除飞牛授权目录失败：%s" % exc}, 500)
-            remaining_paths = [path for path in normalize_library_paths(self.server.config) if path != path_to_delete]
+            remaining_paths = [
+                path for path in normalize_library_paths(self.server.config)
+                if os.path.realpath(path) != path_to_delete
+            ]
             apply_library_paths(self.server.config, remaining_paths)
             if not save_config(self.server.config_path, self.server.config):
                 return self.send_json({"ok": False, "message": "授权已删除，但本地设置保存失败"}, 500)
@@ -868,20 +1050,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": False, "message": "缓存清理宽限天数必须是 0-90 的整数"}, 400)
             self.server.config["metadata_enabled"] = bool(payload.get("enabled", True))
             self.server.config["metadata_orphan_grace_days"] = grace_days
-            if payload.get("clear_spotify"):
-                self.server.config["spotify_client_id"] = ""
-                self.server.config["spotify_client_secret"] = ""
-            else:
-                if "spotify_client_id" in payload:
-                    self.server.config["spotify_client_id"] = str(payload.get("spotify_client_id") or "").strip()
-                secret = str(payload.get("spotify_client_secret") or "").strip()
-                if secret:
-                    self.server.config["spotify_client_secret"] = secret
             if not save_config(self.server.config_path, self.server.config):
                 return self.send_json({"ok": False, "message": "保存元数据设置失败"}, 500)
             if METADATA_SERVICE:
-                METADATA_SERVICE.providers.spotify_token = ""
-                METADATA_SERVICE.providers.spotify_token_expires = 0
                 METADATA_SERVICE.wake(force=bool(payload.get("refresh")))
             return self.send_json({"ok": True, "status": METADATA_SERVICE.status() if METADATA_SERVICE else {}})
         if parsed.path == "/api/metadata/refresh":
@@ -889,32 +1060,45 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": False, "message": "后台元数据服务没有启动"}, 503)
             METADATA_SERVICE.wake(force=True)
             return self.send_json({"ok": True, "message": "已加入后台补全队列"})
+        if parsed.path == "/api/metadata/retry-tag-writes":
+            if not METADATA_SERVICE:
+                return self.send_json({"ok": False, "message": "Metadata service is not running"}, 503)
+            retried = METADATA_SERVICE.retry_failed_tag_writes()
+            return self.send_json({"ok": True, "retried": retried, "status": METADATA_SERVICE.status()})
+        if parsed.path == "/api/metadata/track/apply":
+            if not METADATA_SERVICE:
+                return self.send_json({"ok": False, "message": "Metadata service is not running"}, 503)
+            track_id = str(payload.get("track_id") or "")
+            if not track_id:
+                return self.send_json({"ok": False, "message": "Missing track_id"}, 400)
+            candidate_index = payload.get("candidate_index", 0)
+            if isinstance(candidate_index, bool):
+                return self.send_json({"ok": False, "message": "candidate_index must be a non-negative integer"}, 400)
+            try:
+                candidate_index = int(candidate_index)
+            except (TypeError, ValueError):
+                return self.send_json({"ok": False, "message": "candidate_index must be a non-negative integer"}, 400)
+            if candidate_index < 0:
+                return self.send_json({"ok": False, "message": "candidate_index must be a non-negative integer"}, 400)
+            if not METADATA_SERVICE.apply_track_match(track_id, candidate_index):
+                return self.send_json({"ok": False, "message": "No matching candidate is available for this track"}, 404)
+            return self.send_json({"ok": True, "status": METADATA_SERVICE.track_match(track_id)})
         if parsed.path == "/api/config/library":
             raw_library_path = str(payload.get("library_path", ""))
-            candidate_paths = [os.path.abspath(os.path.expanduser(x.strip())) for x in re.split(r"[\r\n;]+", raw_library_path) if x.strip()]
+            candidate_paths = [
+                canonical_library_path(x.strip())
+                for x in re.split(r"[\r\n;]+", raw_library_path)
+                if x.strip()
+            ]
             if not candidate_paths:
                 return self.send_json({"ok": False, "message": "请输入音乐目录"}, 400)
             bad_path = next((x for x in candidate_paths if not is_allowed_library_path(x) or not os.path.isdir(x)), "")
             if bad_path:
                 return self.send_json({"ok": False, "message": "这个目录不能作为音乐目录：%s" % bad_path}, 400)
-            try:
-                server_port = int(payload.get("server_port", self.server.config.get("server_port", 18080)))
-            except (TypeError, ValueError):
-                return self.send_json({"ok": False, "message": "TCP port must be a number"}, 400)
-            if not 1024 <= server_port <= 65535:
-                return self.send_json({"ok": False, "message": "TCP 端口必须在 1024-65535 之间"}, 400)
-            if not is_tcp_port_available(server_port, self.server.server_address[1]):
-                return self.send_json({"ok": False, "message": "TCP 端口 %s 已被占用，请换一个端口" % server_port}, 409)
             apply_library_paths(self.server.config, candidate_paths)
-            self.server.config["server_port"] = server_port
             if not save_config(self.server.config_path, self.server.config):
                 return self.send_json({"ok": False, "message": "保存设置失败"}, 500)
-            if not save_proxy_port(self.server.web_root, server_port):
-                return self.send_json({"ok": False, "message": "Unable to update the application proxy port"}, 500)
-            manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "manifest")
-            if os.path.isfile(manifest_path):
-                save_manifest_port(os.path.abspath(manifest_path), server_port)
-            return self.send_json({"ok": True, "restart_required": server_port != self.server.server_address[1], "status": library_status(self.server.config)})
+            return self.send_json({"ok": True, "restart_required": False, "status": library_status(self.server.config)})
         return self.send_json({"error": "not found"}, 404)
 
     def handle_dlna_get(self, path, head_only=False):
@@ -957,31 +1141,66 @@ class Handler(BaseHTTPRequestHandler):
                 body = fh.read()
         else:
             body = b""
+        mime_type = mimetypes.guess_type(target)[0]
+        # Windows and some minimal Linux environments do not map .js to a
+        # JavaScript MIME type. The fnOS host bridge is loaded as an ES module,
+        # which browsers reject when it is served as application/octet-stream.
+        if target.lower().endswith(".js"):
+            mime_type = "text/javascript"
         self.send_response(200)
-        self.send_header("Content-Type", mimetypes.guess_type(target)[0] or "application/octet-stream")
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
         self.send_header("Content-Length", str(os.path.getsize(target) if head_only else len(body)))
         self.end_headers()
         if not head_only:
             self.wfile.write(body)
 
-    def serve_cover(self, item_id, head_only=False):
+    def serve_cover(self, item_id, query=None, head_only=False):
         item = find_library_item(self.server.config, item_id)
         if not item:
             return self.send_error(404)
-        mime, body = read_cover_for_item(item, self.server.config)
+        size = normalized_cover_size(((query or {}).get("size") or [0])[0])
+        mime, body = (cached_thumbnail_for_item(item, self.server.config, size, cached_cover_for_item)
+                      if size else cached_cover_for_item(item, self.server.config))
         if not body:
             return self.send_error(404)
-        etag = '"%s-%s"' % (item.get("id", item_id), safe_int(item.get("modified_ns") or item.get("modified")))
+        # URL version, ETag and thumbnail-cache invalidation deliberately use
+        # the same source version. This keeps tag/cover writes from serving a
+        # stale 304 response after a library index has not caught up yet.
+        version = cover_source_version(item)
+        etag = '"cover-%s-%s-%s-%s"' % (
+            item.get("id", item_id), version, size or "original", hashlib.sha256(body).hexdigest()[:16])
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Cache-Control", "public, max-age=2592000, immutable")
             self.end_headers()
             return
         self.send_response(200)
         self.send_header("Content-Type", mime or "image/jpeg")
         self.send_header("ETag", etag)
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Cache-Control", "public, max-age=2592000, immutable")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
+    def serve_cover_asset(self, asset_id, query=None, head_only=False):
+        size = normalized_cover_size(((query or {}).get("size") or [160])[0]) or 160
+        value = thumbnail_asset_bytes(self.server.config, asset_id, size)
+        if not value:
+            return self.send_error(404)
+        mime, body = value
+        etag = '"cover-asset-%s-%s"' % (asset_id, size)
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "public, max-age=2592000, immutable")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "image/jpeg")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "public, max-age=2592000, immutable")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if not head_only:
@@ -1017,7 +1236,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         mode = media_mode(item, query, self)
         if mode != "original":
-            if mode == "cue_flac":
+            if mode in ("cue_flac", "ape_flac"):
                 try:
                     target, mime = transcode_to_audio(item, self.server.config, mode)
                 except RuntimeError as exc:
@@ -1055,7 +1274,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(501, str(exc))
         return self.serve_file_range(target, mime, head_only)
 
-    def serve_file_range(self, target, mime, head_only=False):
+    def serve_file_range(self, target, mime, head_only=False, dlna=False):
         try:
             size = os.path.getsize(target)
         except OSError:
@@ -1065,35 +1284,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", "0")
             self.send_header("Accept-Ranges", "bytes")
+            if dlna:
+                self.send_header("transferMode.dlna.org", "Streaming")
             self.end_headers()
             return
-        range_header = self.headers.get("Range")
-        start, end = 0, size - 1
-        if range_header and range_header.startswith("bytes="):
-            spec = range_header[6:].split(",", 1)[0]
-            left, _, right = spec.partition("-")
-            try:
-                if left:
-                    start = int(left)
-                elif right:
-                    suffix = int(right)
-                    if suffix <= 0:
-                        return self.send_error(416)
-                    start = max(0, size - suffix)
-                if left and right:
-                    end = int(right)
-                end = min(end, size - 1)
-            except (TypeError, ValueError):
-                return self.send_error(416)
-            if start < 0 or start >= size or start > end:
-                return self.send_error(416)
-            self.send_response(206)
+        try:
+            status, start, end = parse_single_byte_range(size, self.headers.get("Range"))
+        except ValueError:
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%s" % size)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if status == 206:
+            self.send_response(status)
             self.send_header("Content-Range", "bytes %s-%s/%s" % (start, end, size))
         else:
-            self.send_response(200)
+            self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
+        if dlna:
+            self.send_header("transferMode.dlna.org", "Streaming")
         self.end_headers()
         if head_only:
             return
@@ -1104,7 +1317,10 @@ class Handler(BaseHTTPRequestHandler):
                 chunk = fh.read(min(1024 * 256, remaining))
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
                 remaining -= len(chunk)
 
     def serve_upnp_media(self, item_path, query, head_only=False):
@@ -1116,6 +1332,10 @@ class Handler(BaseHTTPRequestHandler):
         # DLNA DSD pushes must expose the original DSF/DFF bytes. Browser
         # playback may still request server-side conversion explicitly.
         mode = "original" if item.get("is_dsd") else media_mode(item, query, self)
+        if str(item.get("path") or "").lower().endswith(".ape"):
+            # Renderers frequently omit source format support in their probe.
+            # fnAudio always exposes the APE compatibility resource as FLAC.
+            mode = "cue_flac" if item.get("cue_track") else "ape_flac"
         self.record_dlna(
             "media",
             item_id=item_id,
@@ -1134,6 +1354,11 @@ class Handler(BaseHTTPRequestHandler):
                 target, mime = transcode_to_audio(item, self.server.config, "dsd_wav")
             except RuntimeError as exc:
                 return self.send_error(501, str(exc))
+        elif mode == "ape_flac":
+            try:
+                target, mime = transcode_to_audio(item, self.server.config, "ape_flac")
+            except RuntimeError as exc:
+                return self.send_error(501, str(exc))
         elif item.get("cue_track"):
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "cue_flac")
@@ -1142,61 +1367,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             target = item["path"]
             mime = upnp_resource_mime(item)
-        try:
-            size = os.path.getsize(target)
-        except OSError:
-            return self.send_error(404)
-        if size <= 0:
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", "0")
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header("transferMode.dlna.org", "Streaming")
-            self.end_headers()
-            return
-        range_header = self.headers.get("Range")
-        start, end = 0, size - 1
-        if range_header and range_header.startswith("bytes="):
-            spec = range_header[6:].split(",", 1)[0]
-            left, _, right = spec.partition("-")
-            try:
-                if left:
-                    start = int(left)
-                elif right:
-                    suffix = int(right)
-                    if suffix <= 0:
-                        return self.send_error(416)
-                    start = max(0, size - suffix)
-                if left and right:
-                    end = int(right)
-                end = min(end, size - 1)
-            except (TypeError, ValueError):
-                return self.send_error(416)
-            if start < 0 or start >= size or start > end:
-                return self.send_error(416)
-            self.send_response(206)
-            self.send_header("Content-Range", "bytes %s-%s/%s" % (start, end, size))
-        else:
-            self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("transferMode.dlna.org", "Streaming")
-        self.end_headers()
-        if head_only:
-            return
-        with open(target, "rb") as fh:
-            fh.seek(start)
-            remaining = end - start + 1
-            while remaining:
-                chunk = fh.read(min(1024 * 256, remaining))
-                if not chunk:
-                    break
-                try:
-                    self.wfile.write(chunk)
-                except (BrokenPipeError, ConnectionResetError):
-                    break
-                remaining -= len(chunk)
+        return self.serve_file_range(target, mime, head_only, dlna=True)
 
     def serve_transcoded_media(self, item, mode, query=None):
         try:
@@ -1204,42 +1375,66 @@ class Handler(BaseHTTPRequestHandler):
             command, mime, env = transcode_command(item, self.server.config, mode, start)
         except RuntimeError as exc:
             return self.send_error(501, str(exc))
-        self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         try:
-            while True:
-                chunk = process.stdout.read(1024 * 128)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            if process.poll() is None:
-                process.terminate()
+            with ffmpeg_slot(self.server.config, timeout=2):
+                process = None
+                watchdog = None
+                timed_out = threading.Event()
+                try:
+                    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+
+                    def stop_timed_out_process():
+                        timed_out.set()
+                        try:
+                            if process.poll() is None:
+                                process.terminate()
+                        except OSError:
+                            pass
+
+                    watchdog = threading.Timer(
+                        max(0.1, safe_float(self.server.config.get("ffmpeg_task_timeout_seconds") or 900)),
+                        stop_timed_out_process,
+                    )
+                    watchdog.daemon = True
+                    watchdog.start()
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-fnAudio-Transcode-Timeout", "%g" % safe_float(self.server.config.get("ffmpeg_task_timeout_seconds") or 900))
+                    self.end_headers()
+                    while True:
+                        chunk = process.stdout.read(1024 * 128)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    if watchdog is not None:
+                        watchdog.cancel()
+                    if process is not None and process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=2)
+        except ResourceLimitError as exc:
+            return self.send_error(503, str(exc))
+        except OSError as exc:
+            return self.send_error(502, "failed to start ffmpeg: %s" % exc)
 
 
-def public_item(item):
+def public_item(item, config=None):
     result = dict(item)
     result.pop("path", None)
     result["url"] = "media/" + item["id"]
-    result["cover_url"] = "cover/%s?v=%s" % (item["id"], safe_int(item.get("modified_ns") or item.get("modified")))
+    result["cover_url"] = ("" if cover_is_known_missing(item, config or {}, 160) else
+                           "cover/%s?v=%s" % (item["id"], cover_source_version(item)))
+    asset_id = thumbnail_asset_id_for_item(item, config or {}, 160)
+    result["cover_thumbnail_url"] = ("cover-asset/%s?size=160" % asset_id) if asset_id else ""
     return result
-
-
-def playback_target_kind(target_id):
-    target_id = str(target_id or "local")
-    if target_id in ("", "local", "browser"):
-        return "browser"
-    if target_id.startswith("mpd:"):
-        return "mpd"
-    if target_id.startswith("dac:"):
-        return "alsa"
-    return "dlna_push"
 
 
 def playback_targets_payload(force_refresh=False):
@@ -1253,21 +1448,21 @@ def playback_targets_payload(force_refresh=False):
     # mark as current when the dialog is opened again.
     if current_target == "mpd":
         selected_output = mpd_caps.get("selected_output") or {}
-        selected_alsa_id = str(selected_output.get("alsa_id") or "").strip()
-        if selected_alsa_id:
-            current_target = "mpd:" + urllib.parse.quote(selected_alsa_id, safe=":,")
+        selected_device_id = str(selected_output.get("stable_id") or selected_output.get("alsa_id") or "").strip()
+        if selected_device_id:
+            current_target = "mpd:" + urllib.parse.quote(selected_device_id, safe=":,=-_")
     if current_target == "browser":
         current_target = "local"
     current_target_name = ""
     if current_target == "local":
-        current_target_name = "本机播放"
+        current_target_name = "当前设备"
     upmpdcli = upmpdcli_probe()
     if force_refresh or time.time() - UPNP_CACHE["stamp"] > 15:
         refresh_upnp_cache_background()
     targets = [
         {
             "id": "local",
-            "name": "本机播放",
+            "name": "当前设备",
             "kind": "browser",
             "online": True,
             "selected": current_target == "local",
@@ -1280,14 +1475,14 @@ def playback_targets_payload(force_refresh=False):
             if not alsa_id or not bool(device.get("is_usb")):
                 continue
             name = device.get("name") or alsa_id
-            target_id = "mpd:" + urllib.parse.quote(alsa_id, safe=":,")
+            persistent_id = str(device.get("stable_id") or alsa_id).strip()
+            target_id = "mpd:" + urllib.parse.quote(persistent_id, safe=":,=-_")
             selected = target_id == current_target
             caps = device.get("caps") or {}
             display_name = "NAS - %s - USB Audio" % name
             targets.append(
                 {
                     "id": target_id,
-                    "name": "USB DAC · " + name,
                     "kind": "mpd",
                     "name": display_name,
                     "online": bool(mpd.get("available")),
@@ -1300,6 +1495,8 @@ def playback_targets_payload(force_refresh=False):
                         "mpd": mpd,
                         "upmpdcli": upmpdcli,
                         "alsa_id": alsa_id,
+                        "stable_id": device.get("stable_id", ""),
+                        "stable_alsa_id": device.get("stable_alsa_id", ""),
                     },
                     "capabilities": PLAYBACK_CORE.registry.get("mpd").capabilities(),
                 }
@@ -1315,26 +1512,38 @@ def playback_targets_payload(force_refresh=False):
                 "kind": "dlna_push",
                 "online": bool(device.get("online")),
                 "selected": selected,
-                "capabilities": PLAYBACK_CORE.registry.get("dlna_push").capabilities(),
+                "capabilities": {
+                    **PLAYBACK_CORE.registry.get("dlna_push").capabilities(),
+                    **(device.get("capabilities") or {}),
+                    "native_dsd": bool(device.get("supports_dsd")),
+                },
             }
         )
         if selected:
             current_target_name = device.get("name") or "DLNA 设备"
+    # Discovery is asynchronous. Keep the core target untouched while a
+    # renderer is temporarily absent, but tell clients when it has no row.
+    current_target_available = any(
+        str(target.get("id") or "") == str(current_target) for target in targets
+    )
     return {
         "targets": targets,
         "current_target": current_target,
         "current_target_name": current_target_name,
+        "current_target_available": current_target_available,
         "plugins": PLAYBACK_CORE.registry.describe(),
         "optional_backends": {
             "mpd": mpd,
             "upmpdcli": upmpdcli,
+            "airplay": airplay_probe(getattr(getattr(MPD_OUTPUT, "service", None), "config", {}) or {}, os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))),
         },
         "refreshing": bool(UPNP_CACHE.get("refreshing")),
     }
 
 
 def find_library_item(config, item_id):
-    return query_library_item_by_id(config, item_id)
+    item = query_library_item_by_id(config, item_id)
+    return item if item and is_library_item_path(config, item.get("path")) else None
 
 
 def find_upnp_device(device_id):
@@ -1356,6 +1565,8 @@ def current_playback_session():
     return {
         "queue": list(core.get("queue") or []),
         "current_id": str(core.get("current") or ""),
+        "position": safe_float(core.get("position") or 0),
+        "playing": bool(core.get("playing")),
         "repeat": str(core.get("repeat") or "off"),
         "shuffle": bool(core.get("shuffle")),
         "target_id": "local" if core.get("target_id") in ("", "browser") else str(core.get("target_id")),
@@ -1370,7 +1581,8 @@ def save_current_playback_session(config):
         return None
 
 
-def restore_playback_session(config):
+def restore_playback_session(config, _retry=0):
+    retry_delay = (2.0, 5.0, 12.0)
     try:
         playback = (load_user_state(config).get("playback") or {})
         queue_ids = [str(track_id or "").strip() for track_id in playback.get("queue", []) if str(track_id or "").strip()]
@@ -1382,28 +1594,107 @@ def restore_playback_session(config):
         target_id = str(playback.get("target_id") or "local")
         target_kind = playback_target_kind(target_id)
         PLAYBACK_CORE.set_target("local" if target_kind == "browser" else target_id, target_kind)
+        # Restoring the logical queue is not enough for MPD: its native
+        # execution queue is process-local and is empty after an app restart.
+        # Mirror the saved queue back into MPD before the UI tries to control
+        # the recovered target.  Older sessions have no `playing` field; they
+        # are restored paused/stopped after the queue is mirrored.
+        if target_kind == "mpd" and queue and MPD_SERVICE:
+            tracks = [TrackRef.from_mapping(item) for item in queue]
+            restored_position = safe_float(playback.get("position") or 0)
+            result = MPD_SERVICE.sync_playback_queue(
+                tracks,
+                current,
+                resolver=lambda track_id: find_library_item(config, track_id),
+                current_item=next((item for item in queue if str(item.get("id") or "") == current), None),
+                start=restored_position,
+                repeat=str(playback.get("repeat") or "off"),
+                shuffle=bool(playback.get("shuffle")),
+                play=False,
+            )
+            # Session restore deliberately never resumes audio. The saved
+            # playing flag is historical state for the UI, not permission to
+            # start an output device when fnAudio starts.
+            restore_playing = False
+            if not restore_playing:
+                mpd_control("stop", host=MPD_SERVICE.host, port=MPD_SERVICE.port)
+                PLAYBACK_CORE.sync_output_status("mpd", "STOPPED", restored_position, 0)
+                save_current_playback_session(config)
+            else:
+                # MPD accepts `playid` before ALSA has actually opened the
+                # stream.  A format/rate failure (for example a 384 kHz
+                # source on this DAC) therefore needs an authoritative
+                # transport check; otherwise the UI can claim PLAYING while
+                # MPD has already stopped.
+                actual_state = ""
+                refresh_status = getattr(MPD_SERVICE, "refresh_status", None)
+                if callable(refresh_status):
+                    try:
+                        probe = refresh_status()
+                        actual_state = str(
+                            ((probe.get("status") or {}).get("transport") or {}).get("state") or ""
+                        ).upper()
+                    except Exception:
+                        actual_state = ""
+                if actual_state and actual_state not in ("PLAYING", "PAUSED"):
+                    message = "MPD 未能打开恢复曲目，已停止并保留当前队列"
+                    PLAYBACK_CORE.sync_output_status(
+                        "mpd", "STOPPED", restored_position, 0, message
+                    )
+                    save_current_playback_session(config)
+                else:
+                    # Keep restoration visible to event consumers as well as
+                    # the persisted state; direct field writes bypass the
+                    # core version/condition used by SSE.
+                    PLAYBACK_CORE.sync_output_status("mpd", "PLAYING", restored_position)
+            if result.get("ok") is False:
+                raise RuntimeError(result.get("message") or "MPD queue restore failed")
     except Exception as exc:
         print("fnAudio playback-session restore skipped: %s" % exc, flush=True)
+        # MPD may still be opening its database immediately after process
+        # startup.  Keep the logical session, but retry the native queue
+        # mirror a few times so a transient startup race cannot leave MPD
+        # with playlistlength=0 until the next user action.
+        if _retry < len(retry_delay):
+            timer = threading.Timer(
+                retry_delay[_retry],
+                restore_playback_session,
+                args=(config, _retry + 1),
+            )
+            timer.daemon = True
+            timer.start()
 
 
 def playback_queue(config, payload):
-    source = payload.get("queue") if isinstance(payload.get("queue"), list) else []
-    tracks = []
-    for item in source:
-        if isinstance(item, dict):
-            track_id = str(item.get("id") or item.get("track_id") or "").strip()
-            if track_id:
-                tracks.append(item)
-            continue
-        track_id = str(item or "").strip()
-        if track_id:
-            tracks.append({"id": track_id})
+    tracks = normalize_queue_tracks(payload.get("queue"))
     current = payload.get("current_id") or payload.get("current")
     if isinstance(current, dict):
         current = current.get("id")
     repeat = payload.get("repeat")
     shuffle = payload.get("shuffle")
     state = PLAYBACK_CORE.set_queue(tracks, str(current or ""), repeat, shuffle if shuffle is not None else None)
+    # Keep MPD's native execution queue aligned with the logical queue even
+    # when the UI only edits the queue while playback is stopped.  Replacing
+    # the queue with ``play=False`` prevents an edit from unexpectedly
+    # starting audio; the next explicit play/load still uses the fast native
+    # queue path.
+    target_kind = playback_target_kind(PLAYBACK_CORE.state.target_id)
+    service = getattr(MPD_OUTPUT, "service", None)
+    if target_kind == "mpd" and service and tracks:
+        try:
+            was_playing = bool(state.playing)
+            service.sync_playback_queue(
+                state.queue,
+                state.current_track_id,
+                resolver=lambda track_id: find_library_item(config, track_id),
+                repeat=state.repeat,
+                shuffle=state.shuffle,
+                play=was_playing,
+            )
+            if not was_playing:
+                service.refresh_status()
+        except Exception as exc:
+            state.error = "MPD 队列同步失败: %s" % exc
     revision = save_current_playback_session(config)
     return {"ok": True, "core": state.to_dict(), "revision": revision}, 200
 
@@ -1420,6 +1711,15 @@ def playback_load_selected(handler, target_id, item, position=0):
     }
     core_result = PLAYBACK_CORE.dispatch(PlaybackCommand("load", track=TrackRef.from_mapping(item), context=context))
     output_result = core_result.get("result") or {}
+    # A direct device load can be initiated by a renderer, Android bridge, or
+    # another client without first calling /api/playback/queue.  Persist the
+    # authoritative core snapshot here as well, otherwise the next browser
+    # refresh can restore an empty/stale queue even though the device is
+    # already playing the selected track.
+    if core_result.get("ok") and not (isinstance(output_result, dict) and output_result.get("ok") is False):
+        save_current_playback_session(handler.server.config)
+        if METADATA_SERVICE:
+            METADATA_SERVICE.prioritize_track(item["id"])
     if target_kind == "browser":
         return {"ok": True, "kind": target_kind, "target_id": "local", "track_id": item["id"], "core": core_result["state"]}, 200
     ok = bool(output_result.get("ok"))
@@ -1433,6 +1733,35 @@ def playback_load_selected(handler, target_id, item, position=0):
         "cue_segment": bool(output_result.get("cue_segment")),
         "core": PLAYBACK_CORE.snapshot(),
     }, 200 if ok else 502
+
+
+def playback_control_idempotent(handler, payload):
+    """Execute a transport command once and return its authoritative result.
+
+    Browser retries, native notification actions, and intermittent mobile
+    proxies can submit the same command twice.  A caller-provided command id
+    makes next/previous safe to retry without turning one user gesture into
+    two queue advances.
+    """
+    command_id = str((payload or {}).get("command_id") or "").strip()[:128]
+    if not command_id:
+        return playback_control(handler, payload)
+    now = time.monotonic()
+    with PLAYBACK_COMMAND_LOCK:
+        expired = [key for key, value in PLAYBACK_COMMAND_RESULTS.items() if value[0] <= now]
+        for key in expired:
+            PLAYBACK_COMMAND_RESULTS.pop(key, None)
+        cached = PLAYBACK_COMMAND_RESULTS.get(command_id)
+        if cached:
+            response, status = cached[1], cached[2]
+            return dict(response), status
+        response, status = playback_control(handler, payload)
+        response = dict(response)
+        response["command_id"] = command_id
+        core = response.get("core") or {}
+        response["state_version"] = safe_int(core.get("state_version"))
+        PLAYBACK_COMMAND_RESULTS[command_id] = (now + PLAYBACK_COMMAND_TTL_SECONDS, dict(response), status)
+        return response, status
 
 
 def playback_control(handler, payload):
@@ -1456,17 +1785,27 @@ def playback_control(handler, payload):
         item = find_library_item(handler.server.config, track_id) if track_id else None
         if not item:
             return {"ok": False, "kind": target_kind, "message": "no next track", "core": PLAYBACK_CORE.snapshot()}, 404
+        revision = save_current_playback_session(handler.server.config)
+        if METADATA_SERVICE:
+            METADATA_SERVICE.prioritize_track(item["id"])
         if target_kind == "browser":
-            return {"ok": True, "kind": target_kind, "track_id": item["id"], "core": PLAYBACK_CORE.snapshot()}, 200
+            return {"ok": True, "kind": target_kind, "track_id": item["id"], "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200
         output_result = result.get("result") or {}
         ok = bool(output_result.get("ok"))
-        return {"ok": ok, "kind": target_kind, "track_id": item["id"], "message": output_result.get("message", ""), "core": PLAYBACK_CORE.snapshot()}, 200 if ok else 502
+        return {"ok": ok, "kind": target_kind, "track_id": item["id"], "message": output_result.get("message", ""), "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200 if ok else 502
     if action in ("repeat", "shuffle"):
-        result = PLAYBACK_CORE.dispatch(PlaybackCommand(action))
-        return {"ok": True, "kind": target_kind, "result": result, "core": PLAYBACK_CORE.snapshot()}, 200
+        context = {}
+        if action == "repeat" and payload.get("repeat") in ("off", "all", "one"):
+            context["repeat_value"] = payload.get("repeat")
+        if action == "shuffle" and isinstance(payload.get("shuffle"), bool):
+            context["shuffle_value"] = bool(payload.get("shuffle"))
+        result = PLAYBACK_CORE.dispatch(PlaybackCommand(action, context=context))
+        revision = save_current_playback_session(handler.server.config)
+        return {"ok": True, "kind": target_kind, "result": result, "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200
     if target_kind == "browser":
         result = PLAYBACK_CORE.dispatch(PlaybackCommand(action, safe_float(position) if position is not None else None))
-        return {"ok": True, "kind": target_kind, "result": result, "core": PLAYBACK_CORE.snapshot()}, 200
+        revision = save_current_playback_session(handler.server.config)
+        return {"ok": True, "kind": target_kind, "result": result, "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200
     if target_kind in ("alsa", "mpd"):
         item_id = str(payload.get("track_id") or "")
         if target_kind == "alsa" and not item_id:
@@ -1484,7 +1823,8 @@ def playback_control(handler, payload):
         output_result = result.get("result") or {}
         ok = bool(output_result.get("ok"))
         message = output_result.get("message") or ""
-        return {"ok": ok, "kind": target_kind, "message": message, "core": PLAYBACK_CORE.snapshot()}, 200 if ok else 502
+        revision = save_current_playback_session(handler.server.config)
+        return {"ok": ok, "kind": target_kind, "message": message, "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200 if ok else 502
     result = PLAYBACK_CORE.dispatch(
         PlaybackCommand(
             action,
@@ -1495,7 +1835,8 @@ def playback_control(handler, payload):
     output_result = result.get("result") or {}
     ok = bool(output_result.get("ok"))
     message = output_result.get("message") or ""
-    return {"ok": ok, "kind": target_kind, "message": message, "core": PLAYBACK_CORE.snapshot()}, 200 if ok else 502
+    revision = save_current_playback_session(handler.server.config)
+    return {"ok": ok, "kind": target_kind, "message": message, "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200 if ok else 502
 
 
 def playback_status(payload_or_query):
@@ -1511,7 +1852,10 @@ def playback_status(payload_or_query):
     if target_kind == "alsa":
         return {"kind": target_kind, **dac_public_status(), "core": PLAYBACK_CORE.snapshot()}, 200
     if target_kind == "mpd":
-        probe = MPD_OUTPUT.status()
+        # The UI polls this endpoint frequently for the progress bar.  Keep
+        # it on the lightweight MPD status path so ALSA capability probing and
+        # recent-log collection never run in the request thread.
+        probe = MPD_OUTPUT.status(light=True)
         if not probe.get("running"):
             return {"kind": target_kind, "error": probe.get("message") or "MPD is not running", "core": PLAYBACK_CORE.snapshot()}, 404
         status = probe.get("status") or {}
@@ -1524,12 +1868,16 @@ def playback_status(payload_or_query):
             cue_start = safe_float(current_item.get("cue_start"))
             cue_end = safe_float(current_item.get("cue_end"))
             cue_duration = max(0.0, safe_float(current_item.get("duration")) or (cue_end - cue_start))
-            rel = max(0.0, whole_seconds - cue_start)
+            # CUE+APE is rendered as an individual FLAC segment for MPD, so
+            # its reported position is already relative to this cue track.
+            cue_transcoded = str(current_item.get("path") or "").lower().endswith(".ape")
+            rel = max(0.0, whole_seconds if cue_transcoded else whole_seconds - cue_start)
             if cue_duration > 0:
                 rel = min(rel, cue_duration)
-            position.update({"rel_seconds": rel, "duration_seconds": cue_duration, "cue_start": cue_start, "cue_end": cue_end})
+            position.update({"rel_seconds": rel, "duration_seconds": cue_duration, "cue_start": cue_start, "cue_end": cue_end, "cue_transcoded": cue_transcoded})
             status["position"] = position
-            if cue_end > cue_start and whole_seconds >= max(cue_start, cue_end - 0.25):
+            cue_finished = rel >= max(0.0, cue_duration - 0.25) if cue_transcoded else whole_seconds >= max(cue_start, cue_end - 0.25)
+            if cue_end > cue_start and cue_finished:
                 now = time.time()
                 if CUE_AUTO_ADVANCE.get("track_id") != current_id or now - safe_float(CUE_AUTO_ADVANCE.get("at")) > 2:
                     CUE_AUTO_ADVANCE.update({"track_id": current_id, "at": now})
@@ -1565,6 +1913,148 @@ def playback_status(payload_or_query):
         return {"error": str(exc)}, 502
 
 
+def _upnp_track_id_from_uri(uri):
+    try:
+        path = urllib.parse.urlparse(str(uri or "")).path
+        marker = "/upnp/media/"
+        if marker not in path:
+            return ""
+        return urllib.parse.unquote(path.split(marker, 1)[1].split("/", 1)[0])
+    except Exception:
+        return ""
+
+
+def _dlna_stop_is_suppressed(target_id, transport, now=None):
+    return (
+        str(transport or "").upper() in ("STOPPED", "NO_MEDIA_PRESENT")
+        and DLNA_MONITOR_GUARD.get("target_id") == str(target_id or "")
+        and (time.monotonic() if now is None else float(now))
+        <= safe_float(DLNA_MONITOR_GUARD.get("suppress_stop_until"))
+    )
+
+
+def start_remote_output_monitor(server):
+    """Keep external Renderer playback alive without a foreground UI.
+
+    fnAudio deliberately owns queue progression for pushed renderers.  After
+    a stable PLAYING->STOPPED transition, it loads one next queue item rather
+    than relying on the renderer's optional NextURI state machine.
+    """
+    stop_event = threading.Event()
+    monitor = {
+        "target": "",
+        "transport": "",
+        "advance_at": 0.0,
+        "track": "",
+        "managed_key": "",
+        "managed_playing": False,
+        "start_pending_at": 0.0,
+        "missing_count": 0,
+    }
+    handler = SimpleNamespace(server=server, headers={})
+
+    def loop():
+        while not stop_event.wait(1.25):
+            snapshot = PLAYBACK_CORE.state
+            if snapshot.target_kind != "dlna_push" or not snapshot.target_id:
+                monitor.update({"target": "", "transport": "", "track": "", "managed_key": "", "managed_playing": False, "start_pending_at": 0.0, "missing_count": 0})
+                continue
+            device = find_upnp_device(snapshot.target_id)
+            if not device:
+                monitor["missing_count"] = int(monitor.get("missing_count") or 0) + 1
+                if monitor["missing_count"] >= 3:
+                    PLAYBACK_CORE.sync_output_status("dlna_push", "ERROR", error="DLNA renderer is offline")
+                continue
+            monitor["missing_count"] = 0
+            try:
+                transport_payload = upnp_transport_state(device) or {}
+                position_payload = upnp_position_info(device) or {}
+            except Exception as exc:
+                PLAYBACK_CORE.sync_output_status("dlna_push", "ERROR", error=str(exc))
+                continue
+            transport = str(transport_payload.get("state") or "UNKNOWN").upper()
+            previous = monitor.get("transport") if monitor.get("target") == snapshot.target_id else ""
+            monitor["target"] = snapshot.target_id
+            monitor["transport"] = transport
+            managed_key = "%s:%s" % (snapshot.target_id, snapshot.current_track_id)
+            if snapshot.playing and (managed_key != monitor.get("managed_key") or not monitor.get("managed_playing")):
+                monitor["managed_key"] = managed_key
+                monitor["start_pending_at"] = time.monotonic()
+            monitor["managed_playing"] = bool(snapshot.playing)
+            if transport in ("PLAYING", "TRANSITIONING", "PAUSED_PLAYBACK"):
+                monitor["start_pending_at"] = 0.0
+
+            backend_track_id = _upnp_track_id_from_uri(position_payload.get("track_uri"))
+            if backend_track_id and backend_track_id != snapshot.current_track_id:
+                before = snapshot.current_track_id
+                PLAYBACK_CORE.select_current(backend_track_id)
+                if PLAYBACK_CORE.state.current_track_id != before:
+                    save_current_playback_session(server.config)
+
+            ended = previous in ("PLAYING", "TRANSITIONING") and transport in ("STOPPED", "NO_MEDIA_PRESENT")
+            managed_playing = bool(snapshot.playing)
+            stop_suppressed = _dlna_stop_is_suppressed(snapshot.target_id, transport)
+            if stop_suppressed:
+                monitor["start_pending_at"] = 0.0
+                monitor["managed_playing"] = False
+                PLAYBACK_CORE.sync_output_status(
+                    "dlna_push",
+                    "STOPPED",
+                    safe_float(position_payload.get("rel_seconds")),
+                    safe_float(position_payload.get("duration_seconds")),
+                )
+                continue
+            if ended and managed_playing:
+                now = time.time()
+                guard_track = snapshot.current_track_id
+                if monitor.get("track") == guard_track and now - safe_float(monitor.get("advance_at")) < 3.0:
+                    continue
+                monitor.update({"track": guard_track, "advance_at": now})
+                result = PLAYBACK_CORE.dispatch(
+                    PlaybackCommand(
+                        "next",
+                        context={
+                            "handler": handler,
+                            "config": server.config,
+                            "resolve_track": lambda track_id: find_library_item(server.config, track_id),
+                        },
+                    )
+                )
+                output = result.get("result") or {}
+                if output.get("ok") is False:
+                    PLAYBACK_CORE.sync_output_status("dlna_push", "STOPPED", error=str(output.get("message") or ""))
+                save_current_playback_session(server.config)
+                continue
+
+            if transport in ("STOPPED", "NO_MEDIA_PRESENT") and managed_playing:
+                pending_at = safe_float(monitor.get("start_pending_at"))
+                if pending_at and time.monotonic() - pending_at < 4.0:
+                    # A Renderer may acknowledge Play before it exposes the
+                    # new transport state. Preserve the optimistic command
+                    # state briefly, then surface a real rejection instead
+                    # of silently pretending playback succeeded.
+                    continue
+                PLAYBACK_CORE.sync_output_status(
+                    "dlna_push",
+                    "ERROR",
+                    safe_float(position_payload.get("rel_seconds")),
+                    safe_float(position_payload.get("duration_seconds")),
+                    "Renderer accepted Play but did not enter PLAYING; source format may be unsupported",
+                )
+                continue
+
+            PLAYBACK_CORE.sync_output_status(
+                "dlna_push",
+                transport,
+                safe_float(position_payload.get("rel_seconds")),
+                safe_float(position_payload.get("duration_seconds")),
+            )
+
+    thread = threading.Thread(target=loop, name="fnaudio-renderer-monitor", daemon=True)
+    thread.start()
+    return stop_event
+
+
 def initialize_dlna_services(server):
     """Attach independent DLNA roles after the HTTP listener has a real port."""
     global DLNA_PROTOCOL, DLNA_SSDP
@@ -1585,6 +2075,10 @@ def initialize_dlna_services(server):
 
     def renderer_control(action, position=None):
         try:
+            if action == "volume" and MPD_SERVICE:
+                mixer = MPD_SERVICE.mixer_policy()
+                if not mixer.get("available"):
+                    return {"ok": False, "message": mixer.get("message") or "renderer volume control is unavailable"}
             return mpd_control(action, position, host=MPD_SERVICE.host, port=MPD_SERVICE.port)
         except Exception as exc:
             return {"ok": False, "message": "DLNA renderer control failed: %s" % exc}
@@ -1617,6 +2111,13 @@ def initialize_dlna_services(server):
         except Exception:
             return {}
 
+    def library_item(item_id):
+        return query_library_item_by_id(server.config, item_id)
+
+    def system_update_id():
+        signature = str(FS_CACHE.get("signature") or "empty")
+        return int(hashlib.sha256(signature.encode("utf-8")).hexdigest()[:8], 16)
+
     def renderer_state_changed(state):
         uri = str(state.get("uri") or "")
         title = str(state.get("title") or os.path.basename(urllib.parse.urlparse(uri).path) or "DLNA input")
@@ -1631,28 +2132,67 @@ def initialize_dlna_services(server):
         )
 
     renderer = DlnaRenderer(renderer_load, renderer_control, renderer_status, renderer_state_changed)
-    DLNA_PROTOCOL = DlnaProtocolService(base_url, renderer, page, groups, upnp_resource_mime, roots, folders, output_capabilities)
+    DLNA_PROTOCOL = DlnaProtocolService(
+        base_url,
+        renderer,
+        page,
+        groups,
+        upnp_resource_mime,
+        roots,
+        folders,
+        output_capabilities,
+        library_item=library_item,
+        system_update_id=system_update_id,
+    )
     DLNA_SSDP = SsdpService(base_url)
     DLNA_SSDP.start()
 
 
 def main():
-    global MPD_SERVICE, DLNA_SSDP, METADATA_SERVICE
+    global MPD_SERVICE, DLNA_SSDP, METADATA_SERVICE, AIRPLAY_SERVICE
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config", default="config.json")
     args = parser.parse_args()
+    if os.name != "nt":
+        os.umask(0o077)
     config = load_config(args.config)
-    MPD_SERVICE = MpdService(config, app_root=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    MPD_SERVICE = MpdService(
+        config,
+        app_root=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+        app_config_path=args.config,
+    )
+    AIRPLAY_SERVICE = AirplayService(config, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     MPD_OUTPUT.configure(MPD_SERVICE)
     mpd_advance_guard = {"at": 0.0, "track_id": ""}
 
-    def on_mpd_transport(previous, current, _probe):
-        if previous != "PLAYING" or current != "STOPPED":
-            return
+    def on_mpd_transport(previous, current, probe):
+        status = dict((probe or {}).get("status") or {})
+        position = dict(status.get("position") or {})
+        raw = dict(status.get("raw") or {})
         snapshot = PLAYBACK_CORE.state
-        if snapshot.target_kind != "mpd" or not snapshot.playing:
+        backend_track_id = MPD_SERVICE.track_id_for_status(probe)
+        if backend_track_id and backend_track_id != snapshot.current_track_id:
+            before = snapshot.current_track_id
+            PLAYBACK_CORE.select_current(backend_track_id)
+            snapshot = PLAYBACK_CORE.state
+            if snapshot.current_track_id != before:
+                save_current_playback_session(config)
+        managed_track_ended = (
+            previous == "PLAYING"
+            and current == "STOPPED"
+            and snapshot.target_kind == "mpd"
+            and snapshot.playing
+        )
+        if not managed_track_ended:
+            PLAYBACK_CORE.sync_output_status(
+                "mpd",
+                current,
+                safe_float(position.get("rel_seconds")),
+                safe_float(position.get("duration_seconds")),
+                str(raw.get("error") or ""),
+            )
             return
         now = time.time()
         if mpd_advance_guard["track_id"] == snapshot.current_track_id and now - mpd_advance_guard["at"] < 3.0:
@@ -1668,7 +2208,13 @@ def main():
             )
         )
         if not (result.get("result") or {}).get("ok", False):
-            snapshot.playing = False
+            PLAYBACK_CORE.sync_output_status(
+                "mpd",
+                "STOPPED",
+                safe_float(position.get("rel_seconds")),
+                safe_float(position.get("duration_seconds")),
+                str((result.get("result") or {}).get("message") or raw.get("error") or ""),
+            )
         save_current_playback_session(config)
 
     MPD_SERVICE.set_status_listener(on_mpd_transport)
@@ -1685,6 +2231,10 @@ def main():
     config.setdefault("cache_dir", os.path.join(os.path.dirname(os.path.abspath(args.config)), "transcode"))
     cleanup_transcode_cache_if_due(config, True)
     load_library_cache(config)
+    # Existing indexes may predate thumbnail assets. Warm them after startup
+    # as well as after future scans, without delaying the HTTP listener.
+    warm_items = MUSIC_CACHE["items"] or (load_items_from_sqlite(config) or {}).get("items", [])
+    prewarm_library_thumbnails(warm_items, config, cached_cover_for_item)
     METADATA_SERVICE = MetadataService(config)
     METADATA_SERVICE.start()
     restore_playback_session(config)
@@ -1700,6 +2250,11 @@ def main():
     server.config_path = args.config
     server.web_root = web_root
     initialize_dlna_services(server)
+    start_remote_output_monitor(server)
+    if config.get("airplay_enabled"):
+        started_airplay = AIRPLAY_SERVICE.start()
+        if not started_airplay.get("ok"):
+            print("fnAudio AirPlay optional backend unavailable: %s" % (started_airplay.get("message") or started_airplay), flush=True)
     if not MUSIC_CACHE["stamp"]:
         request_library_refresh(config, False)
     threading.Thread(target=watch_library, args=(config,), daemon=True).start()
@@ -1707,10 +2262,13 @@ def main():
     try:
         server.serve_forever()
     finally:
+        shutdown_library_thumbnail_prewarm(wait=True)
         if DLNA_SSDP:
             DLNA_SSDP.stop()
         if MPD_SERVICE:
             MPD_SERVICE.shutdown()
+        if AIRPLAY_SERVICE:
+            AIRPLAY_SERVICE.shutdown()
         if METADATA_SERVICE:
             METADATA_SERVICE.shutdown()
 

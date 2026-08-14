@@ -18,13 +18,13 @@
       {
         "type": "text",
         "field": "wizard_server_port",
-        "label": "TCP 服务端口",
-        "initValue": "18080",
-        "helpText": "默认 18080；如果端口被占用，安装时会自动改用一个未占用端口。",
+        "label": "服务端口",
+        "initValue": "53199",
+        "helpText": "默认 53199。端口被占用时，请输入其他未占用的端口。",
         "rules": [
           {
             "required": true,
-            "message": "请输入 TCP 端口"
+            "message": "请输入服务端口"
           }
         ]
       }

@@ -49,6 +49,8 @@ import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.HttpClientFactory;
 import com.fnaudio.client.network.FnOsAuthClient;
+import com.fnaudio.client.network.FnConnectResolver;
+import com.fnaudio.client.network.CertificatePin;
 import com.fnaudio.client.playback.PlaybackRuntimeConfig;
 import com.fnaudio.client.playback.PlaybackService;
 import com.fnaudio.client.web.NativePlaybackBridge;
@@ -61,6 +63,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.net.URLEncoder;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
@@ -72,6 +75,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutionException;
+import java.util.regex.Matcher;
 
 import okhttp3.Headers;
 import okhttp3.Call;
@@ -86,6 +90,7 @@ import okhttp3.ResponseBody;
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends AppCompatActivity implements NativePlaybackBridge.ControllerProvider, NativePlaybackBridge.HttpRequestHandler {
     public static final String EXTRA_PROFILE_ID = "profile_id";
+    public static final String ACTION_OPEN_PLAYBACK = "com.fnaudio.client.action.OPEN_PLAYBACK";
     private static final long ROOT_BACK_CONFIRM_WINDOW_MS = 2200L;
 
     private WebView webView;
@@ -94,6 +99,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private TextView errorMessage;
     private ConnectionProfile profile;
     private OkHttpClient webResourceClient;
+    private AuthenticatedCoverCache coverCache;
     private ListenableFuture<MediaController> controllerFuture;
     private MediaController mediaController;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
@@ -120,18 +126,29 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
         profile = resolveProfile();
         bindViews();
+        coverCache = new AuthenticatedCoverCache(this);
         installBackHandler();
-        if (profile == null || (profile.token.isEmpty() && profile.longToken.isEmpty() && profile.password.isEmpty())) {
+        if (profile == null || (!profile.webSession && profile.token.isEmpty() && profile.longToken.isEmpty() && profile.password.isEmpty())) {
             openConnectionChooser();
             return;
         }
         pageProgress.setVisibility(View.VISIBLE);
-        authenticateBeforeLoading(profile, false);
+        if (profile.webSession) {
+            PlaybackRuntimeConfig.activate(profile);
+            configureWebView();
+            connectMediaController();
+            requestNotificationPermission();
+            return;
+        }
+        restoreFnConnectRelayThenAuthenticate(profile);
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        // A notification tap should only bring the existing WebView task to
+        // the foreground. Recreating here reloads its current fnAudio page.
+        if (ACTION_OPEN_PLAYBACK.equals(intent.getAction())) return;
         setIntent(intent);
         recreate();
     }
@@ -147,7 +164,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private void authenticateBeforeLoading(ConnectionProfile candidate, boolean passwordFallback) {
         String password = passwordFallback ? candidate.password : null;
-        new FnOsAuthClient().authenticate(candidate, password, new FnOsAuthClient.Callback() {
+        new FnOsAuthClient().authenticate(this, candidate, password, new FnOsAuthClient.Callback() {
             @Override
             public void onSuccess(ConnectionProfile authenticatedProfile) {
                 if (isFinishing() || isDestroyed()) return;
@@ -172,6 +189,47 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         });
     }
 
+    private void restoreFnConnectRelayThenAuthenticate(ConnectionProfile candidate) {
+        if (!isStoredRelayProfile(candidate)) {
+            authenticateBeforeLoading(candidate, false);
+            return;
+        }
+        String fnId = fnConnectId(candidate);
+        if (fnId.isEmpty()) {
+            showError("FN Connect 历史记录缺少 FN ID，请重新登录。");
+            return;
+        }
+        pageProgress.setVisibility(View.VISIBLE);
+        new FnConnectResolver().resolve(fnId, new FnConnectResolver.Callback() {
+            @Override public void onResolved(ConnectionProfile route) {
+                ConnectionProfile refreshed = candidate.withEndpoint(route.host, route.port, route.https);
+                profile = refreshed;
+                new SecureProfileStore(MainActivity.this).upsert(refreshed, true);
+                authenticateBeforeLoading(refreshed, false);
+            }
+            @Override public void onError(String message) {
+                showError("FN Connect 公网地址重新解析失败：" + message);
+            }
+        });
+    }
+
+    private static boolean isStoredRelayProfile(ConnectionProfile candidate) {
+        return candidate != null && candidate.id.startsWith("fnconnect:")
+                && "127.0.0.1".equals(candidate.host) && candidate.port == 9018;
+    }
+
+    private static String fnConnectId(ConnectionProfile candidate) {
+        if (candidate == null) return "";
+        String prefix = "fnconnect:";
+        if (candidate.id.startsWith(prefix)) {
+            String rest = candidate.id.substring(prefix.length());
+            int separator = rest.indexOf(':');
+            return (separator >= 0 ? rest.substring(0, separator) : rest).trim();
+        }
+        String namePrefix = "FN Connect - ";
+        return candidate.name.startsWith(namePrefix) ? candidate.name.substring(namePrefix.length()).trim() : "";
+    }
+
     private void configureSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(0xffffffff);
@@ -190,6 +248,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         settings.setBuiltInZoomControls(false);
@@ -198,12 +257,15 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         settings.setUserAgentString(settings.getUserAgentString() + " fnAudio-Android/" + BuildConfig.VERSION_NAME);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
-        webResourceClient = HttpClientFactory.create(profile);
+        webResourceClient = HttpClientFactory.create(this, profile);
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         cookies.setAcceptThirdPartyCookies(webView, false);
-        installSessionCookies(cookies, () -> {
+        if (profile.webSession) {
+            sessionCookiesReady = true;
+            maybeLoadFnAudio();
+        } else installSessionCookies(cookies, () -> {
             sessionCookiesReady = true;
             maybeLoadFnAudio();
         });
@@ -221,7 +283,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 pageProgress.setVisibility(View.VISIBLE);
                 errorPanel.setVisibility(View.GONE);
-                webView.setVisibility(View.VISIBLE);
+                webView.setVisibility(isFnConnectProfile() ? View.INVISIBLE : View.VISIBLE);
             }
 
             @Override
@@ -229,8 +291,9 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 pageLoaded = true;
                 pageProgress.setVisibility(View.GONE);
                 injectNativeEnvironment();
+                webView.setVisibility(View.VISIBLE);
                 String path = Uri.parse(url).getPath();
-                if (path != null && !path.contains("/cgi/ThirdParty/fnaudio/index.cgi")) {
+                if (!profile.webSession && path != null && !path.contains("/cgi/ThirdParty/fnaudio/index.cgi")) {
                     showError("fnOS 没有接受当前会话，页面被转到了系统入口。请返回连接页重新登录。 ");
                 }
             }
@@ -267,12 +330,18 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
             @Override
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                String observedPin = CertificatePin.of(error.getCertificate());
                 if (profile.https && profile.trustSelfSigned && error.getUrl() != null
-                        && profile.host.equalsIgnoreCase(Uri.parse(error.getUrl()).getHost())) {
+                        && profile.host.equalsIgnoreCase(Uri.parse(error.getUrl()).getHost())
+                        && !profile.certificatePinSha256.isEmpty()
+                        && profile.certificatePinSha256.equals(observedPin)) {
                     handler.proceed();
                 } else {
                     handler.cancel();
-                    showError("HTTPS 证书校验失败。请检查证书，或仅对可信 NAS 开启自签名证书兼容。");
+                    String message = profile.trustSelfSigned && !profile.certificatePinSha256.isEmpty()
+                            ? "服务器证书已变更或无法验证指纹，已拒绝加载页面。请确认 NAS 证书后重新建立连接。"
+                            : "HTTPS 证书校验失败。请检查证书，或仅对可信 NAS 开启自签名证书兼容。";
+                    showError(message);
                 }
             }
         });
@@ -298,8 +367,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (request == null || request.isForMainFrame()
                 || !"GET".equalsIgnoreCase(request.getMethod())
                 || !sameServer(request.getUrl()) || webResourceClient == null) return null;
+        WebResourceResponse bundled = bundledFnConnectAsset(request.getUrl());
+        if (bundled != null) return bundled;
+        // WebView does not reliably attach programmatically installed cookies
+        // to private image requests on every Android/WebView version. Proxy
+        // covers as authenticated GETs; shouldInterceptRequest is concurrent
+        // and OkHttp retains its own connection pool while the server returns
+        // persistent 160 px thumbnails with immutable cache headers.
         Uri uri = canonicalFnAudioResourceUri(request.getUrl());
         Request.Builder builder = new Request.Builder().url(uri.toString()).get();
+        String routedPath = cgiRoutedPath(uri);
+        if (!routedPath.isEmpty()) builder.header("X-Fnaudio-Path", routedPath);
         for (Map.Entry<String, String> header : request.getRequestHeaders().entrySet()) {
             String name = header.getKey();
             if (name == null || header.getValue() == null) continue;
@@ -309,18 +387,40 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")) continue;
             builder.header(name, header.getValue());
         }
-        builder.header("Authorization", "Bearer " + profile.token);
-        builder.header("X-Fnaudio-Trim-Token", profile.token);
-        builder.header("Cookie", authenticatedCookie(request.getRequestHeaders().get("Cookie")));
+        if (!profile.webSession) {
+            builder.header("Authorization", "Bearer " + profile.token);
+            builder.header("X-Fnaudio-Trim-Token", profile.token);
+        }
+        String requestCookie = request.getRequestHeaders().get("Cookie");
+        if (profile.webSession && (requestCookie == null || requestCookie.trim().isEmpty())) {
+            requestCookie = CookieManager.getInstance().getCookie(uri.toString());
+        }
+        builder.header("Cookie", profile.webSession
+                ? (requestCookie == null ? "" : requestCookie)
+                : authenticatedCookie(requestCookie));
         try {
+            if (isListThumbnail(uri)) {
+                InputStream cached = coverCache.open(uri.toString());
+                if (cached != null) {
+                    return new WebResourceResponse("image/jpeg", null, cached);
+                }
+            }
             Response response = webResourceClient.newCall(builder.build()).execute();
             if (response.code() >= 400 && isCriticalUiAsset(uri)) {
                 uiHandler.post(() -> showError("fnAudio 界面资源加载失败（HTTP " + response.code() + "）。请确认 NAS 已安装配套版本的 FPK。"));
             }
             syncResponseCookies(response.headers("Set-Cookie"));
             ResponseBody body = response.body();
-            InputStream stream = new ResponseClosingInputStream(
-                    body == null ? new ByteArrayInputStream(new byte[0]) : body.byteStream(), response);
+            InputStream stream;
+            if (isListThumbnail(uri) && response.code() == 200 && body != null) {
+                byte[] bytes = body.bytes();
+                coverCache.put(uri.toString(), bytes);
+                response.close();
+                stream = new ByteArrayInputStream(bytes);
+            } else {
+                stream = new ResponseClosingInputStream(
+                        body == null ? new ByteArrayInputStream(new byte[0]) : body.byteStream(), response);
+            }
             MediaType mediaType = body == null ? null : body.contentType();
             String contentType = mediaType == null ? guessContentType(uri) : mediaType.toString();
             String mime = contentType;
@@ -337,6 +437,50 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             return webResponse;
         } catch (IOException exception) {
             return null;
+        }
+    }
+
+    private static boolean isListThumbnail(Uri uri) {
+        if (uri == null || uri.getPath() == null) return false;
+        String path = uri.getPath().toLowerCase(Locale.ROOT);
+        if (!path.contains("/cover/") && !path.contains("/cover-asset/")) return false;
+        String size = uri.getQueryParameter("size");
+        return "160".equals(size);
+    }
+
+    @Nullable
+    private WebResourceResponse bundledFnConnectAsset(Uri uri) {
+        if (profile == null || !isFnConnectProfile() || uri == null || !sameProfileOrigin(uri)) return null;
+        String path = uri.getPath();
+        if (path == null) return null;
+        String lower = path.toLowerCase(Locale.ROOT);
+        String relative;
+        if (lower.endsWith("/app.css")) relative = "app.css";
+        else if (lower.endsWith("/app.js")) relative = "app.js";
+        else if (lower.endsWith("/images/icon_64.png")) relative = "images/icon_64.png";
+        else if (lower.endsWith("/images/icon_256.png")) relative = "images/icon_256.png";
+        else return null;
+        try {
+            InputStream stream = getAssets().open(relative);
+            String mime = relative.endsWith(".css") ? "text/css"
+                    : relative.endsWith(".js") ? "application/javascript" : "image/png";
+            return new WebResourceResponse(mime, mime.startsWith("text/") || mime.contains("javascript") ? "UTF-8" : null, stream);
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    private boolean isFnConnectProfile() {
+        return profile.id.startsWith("fnconnect:") || profile.name.startsWith("FN Connect - ");
+    }
+
+    private String readBundledText(String name) throws IOException {
+        try (InputStream input = getAssets().open(name);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[16 * 1024];
+            int count;
+            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+            return output.toString(StandardCharsets.UTF_8.name());
         }
     }
 
@@ -369,13 +513,16 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         }
 
         String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase(Locale.ROOT);
-        if (!(normalizedMethod.equals("POST") || normalizedMethod.equals("PUT")
+        if (!(normalizedMethod.equals("GET") || normalizedMethod.equals("HEAD")
+                || normalizedMethod.equals("POST") || normalizedMethod.equals("PUT")
                 || normalizedMethod.equals("PATCH") || normalizedMethod.equals("DELETE"))) {
             deliverNativeHttpFailure(requestId, "原生认证请求不支持 " + normalizedMethod);
             return;
         }
 
         Request.Builder builder = new Request.Builder().url(uri.toString());
+        String routedPath = cgiRoutedPath(uri);
+        if (!routedPath.isEmpty()) builder.header("X-Fnaudio-Path", routedPath);
         String contentType = "application/json; charset=utf-8";
         try {
             JSONObject headers = new JSONObject(headersJson == null ? "{}" : headersJson);
@@ -395,11 +542,24 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             return;
         }
         MediaType mediaType = MediaType.parse(contentType);
-        RequestBody requestBody = RequestBody.create(body == null ? "" : body, mediaType);
-        builder.method(normalizedMethod, requestBody);
-        builder.header("Authorization", "Bearer " + profile.token);
-        builder.header("X-Fnaudio-Trim-Token", profile.token);
-        builder.header("Cookie", authenticatedCookie(null));
+        if (normalizedMethod.equals("GET") || normalizedMethod.equals("HEAD")) {
+            builder.method(normalizedMethod, null);
+        } else {
+            RequestBody requestBody = RequestBody.create(body == null ? "" : body, mediaType);
+            builder.method(normalizedMethod, requestBody);
+        }
+        if (!profile.webSession) {
+            builder.header("Authorization", "Bearer " + profile.token);
+            builder.header("X-Fnaudio-Trim-Token", profile.token);
+            builder.header("Cookie", authenticatedCookie(null));
+        } else {
+            String cookie = CookieManager.getInstance().getCookie(uri.toString());
+            if (cookie == null || cookie.trim().isEmpty()) {
+                deliverNativeHttpFailure(requestId, "FN Connect 登录会话已失效，请重新登录");
+                return;
+            }
+            builder.header("Cookie", cookie);
+        }
 
         client.newCall(builder.build()).enqueue(new Callback() {
             @Override
@@ -448,10 +608,21 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private void deliverNativeHttpResponse(JSONObject payload) {
-        String script = "window.fnAudioNativeOnHttpResponse && window.fnAudioNativeOnHttpResponse("
-                + JSONObject.quote(payload.toString()) + ");";
+        String serialized = payload.toString();
+        final int chunkSize = 24 * 1024;
+        int total = Math.max(1, (serialized.length() + chunkSize - 1) / chunkSize);
+        String transferId = "native-http-" + System.nanoTime();
         uiHandler.post(() -> {
-            if (webView != null && !isFinishing() && !isDestroyed()) webView.evaluateJavascript(script, null);
+            if (webView == null || isFinishing() || isDestroyed()) return;
+            for (int index = 0; index < total; index++) {
+                int start = index * chunkSize;
+                int end = Math.min(serialized.length(), start + chunkSize);
+                String chunk = serialized.substring(start, end);
+                String script = "window.fnAudioNativeOnHttpChunk && window.fnAudioNativeOnHttpChunk("
+                        + JSONObject.quote(transferId) + "," + index + "," + total + ","
+                        + JSONObject.quote(chunk) + ");";
+                webView.evaluateJavascript(script, null);
+            }
         });
     }
 
@@ -466,9 +637,31 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         return original;
     }
 
+    /**
+     * fnOS releases differ in whether a CGI sub-resource reaches PATH_INFO.
+     * The CGI proxy accepts this same-origin header as the authoritative suffix.
+     */
+    private String cgiRoutedPath(Uri uri) {
+        if (uri == null) return "";
+        String path = uri.getEncodedPath();
+        String marker = "/cgi/ThirdParty/fnaudio/index.cgi";
+        if (path == null || !path.startsWith(marker)) return "";
+        String suffix = path.substring(marker.length());
+        return suffix.isEmpty() ? "/" : (suffix.startsWith("/") ? suffix : "/" + suffix);
+    }
+
     private boolean isCriticalUiAsset(Uri uri) {
         String path = uri.getPath();
         return path != null && (path.endsWith("/app.css") || path.endsWith("/app.js"));
+    }
+
+    private boolean isDirectImageResource(Uri uri) {
+        String path = uri == null ? "" : uri.getPath();
+        if (path == null) return false;
+        String lower = path.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".avif")
+                || lower.contains("/cover/") || lower.contains("/covers/");
     }
 
     private void syncResponseCookies(List<String> setCookies) {
@@ -515,11 +708,33 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (webView == null) return;
         pageLoaded = false;
         errorPanel.setVisibility(View.GONE);
-        webView.setVisibility(View.VISIBLE);
+        webView.setVisibility(isFnConnectProfile() ? View.INVISIBLE : View.VISIBLE);
+        if (isFnConnectProfile()) {
+            loadBundledFnConnectPage();
+            return;
+        }
         Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("Authorization", "Bearer " + profile.token);
-        headers.put("X-Fnaudio-Trim-Token", profile.token);
-        webView.loadUrl(profile.fnAudioUrl(), headers);
+        if (profile.webSession) webView.loadUrl(profile.fnAudioUrl());
+        else {
+            headers.put("Authorization", "Bearer " + profile.token);
+            headers.put("X-Fnaudio-Trim-Token", profile.token);
+            webView.loadUrl(profile.fnAudioUrl(), headers);
+        }
+    }
+
+    private void loadBundledFnConnectPage() {
+        try {
+            String html = readBundledText("index.html");
+            String css = readBundledText("app.css");
+            String javascript = readBundledText("app.js");
+            html = html.replaceFirst("(?s)<link\\s+rel=\"stylesheet\"[^>]*>", Matcher.quoteReplacement(
+                    "<style id=\"fnaudio-bundled-css\">" + css.replace("</style", "<\\/style") + "</style>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"app\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + javascript.replace("</script", "<\\/script") + "</script>"));
+            webView.loadDataWithBaseURL(profile.fnAudioUrl(), html, "text/html", "UTF-8", profile.fnAudioUrl());
+        } catch (IOException exception) {
+            showError("FN Connect 界面资源读取失败：" + exception.getMessage());
+        }
     }
 
     private void connectMediaController() {
@@ -589,19 +804,38 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private boolean sameServer(Uri uri) {
         if (uri == null || uri.getHost() == null) return false;
-        if (!profile.host.equalsIgnoreCase(uri.getHost())) return false;
+        if (profile.webSession) {
+            String host = comparableHost(uri.getHost());
+            return host.equals(comparableHost(profile.host)) || host.equals("fnos.net");
+        }
+        if (!comparableHost(profile.host).equals(comparableHost(uri.getHost()))) return false;
         int uriPort = uri.getPort();
         return uriPort < 0 || uriPort == profile.port;
     }
 
     private boolean sameProfileOrigin(Uri uri) {
+        if (profile.webSession) {
+            return uri != null && "https".equalsIgnoreCase(uri.getScheme())
+                    && uri.getHost() != null
+                    && (comparableHost(profile.host).equals(comparableHost(uri.getHost()))
+                    || "fnos.net".equals(comparableHost(uri.getHost())));
+        }
         if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
         String expectedScheme = profile.https ? "https" : "http";
-        if (!expectedScheme.equalsIgnoreCase(uri.getScheme()) || !profile.host.equalsIgnoreCase(uri.getHost())) return false;
+        if (!expectedScheme.equalsIgnoreCase(uri.getScheme())
+                || !comparableHost(profile.host).equals(comparableHost(uri.getHost()))) return false;
         int defaultPort = profile.https ? 443 : 80;
         int actualPort = uri.getPort() < 0 ? defaultPort : uri.getPort();
         int expectedPort = profile.port > 0 ? profile.port : defaultPort;
         return actualPort == expectedPort;
+    }
+
+    private static String comparableHost(@Nullable String rawHost) {
+        String host = rawHost == null ? "" : rawHost.trim().toLowerCase(Locale.ROOT);
+        if (host.startsWith("[") && host.endsWith("]") && host.length() > 2) {
+            host = host.substring(1, host.length() - 1);
+        }
+        return host;
     }
 
     private void showError(String message) {
@@ -624,6 +858,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private void openConnectionChooser() {
         Intent intent = new Intent(this, LoginActivity.class);
         intent.putExtra(LoginActivity.EXTRA_SKIP_AUTO_RESUME, true);
+        intent.putExtra(LoginActivity.EXTRA_PREFILL_ACTIVE_PROFILE, true);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(intent);
         finish();

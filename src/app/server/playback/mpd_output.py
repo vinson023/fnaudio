@@ -9,9 +9,11 @@ from .mpd_client import (
     mpd_load_file,
     mpd_load_uri,
     mpd_probe,
+    mpd_set_playback_modes,
     mpd_status,
     mpd_update_and_wait,
 )
+from .mpd_errors import classify_mpd_exception, mpd_error
 from .plugins import OutputPlugin
 
 
@@ -41,6 +43,17 @@ class MpdOutput(OutputPlugin):
             return {"host": self.service.host, "port": self.service.port}
         return {}
 
+    @staticmethod
+    def _failure(message: str, target_id: str, category: str = "") -> Dict[str, Any]:
+        error = mpd_error(category, message) if category else classify_mpd_exception(message)
+        return {
+            "ok": False,
+            "message": message,
+            "error_category": error["category"],
+            "error": error,
+            "target_id": target_id,
+        }
+
     def _select_target_output(self, state: PlaybackState) -> Dict[str, Any]:
         if not self.service or not hasattr(self.service, "select_output"):
             return {"ok": True}
@@ -53,36 +66,100 @@ class MpdOutput(OutputPlugin):
         return self.service.select_output(alsa_id)
 
     def capabilities(self) -> Dict[str, Any]:
+        output = {}
+        if self.service and hasattr(self.service, "output_capabilities"):
+            try:
+                output = self.service.output_capabilities()
+            except Exception:
+                output = {}
+        volume_control = output.get("volume_control") or {}
         return {
             "seek": True,
             "pause": True,
             "stop": True,
-            "volume": True,
+            "volume": bool(volume_control.get("available")),
             "next_previous": True,
-            "native_dsd": True,
+            "native_dsd": bool(output.get("dsd_native")),
+            "native_dsd_verified": bool(output.get("native_dsd_verified")),
+            "dop": bool(output.get("dop")),
+            "dsd_mode": output.get("dsd_mode") or "native",
+            "bitperfect": bool(output.get("bitperfect")),
             "server_transcode": False,
             "optional_backend": True,
+            "volume_control": volume_control,
         }
+
+    def preload_next(self, track: TrackRef, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if self.service and hasattr(self.service, "preload_status"):
+            return self.service.preload_status(track.track_id)
+        return {"ok": False, "supported": False}
+
+    def recover(self, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if self.service and hasattr(self.service, "recover_playback"):
+            return self.service.recover_playback()
+        return {"ok": False, "supported": False}
 
     def open(self, track: TrackRef, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         item = (context or {}).get("item") or track.item
         path = str(item.get("path") or "")
         if not path:
-            return {"ok": False, "message": "曲目没有本地文件路径", "target_id": state.target_id}
+            return self._failure("曲目没有本地文件路径", state.target_id, "source_missing")
         try:
             selected = self._select_target_output(state)
             if selected.get("ok") is False:
-                return {"ok": False, "message": selected.get("message") or "MPD 输出设备不可用", "target_id": state.target_id}
+                return self._failure(selected.get("message") or "MPD 输出设备不可用", state.target_id, "output_device_missing")
+            if self.service and hasattr(self.service, "prepare_track_output"):
+                negotiated = self.service.prepare_track_output(item)
+                if negotiated.get("ok") is False:
+                    failure = self._failure(
+                        negotiated.get("message") or "MPD 输出格式不受支持",
+                        state.target_id,
+                        "output_format_unsupported",
+                    )
+                    return {**negotiated, **failure}
             started = self.start_service()
             if started.get("available") is False or (started.get("ok") is False and not started.get("running")):
-                return {"ok": False, "message": started.get("message") or "MPD 不可用", "target_id": state.target_id}
+                return self._failure(started.get("message") or "MPD 不可用", state.target_id, "backend_unavailable")
             output_ready = self._output_ready()
             if not output_ready.get("ok"):
-                return {"ok": False, "message": output_ready.get("message") or "没有检测到本机音频输出设备", "target_id": state.target_id}
+                return self._failure(
+                    output_ready.get("message") or "没有检测到本机音频输出设备",
+                    state.target_id,
+                    "output_device_missing",
+                )
             cue_start = float(item.get("cue_start") or 0) if item.get("cue_track") else 0.0
             if self.service and hasattr(self.service, "suppress_stop_transition"):
                 self.service.suppress_stop_transition()
-            if self.service and hasattr(self.service, "uri_for_path"):
+            if self.service and hasattr(self.service, "sync_playback_queue"):
+                resolver = (context or {}).get("resolve_track")
+                try:
+                    result = self.service.sync_playback_queue(
+                        state.queue,
+                        state.current_track_id,
+                        resolver=resolver,
+                        current_item=item,
+                        start=cue_start,
+                        repeat=state.repeat,
+                        shuffle=state.shuffle,
+                    )
+                except MpdError as exc:
+                    # fnAudio can finish scanning before MPD notices a new
+                    # file. Keep the native queue path consistent with the
+                    # single-track fallback: refresh MPD once, then retry.
+                    if not self._is_missing_mpd_library_entry(exc):
+                        raise
+                    update = mpd_update_and_wait(**self._connection())
+                    result = self.service.sync_playback_queue(
+                        state.queue,
+                        state.current_track_id,
+                        resolver=resolver,
+                        current_item=item,
+                        start=cue_start,
+                        repeat=state.repeat,
+                        shuffle=state.shuffle,
+                    )
+                    result = {**result, "mpd_update": update}
+            elif self.service and hasattr(self.service, "uri_for_path"):
                 result = self._load_uri_with_retry(self.service.uri_for_path(path), cue_start)
             else:
                 result = mpd_load_file(path, start=cue_start, **self._connection())
@@ -96,16 +173,23 @@ class MpdOutput(OutputPlugin):
                 "cue_segment": bool(item.get("cue_track")),
             }
         except Exception as exc:
-            return {"ok": False, "message": "MPD 播放失败：%s" % exc, "target_id": state.target_id}
+            return self._failure("MPD 播放失败：%s" % exc, state.target_id)
 
     def command(self, command: PlaybackCommand, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
             selected = self._select_target_output(state)
             if selected.get("ok") is False:
-                return {"ok": False, "message": selected.get("message") or "MPD 输出设备不可用", "target_id": state.target_id}
+                return self._failure(selected.get("message") or "MPD 输出设备不可用", state.target_id, "output_device_missing")
+            if command.action == "volume" and self.service and hasattr(self.service, "mixer_policy"):
+                mixer = self.service.mixer_policy()
+                if not mixer.get("available"):
+                    return self._failure(mixer.get("message") or "当前输出未启用音量控制", state.target_id, "mixer_unavailable")
             started = self.start_service()
             if started.get("available") is False or (started.get("ok") is False and not started.get("running")):
-                return {"ok": False, "message": started.get("message") or "MPD 不可用", "target_id": state.target_id}
+                return self._failure(started.get("message") or "MPD 不可用", state.target_id, "backend_unavailable")
+            if command.action in ("repeat", "shuffle"):
+                result = mpd_set_playback_modes(state.repeat, state.shuffle, **self._connection())
+                return {**result, "message": "", "target_id": state.target_id}
             if command.action == "stop" and self.service and hasattr(self.service, "suppress_stop_transition"):
                 self.service.suppress_stop_transition()
             result = mpd_control(command.action, command.position, **self._connection())
@@ -113,7 +197,7 @@ class MpdOutput(OutputPlugin):
                 self.service.refresh_status()
             return {**result, "message": "", "target_id": state.target_id}
         except Exception as exc:
-            return {"ok": False, "message": "MPD 控制失败：%s" % exc, "target_id": state.target_id}
+            return self._failure("MPD 控制失败：%s" % exc, state.target_id)
 
     def close(self, state: PlaybackState) -> None:
         try:
@@ -129,9 +213,9 @@ class MpdOutput(OutputPlugin):
             result["mpd"] = {"available": False, "message": str(exc)}
         return result
 
-    def status(self) -> Dict[str, Any]:
+    def status(self, light: bool = False) -> Dict[str, Any]:
         if self.service:
-            return self.service.status()
+            return self.service.status(light=light)
         return mpd_probe()
 
     def _output_ready(self) -> Dict[str, Any]:
@@ -152,7 +236,7 @@ class MpdOutput(OutputPlugin):
             return mpd_load_uri(uri, start=cue_start, **self._connection())
         except MpdError as exc:
             message = str(exc)
-            if "No such song" not in message and "directory or file not found" not in message.lower():
+            if not self._is_missing_mpd_library_entry(exc):
                 raise
             update = mpd_update_and_wait(**self._connection())
             try:
@@ -160,6 +244,12 @@ class MpdOutput(OutputPlugin):
                 return {**result, "mpd_update": update}
             except Exception as retry_exc:
                 raise MpdError("%s；已触发 MPD 音乐库更新后重试仍失败：%s；uri=%s" % (message, retry_exc, uri)) from retry_exc
+
+
+    @staticmethod
+    def _is_missing_mpd_library_entry(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "no such song" in message or "directory or file not found" in message
 
 
 def mpd_output_status(output: Optional[MpdOutput] = None) -> Dict[str, Any]:

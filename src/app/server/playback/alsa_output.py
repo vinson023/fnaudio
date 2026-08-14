@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import ctypes
+import ctypes.util
 import shutil
 import signal
 import subprocess
@@ -12,6 +15,26 @@ from typing import Any, Dict
 
 DAC_STATE = {"device_id": "", "item_id": "", "processes": [], "playing": False, "started_at": 0.0, "offset": 0.0, "duration": 0.0, "strategy": {}}
 DAC_LOCK = threading.Lock()
+ALSA_CAPS_CACHE = {}
+ALSA_CAPS_LOCK = threading.Lock()
+
+
+def preserve_verified_busy_probe(previous, current):
+    """Keep the last successful ALSA negotiation while the PCM is occupied."""
+    previous = dict(previous or {})
+    current = dict(current or {})
+    if not current.get("busy") or not previous.get("verified"):
+        return current
+    preserved = dict(previous)
+    preserved.update(
+        {
+            "busy": True,
+            "available": True,
+            "error": current.get("error") or "ALSA PCM is busy",
+            "probed_at": current.get("probed_at") or time.time(),
+        }
+    )
+    return preserved
 
 
 def safe_float(value, default=0.0):
@@ -78,6 +101,136 @@ def find_libasound():
     return ""
 
 
+def probe_alsa_hw_params(device, force=False, cache_seconds=300.0):
+    """Verify formats by opening the selected ALSA PCM and testing hw_params.
+
+    `/proc/asound/.../stream*` describes driver-advertised USB descriptors.
+    This probe answers the stricter question: can ALSA actually configure this
+    PCM endpoint with the requested rate, sample format and channel count?
+    """
+    device = dict(device or {})
+    cache_key = str(device.get("stable_id") or device.get("stable_alsa_id") or device.get("alsa_id") or "")
+    now = time.time()
+    with ALSA_CAPS_LOCK:
+        cached = dict(ALSA_CAPS_CACHE.get(cache_key) or {})
+    effective_cache_seconds = min(float(cache_seconds), 5.0) if cached.get("busy") else float(cache_seconds)
+    if cached and not force and now - safe_float(cached.get("probed_at")) <= max(1.0, effective_cache_seconds):
+        return cached
+    result = {
+        "source": "alsa-hw-params",
+        "verified": False,
+        "available": False,
+        "busy": False,
+        "device": str(device.get("stable_alsa_id") or device.get("alsa_id") or "default"),
+        "pcm_rates": [],
+        "pcm_formats": [],
+        "pcm_max_rate": 0,
+        "pcm_max_bits": 0,
+        "native_dsd": False,
+        "native_dsd_formats": [],
+        "error": "",
+        "probed_at": now,
+    }
+    library_path = ctypes.util.find_library("asound") or find_libasound()
+    if not library_path:
+        result["error"] = "libasound is unavailable"
+        return result
+    pcm = ctypes.c_void_p()
+    params = ctypes.c_void_p()
+    try:
+        lib = ctypes.CDLL(library_path)
+        lib.snd_pcm_open.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        lib.snd_pcm_open.restype = ctypes.c_int
+        lib.snd_pcm_close.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_hw_params_malloc.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        lib.snd_pcm_hw_params_malloc.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_free.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_hw_params_any.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        lib.snd_pcm_hw_params_any.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_channels.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+        lib.snd_pcm_hw_params_test_channels.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_rate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int]
+        lib.snd_pcm_hw_params_test_rate.restype = ctypes.c_int
+        lib.snd_pcm_hw_params_test_format.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        lib.snd_pcm_hw_params_test_format.restype = ctypes.c_int
+        lib.snd_pcm_format_value.argtypes = [ctypes.c_char_p]
+        lib.snd_pcm_format_value.restype = ctypes.c_int
+        # MPD may have just stopped or switched tracks while the kernel is
+        # still releasing the USB PCM handle.  A short bounded retry avoids
+        # treating that transition as a permanent inability to verify Native
+        # DSD/DoP.  Non-forced status probes remain single-shot so polling
+        # never adds latency to the playback UI.
+        attempts = 4 if force else 1
+        open_code = -16
+        for attempt in range(attempts):
+            open_code = lib.snd_pcm_open(ctypes.byref(pcm), result["device"].encode("utf-8"), 0, 1)
+            if open_code >= 0 or open_code != -16 or attempt >= attempts - 1:
+                break
+            time.sleep(0.15)
+        if open_code < 0:
+            result["busy"] = open_code == -16
+            result["error"] = "ALSA open failed (%s)" % open_code
+            # MPD owns the PCM while it is playing.  Do not throw away a
+            # successful probe from the stopped/initial state merely because
+            # a status refresh happens during playback.  Keep the verified
+            # formats, but expose the current busy condition to callers.
+            if result["busy"]:
+                with ALSA_CAPS_LOCK:
+                    previous = dict(ALSA_CAPS_CACHE.get(cache_key) or {})
+                preserved = preserve_verified_busy_probe(previous, result)
+                if preserved is not result:
+                    # Continue through the common finally block so the
+                    # preserved result, rather than the transient `-16`
+                    # probe result, is written back to the cache.
+                    result = preserved
+                    return result
+            return result
+        result["available"] = True
+        if lib.snd_pcm_hw_params_malloc(ctypes.byref(params)) < 0 or not params:
+            result["error"] = "ALSA hw_params allocation failed"
+            return result
+        if lib.snd_pcm_hw_params_any(pcm, params) < 0:
+            result["error"] = "ALSA hw_params query failed"
+            return result
+        if lib.snd_pcm_hw_params_test_channels(pcm, params, 2) < 0:
+            result["error"] = "stereo playback is unsupported"
+            return result
+        pcm_formats = (("S16_LE", 16), ("S24_3LE", 24), ("S24_LE", 24), ("S32_LE", 32))
+        for name, bits in pcm_formats:
+            format_id = lib.snd_pcm_format_value(name.encode("ascii"))
+            if format_id >= 0 and lib.snd_pcm_hw_params_test_format(pcm, params, format_id) == 0:
+                result["pcm_formats"].append(name)
+                result["pcm_max_bits"] = max(result["pcm_max_bits"], bits)
+        for rate in (44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000):
+            if lib.snd_pcm_hw_params_test_rate(pcm, params, rate, 0) == 0:
+                result["pcm_rates"].append(rate)
+        dsd_names = ("DSD_U8", "DSD_U16_LE", "DSD_U16_BE", "DSD_U32_LE", "DSD_U32_BE")
+        for name in dsd_names:
+            format_id = lib.snd_pcm_format_value(name.encode("ascii"))
+            if format_id >= 0 and lib.snd_pcm_hw_params_test_format(pcm, params, format_id) == 0:
+                result["native_dsd_formats"].append(name)
+        result["pcm_max_rate"] = max(result["pcm_rates"] or [0])
+        result["native_dsd"] = bool(result["native_dsd_formats"])
+        result["verified"] = bool(result["pcm_formats"] or result["native_dsd_formats"])
+    except Exception as exc:
+        result["error"] = str(exc)
+    finally:
+        try:
+            if params:
+                lib.snd_pcm_hw_params_free(params)
+        except Exception:
+            pass
+        try:
+            if pcm:
+                lib.snd_pcm_close(pcm)
+        except Exception:
+            pass
+        result["probed_at"] = time.time()
+        with ALSA_CAPS_LOCK:
+            ALSA_CAPS_CACHE[cache_key] = dict(result)
+    return result
+
+
 def empty_dac_caps():
     return {"source": "unknown", "pcm_rates": [], "pcm_max_rate": 192000, "pcm_max_bits": 24, "dsd": False, "dsd_rates": [], "notes": []}
 
@@ -107,7 +260,7 @@ def merge_dac_caps(base, override):
 
 def parse_dac_stream_caps(card):
     caps = empty_dac_caps()
-    base = os.path.join("/proc/asound", "card%s" % card)
+    base = _proc_asound_path("card%s" % card)
     if not os.path.isdir(base):
         return caps
     try:
@@ -123,7 +276,7 @@ def parse_dac_stream_caps(card):
             pass
     if not text:
         return caps
-    caps["source"] = "/proc/asound/card%s/stream*" % card
+    caps["source"] = "%s/stream*" % base
     lower = text.lower()
     if "dsd" in lower or "dop" in lower:
         caps["dsd"] = True
@@ -153,7 +306,10 @@ def parse_dac_stream_caps(card):
 
 
 def enrich_dac_device(device):
-    caps = parse_dac_stream_caps(str(device.get("alsa_id", "")).replace("hw:", "").split(",", 1)[0])
+    card, pcm_device = _alsa_card_device(device.get("alsa_id"))
+    identity = alsa_device_identity(card, pcm_device, device)
+    device.update(identity)
+    caps = parse_dac_stream_caps(card)
     if not caps.get("pcm_rates"):
         caps["pcm_rates"] = [caps.get("pcm_max_rate") or 192000]
     device["caps"] = caps
@@ -168,6 +324,11 @@ def is_music_alsa_device(*parts):
 
 def _proc_asound_path(*parts):
     root = os.environ.get("FNAUDIO_ASOUND_ROOT") or "/proc/asound"
+    return os.path.join(root, *[str(part) for part in parts])
+
+
+def _sys_sound_path(*parts):
+    root = os.environ.get("FNAUDIO_SYS_SOUND_ROOT") or "/sys/class/sound"
     return os.path.join(root, *[str(part) for part in parts])
 
 
@@ -218,8 +379,78 @@ def _read_card_usb_name(card):
 
 
 def _read_sysfs_value(card, name):
-    path = os.path.join("/sys/class/sound/card%s/device" % card, name)
+    path = os.path.join(_sys_sound_path("card%s" % card, "device"), name)
     return _read_text(path).strip().lower()
+
+
+def _alsa_card_device(alsa_id):
+    match = re.search(r"(?:hw:)?(\d+)\s*,\s*(\d+)", str(alsa_id or ""), re.I)
+    return (match.group(1), match.group(2)) if match else ("", "0")
+
+
+def _safe_identity_part(value):
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", str(value or "").strip().lower()).strip("-.")
+    return normalized[:80]
+
+
+def _usb_sysfs_identity(card):
+    """Read USB identity from the sound interface or one of its USB parents."""
+    start = os.path.realpath(_sys_sound_path("card%s" % card, "device"))
+    current = start
+    fields = {}
+    for _ in range(8):
+        for name in ("idVendor", "idProduct", "serial", "product", "manufacturer"):
+            if name not in fields:
+                value = _read_text(os.path.join(current, name)).strip()
+                if value:
+                    fields[name] = value
+        if fields.get("idVendor") and fields.get("idProduct") and (fields.get("serial") or fields.get("product")):
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return fields
+
+
+def alsa_device_identity(card, pcm_device="0", hints=None):
+    """Return a persistent identity plus the current ALSA runtime address.
+
+    Numeric card indexes are intentionally excluded from ``stable_id``. USB
+    reconnects may change ``hw:X,Y`` while the ALSA card id, VID/PID and serial
+    continue to identify the same physical DAC.
+    """
+    hints = dict(hints or {})
+    card = str(card or "")
+    pcm_device = str(pcm_device or "0")
+    card_id = _read_text(_proc_asound_path("card%s" % card, "id")).strip()
+    usb = _usb_sysfs_identity(card) if card else {}
+    vendor = _safe_identity_part(usb.get("idVendor"))
+    product_id = _safe_identity_part(usb.get("idProduct"))
+    serial = _safe_identity_part(usb.get("serial"))
+    product = _safe_identity_part(usb.get("product") or hints.get("raw_name") or hints.get("name"))
+    card_key = _safe_identity_part(card_id)
+    if vendor and product_id:
+        discriminator = serial or card_key or product
+        stable_id = "usb:%s:%s:%s:dev%s" % (vendor, product_id, discriminator or "unknown", pcm_device)
+    elif card_key:
+        stable_id = "alsa:%s:dev%s" % (card_key, pcm_device)
+    else:
+        fallback = "%s|%s|%s" % (hints.get("raw_name", ""), hints.get("name", ""), pcm_device)
+        stable_id = "alsa:fallback-%s:dev%s" % (hashlib.sha1(fallback.encode("utf-8", "ignore")).hexdigest()[:12], pcm_device)
+    stable_alsa_id = "hw:CARD=%s,DEV=%s" % (card_id, pcm_device) if card_id else str(hints.get("alsa_id") or "default")
+    return {
+        "stable_id": stable_id,
+        "stable_alsa_id": stable_alsa_id,
+        "card_id": card_id,
+        "card_index": safe_int(card, -1),
+        "pcm_device": safe_int(pcm_device, 0),
+        "usb_vendor_id": vendor,
+        "usb_product_id": product_id,
+        "usb_serial": str(usb.get("serial") or ""),
+        "usb_product": str(usb.get("product") or ""),
+        "usb_manufacturer": str(usb.get("manufacturer") or ""),
+    }
 
 
 def _is_usb_card(card, *parts):
@@ -227,7 +458,7 @@ def _is_usb_card(card, *parts):
     if "usb" in text:
         return True
     try:
-        real = os.path.realpath("/sys/class/sound/card%s/device" % card).lower()
+        real = os.path.realpath(_sys_sound_path("card%s" % card, "device")).lower()
         if "usb" in real:
             return True
     except OSError:
@@ -335,7 +566,9 @@ def alsa_devices_from_proc():
                 if not is_music_alsa_device(line, name, card_info.get("key"), card_info.get("driver")):
                     continue
                 is_usb = _is_usb_card(card, line, name, raw_name, card_info.get("driver", ""), card_info.get("key", ""))
-                devices.append(enrich_dac_device({"id": "dac:" + alsa_id, "alsa_id": alsa_id, "name": name, "raw_name": raw_name, "online": True, "kind": "dac", "is_usb": is_usb}))
+                enriched = enrich_dac_device({"alsa_id": alsa_id, "name": name, "raw_name": raw_name, "online": True, "kind": "dac", "is_usb": is_usb})
+                enriched["id"] = "dac:" + enriched["stable_id"]
+                devices.append(enriched)
     except OSError:
         pass
     return devices
@@ -365,7 +598,9 @@ def alsa_devices():
         if not is_music_alsa_device(line, name, card_name, dev_name):
             continue
         is_usb = _is_usb_card(card, line, name, raw_name, card_name, dev_name)
-        devices.append(enrich_dac_device({"id": "dac:" + alsa_id, "alsa_id": alsa_id, "name": name, "raw_name": raw_name, "online": True, "kind": "dac", "is_usb": is_usb}))
+        enriched = enrich_dac_device({"alsa_id": alsa_id, "name": name, "raw_name": raw_name, "online": True, "kind": "dac", "is_usb": is_usb})
+        enriched["id"] = "dac:" + enriched["stable_id"]
+        devices.append(enriched)
     return [device for device in devices if device.get("is_usb")]
 
 
@@ -414,24 +649,6 @@ def stop_dac_locked():
             pass
 
 
-def dac_ffmpeg_command(item, config, start=0):
-    ffmpeg = find_ffmpeg(config)
-    if not ffmpeg:
-        raise RuntimeError("鏈壘鍒伴鐗涚郴缁熻浆鐮佸櫒 ffmpeg")
-    command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
-    if start and start > 0:
-        command += ["-ss", str(max(0, float(start)))]
-    command += ["-i", item["path"], "-vn", "-map", "0:a:0"]
-    if item.get("is_dsd"):
-        command += ["-ar", "192000", "-codec:a", "pcm_s24le"]
-    else:
-        command += ["-codec:a", "pcm_s16le"]
-    command += ["-f", "wav", "pipe:1"]
-    env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
-    return command, env
-
-
 def dac_pcm_profile(item):
     strategy = item.get("_dac_strategy") or {}
     if item.get("is_dsd"):
@@ -453,7 +670,7 @@ def aplay_format_name(sample_format):
 def dac_ffmpeg_alsa_command(item, config, alsa_id, start=0):
     ffmpeg = find_ffmpeg(config)
     if not ffmpeg:
-        raise RuntimeError("閺堫亝澹橀崚浼搭棧閻楁稓閮寸紒鐔绘祮閻礁娅?ffmpeg")
+        raise RuntimeError("系统中未找到可用的 ffmpeg")
     profile = dac_pcm_profile(item)
     command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
     if start and start > 0:
@@ -512,25 +729,14 @@ def choose_dac_strategy(item, device):
     source_rate = safe_int(item.get("sample_rate")) or 44100
     source_bits = safe_int(item.get("bit_depth")) or 16
     if item.get("is_dsd"):
-        if caps.get("dsd"):
-            return {
-                "mode": "dsd_direct_preferred",
-                "label": "DSD direct preferred (PCM fallback test mode)",
-                "rate": max_rate,
-                "bits": min(max_bits, 32),
-                "needs_transcode": False,
-                "direct_possible": True,
-                "actual": "pcm_fallback",
-                "caps": caps,
-            }
         return {
-            "mode": "dsd_to_best_pcm",
-            "label": "DSD to supported PCM %skHz/%sbit" % (int(max_rate / 1000), min(max_bits, 32)),
-            "rate": max_rate,
-            "bits": min(max_bits, 32),
-            "needs_transcode": True,
-            "direct_possible": False,
-            "actual": "pcm",
+            "mode": "dsd_requires_mpd",
+            "label": "DSD must use verified MPD Native DSD/DoP output",
+            "rate": 0,
+            "bits": 0,
+            "needs_transcode": False,
+            "direct_possible": bool(caps.get("dsd")),
+            "actual": "blocked_no_pcm_fallback",
             "caps": caps,
         }
     target_rate = source_rate if source_rate <= max_rate else max_rate
@@ -574,31 +780,60 @@ def dac_ffmpeg_pcm_command(item, config, start=0):
     return command, env, profile
 
 
+def _nice_preexec(value):
+    value = int(value or 0)
+    if os.name == "nt" or not value:
+        return None
+    def apply_nice():
+        try:
+            os.nice(value)
+        except (OSError, ValueError):
+            pass
+    return apply_nice
+
+
 def start_dac_playback(device_id, item, config, start=0):
-    alsa_id = str(device_id or "").replace("dac:", "", 1)
     device = dac_device_by_id(device_id)
     if not device:
-        return False, "娌℃湁鎵惧埌杩欎釜 USB/ALSA 闊抽璁惧"
+        return False, "没有找到这个 USB/ALSA 音频设备"
+    alsa_id = str(device.get("stable_alsa_id") or device.get("alsa_id") or "")
     strategy = choose_dac_strategy(item, device)
+    if item.get("is_dsd"):
+        return False, "DSD 直连模式不允许转为 PCM，请使用 MPD USB DAC 输出进行 Native DSD/DoP 播放"
     playback_item = dict(item)
     playback_item["_dac_strategy"] = strategy
+    try:
+        from services.dac_profiles import dac_quirk_profile
+        quirk = dac_quirk_profile(device, (config or {}).get("dac_profiles") or [])
+    except Exception:
+        quirk = {"track_settle_ms": 0}
+    # Never overlap the previous aplay/ffmpeg pair with the new one.  On USB
+    # DACs that overlap can produce an ALSA busy/open retry and visible first-
+    # frame stalls.  The settle window is opt-in per DAC profile.
+    with DAC_LOCK:
+        stop_dac_locked()
+    settle_ms = max(0, min(500, safe_int(quirk.get("track_settle_ms"))))
+    if settle_ms:
+        time.sleep(settle_ms / 1000.0)
+    nice_value = safe_int((config or {}).get("ffmpeg_nice"))
     try:
         aplay = find_aplay()
         if aplay:
             ffmpeg_cmd, env, profile = dac_ffmpeg_pcm_command(playback_item, config, start)
-            ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, preexec_fn=_nice_preexec(nice_value))
             player_process = subprocess.Popen(
                 [aplay, "-q", "-D", alsa_id, "-f", aplay_format_name(profile["sample_format"]), "-r", str(profile["rate"]), "-c", str(profile["channels"]), "-"],
                 stdin=ffmpeg_process.stdout,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                preexec_fn=_nice_preexec(nice_value),
             )
             if ffmpeg_process.stdout:
                 ffmpeg_process.stdout.close()
             processes = [ffmpeg_process, player_process]
         else:
             if not find_libasound():
-                return False, "绯荤粺娌℃湁 aplay锛屼篃娌℃湁鎵惧埌 libasound锛屾殏鏃舵棤娉曠洿鎺ヨ緭鍑哄埌 USB DAC"
+                return False, "系统没有 aplay，也没有找到 libasound，暂时无法直接输出到 USB DAC"
             ffmpeg_cmd, env, _profile = dac_ffmpeg_alsa_command(playback_item, config, alsa_id, start)
             player_process = subprocess.Popen(
                 ffmpeg_cmd,
@@ -606,6 +841,7 @@ def start_dac_playback(device_id, item, config, start=0):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 env=env,
+                preexec_fn=_nice_preexec(nice_value),
             )
             processes = [player_process]
     except Exception as exc:
@@ -614,7 +850,6 @@ def start_dac_playback(device_id, item, config, start=0):
     if failed:
         return False, failed
     with DAC_LOCK:
-        stop_dac_locked()
         DAC_STATE.update({"device_id": device_id, "item_id": item["id"], "processes": processes, "playing": True, "started_at": time.time(), "offset": safe_float(start), "duration": safe_float(item.get("duration")), "strategy": strategy})
     return True, "ok"
 

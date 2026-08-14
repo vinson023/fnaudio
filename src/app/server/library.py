@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import json
 import mimetypes
@@ -10,28 +11,225 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import struct
 import threading
 import time
 import tempfile
+import wave
 from contextlib import contextmanager
 from typing import Any, Dict
 
 from transcode import find_ffmpeg
+from resource_limits import bounded_int
+from file_permissions import atomic_write_json, secure_directory, secure_file, secure_sqlite_files
 
 SUPPORTED = {
     ".flac": "audio/flac", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav", ".aiff": "audio/aiff",
-    ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".dsf": "audio/x-dsf", ".dff": "audio/x-dff", ".cue": "application/x-cue",
+    ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".ape": "audio/ape", ".dsf": "audio/x-dsf", ".dff": "audio/x-dff", ".cue": "application/x-cue",
 }
-METADATA_VERSION = 15
+METADATA_VERSION = 16
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"
 MUSIC_CACHE = {"stamp": 0, "items": []}
 FS_CACHE = {"signature": ""}
-SCAN_STATE = {"running": False, "last_error": "", "last_scan": 0, "current": "", "phase": "", "scanned": 0, "found": 0, "errors": []}
+LIBRARY_CHANGE_MONITOR = None
+SCAN_STATE = {
+    "running": False,
+    "cancelled": False,
+    "timed_out": False,
+    "deadline": 0,
+    "last_error": "",
+    "last_scan": 0,
+    "current": "",
+    "phase": "",
+    "scanned": 0,
+    "found": 0,
+    "errors": [],
+}
 SCAN_LOCK = threading.Lock()
+SCAN_CANCEL_EVENT = threading.Event()
 LIBRARY_JSON_CACHE_LIMIT = 5000
 ALLOWED_LIBRARY_PREFIXES = ("/vol", "/volume", "/mnt", "/share", "/var/apps/fnaudio/share")
+
+
+class LibraryChangeMonitor:
+    """Use Linux inotify to avoid polling every audio file when nothing changed."""
+
+    IN_ATTRIB = 0x00000004
+    IN_CLOSE_WRITE = 0x00000008
+    IN_MOVED_FROM = 0x00000040
+    IN_MOVED_TO = 0x00000080
+    IN_CREATE = 0x00000100
+    IN_DELETE = 0x00000200
+    IN_DELETE_SELF = 0x00000400
+    IN_MOVE_SELF = 0x00000800
+    IN_Q_OVERFLOW = 0x00004000
+    IN_IGNORED = 0x00008000
+    IN_ISDIR = 0x40000000
+    WATCH_MASK = (
+        IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO |
+        IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MOVE_SELF
+    )
+    EVENT_HEADER = struct.Struct("iIII")
+
+    def __init__(self, roots):
+        self.roots = tuple(os.path.abspath(os.path.expanduser(root)) for root in roots)
+        self.available = False
+        self._dirty = True
+        self._overflowed = False
+        self._generation = 0
+        self._fd = -1
+        self._libc = None
+        self._watches = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if os.name != "posix" or not self.roots:
+            return False
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.inotify_init1.argtypes = [ctypes.c_int]
+            libc.inotify_init1.restype = ctypes.c_int
+            libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+            libc.inotify_add_watch.restype = ctypes.c_int
+            flags = int(getattr(os, "O_NONBLOCK", 0)) | int(getattr(os, "O_CLOEXEC", 0))
+            fd = libc.inotify_init1(flags)
+            if fd < 0:
+                raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+            self._libc = libc
+            self._fd = fd
+            for root in self.roots:
+                if os.path.isdir(root):
+                    self._add_tree(root)
+            if not self._watches:
+                raise OSError("no readable library directories could be watched")
+            self.available = True
+            self._thread = threading.Thread(target=self._run, name="fnaudio-library-inotify", daemon=True)
+            self._thread.start()
+            return True
+        except (AttributeError, OSError):
+            self.stop()
+            return False
+
+    def stop(self):
+        self._stop.set()
+        fd = self._fd
+        self._fd = -1
+        self.available = False
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        with self._lock:
+            self._watches.clear()
+
+    def needs_scan(self):
+        with self._lock:
+            return not self.available or self._dirty or self._overflowed
+
+    def generation(self):
+        with self._lock:
+            return self._generation
+
+    def mark_clean(self, generation):
+        with self._lock:
+            if self.available and self._generation == generation:
+                self._dirty = False
+                self._overflowed = False
+                return True
+            return False
+
+    def status(self):
+        with self._lock:
+            return {
+                "mode": "inotify" if self.available else "polling",
+                "watched_directories": len(self._watches),
+                "dirty": bool(self._dirty),
+                "overflowed": bool(self._overflowed),
+            }
+
+    def _watch_path(self, path):
+        if self._fd < 0 or self._libc is None:
+            return
+        wd = self._libc.inotify_add_watch(self._fd, os.fsencode(path), self.WATCH_MASK)
+        if wd < 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), path)
+        with self._lock:
+            self._watches[wd] = path
+
+    def _add_tree(self, root):
+        for base, directories, _ in os.walk(root):
+            self._watch_path(base)
+            directories[:] = [name for name in directories if not os.path.islink(os.path.join(base, name))]
+
+    def _mark_dirty(self, overflowed=False):
+        with self._lock:
+            self._generation += 1
+            self._dirty = True
+            self._overflowed = self._overflowed or overflowed
+
+    def _handle_events(self, payload):
+        offset = 0
+        while offset + self.EVENT_HEADER.size <= len(payload):
+            wd, mask, _, name_length = self.EVENT_HEADER.unpack_from(payload, offset)
+            offset += self.EVENT_HEADER.size
+            raw_name = payload[offset:offset + name_length]
+            offset += name_length
+            name = os.fsdecode(raw_name.split(b"\0", 1)[0]) if raw_name else ""
+            if mask & self.IN_Q_OVERFLOW:
+                self._mark_dirty(True)
+                continue
+            with self._lock:
+                base = self._watches.get(wd, "")
+                if mask & self.IN_IGNORED:
+                    self._watches.pop(wd, None)
+            if mask & self.IN_IGNORED:
+                continue
+            path = os.path.join(base, name) if base and name else base
+            if mask & self.IN_ISDIR:
+                self._mark_dirty()
+                if mask & (self.IN_CREATE | self.IN_MOVED_TO) and path:
+                    try:
+                        self._add_tree(path)
+                    except OSError:
+                        self._mark_dirty(True)
+                continue
+            if not name or os.path.splitext(name)[1].lower() in SUPPORTED:
+                self._mark_dirty()
+
+    def _run(self):
+        while not self._stop.wait(0.25):
+            try:
+                payload = os.read(self._fd, 256 * 1024)
+            except BlockingIOError:
+                continue
+            except OSError:
+                if not self._stop.is_set():
+                    self._mark_dirty(True)
+                    self.available = False
+                return
+            if payload:
+                self._handle_events(payload)
+
+
+class ScanCancelled(RuntimeError):
+    pass
+
+
+class ScanTimedOut(ScanCancelled):
+    pass
+
+
+def check_scan_deadline(deadline=None):
+    if SCAN_CANCEL_EVENT.is_set():
+        raise ScanCancelled("library scan cancelled")
+    if deadline is not None and time.monotonic() >= float(deadline):
+        raise ScanTimedOut("library scan timed out")
 
 
 def record_scan_error(path, message):
@@ -44,10 +242,18 @@ def record_scan_error(path, message):
 def is_allowed_library_path(path):
     if os.name == "nt":
         return True
-    root = os.path.abspath(os.path.expanduser(path or ""))
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(path or "")))
     if re.match(r"^/vol\d+(/|$)", root):
         return True
     return any(root == prefix or root.startswith(prefix + os.sep) for prefix in ALLOWED_LIBRARY_PREFIXES)
+
+
+def canonical_library_path(path):
+    value = os.path.abspath(os.path.expanduser(str(path or "")))
+    # Windows may expand an 8.3 temporary path to its long form in realpath(),
+    # which breaks the path identity stored in SQLite. Linux still resolves
+    # symlinks here so configured roots cannot escape the allowed boundary.
+    return value if os.name == "nt" else os.path.realpath(value)
 
 
 def normalize_library_paths(config):
@@ -64,12 +270,34 @@ def normalize_library_paths(config):
         raw_value = str(value or "").strip()
         if not raw_value:
             continue
-        path = os.path.abspath(os.path.expanduser(raw_value))
+        path = canonical_library_path(raw_value)
         if path in seen:
             continue
         seen.add(path)
         paths.append(path)
-    return paths or [os.path.abspath(os.path.expanduser(config.get("library_path", ".")))]
+    return paths or [canonical_library_path(config.get("library_path", "."))]
+
+
+def merge_library_paths(current_paths, extra_paths):
+    """Merge configured roots using the same identity as scanning and SQLite."""
+    paths = []
+    seen = set()
+    for value in list(current_paths or []) + list(extra_paths or []):
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            continue
+        path = canonical_library_path(raw_value)
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def apply_library_paths(config, paths):
+    config["library_path"] = "\n".join(paths)
+    config["library_paths"] = list(paths)
+
 
 def safe_float(value, default=0.0):
     try:
@@ -93,12 +321,6 @@ def parse_track_number(value):
         return 0
     match = re.match(r"^\s*(\d+)", text)
     return int(match.group(1)) if match else 0
-
-def safe_float(value):
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
 
 def display_library_path(config):
     return "\n".join(normalize_library_paths(config))
@@ -177,6 +399,24 @@ def id3_tag(path):
             if header:
                 return header, data
             ext = os.path.splitext(path)[1].lower()
+            if ext == ".wav":
+                fh.seek(0)
+                riff = fh.read(12)
+                if riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+                    return None, b""
+                limit = min(os.path.getsize(path), 8 + int.from_bytes(riff[4:8], "little"))
+                offset = 12
+                while offset + 8 <= limit:
+                    fh.seek(offset)
+                    chunk_id = fh.read(4)
+                    chunk_size = int.from_bytes(fh.read(4), "little")
+                    payload = offset + 8
+                    if payload + chunk_size > limit:
+                        break
+                    if chunk_id.lower() == b"id3 ":
+                        return read_id3_header_at(fh, payload)
+                    offset = payload + chunk_size + (chunk_size & 1)
+                return None, b""
             if ext != ".dsf":
                 return None, b""
             fh.seek(0)
@@ -320,6 +560,80 @@ def read_m4a_cover(path, config=None):
         return "image/gif", body
     return None, None
 
+def read_ape_cover(path):
+    """Read APEv2 Cover Art (Front) without decoding the audio stream."""
+    try:
+        with open(path, "rb") as fh:
+            body = fh.read()
+    except OSError:
+        return None, None
+    if len(body) < 32 or body[-32:-24] != b"APETAGEX":
+        return None, None
+    total = int.from_bytes(body[-20:-16], "little")
+    count = int.from_bytes(body[-16:-12], "little")
+    start = len(body) - total
+    if total < 32 or start < 0 or count > 4096:
+        return None, None
+    offset = start
+    try:
+        for _ in range(count):
+            if offset + 9 > len(body) - 32:
+                return None, None
+            value_size = int.from_bytes(body[offset:offset + 4], "little")
+            key_end = body.index(b"\x00", offset + 8, min(len(body) - 32, offset + 8 + 1024))
+            key = body[offset + 8:key_end].decode("utf-8", "replace").casefold()
+            value_start = key_end + 1
+            value_end = value_start + value_size
+            if value_end > len(body) - 32:
+                return None, None
+            if key == "cover art (front)":
+                image = body[value_start:value_end].split(b"\x00", 1)[1]
+                if image.startswith(b"\xff\xd8\xff"):
+                    return "image/jpeg", image
+                if image.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return "image/png", image
+                if image.startswith((b"GIF87a", b"GIF89a")):
+                    return "image/gif", image
+                return None, None
+            offset = value_end
+    except (ValueError, IndexError):
+        return None, None
+    return None, None
+
+def read_wav_cover(path, config=None):
+    """Extract an embedded WAV artwork stream when the muxer stores one."""
+    mime, body = read_id3_cover(path)
+    if body:
+        return mime, body
+    # WAV artwork is not standardized across muxers. FFmpeg understands the
+    # common ID3-in-RIFF representation, so use the same bounded extraction
+    # path as M4A when the native RIFF scanner has no result.
+    ffmpeg = find_ffmpeg(config or {})
+    if not ffmpeg:
+        return None, None
+    fd, target = tempfile.mkstemp(prefix="fnaudio-cover-", suffix=".jpg")
+    os.close(fd)
+    command = [ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2", "-f", "image2", target]
+    env = os.environ.copy()
+    if "/usr/trim/lib/mediasrv/bin" in ffmpeg:
+        env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
+    try:
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, env=env, check=False)
+        with open(target, "rb") as fh:
+            body = fh.read()
+    except (OSError, subprocess.SubprocessError):
+        body = b""
+    finally:
+        try:
+            os.unlink(target)
+        except OSError:
+            pass
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", body
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", body
+    return None, None
+
 def read_mp4_covr_cover(path):
     """Read JPEG/PNG artwork from the MP4/M4A ilst/covr atom."""
     containers = {b"moov", b"udta", b"meta", b"ilst", b"covr"}
@@ -405,6 +719,10 @@ def read_cover(path, config=None):
     ext = os.path.splitext(path)[1].lower()
     if ext in (".mp3", ".dsf", ".dff"):
         return read_id3_cover(path)
+    if ext == ".ape":
+        return read_ape_cover(path)
+    if ext == ".wav":
+        return read_wav_cover(path, config)
     if ext == ".flac":
         return read_flac_cover(path)
     if ext in (".m4a", ".mp4"):
@@ -429,6 +747,8 @@ def read_sidecar_cover(*paths):
             if not actual:
                 continue
             target = os.path.join(directory, actual)
+            if not _path_under(target, directory):
+                continue
             try:
                 with open(target, "rb") as fh:
                     body = fh.read()
@@ -463,7 +783,7 @@ def read_vorbis_comments(path):
 def read_probe_metadata(path, config=None):
     ffprobe = find_ffprobe(config or {})
     if not ffprobe:
-        return {}, {}
+        return {}, read_native_audio_info(path)
     command = [
         ffprobe,
         "-v", "error",
@@ -514,7 +834,78 @@ def read_probe_metadata(path, config=None):
         "bit_rate": safe_int(stream.get("bit_rate")),
         "duration": safe_float((data.get("format") or {}).get("duration")),
     }
+    native_info = read_native_audio_info(path)
+    for key, value in native_info.items():
+        if not audio_info.get(key):
+            audio_info[key] = value
     return tags, audio_info
+
+
+def read_native_audio_info(path):
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    if ext == ".wav":
+        try:
+            with wave.open(path, "rb") as handle:
+                rate = int(handle.getframerate() or 0)
+                channels = int(handle.getnchannels() or 0)
+                bits = int(handle.getsampwidth() or 0) * 8
+                frames = int(handle.getnframes() or 0)
+            return {
+                "sample_rate": rate,
+                "bit_depth": bits,
+                "bit_rate": rate * channels * bits,
+                "duration": frames / float(rate) if rate > 0 else 0.0,
+            }
+        except (OSError, EOFError, wave.Error):
+            return {}
+    if ext != ".dff":
+        return {}
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(4) != b"FRM8":
+                return {}
+            form_size = int.from_bytes(handle.read(8), "big")
+            if handle.read(4) != b"DSD ":
+                return {}
+            end = min(os.path.getsize(path), 12 + form_size)
+            sample_rate = 0
+            channels = 0
+            dsd_bytes = 0
+
+            def chunks(first, limit):
+                position = first
+                while position + 12 <= limit:
+                    handle.seek(position)
+                    chunk_id = handle.read(4)
+                    size = int.from_bytes(handle.read(8), "big")
+                    payload = position + 12
+                    if payload + size > limit:
+                        break
+                    yield chunk_id, payload, size
+                    position = payload + size + (size % 2)
+
+            for chunk_id, payload, size in chunks(16, end):
+                if chunk_id == b"PROP" and size >= 4:
+                    handle.seek(payload)
+                    if handle.read(4) != b"SND ":
+                        continue
+                    for prop_id, prop_payload, prop_size in chunks(payload + 4, payload + size):
+                        handle.seek(prop_payload)
+                        if prop_id == b"FS  " and prop_size >= 4:
+                            sample_rate = int.from_bytes(handle.read(4), "big")
+                        elif prop_id == b"CHNL" and prop_size >= 2:
+                            channels = int.from_bytes(handle.read(2), "big")
+                elif chunk_id == b"DSD ":
+                    dsd_bytes = size
+            duration = (dsd_bytes * 8) / float(sample_rate * channels) if sample_rate > 0 and channels > 0 else 0.0
+            return {
+                "sample_rate": sample_rate,
+                "bit_depth": 1,
+                "bit_rate": sample_rate * channels,
+                "duration": duration,
+            } if sample_rate and channels else {}
+    except (OSError, ValueError):
+        return {}
 
 def read_probe_tags(path, config=None):
     tags, _ = read_probe_metadata(path, config)
@@ -548,7 +939,7 @@ def read_id3v1(path):
 def read_metadata(path, root, config=None, probe_tags=None):
     ext = os.path.splitext(path)[1].lower()
     tags = dict(probe_tags or read_probe_tags(path, config or {}))
-    local_tags = read_id3(path) if ext in (".mp3", ".dsf", ".dff") else read_vorbis_comments(path)
+    local_tags = read_id3(path) if ext in (".mp3", ".dsf", ".dff", ".wav") else read_vorbis_comments(path)
     for key, value in local_tags.items():
         tags.setdefault(key, value)
     tag_title = clean_tag(tags.get("title"))
@@ -618,7 +1009,9 @@ def read_cue_lines(cue_path):
             return []
     return []
 
-def parse_cue_tracks(cue_path, root, config=None):
+def parse_cue_tracks(cue_path, root, config=None, deadline=None):
+    if not _path_under(cue_path, root):
+        return []
     text = read_cue_lines(cue_path)
     if not text:
         return []
@@ -659,9 +1052,15 @@ def parse_cue_tracks(cue_path, root, config=None):
     items = []
     cue_dir = os.path.dirname(cue_path)
     for track in tracks:
+        check_scan_deadline(deadline)
         audio_path = os.path.abspath(os.path.join(cue_dir, track.get("file") or ""))
         ext = os.path.splitext(audio_path)[1].lower()
-        if ext not in SUPPORTED or ext == ".cue" or not os.path.isfile(audio_path):
+        if (
+            ext not in SUPPORTED
+            or ext == ".cue"
+            or not os.path.isfile(audio_path)
+            or not _path_under(audio_path, root)
+        ):
             continue
         try:
             stat = os.stat(audio_path)
@@ -680,7 +1079,7 @@ def parse_cue_tracks(cue_path, root, config=None):
         items.append({"id": item_id, **metadata, "format": ext[1:].upper(), "mime": SUPPORTED[ext], "is_dsd": ext in (".dsf", ".dff"), "size": stat.st_size, **audio_info, "duration": cue_duration, "path": audio_path, "cue_path": cue_path, "cue_track": True, "cue_start": cue_start, "cue_end": cue_end, "added": int(time.time()), "added_ns": int(time.time() * 1000000000), "modified": int(os.path.getmtime(cue_path)), "modified_ns": os.stat(cue_path).st_mtime_ns, "metadata_version": METADATA_VERSION})
     return items
 
-def scan_library(root, previous_items=None, config=None):
+def scan_library(root, previous_items=None, config=None, deadline=None):
     items = []
     signature_parts = []
     previous = {}
@@ -688,18 +1087,24 @@ def scan_library(root, previous_items=None, config=None):
     for item in previous_items or []:
         if item.get("path"):
             previous[item["path"]] = item
-    root = os.path.abspath(os.path.expanduser(root))
+    root = canonical_library_path(root)
     if not is_allowed_library_path(root) or not os.path.isdir(root):
         return items, ""
     cue_audio_paths = set()
     SCAN_STATE["phase"] = "扫描 CUE"
-    for base, _, files in os.walk(root):
+    for base, directories, files in os.walk(root):
+        directories[:] = [name for name in directories if name != "fnaudio-transcode"]
+        check_scan_deadline(deadline)
         SCAN_STATE["current"] = base
         for filename in files:
+            check_scan_deadline(deadline)
             if os.path.splitext(filename)[1].lower() != ".cue":
                 continue
             full = os.path.join(base, filename)
-            cue_items = parse_cue_tracks(full, root, config or {})
+            if not _path_under(full, root):
+                record_scan_error(full, "CUE path escapes the configured library root")
+                continue
+            cue_items = parse_cue_tracks(full, root, config or {}, deadline)
             items.extend(cue_items)
             cue_audio_paths.update(os.path.abspath(item.get("path", "")) for item in cue_items if item.get("path"))
             SCAN_STATE["found"] = len(items)
@@ -721,12 +1126,16 @@ def scan_library(root, previous_items=None, config=None):
                     pass
         SCAN_STATE["phase"] = "扫描音频文件"
         for filename in files:
+            check_scan_deadline(deadline)
             SCAN_STATE["scanned"] += 1
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SUPPORTED:
                 continue
             full = os.path.join(base, filename)
             if ext == ".cue":
+                continue
+            if not _path_under(full, root):
+                record_scan_error(full, "audio path escapes the configured library root")
                 continue
             if os.path.abspath(full) in cue_audio_paths:
                 continue
@@ -765,16 +1174,18 @@ def scan_library(root, previous_items=None, config=None):
             SCAN_STATE["found"] = len(items)
         if len(items) and len(items) % 500 == 0:
             time.sleep(0.01)
+    check_scan_deadline(deadline)
     items.sort(key=lambda x: (x["artist"].lower(), x["album"].lower(), x["title"].lower()))
     signature_parts.append("metadata_version:%s" % METADATA_VERSION)
     signature = hashlib.sha1("|".join(sorted(signature_parts)).encode("utf-8", "ignore")).hexdigest()
     return items, signature
 
-def scan_libraries(config, previous_items=None):
+def scan_libraries(config, previous_items=None, deadline=None):
     all_items = []
     signatures = []
     for root in normalize_library_paths(config):
-        items, signature = scan_library(root, previous_items, config)
+        check_scan_deadline(deadline)
+        items, signature = scan_library(root, previous_items, config, deadline)
         all_items.extend(items)
         if signature:
             signatures.append("%s:%s" % (root, signature))
@@ -789,11 +1200,12 @@ def scan_libraries(config, previous_items=None):
     return unique, hashlib.sha1("|".join(sorted(signatures)).encode("utf-8", "ignore")).hexdigest()
 
 
-def library_signature_for_config(config):
+def library_signature_for_config(config, deadline=None):
     """Build the filesystem signature without parsing audio metadata."""
     signatures = []
     for root in normalize_library_paths(config):
-        signature = library_signature(root)
+        check_scan_deadline(deadline)
+        signature = library_signature(root, deadline)
         if signature:
             signatures.append("%s:%s" % (root, signature))
     return hashlib.sha1("|".join(sorted(signatures)).encode("utf-8", "ignore")).hexdigest()
@@ -815,6 +1227,9 @@ def library_status(config):
         "count": count,
         "dsd_count": dsd_count,
         "scanning": SCAN_STATE["running"],
+        "cancelled": bool(SCAN_STATE.get("cancelled")),
+        "timed_out": bool(SCAN_STATE.get("timed_out")),
+        "deadline": int(SCAN_STATE.get("deadline") or 0),
         "last_error": SCAN_STATE["last_error"],
         "last_scan": SCAN_STATE["last_scan"],
         "current": SCAN_STATE.get("current", ""),
@@ -822,6 +1237,11 @@ def library_status(config):
         "scanned": SCAN_STATE.get("scanned", 0),
         "found": SCAN_STATE.get("found", 0),
         "errors": list(SCAN_STATE.get("errors") or []),
+        "change_detection": (
+            LIBRARY_CHANGE_MONITOR.status()
+            if LIBRARY_CHANGE_MONITOR is not None
+            else {"mode": "polling", "watched_directories": 0, "dirty": True, "overflowed": False}
+        ),
         "supported_formats": sorted(x[1:].upper() for x in SUPPORTED),
     }
     if not status["allowed"]:
@@ -869,17 +1289,22 @@ def list_music_directories(path):
         return []
     return sorted(dirs, key=lambda x: x.lower())
 
-def library_signature(root):
+def library_signature(root, deadline=None):
     parts = []
     root = os.path.abspath(os.path.expanduser(root))
     if not is_allowed_library_path(root) or not os.path.isdir(root):
         return ""
-    for base, _, files in os.walk(root):
+    for base, directories, files in os.walk(root):
+        directories[:] = [name for name in directories if name != "fnaudio-transcode"]
+        check_scan_deadline(deadline)
         for filename in files:
+            check_scan_deadline(deadline)
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SUPPORTED:
                 continue
             full = os.path.join(base, filename)
+            if not _path_under(full, root):
+                continue
             try:
                 stat = os.stat(full)
             except OSError:
@@ -888,10 +1313,16 @@ def library_signature(root):
     parts.append("metadata_version:%s" % METADATA_VERSION)
     return hashlib.sha1("|".join(sorted(parts)).encode("utf-8", "ignore")).hexdigest()
 
-def refresh_library_if_changed(config, force=False):
+def refresh_library_if_changed(config, force=False, change_monitor=None):
     if not SCAN_LOCK.acquire(False):
         return
     SCAN_STATE["running"] = True
+    SCAN_STATE["cancelled"] = False
+    SCAN_STATE["timed_out"] = False
+    timeout = bounded_int(config, "scan_timeout_seconds", 3600, 60, 86400)
+    deadline = time.monotonic() + timeout
+    SCAN_STATE["deadline"] = int(time.time()) + timeout
+    SCAN_CANCEL_EVENT.clear()
     SCAN_STATE["last_error"] = ""
     SCAN_STATE["current"] = ""
     SCAN_STATE["phase"] = "准备扫描"
@@ -899,12 +1330,19 @@ def refresh_library_if_changed(config, force=False):
     SCAN_STATE["found"] = 0
     SCAN_STATE["errors"] = []
     try:
+        monitor = change_monitor if change_monitor is not None else LIBRARY_CHANGE_MONITOR
+        monitor_generation = monitor.generation() if monitor is not None and monitor.available else None
         previous_signature = FS_CACHE["signature"]
         if previous_signature and not force:
-            # Startup and watcher refreshes only need a filesystem check. Do
-            # not hydrate every indexed track unless a change is detected.
-            quick_signature = library_signature_for_config(config)
+            if monitor_generation is not None and not monitor.needs_scan():
+                SCAN_STATE["last_scan"] = time.time()
+                return
+            # The startup integrity pass and inotify-triggered refresh only
+            # read filesystem metadata. Audio tags are parsed after a change.
+            quick_signature = library_signature_for_config(config, deadline)
             if quick_signature == previous_signature:
+                if monitor_generation is not None:
+                    monitor.mark_clean(monitor_generation)
                 SCAN_STATE["last_scan"] = time.time()
                 return
         SCAN_STATE["phase"] = "读取旧索引"
@@ -913,7 +1351,8 @@ def refresh_library_if_changed(config, force=False):
             cached = load_items_from_sqlite(config)
             previous_items = (cached or {}).get("items", [])
         SCAN_STATE["phase"] = "扫描音乐目录"
-        items, signature = scan_libraries(config, previous_items)
+        items, signature = scan_libraries(config, previous_items, deadline)
+        check_scan_deadline(deadline)
         MUSIC_CACHE["items"] = items
         MUSIC_CACHE["stamp"] = time.time()
         if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
@@ -922,19 +1361,36 @@ def refresh_library_if_changed(config, force=False):
             save_library_cache(config)
         elif not MUSIC_CACHE["stamp"] and previous_signature:
             MUSIC_CACHE["stamp"] = time.time()
+        if monitor_generation is not None:
+            monitor.mark_clean(monitor_generation)
         SCAN_STATE["last_scan"] = time.time()
+    except ScanTimedOut as exc:
+        SCAN_STATE["timed_out"] = True
+        SCAN_STATE["last_error"] = str(exc)
+    except ScanCancelled as exc:
+        SCAN_STATE["cancelled"] = True
+        SCAN_STATE["last_error"] = str(exc)
     except Exception as exc:
         SCAN_STATE["last_error"] = str(exc)
     finally:
         SCAN_STATE["running"] = False
         SCAN_STATE["current"] = ""
         SCAN_STATE["phase"] = ""
+        SCAN_STATE["deadline"] = 0
         SCAN_LOCK.release()
 
 def request_library_refresh(config, force=False):
     if SCAN_STATE["running"]:
-        return
+        return False
     threading.Thread(target=refresh_library_if_changed, args=(config, force), daemon=True).start()
+    return True
+
+
+def cancel_library_refresh():
+    if not SCAN_STATE.get("running"):
+        return False
+    SCAN_CANCEL_EVENT.set()
+    return True
 
 def library_items(config, refresh=False):
     if refresh:
@@ -1289,12 +1745,17 @@ def query_library_item_location(config, item_id):
     if not raw_path:
         return None
     path = os.path.abspath(os.path.expanduser(raw_path))
-    if not any(_path_under(path, root) for root in normalize_library_paths(config)):
+    # Resolve both the file and configured roots before comparing them. This
+    # prevents an indexed symlink inside a music folder from deleting a target
+    # outside the configured library through fnOS's file.rm API.
+    real_path = os.path.realpath(path)
+    roots = [os.path.realpath(root) for root in normalize_library_paths(config)]
+    if not os.path.isfile(real_path) or not any(_path_under(real_path, root) for root in roots):
         return None
     return {
         "id": str((item or {}).get("id") or item_id or ""),
-        "path": path,
-        "folder": os.path.dirname(path),
+        "path": real_path,
+        "folder": os.path.dirname(real_path),
     }
 
 def _first_param(params, key, default=""):
@@ -1319,18 +1780,22 @@ def library_db_path(config):
 
 @contextmanager
 def library_db_connect(config):
-    os.makedirs(config["cache_dir"], exist_ok=True)
-    conn = sqlite3.connect(library_db_path(config), timeout=15)
+    secure_directory(config["cache_dir"])
+    db_path = library_db_path(config)
+    conn = sqlite3.connect(db_path, timeout=15)
     try:
+        secure_sqlite_files(db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=15000")
         conn.execute("PRAGMA journal_mode=WAL")
+        secure_sqlite_files(db_path)
         conn.execute("PRAGMA synchronous=NORMAL")
         ensure_library_schema(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+        secure_sqlite_files(db_path)
 
 def ensure_library_schema(conn):
     # Older builds could leave a stale folders index behind after replacing
@@ -1901,9 +2366,16 @@ def _rebuild_folders_for_changes(conn):
 
 def _path_under(path, root):
     try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+        path = os.path.realpath(os.path.abspath(path))
+        root = os.path.realpath(os.path.abspath(root))
+        return os.path.commonpath([path, root]) == root
     except ValueError:
         return False
+
+
+def is_library_item_path(config, path):
+    value = str(path or "").strip()
+    return bool(value) and any(_path_under(value, root) for root in normalize_library_paths(config))
 
 def load_library_cache(config):
     summary = library_summary_from_sqlite(config)
@@ -1925,7 +2397,7 @@ def load_library_cache(config):
 
 def save_library_cache(config):
     try:
-        os.makedirs(config["cache_dir"], exist_ok=True)
+        secure_directory(config["cache_dir"])
         save_items_to_sqlite(config, MUSIC_CACHE["items"], FS_CACHE["signature"])
         # SQLite is the authoritative index. Keep the legacy JSON fallback
         # useful for smaller libraries without serializing a large library a
@@ -1937,19 +2409,38 @@ def save_library_cache(config):
             "items": cached_items,
             "sqlite": True,
         }
-        with open(library_cache_path(config), "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False)
+        atomic_write_json(library_cache_path(config), payload)
+        # Thumbnail work is intentionally deferred until the SQLite index is
+        # durable. It runs outside the scan path and therefore never delays
+        # library availability after an update.
+        from cover_cache import prewarm_library_thumbnails
+        prewarm_library_thumbnails(MUSIC_CACHE["items"], config, read_cover_for_item)
     except OSError:
         pass
 
 def watch_library(config):
-    while True:
-        try:
-            refresh_library_if_changed(config)
-            cleanup_transcode_cache_if_due(config)
-        except Exception:
-            pass
-        time.sleep(180)
+    global LIBRARY_CHANGE_MONITOR
+    monitor = None
+    try:
+        while True:
+            roots = tuple(normalize_library_paths(config))
+            if monitor is None or monitor.roots != roots:
+                if monitor is not None:
+                    monitor.stop()
+                monitor = LibraryChangeMonitor(roots)
+                monitor.start()
+                LIBRARY_CHANGE_MONITOR = monitor
+            try:
+                refresh_library_if_changed(config, change_monitor=monitor)
+                cleanup_transcode_cache_if_due(config)
+            except Exception:
+                pass
+            time.sleep(180)
+    finally:
+        if monitor is not None:
+            monitor.stop()
+        if LIBRARY_CHANGE_MONITOR is monitor:
+            LIBRARY_CHANGE_MONITOR = None
 
 def find_ffprobe(config):
     configured = config.get("ffprobe_path")
@@ -1973,7 +2464,7 @@ def find_ffprobe(config):
 def read_audio_info(path, config=None):
     ffprobe = find_ffprobe(config or {})
     if not ffprobe:
-        return {}
+        return read_native_audio_info(path)
     command = [
         ffprobe,
         "-v", "error",
@@ -1994,8 +2485,13 @@ def read_audio_info(path, config=None):
     sample_rate = int(stream.get("sample_rate") or 0)
     bit_depth = int(stream.get("bits_per_raw_sample") or stream.get("bits_per_sample") or 0)
     bit_rate = int(stream.get("bit_rate") or 0)
-    return {
+    result = {
         "sample_rate": sample_rate,
         "bit_depth": bit_depth,
         "bit_rate": bit_rate,
     }
+    native_info = read_native_audio_info(path)
+    for key, value in native_info.items():
+        if not result.get(key):
+            result[key] = value
+    return result

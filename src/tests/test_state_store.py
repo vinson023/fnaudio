@@ -72,6 +72,57 @@ class StateStoreTests(unittest.TestCase):
             with self.assertRaises(StateConflict):
                 save_user_state(config, {"favorites": ["track-3"], "playlists": [], "playback": {}}, first["revision"])
 
+    def test_stale_client_changes_merge_favorite_deletions_and_playlist_edits(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {"cache_dir": root}
+            initial = save_user_state(
+                config,
+                {
+                    "favorites": ["keep", "remove-a", "remove-b"],
+                    "playlists": [
+                        {"id": "delete-me", "name": "Delete", "trackIds": ["one"]},
+                        {"id": "remote-edit", "name": "Before", "trackIds": ["one"]},
+                    ],
+                    "playback": {"current_id": "one"},
+                },
+            )
+            remote = save_user_state(
+                config,
+                {
+                    "favorites": ["keep", "remove-b", "remote-add"],
+                    "playlists": [
+                        {"id": "delete-me", "name": "Delete", "trackIds": ["one"]},
+                        {"id": "remote-edit", "name": "Remote", "trackIds": ["one", "two"]},
+                        {"id": "remote-only", "name": "Remote only", "trackIds": ["three"]},
+                    ],
+                    "playback": {"current_id": "two"},
+                },
+                initial["revision"],
+            )
+            merged = save_user_state(
+                config,
+                {
+                    "favorites": ["keep", "remove-a", "local-add"],
+                    "playlists": [{"id": "local-only", "name": "Local", "trackIds": ["four"]}],
+                    "playback": {"current_id": "stale"},
+                    "changes": {
+                        "favorites_add": ["local-add"],
+                        "favorites_remove": ["remove-b"],
+                        "playlist_upserts": [{"id": "local-only", "name": "Local", "trackIds": ["four"]}],
+                        "playlist_delete": ["delete-me"],
+                    },
+                },
+                initial["revision"],
+            )
+
+            self.assertEqual(set(merged["favorites"]), {"keep", "remote-add", "local-add"})
+            playlists = {entry["id"]: entry for entry in merged["playlists"]}
+            self.assertNotIn("delete-me", playlists)
+            self.assertEqual(playlists["remote-edit"]["name"], "Remote")
+            self.assertEqual(playlists["remote-only"]["trackIds"], ["three"])
+            self.assertEqual(playlists["local-only"]["trackIds"], ["four"])
+            self.assertEqual(merged["playback"], remote["playback"])
+
     def test_parallel_playback_session_saves_are_serialized(self):
         with tempfile.TemporaryDirectory() as root:
             config = {"cache_dir": root}

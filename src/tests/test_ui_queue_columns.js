@@ -83,7 +83,11 @@ vm.runInNewContext(`${sourceBetween("function trackRowSelectionKey", "function r
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: true }), /◈/);
 trackRenderContext.coverUrl = () => "https://example.test/cover.jpg";
-assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden/);
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
+assert.match(source, /onload="const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=true"/, "Covers must retain the fallback until their image has loaded");
+assert.match(source, /const parent=this\.parentElement;this\.remove\(\)/, "Failed covers must retain the parent before removing the image");
+assert.match(source, /function coverUrl\(item, size = 160\)/, "Track covers must default to list thumbnails");
+assert.match(source, /artwork: coverUrl\(item, 512\)/, "Android media artwork must keep the larger cover size");
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /正在播放|is-current/);
 trackRenderContext.state.view = "queue";
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two", __queueIndex: 1 }), /正在播放|is-current/);
@@ -91,6 +95,8 @@ assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two", __q
 const coreSnapshotContext = {
   state: { queue: [{ id: "one" }, { id: "two" }], index: 0, repeat: "off", shuffle: false },
   updateRepeatShuffleButtons: () => {},
+  favoriteRefreshes: 0,
+  updateFavoriteControls: () => { coreSnapshotContext.favoriteRefreshes += 1; },
   resetPlaybackProgress: () => {},
   loadCurrent: () => {},
   previousQueueIndex: null,
@@ -100,26 +106,30 @@ vm.runInNewContext(`${sourceBetween("function applyCoreSnapshot", "async functio
 assert.equal(coreSnapshotContext.core.applyCoreSnapshot({ current: "two" }, false), true);
 assert.equal(coreSnapshotContext.state.index, 1);
 assert.equal(coreSnapshotContext.previousQueueIndex, 0);
+assert.equal(coreSnapshotContext.favoriteRefreshes, 1);
 
-const contextMenuFunctions = sourceBetween("function trackContextActionButtons", "function bindTrackActionButtons");
-const expectedContextActions = [
-  "从当前开始播放所有歌曲",
-  "加入当前队列",
-  "收藏歌曲",
-  "加入播放列表",
-];
-let previousActionIndex = -1;
-expectedContextActions.forEach(label => {
-  const index = contextMenuFunctions.indexOf(label);
-  assert.ok(index > previousActionIndex, `Missing or out-of-order context action: ${label}`);
-  previousActionIndex = index;
-});
-assert.doesNotMatch(contextMenuFunctions, /插播所选项目|歌曲信息|打开包含的文件夹|分享外部链接|从当前队列移除|从收藏移除|从此播放列表移除/);
+const favoriteContext = {
+  state: { queue: [{ id: 42 }], index: 0, favorites: ["42"] },
+  nodes: {
+    favoriteCurrentBtn: { classList: { toggle: (_name, value) => { favoriteContext.currentActive = value; } } },
+    lyricsFavoriteBtn: { classList: { toggle: (_name, value) => { favoriteContext.lyricsActive = value; } } },
+  },
+  $: id => favoriteContext.nodes[id],
+};
+vm.runInNewContext(`${sourceBetween("function currentItem", "function isPrivateHost")}${sourceBetween("function updateFavoriteControls", "function updateNowMarquee")}; this.favorites = { isFavorite, updateFavoriteControls };`, favoriteContext);
+favoriteContext.favorites.updateFavoriteControls();
+assert.equal(favoriteContext.currentActive, true, "Favorite IDs must match across numeric and string transport forms");
+favoriteContext.state.favorites = [];
+favoriteContext.favorites.updateFavoriteControls();
+assert.equal(favoriteContext.currentActive, false, "Favorite control must clear when server state removes the current track");
+
 assert.match(source, /openTrackContextMenu\(trackId, x, y, mobile = false\)/);
 assert.match(source, /function desktopTrackContextActionButtons\(trackId\)/);
-assert.match(source, /const actions = mobile \? trackContextActionButtons\(trackId\) : desktopTrackContextActionButtons\(trackId\)/);
+assert.match(source, /function mobileTrackContextActionButtons\(trackId\)/);
+assert.match(source, /const actions = mobile\s*\? mobileTrackContextActionButtons\(trackId\)\s*:\s*desktopTrackContextActionButtons\(trackId\)/);
 const desktopMenuFunctions = sourceBetween("function desktopTrackContextActionButtons", "function bindTrackActionButtons");
 assert.doesNotMatch(desktopMenuFunctions, /data-track-action="(?:play|insert)"/);
+assert.match(desktopMenuFunctions, /data-track-action="\(\?:open-folder\|share\)"/, "Mobile menu must filter file-manager-only actions separately");
 const groupMenuFunctions = sourceBetween("function groupActionButtons", "function bindGroupActionButtons");
 assert.doesNotMatch(groupMenuFunctions, /groupActionButton\("播放"|groupActionButton\("插播所选项目"/);
 assert.match(source, /openTrackActionDialog\(trackId\)[\s\S]*?trackActionButtons\(trackId\)/);
@@ -133,5 +143,11 @@ assert.match(source, /row\.oncontextmenu = event => \{[\s\S]*?openTrackMenuForRo
 assert.match(source, /\$\("trackList"\)\.addEventListener\("scroll", \(\) => \{\s*cancelTrackLongPress\(\);\s*closeTrackContextMenu\(\);/);
 assert.match(source, /else if \(action === "play-from-current"\) playFromCurrentTrack\(trackId\)/);
 assert.match(source, /tracks = await allTracksForCurrentContext\(\)/);
+
+// Large persisted queues must be restored in bounded CGI requests and keep
+// cached rows when a transient batch fails.
+assert.match(source, /for \(let offset = 0; offset < queueIds\.length; offset \+= 100\)/);
+assert.match(source, /api\/library\/items\?ids=\$\{encodeURIComponent\(batch\.join\(\",\"\)\)\}/);
+assert.match(source, /const hydrated = queueIds\.map\(id => byId\.get\(id\) \|\| previousById\.get\(id\)\)\.filter\(Boolean\)/);
 
 console.log("UI queue and album-column regression checks passed.");

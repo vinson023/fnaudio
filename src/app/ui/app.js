@@ -1,5 +1,6 @@
 ﻿const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放" };
 const $ = (id) => document.getElementById(id);
+state.playTargetName = "当前设备";
 const audio = $("audio");
 const groupViews = { albums: "album", artists: "artist", composers: "composer", genres: "genre" };
 function isCreatorView(view = state.view) {
@@ -105,6 +106,8 @@ state.lyricsTrackId = "";
 state.lyricsStatus = "idle";
 state.lyricsRequestToken = 0;
 state.lyricsLoadingTrackId = "";
+state.lyricsPollTimer = 0;
+state.lyricsPollAttempts = 0;
 state.seeking = false;
 state.streamOffset = 0;
 state.pendingSeekTime = null;
@@ -128,6 +131,11 @@ state.remoteWasPlaying = false;
 state.remoteAutoAdvanceAt = 0;
 state.remoteSnapshotAt = 0;
 state.remoteBaseSeconds = 0;
+state.remoteStatusRequestInFlight = false;
+state.remoteEventSource = null;
+state.remoteEventConnected = false;
+state.remoteEventRetryAt = 0;
+state.remoteUiLast = { transport: "", duration: -1, seconds: -1, current: "" };
 state.remoteLoadPromise = null;
 state.remoteLoadedKey = "";
 state.remoteLoadedAt = 0;
@@ -163,6 +171,8 @@ state.userStateSaveTimer = null;
 state.userStateSaveInFlight = false;
 state.userStateRevision = 0;
 state.userStateRefreshInFlight = false;
+state.userStateBase = { favorites: [], playlists: [] };
+state.userStateDirty = false;
 state.trackColumnPreferences = loadTrackColumnPreferences();
 state.trackColumnWidthPreferences = loadTrackColumnWidthPreferences();
 state.autoTrackColumnWidths = {};
@@ -175,9 +185,16 @@ state.albumMetadata = {};
 state.settingsTab = "library";
 state.searchTimer = null;
 state.nativePlayback = { available: false, mediaId: "", queueIds: [], position: 0, duration: 0, playing: false, playbackState: 1 };
+state.coverObserver = null;
+state.coverLoadQueue = [];
+state.coverLoadsInFlight = 0;
+state.coverLoadGeneration = 0;
 
 function nativePlaybackAvailable() {
   if (isRemoteTarget()) return false;
+  return nativeBridgeAvailable();
+}
+function nativeBridgeAvailable() {
   try {
     return Boolean(window.FnAudioNative && typeof window.FnAudioNative.isAvailable === "function" && window.FnAudioNative.isAvailable());
   } catch (error) {
@@ -197,6 +214,7 @@ function nativePlaybackCall(method, ...args) {
 }
 const browserFetch = window.fetch.bind(window);
 const nativeHttpRequests = new Map();
+const nativeHttpResponseChunks = new Map();
 let nativeHttpRequestSequence = 0;
 function nativeHttpAvailable() {
   try {
@@ -234,6 +252,22 @@ window.fnAudioNativeOnHttpResponse = payload => {
   if (result.networkError) pending.reject(new TypeError(String(result.networkError)));
   else pending.resolve(nativeHttpResponse(result));
 };
+window.fnAudioNativeOnHttpChunk = (transferId, index, total, chunk) => {
+  const key = String(transferId || "");
+  if (!key || !Number.isFinite(Number(index)) || !Number.isFinite(Number(total))) return;
+  let transfer = nativeHttpResponseChunks.get(key);
+  if (!transfer || transfer.total !== Number(total)) {
+    transfer = { total: Number(total), chunks: new Array(Number(total)), received: 0 };
+    nativeHttpResponseChunks.set(key, transfer);
+  }
+  const part = Number(index);
+  if (part < 0 || part >= transfer.total || transfer.chunks[part] !== undefined) return;
+  transfer.chunks[part] = String(chunk || "");
+  transfer.received += 1;
+  if (transfer.received !== transfer.total) return;
+  nativeHttpResponseChunks.delete(key);
+  window.fnAudioNativeOnHttpResponse(transfer.chunks.join(""));
+};
 function apiFetch(input, init = {}) {
   const requestMethod = String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
   let url;
@@ -242,7 +276,7 @@ function apiFetch(input, init = {}) {
   } catch (error) {
     return browserFetch(input, init);
   }
-  if (!nativeHttpAvailable() || ["GET", "HEAD"].includes(requestMethod) || !isFnAudioApiUrl(url)) {
+  if (!nativeHttpAvailable() || !isFnAudioApiUrl(url)) {
     return browserFetch(input, init);
   }
   if (typeof Request !== "undefined" && input instanceof Request && init.body == null) {
@@ -270,6 +304,10 @@ function apiFetch(input, init = {}) {
     }
   });
 }
+// Route every same-origin fnAudio API call through the authenticated native
+// bridge. browserFetch was captured before this assignment, so non-API
+// resources and fallback requests still use WebView's original implementation.
+window.fetch = apiFetch;
 function absoluteAppUrl(value) {
   try { return new URL(String(value || ""), window.location.href).href; }
   catch (error) { return String(value || ""); }
@@ -281,9 +319,18 @@ function nativePlaybackUrl(item, isCurrent = false) {
     if (isCurrent && state.transcodeCacheReady) params.set("cache", "1");
     else if (item.cue_track && Number(item.cue_start || 0) > 0) params.set("start", String(Number(item.cue_start || 0)));
   } else if (shouldTranscodeDsdToWav(item)) params.set("transcode", "dsd_wav");
+  // Neither the browser media element nor Android ExoPlayer decodes Monkey's
+  // Audio reliably. Explicitly request the server's lossless FLAC resource;
+  // `transcode=original` would override the server-side automatic fallback.
   else if (item.cue_track) params.set("transcode", "cue_flac");
+  else if (isApeTrack(item)) params.set("transcode", "ape_flac");
   else params.set("transcode", "original");
   return absoluteAppUrl(`${item.url}?${params.toString()}`);
+}
+
+function isApeTrack(item) {
+  return String(item?.format || "").toUpperCase() === "APE"
+    || /\.ape(?:$|[?#])/i.test(String(item?.url || item?.path || ""));
 }
 function nativeQueueItems() {
   return state.queue.map((item, index) => ({
@@ -292,9 +339,44 @@ function nativeQueueItems() {
     title: displayTrackTitle(item),
     artist: displayText(item.artist),
     album: displayText(item.album),
-    artwork: coverUrl(item) ? absoluteAppUrl(coverUrl(item)) : "",
+    artwork: coverUrl(item, 512) ? absoluteAppUrl(coverUrl(item, 512)) : "",
     durationMs: Math.max(0, Math.round(Number(item.duration || 0) * 1000)),
   }));
+}
+function nativeRemoteEnter(force = false) {
+  if (!isRemoteTarget() || !nativeBridgeAvailable() || !state.queue.length || !currentItem()) return false;
+  const position = currentSeconds();
+  const duration = seekDuration();
+  const transport = String(state.remoteStatus?.transport?.state || "").toUpperCase();
+  const signature = `${state.playTarget}\u0000${nativeQueueSignature()}\u0000${state.index}`;
+  if (!force && state.nativeRemoteSignature === signature) {
+    nativeBridgeCall("updateRemoteState", state.playTarget, state.index, position, duration, transport === "PLAYING" || transport === "TRANSITIONING");
+    return true;
+  }
+  state.nativeRemoteSignature = signature;
+  nativeBridgeCall("enterRemoteMode", state.playTarget, state.playTargetName || "远程播放", JSON.stringify(nativeQueueItems()), state.index,
+    position, duration, transport === "PLAYING" || transport === "TRANSITIONING", state.repeat, Boolean(state.shuffle));
+  return true;
+}
+function nativeRemoteUpdate() {
+  if (!isRemoteTarget() || !nativeBridgeAvailable() || !currentItem()) return false;
+  const transport = String(state.remoteStatus?.transport?.state || "").toUpperCase();
+  return nativeBridgeCall("updateRemoteState", state.playTarget, state.index, currentSeconds(), seekDuration(), transport === "PLAYING" || transport === "TRANSITIONING");
+}
+function nativeRemoteExit() {
+  state.nativeRemoteSignature = "";
+  return nativeBridgeCall("exitRemoteMode");
+}
+function nativeBridgeCall(method, ...args) {
+  if (!nativeBridgeAvailable()) return false;
+  try {
+    const bridge = window.FnAudioNative;
+    if (typeof bridge?.[method] !== "function") return false;
+    bridge[method](...args);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 function nativeQueueSignature(rows = nativeQueueItems()) {
   return rows.map(item => `${item.id}\u0000${item.uri}`).join("\u0001");
@@ -538,8 +620,13 @@ function mediaUrl(path) {
     return path || "images/icon_256.png";
   }
 }
-function coverUrl(item) {
-  return item?.cover_url ? mediaUrl(item.cover_url) : "";
+function coverUrl(item, size = 160) {
+  const thumbnail = Number(size) === 160 ? item?.cover_thumbnail_url : "";
+  const source = thumbnail || item?.cover_url;
+  if (!source) return "";
+  const url = new URL(mediaUrl(source), window.location.href);
+  if (Number(size) > 0) url.searchParams.set("size", String(Number(size)));
+  return url.href;
 }
 function resetPlaybackProgress() {
   state.streamOffset = 0;
@@ -605,10 +692,57 @@ function saveFavorites() {
   localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
   scheduleUserStateSave();
 }
+function normalizeUserMediaState(source = {}) {
+  const favorites = Array.isArray(source.favorites) ? [...new Set(source.favorites.map(String).filter(Boolean))] : [];
+  const playlists = Array.isArray(source.playlists) ? source.playlists.filter(item => item && item.id && item.name).map(item => ({
+    id: String(item.id),
+    name: String(item.name),
+    trackIds: Array.isArray(item.trackIds) ? [...new Set(item.trackIds.map(String).filter(Boolean))] : [],
+  })) : [];
+  return { favorites, playlists };
+}
+function userStateChanges() {
+  const base = normalizeUserMediaState(state.userStateBase);
+  const current = normalizeUserMediaState({ favorites: state.favorites, playlists: state.playlists });
+  const baseFavorites = new Set(base.favorites);
+  const currentFavorites = new Set(current.favorites);
+  const basePlaylists = new Map(base.playlists.map(item => [item.id, item]));
+  const currentPlaylists = new Map(current.playlists.map(item => [item.id, item]));
+  return {
+    favorites_add: current.favorites.filter(id => !baseFavorites.has(id)),
+    favorites_remove: base.favorites.filter(id => !currentFavorites.has(id)),
+    playlist_upserts: current.playlists.filter(item => JSON.stringify(item) !== JSON.stringify(basePlaylists.get(item.id) || null)),
+    playlist_delete: base.playlists.filter(item => !currentPlaylists.has(item.id)).map(item => item.id),
+  };
+}
+function applyUserStateChanges(source, changes) {
+  const result = normalizeUserMediaState(source);
+  const removeFavorites = new Set(Array.isArray(changes?.favorites_remove) ? changes.favorites_remove.map(String) : []);
+  result.favorites = result.favorites.filter(id => !removeFavorites.has(id));
+  (Array.isArray(changes?.favorites_add) ? changes.favorites_add : []).map(String).filter(Boolean).forEach(id => {
+    if (!result.favorites.includes(id)) result.favorites.push(id);
+  });
+  const deleted = new Set(Array.isArray(changes?.playlist_delete) ? changes.playlist_delete.map(String) : []);
+  const playlists = new Map(result.playlists.filter(item => !deleted.has(item.id)).map(item => [item.id, item]));
+  (Array.isArray(changes?.playlist_upserts) ? changes.playlist_upserts : []).forEach(item => {
+    const normalized = normalizeUserMediaState({ playlists: [item] }).playlists[0];
+    if (normalized) playlists.set(normalized.id, normalized);
+  });
+  result.playlists = [...playlists.values()];
+  return result;
+}
+function persistUserMediaState(value) {
+  state.favorites = value.favorites;
+  state.playlists = value.playlists;
+  localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
+  localStorage.setItem(PLAYLIST_STORE_KEY, JSON.stringify(state.playlists));
+  updateFavoriteControls();
+}
 function userStatePayload() {
   return {
     favorites: state.favorites,
     playlists: state.playlists,
+    changes: userStateChanges(),
     revision: state.userStateRevision,
     playback: {
       queue: state.queue.map(item => String(item.id || "")).filter(Boolean),
@@ -623,56 +757,49 @@ function userStatePayload() {
     },
   };
 }
-function scheduleUserStateSave() {
+function scheduleUserStateSave(delay = 350) {
   if (!state.userStateHydrated) return;
+  state.userStateDirty = true;
+  if (state.userStateSaveInFlight) return;
   clearTimeout(state.userStateSaveTimer);
-  state.userStateSaveTimer = setTimeout(saveUserStateNow, 350);
+  state.userStateSaveTimer = setTimeout(saveUserStateNow, delay);
 }
 async function saveUserStateNow() {
-  if (!state.userStateHydrated || state.userStateSaveInFlight) return;
+  if (!state.userStateHydrated) return;
+  if (state.userStateSaveInFlight) {
+    state.userStateDirty = true;
+    return;
+  }
+  clearTimeout(state.userStateSaveTimer);
   state.userStateSaveInFlight = true;
+  state.userStateDirty = false;
+  const payload = userStatePayload();
+  let retryDelay = 350;
   try {
-    let response = await apiFetch("api/state/user", {
+    const response = await apiFetch("api/state/user", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(userStatePayload()),
+      body: JSON.stringify(payload),
     });
-    let data = await response.json().catch(() => ({}));
-    if (response.status === 409 && data.state) {
-      mergeUserState(data.state);
-      response = await apiFetch("api/state/user", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(userStatePayload()),
-      });
-      data = await response.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({}));
+    if (data.state && (response.ok || response.status === 409)) {
+      const latestChanges = userStateChanges();
+      const serverMedia = normalizeUserMediaState(data.state);
+      state.userStateBase = serverMedia;
+      state.userStateRevision = Number(data.state.revision || state.userStateRevision || 0);
+      persistUserMediaState(applyUserStateChanges(serverMedia, latestChanges));
+      if (response.status === 409) state.userStateDirty = true;
+    } else if (!response.ok) {
+      state.userStateDirty = true;
+      retryDelay = 2000;
     }
-    if (response.ok && data.state) state.userStateRevision = Number(data.state.revision || state.userStateRevision || 0);
   } catch (error) {
+    state.userStateDirty = true;
+    retryDelay = 2000;
   } finally {
     state.userStateSaveInFlight = false;
+    if (state.userStateDirty) scheduleUserStateSave(retryDelay);
   }
-}
-function mergeUserState(serverState) {
-  const remoteFavorites = Array.isArray(serverState.favorites) ? serverState.favorites.map(String) : [];
-  state.favorites = [...new Set([...state.favorites.map(String), ...remoteFavorites])];
-  const remotePlaylists = Array.isArray(serverState.playlists) ? serverState.playlists : [];
-  const merged = new Map(remotePlaylists.map(item => [String(item.id), item]));
-  state.playlists.forEach(item => merged.set(String(item.id), item));
-  state.playlists = [...merged.values()];
-  const remoteColumns = serverState?.ui?.track_columns;
-  if (remoteColumns && typeof remoteColumns === "object" && !Array.isArray(remoteColumns)) {
-    state.trackColumnPreferences = { ...Object.fromEntries(Object.entries(remoteColumns).map(([scope, columns]) => [scope, normalizeTrackColumns(columns)])), ...state.trackColumnPreferences };
-    persistTrackColumnPreferences();
-  }
-  const remoteWidths = serverState?.ui?.track_column_widths;
-  if (remoteWidths && typeof remoteWidths === "object" && !Array.isArray(remoteWidths)) {
-    state.trackColumnWidthPreferences = { ...Object.fromEntries(Object.entries(remoteWidths).map(([scope, widths]) => [scope, normalizeTrackColumnWidths(widths)])), ...state.trackColumnWidthPreferences };
-    persistTrackColumnPreferences();
-  }
-  state.userStateRevision = Number(serverState.revision || 0);
-  localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
-  localStorage.setItem(PLAYLIST_STORE_KEY, JSON.stringify(state.playlists));
 }
 async function loadServerUserState() {
   try {
@@ -683,6 +810,7 @@ async function loadServerUserState() {
       await applyServerUserState(serverState);
     } else {
       state.userStateRevision = Number(serverState.revision || 0);
+      state.userStateBase = normalizeUserMediaState(serverState);
     }
     state.userStateHydrated = true;
     if (!serverState.initialized) scheduleUserStateSave();
@@ -693,8 +821,8 @@ async function loadServerUserState() {
 }
 async function applyServerUserState(serverState) {
   state.userStateRevision = Number(serverState.revision || 0);
-  state.favorites = Array.isArray(serverState.favorites) ? serverState.favorites.map(String) : [];
-  state.playlists = Array.isArray(serverState.playlists) ? serverState.playlists : [];
+  state.userStateBase = normalizeUserMediaState(serverState);
+  persistUserMediaState(state.userStateBase);
   const remoteColumns = serverState?.ui?.track_columns;
   if (remoteColumns && typeof remoteColumns === "object" && !Array.isArray(remoteColumns) && Object.keys(remoteColumns).length) {
     state.trackColumnPreferences = Object.fromEntries(Object.entries(remoteColumns).map(([scope, columns]) => [scope, normalizeTrackColumns(columns)]));
@@ -705,8 +833,6 @@ async function applyServerUserState(serverState) {
     state.trackColumnWidthPreferences = Object.fromEntries(Object.entries(remoteWidths).map(([scope, widths]) => [scope, normalizeTrackColumnWidths(widths)]));
     persistTrackColumnPreferences();
   }
-  localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
-  localStorage.setItem(PLAYLIST_STORE_KEY, JSON.stringify(state.playlists));
   await restorePlaybackSession(serverState.playback || {});
 }
 async function refreshServerUserState() {
@@ -718,7 +844,11 @@ async function refreshServerUserState() {
     const serverState = data?.state || {};
     const revision = Number(serverState.revision || 0);
     if (serverState.initialized && revision > state.userStateRevision) {
+      const pendingChanges = userStateChanges();
       await applyServerUserState(serverState);
+      const merged = applyUserStateChanges(serverState, pendingChanges);
+      persistUserMediaState(merged);
+      if (JSON.stringify(merged) !== JSON.stringify(state.userStateBase)) scheduleUserStateSave();
       render();
     }
   } catch (error) {
@@ -729,15 +859,33 @@ async function refreshServerUserState() {
 async function restorePlaybackSession(playback) {
   const queueIds = Array.isArray(playback.queue) ? playback.queue.map(String).filter(Boolean) : [];
   if (queueIds.length) {
-    try {
-      const response = await fetch(`api/library/items?ids=${encodeURIComponent(queueIds.join(","))}`);
-      const data = await response.json();
-      const items = Array.isArray(data.items) ? data.items : [];
-      const byId = new Map(items.map(item => [String(item.id), item]));
-      state.queue = queueIds.map(id => byId.get(id)).filter(Boolean);
+    const previousQueue = Array.isArray(state.queue) ? state.queue : [];
+    const previousById = new Map(previousQueue.map(item => [String(item?.id || ""), item]));
+    const byId = new Map();
+    let fetchedAny = false;
+    // CGI/App Center proxies and some mobile WebViews reject very long query
+    // strings. Hydrate a large persisted queue in bounded batches instead of
+    // sending hundreds of IDs in one request. A failed batch is ignored so a
+    // transient proxy error cannot erase an already playing queue.
+    for (let offset = 0; offset < queueIds.length; offset += 100) {
+      const batch = queueIds.slice(offset, offset + 100);
+      try {
+        const response = await fetch(`api/library/items?ids=${encodeURIComponent(batch.join(","))}`);
+        if (!response.ok) continue;
+        const data = await response.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        items.forEach(item => {
+          if (item && item.id) byId.set(String(item.id), item);
+        });
+        fetchedAny = true;
+      } catch (error) {
+        // Keep cached rows for this batch and continue hydrating later rows.
+      }
+    }
+    const hydrated = queueIds.map(id => byId.get(id) || previousById.get(id)).filter(Boolean);
+    if (hydrated.length || fetchedAny || !previousQueue.length) {
+      state.queue = hydrated;
       cacheLibraryItems(state.queue);
-    } catch (error) {
-      state.queue = [];
     }
   }
   const currentId = String(playback.current_id || "");
@@ -746,7 +894,7 @@ async function restorePlaybackSession(playback) {
   state.repeat = ["off", "all", "one"].includes(playback.repeat) ? playback.repeat : "off";
   state.shuffle = Boolean(playback.shuffle);
   state.playTarget = String(playback.target_id || "local");
-  state.playTargetName = state.playTarget === "local" ? "本机播放" : "已恢复播放设备";
+  state.playTargetName = state.playTarget === "local" ? "当前设备" : "已恢复播放设备";
   const nativeCurrentId = String(state.nativePlayback.mediaId || "");
   if (state.playTarget === "local" && nativeCurrentId) {
     const nativeIndex = state.queue.findIndex(item => String(item.id || "") === nativeCurrentId);
@@ -757,9 +905,11 @@ async function restorePlaybackSession(playback) {
   restoreLibraryNowPlaying();
   syncLyricsForCurrentTrack(currentItem());
   if (isRemoteTarget() && state.queue.length) {
+    startRemoteEventStream();
     await refreshRemoteStatus({ allowAdvance: false });
     const remoteCore = state.remoteStatus?.core;
     if (remoteCore) applyCoreSnapshot(remoteCore, false);
+    nativeRemoteEnter(true);
     updateRemoteUi();
   }
 }
@@ -1003,7 +1153,8 @@ function favoriteTracks() {
   return state.favorites.map(itemById).filter(Boolean);
 }
 function isFavorite(id) {
-  return state.favorites.includes(String(id));
+  const target = String(id || "");
+  return Boolean(target && state.favorites.some(favoriteId => String(favoriteId) === target));
 }
 function isPrivateHost(host) {
   const value = String(host || "").toLowerCase();
@@ -1037,8 +1188,19 @@ function effectiveProfile() {
   return state.accessProfile || "lan";
 }
 function updateModeButton() {
-  $("modeBtn").textContent = state.mp3Transcode ? "MP3 转码：开" : "MP3 转码：关";
-  $("modeBtn").title = state.mp3Transcode ? "当前会把非 MP3 转为 MP3 播放" : "当前优先原格式播放，DSD 本机播放仍转 WAV";
+  const title = state.mp3Transcode ? "关闭 MP3 转码" : "开启 MP3 转码";
+  const desktopButton = $("modeBtn");
+  desktopButton.classList.toggle("active-control", state.mp3Transcode);
+  desktopButton.title = title;
+  desktopButton.setAttribute("aria-label", title);
+  desktopButton.setAttribute("aria-pressed", String(state.mp3Transcode));
+  const mobileButton = $("mobileModeBtn");
+  if (mobileButton) {
+    mobileButton.classList.toggle("active-control", state.mp3Transcode);
+    mobileButton.title = title;
+    mobileButton.setAttribute("aria-label", title);
+    mobileButton.setAttribute("aria-pressed", String(state.mp3Transcode));
+  }
 }
 function scanProgressText() {
   if (state.libraryLoading) return `正在加载音乐库：${state.libraryLoaded}${state.libraryTotal ? ` / ${state.libraryTotal}` : ""} 首`;
@@ -1054,8 +1216,13 @@ function scanProgressText() {
   return `${prefix}${suffix}`;
 }
 function updateDeviceLabel() {
-  const label = isRemoteTarget() ? state.playTargetName : "本机播放";
+  const label = isRemoteTarget() ? state.playTargetName : "当前设备";
   $("deviceBtn").title = label;
+  const mobileButton = $("mobileDeviceBtn");
+  if (mobileButton) {
+    mobileButton.title = label;
+    mobileButton.setAttribute("aria-label", `播放设备：${label}`);
+  }
 }
 function remoteDeviceId() { return isRemoteTarget() ? state.playTarget : ""; }
 function isIncomingRendererSession() {
@@ -1132,7 +1299,7 @@ function restoreLibraryNowPlaying() {
     $("nowArtist").textContent = "从音乐库选择一首歌曲";
     $("nowCover").textContent = "♫";
   } else {
-    const cover = coverUrl(item);
+    const cover = coverUrl(item, 512);
     $("nowTitle").textContent = displayTrackTitle(item);
     $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`;
     $("nowCover").innerHTML = cover ? `<img src="${cover}" onerror="this.remove()">` : "♫";
@@ -1190,49 +1357,35 @@ async function stopPlayback() {
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
   stopLocalAudio();
+  // Keep the server snapshot stopped as well; otherwise an old paused
+  // session can be selected again by a later state synchronization.
+  await coreControl("stop");
   $("elapsed").textContent = "0:00";
   $("seek").value = 0;
   updateMediaSessionPlaybackState();
   syncState();
 }
 function stopRemoteOnUnload() {
-  if (!isRemoteTarget() || isMpdTarget()) return;
-  const payload = JSON.stringify({ target_id: state.playTarget, action: "stop", track_id: currentItem()?.id || "" });
-  if (nativeHttpAvailable()) {
-    apiFetch("api/playback/control", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: payload,
-      keepalive: true,
-    }).catch(() => {});
-    return;
-  }
-  try {
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon("api/playback/control", new Blob([payload], { type: "application/json" }));
-      return;
-    }
-  } catch (error) {
-  }
-  try {
-    fetch("api/playback/control", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: payload,
-      keepalive: true,
-    }).catch(() => {});
-  } catch (error) {
-  }
+  // A browser tab/WebView is a controller, not the output owner. Do not stop
+  // a DAC or Renderer merely because the UI was backgrounded or reclaimed.
+  stopRemoteEventStream();
 }
 function updateRemoteUi() {
   if (updateIncomingRendererUi()) return;
+  if (!isRemoteTarget()) return;
   const transport = state.remoteStatus?.transport?.state || "";
   const duration = seekDuration();
-  if (!isRemoteTarget()) return;
+  const seconds = duration > 0 && !state.seeking ? currentSeconds() : -1;
+  const current = currentItem()?.id || "";
+  const previous = state.remoteUiLast || {};
+  // Avoid rewriting the same DOM/media-session state on every timer tick.
+  // Progress still advances locally between network snapshots.
+  if (previous.transport === transport && previous.duration === duration &&
+      previous.current === current && (seconds < 0 || Math.abs(previous.seconds - seconds) < 0.45)) return;
+  state.remoteUiLast = { transport, duration, seconds, current };
   if (duration > 0) {
     $("duration").textContent = clock(duration);
     if (!state.seeking) {
-      const seconds = currentSeconds();
       $("elapsed").textContent = clock(seconds);
       $("seek").value = Math.max(0, Math.min(100, seconds / duration * 100));
     }
@@ -1284,7 +1437,7 @@ async function controlIncomingRenderer(action, position = null) {
 }
 function updateMediaSessionMetadata(item = currentItem()) {
   if (!("mediaSession" in navigator) || !item) return;
-  const localCover = coverUrl(item);
+  const localCover = coverUrl(item, 512);
   const artwork = localCover
     ? [{ src: localCover, sizes: "512x512", type: "image/jpeg" }]
     : [
@@ -1325,7 +1478,7 @@ function updateMediaSessionPlaybackState() {
 function applyCoreSnapshot(core, shouldLoad = true) {
   const currentId = core?.current || core?.state?.current;
   if (!currentId) return false;
-  const index = state.queue.findIndex(item => item.id === currentId);
+  const index = state.queue.findIndex(item => String(item?.id || "") === String(currentId));
   if (index < 0) return false;
   const previousIndex = state.index;
   state.index = index;
@@ -1337,9 +1490,10 @@ function applyCoreSnapshot(core, shouldLoad = true) {
     loadCurrent();
   }
   syncCurrentQueuePresentation(previousIndex);
+  updateFavoriteControls();
   return true;
 }
-async function coreControl(action, position = null) {
+async function coreControl(action, position = null, payload = {}) {
   if (nativePlaybackAvailable() && (action === "next" || action === "previous")) {
     nativePlaybackCall(action === "next" ? "next" : "previous");
     return { ok: true, native: true };
@@ -1348,11 +1502,16 @@ async function coreControl(action, position = null) {
   const response = await apiFetch("api/playback/control", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ target_id: remoteDeviceId() || "local", action, position, track_id: item?.id || "" }),
+    body: JSON.stringify({ target_id: remoteDeviceId() || "local", action, position, track_id: item?.id || "", command_id: playbackCommandId(), ...payload }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) return false;
-  applyCoreSnapshot(data.core, action === "next" || action === "previous");
+  const changedTrack = action === "next" || action === "previous";
+  applyCoreSnapshot(data.core, changedTrack && !isRemoteTarget());
+  if (isRemoteTarget()) {
+    const snapshot = remoteSnapshotFromCore(data.core);
+    if (snapshot) applyRemotePlaybackSnapshot(snapshot);
+  }
   scheduleUserStateSave();
   return data;
 }
@@ -1406,22 +1565,80 @@ function setupMediaSession() {
 }
 async function refreshRemoteStatus(options = {}) {
   if (!isRemoteTarget()) return;
+  if (!state.remoteEventSource && typeof EventSource !== "undefined") startRemoteEventStream();
+  if (state.remoteEventConnected) return;
+  if (state.remoteStatusRequestInFlight) return;
+  state.remoteStatusRequestInFlight = true;
   try {
     const response = await fetch(`api/playback/status?target_id=${encodeURIComponent(remoteDeviceId())}`);
     const data = await response.json();
     if (data.error) return;
-    state.remoteStatus = data;
-    state.remoteSnapshotAt = Date.now();
-    state.remoteBaseSeconds = Number(data?.position?.rel_seconds || 0);
-    if (options.allowAdvance !== false) maybeAdvanceRemoteQueue(data);
-    updateRemoteUi();
+    applyRemotePlaybackSnapshot(data, options);
   } catch (error) {
+  } finally {
+    state.remoteStatusRequestInFlight = false;
+  }
+}
+function stopRemoteEventStream() {
+  if (state.remoteEventSource) {
+    try { state.remoteEventSource.close(); } catch (error) {}
+  }
+  state.remoteEventSource = null;
+  state.remoteEventConnected = false;
+}
+function applyRemotePlaybackSnapshot(data, options = {}) {
+  if (!isRemoteTarget() || !data || (data.target_id && String(data.target_id) !== String(state.playTarget))) return;
+  state.remoteStatus = data;
+  state.remoteSnapshotAt = Date.now();
+  state.remoteBaseSeconds = Number(data?.position?.rel_seconds || 0);
+  const core = data.core || {};
+  const currentId = String(core.current || "");
+  const nextIndex = currentId ? state.queue.findIndex(item => String(item.id || "") === currentId) : -1;
+  if (nextIndex >= 0 && nextIndex !== state.index) {
+    const previousIndex = state.index;
+    state.index = nextIndex;
+    state.remoteCueSegment = Boolean(currentItem()?.cue_track && !isDacTarget());
+    syncCurrentQueuePresentation(previousIndex);
+    render();
+  }
+  if (options.allowAdvance !== false) maybeAdvanceRemoteQueue(data);
+  updateRemoteUi();
+  nativeRemoteUpdate();
+}
+function startRemoteEventStream() {
+  if (!isRemoteTarget() || typeof EventSource === "undefined" || state.remoteEventSource) return;
+  const targetId = String(state.playTarget || "");
+  if (!targetId) return;
+  try {
+    const source = new EventSource(`api/playback/events?target_id=${encodeURIComponent(targetId)}`);
+    state.remoteEventSource = source;
+    source.addEventListener("playback", event => {
+      if (source !== state.remoteEventSource) return;
+      try {
+        const data = JSON.parse(event.data || "{}");
+        if (String(data.target_id || "") !== targetId) return;
+        state.remoteEventConnected = true;
+        state.remoteEventRetryAt = 0;
+        applyRemotePlaybackSnapshot(data);
+      } catch (error) {}
+    });
+    source.onerror = () => {
+      if (source !== state.remoteEventSource) return;
+      state.remoteEventConnected = false;
+      state.remoteEventRetryAt = Date.now() + 3000;
+      // EventSource reconnects itself. Keep the HTTP status fallback available
+      // while a proxy, browser sleep mode, or older server interrupts it.
+    };
+  } catch (error) {
+    state.remoteEventRetryAt = Date.now() + 3000;
   }
 }
 function maybeAdvanceRemoteQueue(data) {
-  // MPD/USB DAC progression is owned by the server-side idle listener so it
-  // continues while browsers and WebViews are suspended in the background.
-  if (isMpdTarget()) return;
+  // Remote progression is owned by server-side MPD idle / Renderer monitors
+  // so it continues while browsers and WebViews are suspended. Keeping a
+  // second frontend end-of-track detector would race and skip queue items.
+  return;
+  /* Legacy fallback retained below for old servers during rolling upgrades.
   const transport = (data?.transport?.state || "").toUpperCase();
   const position = data?.position || {};
   const item = currentItem();
@@ -1438,21 +1655,43 @@ function maybeAdvanceRemoteQueue(data) {
   if (Date.now() - state.remoteAutoAdvanceAt < 3000) return;
   state.remoteAutoAdvanceAt = Date.now();
   coreControl("next");
+  */
+}
+function playbackCommandId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+function remoteSnapshotFromCore(core) {
+  if (!core) return null;
+  return {
+    target_id: state.playTarget,
+    target_kind: core.target_kind,
+    state_version: core.state_version,
+    core,
+    transport: { state: core.transport || "STOPPED" },
+    position: {
+      rel_seconds: Number(core.position || 0),
+      duration_seconds: Number(core.duration || 0),
+    },
+  };
 }
 async function remoteControl(action, position = null, quiet = false) {
   if (!isRemoteTarget()) return false;
   const item = currentItem();
+  const commandId = playbackCommandId();
   const response = await apiFetch("api/playback/control", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ target_id: remoteDeviceId(), action, position, track_id: item?.id || "" }),
+    body: JSON.stringify({ target_id: remoteDeviceId(), action, position, track_id: item?.id || "", command_id: commandId }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) {
     if (!quiet) alert(data.message || data.error || "远端控制失败");
     return false;
   }
-  setTimeout(refreshRemoteStatus, 300);
+  const snapshot = remoteSnapshotFromCore(data.core);
+  if (snapshot) applyRemotePlaybackSnapshot(snapshot);
+  if (!state.remoteEventConnected) setTimeout(refreshRemoteStatus, 300);
   return true;
 }
 function filteredTracks() {
@@ -1600,7 +1839,7 @@ function groupFallbackIcon(view = state.view) {
 }
 function groupIcon(view, items = [], coverTrackId = "", explicitName = "", metadataImage = "") {
   const cachedItem = items.find(item => item?.cover_url);
-  const localCover = coverUrl(cachedItem) || (coverTrackId ? mediaUrl(`cover/${encodeURIComponent(coverTrackId)}`) : "");
+  const localCover = coverUrl(cachedItem) || (coverTrackId ? mediaUrl(`cover/${encodeURIComponent(coverTrackId)}?size=160`) : "");
   const online = metadataImage ? mediaUrl(metadataImage) : "";
   const image = localCover || online;
   const attributes = localCover && online ? `data-artwork-local="1" data-metadata-image="${escapeHtml(online)}"` : "";
@@ -1798,7 +2037,7 @@ function renderAlbumDetail(list) {
   const metadata = state.albumMetadata[album] || {};
   const artist = displayText(metadata.artist || list.find(item => item?.artist)?.artist || "未知歌手");
   const releaseDate = displayText(metadata.release_date || "");
-  const localCover = coverUrl(first);
+  const localCover = coverUrl(first, 512);
   const onlineCover = metadata.image_url ? mediaUrl(metadata.image_url) : "";
   const cover = localCover || onlineCover;
   const coverAttributes = localCover && onlineCover ? `data-artwork-local="1" data-metadata-image="${escapeHtml(onlineCover)}"` : "";
@@ -1832,14 +2071,68 @@ function renderTrack(item, index = 0) {
   const rowKey = trackRowSelectionKey(item, index);
   const isSelected = state.selectedTrackRowKeys.has(rowKey);
   const playingIndicator = isCurrent ? `<span class="track-playing-indicator" aria-label="正在播放">正在播放</span>` : "";
-  const coverFallback = `<span class="track-cover-fallback"${localCover ? " hidden" : ""}>♫</span>`;
+  // Keep the fallback visible until the image has decoded.  Hiding it while a
+  // lazy image is still in flight produces a distracting blank flash on first load.
+  const coverFallback = `<span class="track-cover-fallback">♫</span>`;
   const coverImage = localCover
-    ? `<img src="${escapeHtml(coverUrl(item))}" loading="lazy" alt="" onerror="this.remove();this.parentElement.querySelector('.track-cover-fallback').hidden=false">`
+    ? `<img data-cover-src="${escapeHtml(localCover)}" alt="" onload="const fallback=this.parentElement?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=true" onerror="const parent=this.parentElement;this.remove();const fallback=parent?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=false">`
     : "";
   const titleCell = `<div class="track-main" data-play="${escapeHtml(item.id)}"><div class="track-cover">${coverImage}${coverFallback}</div><div class="track-info"><div class="track-title-line"><strong class="track-title">${escapeHtml(displayTrackTitle(item))}</strong>${playingIndicator}</div><span class="mobile-track-subtitle">${escapeHtml(mobileSubtitle)}</span></div></div>`;
   return `<div class="track${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}" data-track-row-key="${escapeHtml(rowKey)}" data-track-id="${escapeHtml(item.id)}"${hasQueuePosition ? ` data-queue-index="${queueIndex}"` : ""}>
     ${columns.map(key => key === "title" ? titleCell : `<span class="track-cell track-cell-${key}${key === "format" && item.is_dsd ? " dsd" : ""}">${trackColumnValue(item, key)}</span>`).join("")}
   </div>`;
+}
+function hydrateVisibleTrackCovers() {
+  if (state.coverObserver) {
+    state.coverObserver.disconnect();
+    state.coverObserver = null;
+  }
+  const generation = ++state.coverLoadGeneration;
+  state.coverLoadQueue = [];
+  const images = [...document.querySelectorAll("img[data-cover-src]")];
+  const start = image => {
+    const source = image.dataset.coverSrc;
+    if (!source || image.hasAttribute("src")) return;
+    state.coverLoadsInFlight += 1;
+    const finish = () => {
+      state.coverLoadsInFlight = Math.max(0, state.coverLoadsInFlight - 1);
+      pump();
+    };
+    image.addEventListener("load", finish, { once: true });
+    image.addEventListener("error", finish, { once: true });
+    image.src = source;
+    image.removeAttribute("data-cover-src");
+  };
+  const pump = () => {
+    while (state.coverLoadsInFlight < 4 && state.coverLoadQueue.length) {
+      const job = state.coverLoadQueue.shift();
+      if (job.generation !== state.coverLoadGeneration || !job.image.isConnected) continue;
+      start(job.image);
+    }
+  };
+  const enqueue = (image, priority = false) => {
+    if (!image.dataset.coverSrc || image.dataset.coverQueued === String(generation)) return;
+    image.dataset.coverQueued = String(generation);
+    const job = { image, generation };
+    if (priority) state.coverLoadQueue.unshift(job);
+    else state.coverLoadQueue.push(job);
+    pump();
+  };
+  if (!("IntersectionObserver" in window)) {
+    images.forEach(image => enqueue(image, true));
+    return;
+  }
+  state.coverObserver = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const root = entry.rootBounds;
+      const bounds = entry.boundingClientRect;
+      const visible = !root || (bounds.bottom >= root.top && bounds.top <= root.bottom);
+      enqueue(entry.target, visible);
+      state.coverObserver.unobserve(entry.target);
+    });
+  }, { root: $("libraryScroll"), rootMargin: "280px 0px" });
+  images.forEach(image => state.coverObserver.observe(image));
 }
 function renderGroups() {
   const groupView = isCreatorAlbumView() ? "albums" : state.view;
@@ -1988,6 +2281,8 @@ function bindTrackHeaderScroll() {
   }
 }
 function render() {
+  const serverPortValue = $("serverPortValue");
+  if (serverPortValue) serverPortValue.textContent = String(state.libraryStatus?.server_port || "--");
   updateSortOptions();
   updateSortDirectionButton();
   const isGroup = Boolean(groupViews[state.view]);
@@ -2026,6 +2321,7 @@ function render() {
   $("trackList").classList.toggle("album-detail-mode", albumDetail);
   $("trackList").classList.toggle("artist-all-tracks-mode", creatorAllTracks);
   $("trackList").innerHTML = listHtml;
+  hydrateVisibleTrackCovers();
   setTrackSelection([...state.selectedTrackRowKeys]);
   if (albumDetail) renderTableHead($("albumDetailTableHead"));
   $("pager").innerHTML = renderPager();
@@ -2048,6 +2344,7 @@ function render() {
   $("recentCount").textContent = String(Number(state.libraryStatus?.count || 0));
   $("favoriteCount").textContent = state.favorites.length;
   $("queueCount").textContent = state.queue.length;
+  updateFavoriteControls();
   updateSortDirectionButton();
   renderPlaylistNav();
   const labels = { all: "全部音乐", dsd: "DSD 音乐", queue: "当前队列", folders: "文件夹", albums: "专辑", artists: "歌手", composers: "作曲者", genres: "类型", random100: "随机 100 首", recent: "最近添加", favorites: "收藏歌曲" };
@@ -2056,13 +2353,13 @@ function render() {
     : creatorAllTracks
       ? "所有歌曲"
       : (isAlbumSurfaceView() ? "专辑" : (labels[state.view] || "音乐库"));
-  $("viewSub").textContent = scanProgressText() || "你的音乐，只在你的 NAS 上。";
+  $("viewSub").textContent = scanProgressText() || "飞牛私人音乐库";
   $("mobileViewTitle").textContent = $("viewTitle").textContent;
   $("mobileViewSub").textContent = creatorAllTracks
     ? displayText(currentCreatorName())
     : state.view === "folders" && currentFolderLabel
       ? currentFolderLabel()
-      : "本地音乐库";
+      : "飞牛私人音乐库";
   document.querySelectorAll(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === state.view));
   document.querySelectorAll("[data-play]").forEach(button => button.onclick = event => {
     const row = button.closest("[data-track-row-key]");
@@ -2329,6 +2626,7 @@ function applyConfirmedQueue(queue, core) {
   if (core?.repeat) state.repeat = core.repeat;
   if (typeof core?.shuffle === "boolean") state.shuffle = core.shuffle;
   updateRepeatShuffleButtons();
+  updateFavoriteControls();
 }
 async function commitQueue(queue, currentId = "", options = {}) {
   const response = await apiFetch("api/playback/queue", {
@@ -2679,13 +2977,14 @@ async function loadCurrent() {
     stopLocalAudio();
     $("nowTitle").textContent = displayTrackTitle(item);
     $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)} · ${state.playTargetName}`;
-    const localCover = coverUrl(item);
+    const localCover = coverUrl(item, 512);
     $("nowCover").innerHTML = localCover ? `<img src="${localCover}" onerror="this.remove()">` : "♫";
     syncLyricsForCurrentTrack(item);
     updateMediaSessionMetadata(item);
     updateMediaSessionPlaybackState();
     updateFavoriteControls();
     pushToDevice(state.playTarget, item).then(() => setTimeout(refreshRemoteStatus, 300)).catch(() => {});
+    nativeRemoteEnter(true);
     updateNowMarquee();
     return;
   }
@@ -2700,7 +2999,7 @@ async function loadCurrent() {
     nativeLoadQueue(true, shouldResume ? Number(state.nativePlayback.position || 0) : 0);
     $("nowTitle").textContent = displayTrackTitle(item);
     $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`;
-    const nativeCover = coverUrl(item);
+    const nativeCover = coverUrl(item, 512);
     $("nowCover").innerHTML = nativeCover ? `<img src="${nativeCover}" onerror="this.remove()">` : "♫";
     syncLyricsForCurrentTrack(item);
     updateMediaSessionMetadata(item);
@@ -2725,6 +3024,8 @@ async function loadCurrent() {
     params.set("transcode", "dsd_wav");
   } else if (item.cue_track) {
     params.set("transcode", "cue_flac");
+  } else if (isApeTrack(item)) {
+    params.set("transcode", "ape_flac");
   } else {
     params.set("transcode", "original");
   }
@@ -2739,7 +3040,7 @@ async function loadCurrent() {
   audio.play().catch(() => {});
   $("nowTitle").textContent = displayTrackTitle(item);
   $("nowArtist").textContent = `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`;
-  const localCover = coverUrl(item);
+  const localCover = coverUrl(item, 512);
   $("nowCover").innerHTML = localCover ? `<img src="${localCover}" onerror="this.remove()">` : "♫";
   syncLyricsForCurrentTrack(item);
   updateMediaSessionMetadata(item);
@@ -2878,7 +3179,7 @@ function updateLyricsMeta(item = currentItem()) {
     updateFavoriteControls();
     return;
   }
-  const localCover = coverUrl(item);
+  const localCover = coverUrl(item, 512);
   $("lyricsBg").style.backgroundImage = localCover ? `url("${localCover}")` : "";
   $("lyricsCover").innerHTML = localCover ? `<img src="${localCover}" onerror="this.remove()">` : "♫";
   updateFavoriteControls();
@@ -2896,9 +3197,26 @@ function showLyricsMessage(message) {
   lines.scrollTop = 0;
   lines.innerHTML = `<p class="muted-line">${escapeHtml(message)}</p>`;
 }
+function cancelLyricsPoll() {
+  if (!state.lyricsPollTimer) return;
+  clearTimeout(state.lyricsPollTimer);
+  state.lyricsPollTimer = 0;
+}
+function scheduleLyricsPoll(trackId) {
+  cancelLyricsPoll();
+  if (state.lyricsPollAttempts >= 15) return;
+  state.lyricsPollAttempts += 1;
+  state.lyricsPollTimer = setTimeout(() => {
+    state.lyricsPollTimer = 0;
+    if (String(currentItem()?.id || "") !== String(trackId || "")) return;
+    loadLyricsForCurrentTrack(currentItem(), true);
+  }, 900);
+}
 async function loadLyricsForCurrentTrack(item = currentItem(), force = false) {
   updateLyricsMeta(item);
   if (!item) {
+    cancelLyricsPoll();
+    state.lyricsPollAttempts = 0;
     state.lyricsRequestToken += 1;
     state.lyricsTrackId = "";
     state.lyricsLoadingTrackId = "";
@@ -2908,6 +3226,10 @@ async function loadLyricsForCurrentTrack(item = currentItem(), force = false) {
   }
   const trackId = String(item.id);
   if (!force && state.lyricsTrackId === trackId && ["loading", "loaded", "pending"].includes(state.lyricsStatus)) return;
+  if (state.lyricsTrackId !== trackId) {
+    cancelLyricsPoll();
+    state.lyricsPollAttempts = 0;
+  }
   const requestToken = ++state.lyricsRequestToken;
   state.lyricsTrackId = trackId;
   state.lyricsLoadingTrackId = trackId;
@@ -2920,22 +3242,25 @@ async function loadLyricsForCurrentTrack(item = currentItem(), force = false) {
     if (requestToken !== state.lyricsRequestToken || String(currentItem()?.id || "") !== trackId) return;
     if (data.pending) {
       state.lyricsStatus = "pending";
-      showLyricsMessage("歌词正在后台补全，稍后重新打开即可查看。");
+      showLyricsMessage("正在获取歌词...");
+      scheduleLyricsPoll(trackId);
       return;
     }
     state.lyricsStatus = "loaded";
+    cancelLyricsPoll();
+    state.lyricsPollAttempts = 0;
     renderLyrics(parseLyrics(data.lyrics || ""));
   } catch (error) {
     if (requestToken !== state.lyricsRequestToken || String(currentItem()?.id || "") !== trackId) return;
     state.lyricsStatus = "error";
     showLyricsMessage("歌词加载失败，请稍后重试。");
+    scheduleLyricsPoll(trackId);
   } finally {
     if (requestToken === state.lyricsRequestToken) state.lyricsLoadingTrackId = "";
   }
 }
 function syncLyricsForCurrentTrack(item = currentItem()) {
   updateLyricsMeta(item);
-  if ($("lyricsView").hidden) return;
   const trackId = String(item?.id || "");
   if (trackId !== state.lyricsTrackId) loadLyricsForCurrentTrack(item);
 }
@@ -2992,6 +3317,7 @@ async function loadPagedLibrary(page = 1, refresh = false) {
     state.libraryStatus = { ...(state.libraryStatus || {}), scanning: true, scanned: 0, found: state.pageItems.length };
     render();
   }
+  try {
   if (state.view === "folders" && !state.folderRoot && !state.folderPath) {
     const rootParams = new URLSearchParams();
     if (currentQueryText()) rootParams.set("search", currentQueryText());
@@ -3078,11 +3404,29 @@ async function loadPagedLibrary(page = 1, refresh = false) {
   state.libraryLoaded = state.pageItems.length;
   state.libraryTotal = state.pageTotal;
   hydrateReferencedItems();
-  fetch(`api/library/status${refresh ? "?refresh=1" : ""}`)
-    .then(response => response.json())
-    .then(data => { state.libraryStatus = data; render(); })
-    .catch(() => {});
+  // Fetch the status before the initial paint.  Previously this was allowed to
+  // complete after render(), which rebuilt every row and restarted cover loads.
+  try {
+    const statusResponse = await fetch(`api/library/status${refresh ? "?refresh=1" : ""}`);
+    if (seq === state.libraryRequestSeq && statusResponse.ok) {
+      state.libraryStatus = await statusResponse.json();
+    }
+  } catch (_error) {
+    // The library rows are still usable when only the non-critical status call fails.
+  }
+  if (seq !== state.libraryRequestSeq) return;
   render();
+  } catch (error) {
+    if (seq !== state.libraryRequestSeq) return;
+    state.libraryLoading = false;
+    state.libraryStatus = {
+      ...(state.libraryStatus || {}),
+      scanning: false,
+      error: String(error?.message || error || "音乐库加载失败"),
+    };
+    render();
+    throw error;
+  }
 }
 async function fetchAllTracksForCurrentView(extra = {}) {
   const pageSize = Math.max(1, Math.min(500, state.pageSize || 120));
@@ -3160,6 +3504,10 @@ function stableDeviceTargets(targets = []) {
     return displayText(left.name || "").localeCompare(displayText(right.name || ""), "zh-Hans-CN");
   });
 }
+function resolvedDeviceTarget(targets, reportedTarget) {
+  const targetId = String(reportedTarget || "local");
+  return targets.some(target => String(target.id || "") === targetId) ? targetId : "local";
+}
 function renderDeviceTargets(targets, currentTarget) {
   const signature = JSON.stringify({
     currentTarget,
@@ -3174,11 +3522,11 @@ function renderDeviceTargets(targets, currentTarget) {
   });
   if (signature === state.deviceTargetsSignature) return;
   state.deviceTargetsSignature = signature;
-  const current = targets.find(target => target.id === currentTarget || target.selected === true);
-  const currentName = displayText(current?.name || (currentTarget === "local" ? "本机播放" : state.playTargetName || "播放设备"));
+  const current = targets.find(target => target.id === currentTarget);
+  const currentName = displayText(current?.name || (currentTarget === "local" ? "当前设备" : state.playTargetName || "播放设备"));
   $("deviceCurrentTarget").textContent = `当前：${currentName}`;
   const groups = new Map([
-    ["browser", { title: "本机播放", targets: [] }],
+    ["browser", { title: "当前设备", targets: [] }],
     ["dac", { title: "USB DAC", targets: [] }],
     ["dlna", { title: "DLNA / UPnP", targets: [] }],
   ]);
@@ -3187,7 +3535,7 @@ function renderDeviceTargets(targets, currentTarget) {
     groups.get(key).targets.push(target);
   });
   const rows = targets.map(target => {
-    const isCurrent = target.id === currentTarget || target.selected === true;
+    const isCurrent = target.id === currentTarget;
     const kind = target.kind === "dlna_push" ? "UPnP / DLNA" : (target.kind === "mpd" ? "本机 USB DAC" : "浏览器播放");
     const caps = target.caps ? dacCapsText(target.caps) : "";
     const detail = target.message || (caps || kind);
@@ -3201,7 +3549,7 @@ function renderDeviceTargets(targets, currentTarget) {
     .join("");
   $("deviceList").innerHTML = groupedRows || `<p class="dialog-help">没有找到可用的播放目标。</p>`;
   document.querySelectorAll("[data-target]").forEach(button => {
-    button.onclick = () => selectPlaybackTarget(button.dataset.target, button.dataset.targetName || "本机播放");
+    button.onclick = () => selectPlaybackTarget(button.dataset.target, button.dataset.targetName || "当前设备");
   });
 }
 function markCurrentDeviceTarget(targetId, switching = false) {
@@ -3232,13 +3580,19 @@ async function loadDevices(forceRefresh = false) {
     const data = await response.json().catch(() => ({}));
     if (targetRevision !== state.deviceTargetRevision || state.deviceSwitchInFlight) return;
     const targets = stableDeviceTargets(data.targets || []);
-    const currentTarget = data.current_target || state.playTarget || "local";
+    const reportedTarget = data.current_target || state.playTarget || "local";
+    const currentTarget = resolvedDeviceTarget(targets, reportedTarget);
     if (targetRevision > 0 && currentTarget !== state.playTarget) {
       if ($("deviceDialog").open) scheduleDeviceRefresh();
       return;
     }
+    const previousTarget = state.playTarget;
     state.playTarget = currentTarget;
-    if (data.current_target_name) state.playTargetName = data.current_target_name;
+    state.playTargetName = currentTarget === "local" ? "当前设备" : (data.current_target_name || state.playTargetName);
+    if (previousTarget !== currentTarget) {
+      stopRemoteEventStream();
+      if (isRemoteTarget()) startRemoteEventStream();
+    }
     state.devices = targets.filter(target => target.id !== "local");
     renderDeviceTargets(targets, currentTarget);
     const scanButton = $("scanDevices");
@@ -3298,50 +3652,16 @@ async function findTrimSharedFilePicker() {
   }
   return null;
 }
-function renderAuthorizedFolders(paths = [], message = "") {
-  const list = $("authorizedFolderList");
-  if (!list) return;
-  if (paths.length) {
-    list.innerHTML = paths.map(path => `<div class="authorized-folder-row"><span>${escapeHtml(path)}</span></div>`).join("");
-    return;
-  }
-  list.innerHTML = message ? `<p class="dialog-help">${escapeHtml(message)}</p>` : "";
-}
-function normalizeAuthorizedPaths(result) {
-  if (!result) return [];
-  if (Array.isArray(result)) return result.map(String).map(x => x.trim()).filter(Boolean);
-  if (Array.isArray(result.data)) return result.data.map(String).map(x => x.trim()).filter(Boolean);
-  if (Array.isArray(result.paths)) return result.paths.map(String).map(x => x.trim()).filter(Boolean);
-  if (result.data && Array.isArray(result.data.paths)) return result.data.paths.map(String).map(x => x.trim()).filter(Boolean);
-  return [];
-}
-function mergeLibraryPathValues(extraPaths = []) {
-  const seen = new Set();
-  const merged = [];
-  [...collectLibraryPaths(), ...extraPaths].forEach(path => {
-    const value = String(path || "").trim();
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    merged.push(value);
-  });
-  renderLibraryPathInputs(merged);
-  return merged;
-}
 async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新时请点击刷新音乐库。") {
   const paths = collectLibraryPaths();
-  const serverPort = Number($("serverPortInput").value);
   if (!paths.length) {
     $("folderSaveStatus").textContent = "请输入音乐目录";
-    return false;
-  }
-  if (!Number.isInteger(serverPort) || serverPort < 1024 || serverPort > 65535) {
-    $("folderSaveStatus").textContent = "TCP 端口必须在 1024-65535 之间";
     return false;
   }
   const response = await apiFetch("api/config/library", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ library_path: paths.join("\n"), server_port: serverPort }),
+    body: JSON.stringify({ library_path: paths.join("\n") }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) {
@@ -3349,38 +3669,15 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
     return false;
   }
   state.libraryStatus = data.status || state.libraryStatus;
-  $("folderSaveStatus").textContent = data.restart_required
-    ? "端口已保存，请在飞牛应用中心停止并重新启动 fnAudio 后生效"
-    : statusText;
+  $("folderSaveStatus").textContent = statusText;
   render();
   return true;
-}
-async function loadAuthorizedFolders() {
-  const appVersion = fnAppVersion();
-  if (appVersion && !versionAtLeast(appVersion, "1.34.0")) {
-    renderAuthorizedFolders([], `当前飞牛 App 版本为 ${appVersion}，官方目录授权需要 1.34.0 或更高版本；当前可继续手动输入音乐目录`);
-    return { ok: false, paths: [], unsupported: true };
-  }
-  try {
-    const response = await fetch("api/fnos/shared-folders");
-    const data = await response.json().catch(() => ({}));
-    const fallback = data.token_source === "service"
-      ? "fnAudio 后台服务没有拿到飞牛授权 token，请从飞牛应用中心停止并重新启动应用；如果仍失败，说明当前系统没有向第三方后台注入 token"
-      : "当前没有读取到飞牛授权目录";
-    renderAuthorizedFolders(data.paths || [], data.ok ? "" : (data.message || fallback));
-    return data;
-  } catch (error) {
-    renderAuthorizedFolders([], "读取飞牛授权目录失败");
-    return { ok: false, paths: [] };
-  }
 }
 async function openFolderBrowser(path = "") {
   $("folderDialog").showModal();
   setSettingsTab("library");
   renderLibraryPathInputs(state.libraryStatus?.library_paths || [state.libraryStatus?.library_path || ""]);
-  $("serverPortInput").value = state.libraryStatus?.server_port || 18080;
   $("folderSaveStatus").textContent = "";
-  loadAuthorizedFolders();
   loadMetadataStatus();
 }
 function setSettingsTab(name = "library") {
@@ -3398,9 +3695,65 @@ function setSettingsTab(name = "library") {
 function metadataStatusSummary(data = {}) {
   const jobs = data.jobs || {};
   const pending = Number(jobs.pending || 0) + Number(jobs.retry || 0) + Number(jobs.running || 0);
-  const provider = data.spotify_configured ? "Spotify 已配置" : "Spotify 未配置，将使用其他数据源";
   const progress = pending ? `后台剩余 ${pending} 项` : "后台队列已完成";
-  return `${provider} · ${progress} · 已缓存 ${Number(data.entities || 0)} 项分类资料、${Number(data.lyrics || 0)} 首歌词`;
+  const failed = Number(jobs.failed || 0);
+  const writeStatus = failed ? ` · ${failed} 项写回失败，可查看原因后重试` : "";
+  const workers = Number(data.fetch_workers || 0);
+  const average = Number(data.tag_write_average_seconds || 0);
+  const types = data.job_types || {};
+  const fetching = ["lyrics", "track", "album", "artist", "composer"].reduce((total, type) => total + Number(types[type]?.pending || 0), 0);
+  const writing = Number(types.tag_write?.pending || 0);
+  const pipeline = workers ? ` · 抓取 ${workers} 并发（待抓取 ${fetching}）· Tag ${data.tag_write_in_progress ? "写入中" : "空闲"}（待写入 ${writing}）${average ? `，平均 ${average.toFixed(1)} 秒/首` : ""}` : "";
+  const matches = data.track_matches || {};
+  const review = Number(matches.review || 0);
+  const matched = Number(matches.auto || 0) + Number(matches.confirmed || 0);
+  const matchStatus = (matched || review) ? ` · 曲目匹配 ${matched} 项${review ? `，待确认 ${review} 项` : ""}` : "";
+  return `MusicBrainz、网易云、QQ、酷狗、咪咕、JOOX、千千音乐 · ${progress} · 已缓存 ${Number(data.entities || 0)} 项分类资料、${Number(data.lyrics || 0)} 首歌词${matchStatus}${pipeline}${writeStatus}`;
+}
+function ensureMetadataStatusUi() {
+  const statusNode = $("metadataStatusText");
+  if (!statusNode) return {};
+  let list = $("metadataTagJobs");
+  if (!list) {
+    list = document.createElement("div");
+    list.id = "metadataTagJobs";
+    list.className = "metadata-tag-jobs";
+    list.hidden = true;
+    statusNode.after(list);
+  }
+  let retryButton = $("retryTagWritesBtn");
+  if (!retryButton) {
+    retryButton = document.createElement("button");
+    retryButton.id = "retryTagWritesBtn";
+    retryButton.type = "button";
+    retryButton.className = "secondary-button";
+    retryButton.textContent = "重试失败写回";
+    retryButton.hidden = true;
+    retryButton.onclick = retryFailedTagWrites;
+    $("refreshMetadataBtn")?.after(retryButton);
+  }
+  return { list, retryButton };
+}
+function renderMetadataTagJobs(data = {}) {
+  const { list, retryButton } = ensureMetadataStatusUi();
+  if (!list || !retryButton) return;
+  const jobs = Array.isArray(data.tag_jobs) ? data.tag_jobs : [];
+  const failed = Number((data.jobs || {}).failed || 0);
+  retryButton.hidden = failed === 0;
+  list.replaceChildren();
+  list.hidden = jobs.length === 0;
+  jobs.forEach(job => {
+    const row = document.createElement("div");
+    row.className = `metadata-tag-job is-${String(job.status || "pending")}`;
+    const name = document.createElement("strong");
+    name.textContent = [job.title, job.artist].filter(Boolean).join(" - ");
+    const detail = document.createElement("span");
+    const labels = { done: "已写入", skipped: "无需写入", pending: "等待写入", running: "正在写入", retry: "将重试", failed: "写入失败", no_match: "无可写入信息" };
+    detail.textContent = labels[job.status] || job.status || "等待处理";
+    if (job.error) detail.textContent += `：${job.error}`;
+    row.append(name, detail);
+    list.append(row);
+  });
 }
 async function loadMetadataStatus() {
   const statusNode = $("metadataStatusText");
@@ -3410,10 +3763,9 @@ async function loadMetadataStatus() {
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.ok) throw new Error();
     $("metadataEnabledInput").checked = data.enabled !== false;
-    $("spotifyClientIdInput").value = data.spotify_client_id || "";
-    $("spotifyClientSecretInput").value = "";
     $("metadataGraceDaysInput").value = Number(data.orphan_grace_days ?? 7);
     statusNode.textContent = metadataStatusSummary(data);
+    renderMetadataTagJobs(data);
     return data;
   } catch (error) {
     statusNode.textContent = "无法读取后台元数据状态";
@@ -3426,19 +3778,31 @@ async function saveMetadataSettings(options = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       enabled: $("metadataEnabledInput").checked,
-      spotify_client_id: $("spotifyClientIdInput").value.trim(),
-      spotify_client_secret: $("spotifyClientSecretInput").value.trim(),
       orphan_grace_days: Number($("metadataGraceDaysInput").value || 7),
-      clear_spotify: Boolean(options.clearSpotify),
       refresh: Boolean(options.refresh),
     }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.ok) throw new Error(data.message || "保存元数据设置失败");
-  $("spotifyClientSecretInput").value = "";
-  if (options.clearSpotify) $("spotifyClientIdInput").value = "";
   $("metadataStatusText").textContent = metadataStatusSummary(data.status || {});
+  renderMetadataTagJobs(data.status || {});
   return data;
+}
+async function retryFailedTagWrites() {
+  const { retryButton } = ensureMetadataStatusUi();
+  if (!retryButton) return;
+  retryButton.disabled = true;
+  try {
+    const response = await apiFetch("api/metadata/retry-tag-writes", { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.message || "重试失败");
+    $("metadataStatusText").textContent = data.retried ? `已将 ${data.retried} 项失败写回重新加入队列。` : "没有可重试的失败写回。";
+    renderMetadataTagJobs(data.status || {});
+  } catch (error) {
+    $("metadataStatusText").textContent = error.message || "重试失败";
+  } finally {
+    retryButton.disabled = false;
+  }
 }
 async function refreshMetadataLibrary() {
   const button = $("refreshMetadataBtn");
@@ -3448,18 +3812,6 @@ async function refreshMetadataLibrary() {
     $("metadataStatusText").textContent = "已加入后台补全队列，页面可以正常关闭或继续播放。";
   } catch (error) {
     $("metadataStatusText").textContent = error.message || "启动后台补全失败";
-  } finally {
-    button.disabled = false;
-  }
-}
-async function clearSpotifyCredentials() {
-  const button = $("clearSpotifyBtn");
-  button.disabled = true;
-  try {
-    await saveMetadataSettings({ clearSpotify: true });
-    $("metadataStatusText").textContent = "Spotify 凭据已清除，后台将继续使用网易云、QQ 音乐和 MusicBrainz。";
-  } catch (error) {
-    $("metadataStatusText").textContent = error.message || "清除 Spotify 凭据失败";
   } finally {
     button.disabled = false;
   }
@@ -3545,6 +3897,8 @@ async function chooseCurrentFolder() {
     button.textContent = "保存设置";
   }
 }
+/* Legacy FNOS folder-authorisation code was removed; music roots are manual. */
+/*
 async function authorizeSharedFolder() {
   const appVersion = fnAppVersion();
   if (appVersion && !versionAtLeast(appVersion, "1.34.0")) {
@@ -3610,7 +3964,6 @@ async function consumeAppAuthCallback() {
   if (!$("folderDialog").open) $("folderDialog").showModal();
   mergeLibraryPathValues(paths);
   renderAuthorizedFolders(paths);
-  $("serverPortInput").value = state.libraryStatus?.server_port || 18080;
   $("folderSaveStatus").textContent = "已收到飞牛授权目录，正在保存...";
   await saveLibraryPathsFromDialog("已通过飞牛授权添加音乐目录。需要更新时请点击刷新音乐库。");
   const cleanUrl = window.location.origin + window.location.pathname + window.location.hash;
@@ -3652,6 +4005,7 @@ async function syncAuthorizedFolders() {
     if (button) button.disabled = false;
   }
 }
+*/
 function openPlaylistDialog(trackId = "") {
   openPlaylistDialogForTracks(trackId ? [trackId] : []);
 }
@@ -3858,6 +4212,7 @@ function trackActionButtons(trackId) {
     actionButton("加入播放列表", "playlist"),
     actionButton("插播所选项目", "insert"),
     actionButton("歌曲信息", "info", false, multiple),
+    actionButton("元数据补全候选", "metadata-candidate", false, multiple),
     actionButton("打开包含的文件夹", "open-folder", false, multiple),
     actionButton("分享外部链接", "share", false, multiple),
   ];
@@ -3866,18 +4221,14 @@ function trackActionButtons(trackId) {
   if (isPlaylistView()) actions.push(actionButton("从此播放列表移除", "remove-playlist", true));
   return actions;
 }
-function trackContextActionButtons(trackId) {
-  const multiple = selectedTrackIds(trackId).length > 1;
-  return [
-    actionButton("从当前开始播放所有歌曲", "play-from-current", false, multiple),
-    actionButton("加入当前队列", "queue"),
-    actionButton("收藏歌曲", "favorite-add"),
-    actionButton("加入播放列表", "playlist"),
-  ];
-}
 function desktopTrackContextActionButtons(trackId) {
   return trackActionButtons(trackId).filter(button =>
     !/data-track-action="(?:play|insert)"/.test(button)
+  );
+}
+function mobileTrackContextActionButtons(trackId) {
+  return desktopTrackContextActionButtons(trackId).filter(button =>
+    !/data-track-action="(?:open-folder|share)"/.test(button)
   );
 }
 function bindTrackActionButtons(container) {
@@ -3899,6 +4250,52 @@ function showTrackInformation(trackId) {
   ];
   $("trackActionList").innerHTML = `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   $("trackActionDialog").showModal();
+}
+async function showTrackMetadataCandidate(trackId) {
+  const item = itemById(trackId);
+  if (!item) return;
+  $("trackActionTitle").textContent = "元数据补全候选";
+  const list = $("trackActionList");
+  list.textContent = "正在查询候选结果...";
+  $("trackActionDialog").showModal();
+  try {
+    const response = await fetch(`api/metadata/track?track_id=${encodeURIComponent(String(trackId))}`, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) throw new Error(data.message || "读取候选失败");
+    const candidates = Array.isArray(data.candidates) ? data.candidates.filter(candidate => candidate && candidate.title) : [];
+    const best = data.best || candidates[0] || {};
+    if (!best.title) {
+      list.textContent = data.status === "pending" ? "正在后台检索元数据，请稍后再次打开。" : "没有找到可信的元数据候选。";
+      return;
+    }
+    const review = data.status === "review";
+    const candidateRows = candidates.map((candidate, index) => {
+      const subtitle = [candidate.artist, candidate.album, candidate.source, `${Math.round(Number(candidate.confidence || 0) * 100)}%`].filter(Boolean).map(String).join(" · ");
+      return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
+    }).join("");
+    const details = [["歌名", best.title], ["歌手", best.artist], ["专辑", best.album], ["发行日期", best.date], ["曲序", best.track_no], ["来源", best.source], ["可信度", `${Math.round(Number(best.confidence || 0) * 100)}%`]].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
+    list.innerHTML = review
+      ? `<div class="metadata-candidate-list">${candidateRows}</div><button class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`
+      : `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("")}</div><div class="track-action-info">${data.status === "auto" ? "已进入安全补全队列，只会写入空白字段。" : "候选已确认，等待后台写入。"}</div>`;
+    const apply = list.querySelector("[data-apply-track-metadata]");
+    if (apply) apply.onclick = async () => {
+      apply.disabled = true;
+      try {
+        const selected = list.querySelector('input[name="metadataCandidate"]:checked');
+        const candidateIndex = Number(selected?.value);
+        if (!Number.isInteger(candidateIndex) || candidateIndex < 0) throw new Error("请选择一个候选结果");
+        const applied = await apiFetch("api/metadata/track/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ track_id: trackId, candidate_index: candidateIndex }) });
+        const result = await applied.json().catch(() => ({}));
+        if (!applied.ok || !result.ok) throw new Error(result.message || "确认失败");
+        list.textContent = "已确认，后台将只补全空白 Tag 字段。";
+      } catch (error) {
+        apply.disabled = false;
+        list.textContent = error.message || "确认失败";
+      }
+    };
+  } catch (error) {
+    list.textContent = error.message || "读取候选失败";
+  }
 }
 async function resolveTrackLocation(trackId) {
   const response = await fetch(`api/library/location?id=${encodeURIComponent(String(trackId || ""))}`, { cache: "no-store" });
@@ -4064,7 +4461,9 @@ function openTrackContextMenu(trackId, x, y, mobile = false) {
   const menu = $("trackContextMenu");
   if (!item || !menu) return;
   state.actionTrackId = String(trackId);
-  const actions = mobile ? trackContextActionButtons(trackId) : desktopTrackContextActionButtons(trackId);
+  const actions = mobile
+    ? mobileTrackContextActionButtons(trackId)
+    : desktopTrackContextActionButtons(trackId);
   menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${actions.join("")}</div>`;
   menu.hidden = false;
   menu.style.left = `${Math.max(8, x)}px`;
@@ -4090,50 +4489,55 @@ function runTrackAction(action) {
   else if (action === "playlist") openPlaylistDialogForTracks(selected);
   else if (action === "insert") insertSelectedTracks(selected);
   else if (action === "info") showTrackInformation(trackId);
+  else if (action === "metadata-candidate") showTrackMetadataCandidate(trackId);
   else if (action === "open-folder") openContainingFolder(trackId);
   else if (action === "share") shareTrack(trackId);
   else if (action === "remove-queue") removeTrackFromQueue(trackId);
   else if (action === "remove-favorite") removeFavorite(trackId);
   else if (action === "remove-playlist") removeTrackFromCurrentPlaylist(trackId);
 }
-function closeMobileMoreDialog() {
-  if ($("mobileMoreDialog").open) $("mobileMoreDialog").close();
+function normalizedRepeatMode(repeat) {
+  return ["off", "all", "one"].includes(repeat) ? repeat : "off";
 }
-function openMobileMoreDialog() {
-  const item = currentItem();
-  const actions = [
-    actionButton("选择播放设备", "device"),
-    actionButton(state.shuffle ? "关闭随机播放" : "开启随机播放", "shuffle"),
-    actionButton(state.repeat === "all" ? "关闭循环播放" : "开启循环播放", "repeat"),
-  ];
-  if (item) actions.push(actionButton(isFavorite(item.id) ? "取消收藏当前歌曲" : "收藏当前歌曲", "favorite-current"));
-  $("mobileMoreList").innerHTML = actions.join("");
-  $("mobileMoreList").querySelectorAll("[data-track-action]").forEach(button => button.onclick = () => runMobileMoreAction(button.dataset.trackAction));
-  $("mobileMoreDialog").showModal();
+function nextRepeatMode(repeat) {
+  return { off: "all", all: "one", one: "off" }[normalizedRepeatMode(repeat)];
 }
-function runMobileMoreAction(action) {
-  closeMobileMoreDialog();
-  if (action === "device") {
-    $("deviceDialog").showModal();
-    loadDevices();
-  } else if (action === "shuffle") {
-    toggleShuffle();
-  } else if (action === "repeat") {
-    toggleRepeat();
-  } else if (action === "favorite-current") {
-    toggleCurrentFavorite();
-  }
+function repeatModeLabel(repeat) {
+  return { off: "循环关闭", all: "列表循环", one: "单曲循环" }[normalizedRepeatMode(repeat)];
+}
+function repeatNextAction(repeat) {
+  return { off: "开启列表循环", all: "切换为单曲循环", one: "关闭循环播放" }[normalizedRepeatMode(repeat)];
+}
+function repeatIconMarkup(repeat) {
+  const mode = normalizedRepeatMode(repeat);
+  const loop = '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>';
+  // Follow Volumio's Media3 convention: neutral repeat icon when disabled,
+  // accent repeat for the queue, and an integrated one glyph for one track.
+  if (mode === "one") return loop + '<path d="M11 8h2v8h-2v-5l-1.5 1.1-1.2-1.6L11 8Z" fill="currentColor" stroke="none"/>';
+  return loop;
 }
 function updateRepeatShuffleButtons() {
-  $("repeatBtn").classList.toggle("active-control", state.repeat === "all");
-  $("repeatBtn").title = state.repeat === "all" ? "列表循环" : "循环关闭";
-  $("shuffleBtn").classList.toggle("active-control", state.shuffle);
-  $("shuffleBtn").title = state.shuffle ? "关闭随机播放" : "随机播放";
+  const repeat = normalizedRepeatMode(state.repeat);
+  [[$("repeatBtn"), $("repeatIcon")], [$("mobileRepeatBtn"), $("mobileRepeatIcon")]].forEach(([button, icon]) => {
+    if (!button || !icon) return;
+    button.dataset.repeat = repeat;
+    icon.innerHTML = repeatIconMarkup(repeat);
+    button.classList.toggle("active-control", repeat !== "off");
+    button.title = `${repeatModeLabel(repeat)}，点击${repeatNextAction(repeat)}`;
+    button.setAttribute("aria-label", `循环模式：${repeatModeLabel(repeat)}，点击${repeatNextAction(repeat)}`);
+  });
+  [$("shuffleBtn"), $("mobileShuffleBtn")].forEach(button => {
+    if (!button) return;
+    button.classList.toggle("active-control", state.shuffle);
+    button.title = state.shuffle ? "关闭随机播放" : "随机播放";
+    button.setAttribute("aria-label", state.shuffle ? "关闭随机播放" : "随机播放");
+  });
 }
 async function toggleRepeat() {
-  const data = await coreControl("repeat");
+  const nextRepeat = nextRepeatMode(state.repeat);
+  const data = await coreControl("repeat", null, { repeat: nextRepeat });
   if (data?.core) state.repeat = data.core.repeat || state.repeat;
-  else state.repeat = state.repeat === "all" ? "off" : "all";
+  else if (data) state.repeat = nextRepeat;
   if (nativePlaybackAvailable()) nativePlaybackCall("setRepeat", state.repeat);
   updateRepeatShuffleButtons();
   syncState();
@@ -4242,7 +4646,7 @@ async function selectPlaybackTarget(id, name) {
   state.deviceSwitchInFlight = true;
   state.deviceTargetRevision += 1;
   state.playTarget = nextTarget;
-  state.playTargetName = name || "本机播放";
+  state.playTargetName = name || "当前设备";
   state.deviceTargetsSignature = "";
   markCurrentDeviceTarget(nextTarget, true);
   updateDeviceLabel();
@@ -4261,6 +4665,8 @@ async function selectPlaybackTarget(id, name) {
     state.deviceTargetsSignature = "";
     markCurrentDeviceTarget(previousTarget);
     updateDeviceLabel();
+    if (previousTarget === "local") nativeRemoteExit();
+    else nativeRemoteEnter(true);
     alert(error.message || "播放设备切换失败");
     return;
   } finally {
@@ -4269,6 +4675,14 @@ async function selectPlaybackTarget(id, name) {
   }
   state.remoteStatus = null;
   state.remoteCueSegment = false;
+  if (nextTarget === "local") {
+    stopRemoteEventStream();
+    nativeRemoteExit();
+  } else {
+    stopRemoteEventStream();
+    startRemoteEventStream();
+    nativeRemoteEnter(true);
+  }
   updateDeviceLabel();
   render();
   scheduleUserStateSave();
@@ -4401,14 +4815,21 @@ $("trackList").addEventListener("scroll", () => {
   updateMobilePagerVisibility();
 }, { passive: true });
 $("refreshBtn").onclick = () => loadLibrary(true);
-$("modeBtn").onclick = () => {
+function toggleMp3Transcode() {
   state.mp3Transcode = !state.mp3Transcode;
   localStorage.setItem("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0");
   updateModeButton();
   if (currentItem() && !isRemoteTarget()) loadCurrent();
-};
+}
+$("modeBtn").onclick = toggleMp3Transcode;
+$("mobileModeBtn").onclick = toggleMp3Transcode;
 $("folderBtn").onclick = () => openFolderBrowser();
-$("deviceBtn").onclick = () => { $("deviceDialog").showModal(); loadDevices(); };
+function openDeviceDialog() {
+  $("deviceDialog").showModal();
+  loadDevices();
+}
+$("deviceBtn").onclick = openDeviceDialog;
+$("mobileDeviceBtn").onclick = openDeviceDialog;
 function closeLyrics() {
   $("lyricsView").hidden = true;
 }
@@ -4499,18 +4920,13 @@ $("shareAccessEnabled").onchange = syncExternalShareOptions;
 $("createExternalShare").onclick = createExternalShareLink;
 $("copyExternalShare").onclick = copyExternalShareLink;
 $("openExternalShareDetails").onclick = openExternalShareDetails;
-$("closeMobileMoreDialog").onclick = closeMobileMoreDialog;
-$("mobileMoreBtn").onclick = openMobileMoreDialog;
 $("favoriteCurrentBtn").onclick = toggleCurrentFavorite;
 $("lyricsFavoriteBtn").onclick = toggleCurrentFavorite;
 $("savePlaylistBtn").onclick = savePlaylistFromDialog;
 $("playlistNameInput").onkeydown = event => { if (event.key === "Enter") savePlaylistFromDialog(); };
 $("chooseFolderBtn").onclick = chooseCurrentFolder;
 $("addLibraryPathBtn").onclick = () => addLibraryPathInput();
-$("authorizeFolderBtn").onclick = authorizeSharedFolder;
-$("syncAuthorizedFoldersBtn").onclick = syncAuthorizedFolders;
 $("refreshMetadataBtn").onclick = refreshMetadataLibrary;
-$("clearSpotifyBtn").onclick = clearSpotifyCredentials;
 $("scanDevices").onclick = () => loadDevices(true);
 $("playBtn").onclick = () => {
   if (isIncomingRendererSession()) {
@@ -4550,6 +4966,8 @@ $("stopBtn").onclick = stopPlayback;
 $("nextBtn").onclick = () => playNextTrack();
 $("repeatBtn").onclick = toggleRepeat;
 $("shuffleBtn").onclick = toggleShuffle;
+$("mobileRepeatBtn").onclick = toggleRepeat;
+$("mobileShuffleBtn").onclick = toggleShuffle;
 $("volume").oninput = e => {
   const value = Number(e.target.value);
   audio.volume = value;
@@ -4649,21 +5067,22 @@ document.addEventListener("keydown", event => {
 setupMediaSession();
 loadLibrary();
 loadServerUserState();
-setTimeout(() => consumeAppAuthCallback(), 300);
 setInterval(() => refreshLibraryStatus(), 30000);
 setInterval(() => { if (state.libraryStatus?.scanning) refreshLibraryStatus(); }, 1000);
 setInterval(() => { refreshCurrentTranscodeStatus(); }, 1200);
-setInterval(() => { if (isRemoteTarget()) refreshRemoteStatus(); }, 1500);
+setInterval(() => { if (isRemoteTarget() && !state.remoteEventConnected) refreshRemoteStatus(); }, 5000);
 setInterval(refreshRendererSession, 1500);
-setInterval(() => { if (isRemoteTarget()) updateRemoteUi(); }, 250);
+setInterval(() => { if (isRemoteTarget()) updateRemoteUi(); }, 500);
 setInterval(refreshServerUserState, 3000);
 window.addEventListener("pagehide", stopRemoteOnUnload);
 window.addEventListener("beforeunload", stopRemoteOnUnload);
+window.addEventListener("pageshow", () => { if (isRemoteTarget()) startRemoteEventStream(); });
 window.addEventListener("resize", updateNowMarquee);
 window.addEventListener("resize", updateMobilePagerVisibility, { passive: true });
 updateDeviceLabel();
 updateModeButton();
 updateNowMarquee();
 refreshRendererSession();
+if (isRemoteTarget()) startRemoteEventStream();
 
 

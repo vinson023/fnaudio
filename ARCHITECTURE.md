@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.1.173`  
+> 当前源码版本：`0.1.222`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -32,7 +32,7 @@ flowchart TD
 
     FNOS["fnOS 应用中心"] --> CGI["index.cgi / cgi_proxy.py"]
     CGI --> HTTP["ThreadingHTTPServer :18080"]
-    DIRECT["局域网直连端口"] --> HTTP
+    DIRECT["局域网直连端口（受保护 API 拒绝）"] --> HTTP
 
     HTTP --> UI["原生 Web UI"]
     HTTP --> LIB["音乐库服务"]
@@ -54,7 +54,7 @@ flowchart TD
     DLNA --> EXTERNAL
 ```
 
-安全上必须注意：CGI 是 fnOS 正常入口，但 Python 服务默认监听 `0.0.0.0`，直接端口访问可能绕过 CGI 层。
+CGI/Android 原生桥是受保护 API 的正常入口。Python 服务仍监听 `0.0.0.0`，但非 DLNA API 只接受带 fnOS token 与明确 scope 的回环代理请求；局域网直连不能绕过该边界。DLNA 设备描述、SOAP、GENA 和媒体资源按协议需要保留局域网入口，并使用独立网络限制。
 
 ## 3. 分层与模块
 
@@ -81,7 +81,7 @@ flowchart TD
 
 ```text
 library_path / library_paths
-  -> 全目录变化签名
+  -> Linux inotify 变化通知（不可用/溢出时回退完整签名）
   -> 音频信息、Tag、封面和 CUE 解析
   -> library.sqlite3
   -> 分页/分组/文件夹 API
@@ -131,7 +131,7 @@ Media3 通知小图标由 `PlaybackService` 显式设置为白色播放圆环。
 ### 转码策略
 
 - 外网或手动请求：非 MP3 可转 MP3。
-- DSF/DFF：可转 96 kHz、24 bit WAV。
+- DSF/DFF：MPD/USB DAC 与 DLNA Renderer 保持原始数据；只有明确的浏览器兼容模式可请求 96 kHz、24 bit WAV。
 - CUE 虚拟分轨：可转独立 FLAC 片段。
 - 转码文件默认位于配置目录下的 `transcode/`，缓存 TTL 为两天；当前浏览器曲目的 MP3 缓存会在设置媒体 URL 前经 `/api/transcode/warm` 进入高优先级单工作线程队列，普通媒体请求只做低优先级兜底。
 
@@ -165,7 +165,8 @@ localStorage 兼容数据
 | Android Media3 1.10.1 | Google Maven | ExoPlayer、MediaSessionService 和 MediaController |
 | OkHttp 4.12.0 | Maven Central | fnOS WebSocket 登录和原生媒体 HTTP 数据源 |
 | Android Keystore | Android 系统 | 加密保存连接地址、账号、密码和 token；`allowBackup=false` |
-| Spotify、网易、QQ、MusicBrainz | 公网服务 | 元数据、歌词和封面 |
+| MusicBrainz、网易、QQ、酷狗、咪咕、JOOX、千千 | 公网服务 | 元数据、歌词和封面 |
+| shairport-sync / nqptp | fnOS 可选组件 | AirPlay Receiver 与时钟同步 |
 
 ## 6. 必须保持的架构边界
 
@@ -179,8 +180,18 @@ localStorage 兼容数据
 - Android 非 GET API 必须通过限定同源和 fnAudio `/api/` 路径的原生认证桥；不得把 token 暴露给任意 URL 或网页脚本回调。
 - token 只能进入 Keystore 加密存储、同源 Cookie 和内存请求头；不得写日志、文档、截图或构建产物。
 - 切换 NAS 连接时必须停止旧 MediaSessionService，防止旧 token 和旧媒体队列跨服务器复用。
+- 自签名 HTTPS 只能按连接固定完整证书 SHA-256；首次固定前不得发送凭据，证书变化必须拒绝。
+- 私有目录/文件采用 `0700/0600`，公开 UI 采用 `0755/0644`；媒体替换必须保留原 uid/gid 和 mode。
 
-## 7. 当前扩展点
+## 7. 输出与权限策略
+
+- `upmpdcli_renderer.py` 只探测外部 upmpdcli，不负责启停、不可选择且不占用 ALSA。
+- MPD Mixer 默认 `none` 以保持 bit-perfect；`hardware` 只接受真实 Playback Volume 控件，不可用时回退 `none`；`software` 明确标记非 bit-perfect。
+- 每个输出目标由独立后端状态适配器确认播放、停止和自然结束，浏览器与 Android 不替远程后端自行切歌。
+- Linux 扫描、CUE、媒体读取、共享目录删除均以真实路径做包含关系判断，阻止符号链接逃逸。
+- 主进程暂不降权；待 fnOS 提供共享目录 ACL、ALSA 组、SSDP 与 Tag 写回的稳定契约后再拆分权限。
+
+## 8. 当前扩展点
 
 - `playback/plugins.py` 可注册新的输出插件。
 - `dlna/profiles.py` 可基于真实互操作问题增加设备 profile。

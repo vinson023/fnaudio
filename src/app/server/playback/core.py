@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from threading import RLock
+from threading import Condition, RLock
 from typing import Any, Dict, Iterable, Mapping, Optional
 import random
 import uuid
@@ -16,6 +16,7 @@ class PlaybackCore:
         self.registry = registry or OutputRegistry([BrowserOutput()])
         self.state = PlaybackState(session_id=uuid.uuid4().hex)
         self._lock = RLock()
+        self._changed = Condition(self._lock)
 
     def set_target(self, target_id: str, target_kind: str) -> PlaybackState:
         with self._lock:
@@ -25,9 +26,70 @@ class PlaybackCore:
             self.state.target_id = target_id or "browser"
             self.state.target_kind = target_kind or "browser"
             self.state.playing = False
+            self.state.transport = "STOPPED"
             self.state.position = 0.0
             self.state.error = ""
-            self.state.touch()
+            self._touch()
+            return self.state
+
+    def sync_output_status(
+        self,
+        target_kind: str,
+        transport: str,
+        position: Optional[float] = None,
+        duration: Optional[float] = None,
+        error: str = "",
+    ) -> PlaybackState:
+        """Merge an asynchronous backend snapshot into the global state.
+
+        Output backends such as MPD and UPnP can change independently of the
+        HTTP command that started them. Updates from a stale/non-selected
+        backend are ignored so a late event cannot overwrite the active
+        playback target.
+        """
+        with self._lock:
+            if target_kind and self.state.target_kind != target_kind:
+                return self.state
+            normalized = str(transport or "UNKNOWN").upper()
+            playing = self.state.playing
+            if normalized == "PLAYING":
+                playing = True
+            elif normalized in ("PAUSED", "PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT", "ERROR"):
+                playing = False
+            next_position = self.state.position
+            if position is not None:
+                next_position = max(0.0, float(position or 0))
+            next_duration = self.state.duration
+            if duration is not None and float(duration or 0) >= 0:
+                next_duration = max(0.0, float(duration or 0))
+            next_error = str(error or "")
+            if (
+                self.state.transport == normalized
+                and self.state.playing == playing
+                and self.state.position == next_position
+                and self.state.duration == next_duration
+                and self.state.error == next_error
+            ):
+                return self.state
+            self.state.transport = normalized
+            self.state.playing = playing
+            self.state.position = next_position
+            self.state.duration = next_duration
+            self.state.error = next_error
+            self._touch()
+            return self.state
+
+    def select_current(self, track_id: str) -> PlaybackState:
+        """Adopt a queue item selected autonomously by an output backend."""
+        with self._lock:
+            index = self._index_for(str(track_id or ""))
+            if index < 0:
+                return self.state
+            self.state.current_index = index
+            self.state.current_track_id = self.state.queue[index].track_id
+            self.state.position = 0.0
+            self._sync_duration()
+            self._touch()
             return self.state
 
     def set_queue(
@@ -48,12 +110,28 @@ class PlaybackCore:
             if shuffle is not None:
                 self.state.shuffle = bool(shuffle)
             self._sync_duration()
-            self.state.touch()
+            self._touch()
             return self.state
 
     def dispatch(self, command: PlaybackCommand) -> Dict[str, Any]:
         with self._lock:
+            previous = {
+                "queue": list(self.state.queue),
+                "current_track_id": self.state.current_track_id,
+                "current_index": self.state.current_index,
+                "position": self.state.position,
+                "duration": self.state.duration,
+                "repeat": self.state.repeat,
+                "shuffle": self.state.shuffle,
+                "playing": self.state.playing,
+                "transport": self.state.transport,
+            }
             if command.action == "load" and command.track:
+                # A library click can arrive before the frontend has mirrored
+                # its queue. Keep the selected item in the authoritative
+                # queue so MPD cannot accidentally replay a stale song id.
+                if self._index_for(command.track.track_id) < 0:
+                    self.state.queue.append(command.track)
                 self.state.current_track_id = command.track.track_id
                 self.state.current_index = self._index_for(command.track.track_id)
                 self.state.position = 0.0
@@ -76,20 +154,44 @@ class PlaybackCore:
                 self.state.duration = track.duration
                 result = self._plugin().open(track, self.state, command.context)
             elif command.action == "repeat":
-                self.state.repeat = "off" if self.state.repeat == "all" else "all"
-                result = {"repeat": self.state.repeat}
+                requested = (command.context or {}).get("repeat_value")
+                # Keep direct API and legacy clients aligned with Volumio's
+                # three repeat states: off -> queue -> current track -> off.
+                if requested in ("off", "all", "one"):
+                    self.state.repeat = requested
+                else:
+                    self.state.repeat = {"off": "all", "all": "one", "one": "off"}.get(
+                        self.state.repeat,
+                        "off",
+                    )
+                if self.state.target_kind == "mpd":
+                    result = self._plugin().command(command, self.state, command.context)
+                else:
+                    result = {"repeat": self.state.repeat}
             elif command.action == "shuffle":
-                self.state.shuffle = not self.state.shuffle
-                result = {"shuffle": self.state.shuffle}
+                requested = (command.context or {}).get("shuffle_value")
+                self.state.shuffle = bool(requested) if isinstance(requested, bool) else not self.state.shuffle
+                if self.state.target_kind == "mpd":
+                    result = self._plugin().command(command, self.state, command.context)
+                else:
+                    result = {"shuffle": self.state.shuffle}
             else:
                 result = self._plugin().command(command, self.state, command.context)
             succeeded = not (isinstance(result, dict) and result.get("ok") is False)
             if succeeded:
                 self._apply_command(command)
             else:
-                self.state.playing = False
+                self.state.queue = previous["queue"]
+                self.state.current_track_id = previous["current_track_id"]
+                self.state.current_index = previous["current_index"]
+                self.state.position = previous["position"]
+                self.state.duration = previous["duration"]
+                self.state.repeat = previous["repeat"]
+                self.state.shuffle = previous["shuffle"]
+                self.state.playing = previous["playing"]
+                self.state.transport = previous["transport"]
                 self.state.error = str(result.get("message") or result.get("error") or "")
-            self.state.touch()
+            self._touch()
             return {"ok": True, "result": result, "state": self.state.to_dict()}
 
     def sync_frontend(self, payload: Mapping[str, Any]) -> PlaybackState:
@@ -113,7 +215,7 @@ class PlaybackCore:
             if "playing" in payload:
                 self.state.playing = bool(payload.get("playing"))
             self._sync_duration()
-            self.state.touch()
+            self._touch()
             return self.state
 
     def sync_external_session(
@@ -148,7 +250,7 @@ class PlaybackCore:
             self.state.duration = max(0.0, float(duration or 0))
             self.state.playing = str(transport or "").upper() == "PLAYING"
             self.state.error = str(error or "")
-            self.state.touch()
+            self._touch()
             return self.state
 
     def snapshot(self) -> Dict[str, Any]:
@@ -157,6 +259,17 @@ class PlaybackCore:
             result["output"] = self._plugin().snapshot(self.state)
             return result
 
+    def wait_for_version(self, version: int, timeout: float = 15.0) -> int:
+        """Block an event consumer until the authoritative state changes."""
+        with self._changed:
+            if self.state.state_version == int(version):
+                self._changed.wait(max(0.0, float(timeout)))
+            return self.state.state_version
+
+    def _touch(self) -> None:
+        self.state.touch()
+        self._changed.notify_all()
+
     def _plugin(self):
         plugin_id = self.state.target_id if self.registry.has(self.state.target_id) else self.state.target_kind
         return self.registry.get(plugin_id)
@@ -164,8 +277,10 @@ class PlaybackCore:
     def _apply_command(self, command: PlaybackCommand) -> None:
         if command.action in ("play", "resume", "load", "next", "previous"):
             self.state.playing = True
+            self.state.transport = "PLAYING"
         elif command.action in ("pause", "stop"):
             self.state.playing = False
+            self.state.transport = "PAUSED" if command.action == "pause" else "STOPPED"
         if command.action == "stop":
             self.state.position = 0.0
         elif command.action == "seek" and command.position is not None:

@@ -40,6 +40,13 @@ def upmpdcli_probe() -> Dict[str, Any]:
         "running": running,
         "binary": binary,
         "version": upmpdcli_version(binary),
-        "role": "dlna_openhome_renderer",
-        "message": "" if binary else "upmpdcli is not installed",
+        "role": "compatibility_probe_only",
+        "managed_by_fnaudio": False,
+        "selectable_output": False,
+        "owns_audio_device": False,
+        "message": (
+            "upmpdcli is detected but remains an externally managed compatibility probe"
+            if binary
+            else "upmpdcli is not installed; fnAudio uses its built-in DLNA renderer"
+        ),
     }

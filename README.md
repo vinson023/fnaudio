@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.175`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.1.225`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,14 +8,14 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.1.175` |
+| 版本 | `0.1.225` |
 | 平台 | fnOS x86；Android 6.0（API 23）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
 | 原始来源 | `E:\Codex\fnaudio-0.1.7` |
 | HTTP 端口 | `18080` |
 | Python | fnOS `python312` |
-| 测试基线 | 63 个 Python 单元测试、3 个 Node 回归脚本、Android Lint/Debug 构建通过 |
+| 测试入口 | `tools/test_offline.ps1 -Browser`；Android 使用 `testDebugUnitTest lintDebug assembleDebug` |
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
@@ -43,7 +43,7 @@ C:\path\to\fnAudio
 ├── README.md
 ├── VERSION
 ├── SOURCE_MANIFEST.sha256
-├── src/                       # 0.1.172 fnOS 可继续开发源码
+├── src/                       # 当前 fnOS 可继续开发源码
 │   ├── app/
 │   ├── cmd/
 │   ├── config/
@@ -65,13 +65,8 @@ C:\path\to\fnAudio
 ## 本地验证
 
 ```powershell
-Set-Location C:\path\to\fnAudio\src
-python -B -m unittest discover -s tests -v
-node --check app/ui/app.js
-node tests/test_ui_queue_columns.js
-node tests/test_ui_mobile_layout.js
-node tests/test_ui_android_bridge.js
-Get-Content manifest -Encoding UTF8
+Set-Location C:\path\to\fnAudio
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_offline.ps1
 
 Set-Location C:\path\to\fnAudio\android-client
 .\gradlew.bat :app:lintDebug :app:assembleDebug
@@ -89,9 +84,11 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前配套产物位于 `artifacts/0.1.175/`：构建说明和哈希见该目录的 `VALIDATION.md` 与 `SHA256SUMS`。
+当前开发版本为 `0.1.225`。FPK 必须通过 `tools/build_release.ps1` 从唯一的 `src/` 源目录构建；产物位于 `artifacts/0.1.225/`。播放栈对比和限制见 `docs/PLAYBACK_STACK_COMPARISON.md`。
 
-`0.1.172` 的 PC 歌曲/分组右键菜单不再显示“播放”和“插播所选项目”，移动端四项长按菜单及歌曲操作对话框保持独立；“打开包含的文件夹”只把歌曲父目录传给 fnOS 文件管理，避免完整音频路径被宿主当成打开文件；歌曲列表有封面时隐藏音乐符号、无封面统一显示 `♫`；Android 通知封面通过带 fnOS 认证头的本地缓存加载器获取，真实封面与白色无封面占位图均可交给 Media3。
+当前离线工程状态包括 DLNA 出站网络边界、API scope 授权、结构化可观测性、用户状态并发合并、10 万曲分页基准、ContentDirectory 浏览语义和 WAV/DFF 边缘格式夹具。恢复会话后先运行 `tools/test_offline.ps1`，再依据 `TODO.md` 选择仍未完成的部署或硬件项目。
+
+2026-08-12 的九项连续离线目标还包括资源预算、播放错误分类、兼容 API 拆分、浏览器 E2E、inotify 曲库检测、Renderer/Mixer 策略、Android HTTPS 证书固定，以及文件权限/路径边界。专项说明见 `docs/INDEX.md`。
 
 两份产物已完成本地构建、Lint、单元/回归测试、包结构、哈希和 APK 签名检查，但尚未安装到真实 fnOS 与 Android 设备。当前 APK 使用 Android Debug 证书；真机 token 交接、后台/息屏跨曲、自签名 HTTPS、多连接切换和厂商省电限制未验证，不能标记为正式发布。
 

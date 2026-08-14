@@ -2,6 +2,12 @@ plugins {
     id "com.android.application"
 }
 
+def releaseStoreFile = project.findProperty("fnaudioReleaseStoreFile") ?: System.getenv("FNAUDIO_RELEASE_STORE_FILE")
+def releaseStorePassword = project.findProperty("fnaudioReleaseStorePassword") ?: System.getenv("FNAUDIO_RELEASE_STORE_PASSWORD")
+def releaseKeyAlias = project.findProperty("fnaudioReleaseKeyAlias") ?: System.getenv("FNAUDIO_RELEASE_KEY_ALIAS")
+def releaseKeyPassword = project.findProperty("fnaudioReleaseKeyPassword") ?: System.getenv("FNAUDIO_RELEASE_KEY_PASSWORD")
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace "com.fnaudio.client"
     compileSdk 36
@@ -10,12 +16,17 @@ android {
         applicationId "com.fnaudio.client"
         minSdk 23
         targetSdk 36
-        versionCode 175
-        versionName "0.1.175"
+        versionCode 273
+        versionName "0.2.2"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
         buildConfig true
+    }
+
+    sourceSets {
+        main.assets.srcDirs += ["../../src/app/ui"]
     }
 
     compileOptions {
@@ -25,6 +36,43 @@ android {
 
     packaging {
         resources.excludes += ["META-INF/DEPENDENCIES", "META-INF/NOTICE*", "META-INF/LICENSE*"]
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+        }
+    }
+}
+
+tasks.register("verifyReleaseSigning") {
+    doLast {
+        if (!hasReleaseSigning) {
+            throw new GradleException("Release signing is required. Set FNAUDIO_RELEASE_STORE_FILE, FNAUDIO_RELEASE_STORE_PASSWORD, FNAUDIO_RELEASE_KEY_ALIAS and FNAUDIO_RELEASE_KEY_PASSWORD.")
+        }
+        if (!file(releaseStoreFile).isFile()) {
+            throw new GradleException("Release keystore does not exist: ${releaseStoreFile}")
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name == "preReleaseBuild") {
+        dependsOn(tasks.named("verifyReleaseSigning"))
     }
 }
 
@@ -36,4 +84,11 @@ dependencies {
     implementation "androidx.media3:media3-session:1.10.1"
     implementation "androidx.media3:media3-datasource-okhttp:1.10.1"
     implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    testImplementation "junit:junit:4.13.2"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test:rules:1.6.1"
+    androidTestImplementation "androidx.test.espresso:espresso-core:3.6.1"
+    androidTestImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+    androidTestImplementation "com.squareup.okhttp3:okhttp-tls:4.12.0"
 }

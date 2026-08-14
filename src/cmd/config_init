@@ -1,4 +1,5 @@
 #!/bin/bash
+umask 077
 PYTHON_BIN="/var/apps/python312/target/bin/python3"
 "${PYTHON_BIN}" - <<'PY'
 import json
@@ -7,31 +8,31 @@ import os
 appdest = os.environ.get("TRIM_APPDEST", "")
 pkgetc = os.environ.get("TRIM_PKGETC", "")
 config_path = os.path.join(pkgetc, "config.json")
-
-port = 18080
+port = 53199
 try:
     with open(config_path, encoding="utf-8") as fh:
-        config = json.load(fh)
-    port = int(config.get("server_port") or 18080)
+        port = int(json.load(fh).get("server_port") or 53199)
 except Exception:
-    port = 18080
+    port = 53199
 
-items = [{
-    "type": "text",
-    "field": "wizard_server_port",
-    "label": "TCP 服务端口",
-    "initValue": str(port),
-    "helpText": "默认 18080；如果端口被占用，请换一个未占用端口。",
-    "rules": [{"required": True, "message": "请输入 TCP 端口"}],
+payload = [{
+    "stepTitle": "运行设置",
+    "items": [{
+        "type": "text",
+        "field": "wizard_server_port",
+        "label": "当前服务端口",
+        "initValue": str(port),
+        "helpText": "修改后重启 fnAudio 生效。端口被占用时，请选择其他端口。",
+        "rules": [{"required": True, "message": "请输入服务端口"}],
+    }],
 }]
-
-payload = [{"stepTitle": "运行设置", "items": items}]
 for rel in ("wizard/config", "target/wizard/config"):
     target = os.path.join(appdest, rel)
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
+        os.chmod(target, 0o644)
     except Exception:
         pass
 PY

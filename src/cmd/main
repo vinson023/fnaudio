@@ -1,7 +1,12 @@
 #!/bin/bash
 
+umask 077
+
 LOG_FILE="${TRIM_PKGVAR}/info.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
+install -d -m 700 "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
+touch "${LOG_FILE}"
+chmod 600 "${LOG_FILE}" "${TRIM_PKGETC}/config.json" 2>/dev/null || true
 PYTHON_BIN="/var/apps/python312/target/bin/python3"
 if [ -f "${TRIM_APPDEST}/target/server/server.py" ]; then
   APP_ROOT="${TRIM_APPDEST}/target/server"
@@ -10,7 +15,7 @@ elif [ -f "${TRIM_APPDEST}/server/server.py" ]; then
 else
   APP_ROOT="${TRIM_APPDEST}/target/server"
 fi
-SERVER_PORT="18080"
+SERVER_PORT="53199"
 if [ -f "${TRIM_PKGETC}/config.json" ]; then
   configured_port="$(sed -n 's/.*"server_port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${TRIM_PKGETC}/config.json" | head -n 1)"
   case "${configured_port}" in
@@ -23,35 +28,8 @@ if [ ! -d "${UI_ROOT}" ] && [ -d "${TRIM_APPDEST}/ui" ]; then
   UI_ROOT="${TRIM_APPDEST}/ui"
 fi
 mkdir -p "${UI_ROOT}" 2>/dev/null || true
-for manifest in /var/apps/fnaudio/manifest "${TRIM_APPDEST}/manifest"; do
-  if [ -f "${manifest}" ]; then
-    "${PYTHON_BIN}" - "${manifest}" "${SERVER_PORT}" <<'PY'
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-port = int(sys.argv[2])
-try:
-    lines = path.read_text(encoding="utf-8").splitlines(True)
-except OSError:
-    raise SystemExit(0)
-updated = False
-out = []
-for line in lines:
-    if line.lstrip().startswith("service_port"):
-        newline = "\r\n" if line.endswith("\r\n") else "\n"
-        out.append(f"service_port          = {port}{newline}")
-        updated = True
-    else:
-        out.append(line)
-if not updated:
-    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
-    out.append(f"service_port          = {port}{newline}")
-path.write_text("".join(out), encoding="utf-8")
-PY
-  fi
-done
-printf '{"server_port":%s}\n' "${SERVER_PORT}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
-CMD="TRIM_API_TOKEN=\"\${TRIM_API_TOKEN:-}\" ${PYTHON_BIN} ${APP_ROOT}/server.py --host 0.0.0.0 --port ${SERVER_PORT} --config ${TRIM_PKGETC}/config.json"
+# fnAudio is exposed through the fnOS CGI entry. manifest.service_port is
+# package metadata only; the configured backend port is validated below.
 
 log_msg() {
   mkdir -p "${TRIM_PKGVAR}"
@@ -94,6 +72,34 @@ cleanup_stale_servers() {
   done
 }
 
+configured_port_available() {
+  "${PYTHON_BIN}" - "${SERVER_PORT}" <<'PY'
+import socket
+import sys
+
+port = max(1024, min(65535, int(sys.argv[1])))
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", port))
+PY
+}
+
+persist_backend_port() {
+  export FNAUDIO_SERVER_PORT="${SERVER_PORT}"
+  "${PYTHON_BIN}" - "${TRIM_PKGETC}/config.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as fh: payload = json.load(fh)
+except Exception: payload = {}
+payload["server_port"] = int(os.environ["FNAUDIO_SERVER_PORT"])
+with open(path, "w", encoding="utf-8") as fh: json.dump(payload, fh, ensure_ascii=False)
+PY
+  chmod 600 "${TRIM_PKGETC}/config.json" 2>/dev/null || true
+  printf '{"server_port":%s}\n' "${SERVER_PORT}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
+  chmod 644 "${UI_ROOT}/service_port.json" 2>/dev/null || true
+}
+
 port_ready() {
   "${PYTHON_BIN}" - "$1" <<'PY' >/dev/null 2>&1
 import socket, sys
@@ -133,6 +139,12 @@ start_process() {
     log_msg "Application server not found: ${APP_ROOT}/server.py"
     return 1
   fi
+  configured_port_available || {
+    log_msg "Configured TCP port ${SERVER_PORT} is already in use; change it in App Center settings"
+    return 1
+  }
+  persist_backend_port
+  CMD="TRIM_API_TOKEN=\"\${TRIM_API_TOKEN:-}\" ${PYTHON_BIN} ${APP_ROOT}/server.py --host 0.0.0.0 --port ${SERVER_PORT} --config ${TRIM_PKGETC}/config.json"
   if [ -n "${TRIM_API_TOKEN:-}" ]; then
     log_msg "Starting fnAudio with fnOS API token available"
   else
@@ -140,6 +152,7 @@ start_process() {
   fi
   nohup bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
   printf "%s" "$!" > "${PID_FILE}"
+  chmod 600 "${PID_FILE}" 2>/dev/null || true
   for i in $(seq 1 12); do
     port_ready "${SERVER_PORT}" && return 0
     if ! check_process "$!"; then

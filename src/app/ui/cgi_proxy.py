@@ -12,6 +12,7 @@ import subprocess
 
 CGI_APP_BASE = "/cgi/ThirdParty/fnaudio/index.cgi/"
 CGI_ENTRY_MARKER = "/index.cgi"
+API_SCOPES = "library.read,playback.read,playback.control,state.read,state.write,settings.read,settings.write,files.read"
 
 
 def normalize_path_info(path_info="", request_uri="", routed_path=""):
@@ -93,12 +94,12 @@ def service_port():
             continue
         try:
             with open(config_path, "r", encoding="utf-8") as fh:
-                port = int(json.load(fh).get("server_port", 18080))
+                port = int(json.load(fh).get("server_port", 53199))
             if 1024 <= port <= 65535:
                 return port
         except (OSError, ValueError, TypeError):
             continue
-    return 18080
+    return 53199
 
 
 def trim_token():
@@ -114,6 +115,7 @@ def trim_token():
         "fnaudio_trim_token",
         "trim_api_token",
         "trim_token",
+        "fnos-token",
         "token",
     }
     for field in cookie_header.split(";"):
@@ -201,12 +203,15 @@ def send_local_config_update(paths):
     port = service_port()
     body = json.dumps({
         "library_path": "\n".join(paths),
-        "server_port": port,
     }, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/config/library",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Fnaudio-Trim-Token": trim_token(),
+            "X-Fnaudio-Scopes": API_SCOPES,
+        },
         method="POST",
     )
     try:
@@ -300,17 +305,17 @@ def main():
         header("HTTP_X_FNAUDIO_PATH", ""),
     )
 
-    if path_info == "/api/fnos/auth-debug":
+    if False and path_info == "/api/fnos/auth-debug":
         names = ("TRIM_API_TOKEN", "HTTP_TRIM_TOKEN", "HTTP_X_TRIM_TOKEN", "HTTP_AUTHORIZATION", "HTTP_X_FNAUDIO_TRIM_TOKEN")
         payload = {"ok": True, "sources": {name: bool(os.environ.get(name, "")) for name in names}, "usable": bool(trim_token())}
         sys.stdout.write("Status: 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")
         sys.stdout.write(json.dumps(payload, ensure_ascii=False))
         return
-    if path_info == "/api/fnos/shared-folders":
+    if False and path_info == "/api/fnos/shared-folders":
         sys.stdout.write("Status: 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")
         sys.stdout.write(json.dumps(trim_request("trim.file.getSharedAccessibleFolders", {}), ensure_ascii=False))
         return
-    if path_info == "/api/fnos/shared-folders/sync":
+    if False and path_info == "/api/fnos/shared-folders/sync":
         result = trim_request("trim.file.getSharedAccessibleFolders", {})
         if not result.get("ok"):
             sys.stdout.write("Status: 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")
@@ -334,7 +339,7 @@ def main():
         sys.stdout.write("Status: 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n")
         sys.stdout.write(json.dumps(result, ensure_ascii=False))
         return
-    if path_info == "/api/fnos/shared-folders/delete":
+    if False and path_info == "/api/fnos/shared-folders/delete":
         length = int(header("CONTENT_LENGTH", "0") or "0")
         body = sys.stdin.buffer.read(length) if length else b"{}"
         try:
@@ -374,8 +379,10 @@ def main():
         if value:
             request_headers[http_name] = value
     token = trim_token()
+    request_headers["X-Fnaudio-Internal"] = "1"
     if token:
         request_headers["X-Fnaudio-Trim-Token"] = token
+        request_headers["X-Fnaudio-Scopes"] = API_SCOPES
 
     def build_request():
         return urllib.request.Request(

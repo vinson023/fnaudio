@@ -1,7 +1,9 @@
 package com.fnaudio.client.network;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -13,6 +15,8 @@ import org.json.JSONObject;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -21,6 +25,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 public final class FnOsAuthClient {
+    private static final String TAG = "FnOsAuth";
     public interface Callback {
         void onSuccess(ConnectionProfile authenticatedProfile);
 
@@ -36,8 +41,8 @@ public final class FnOsAuthClient {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    public void authenticate(ConnectionProfile profile, @Nullable String password, Callback callback) {
-        Session session = new Session(profile, password == null ? "" : password, callback);
+    public void authenticate(Context context, ConnectionProfile profile, @Nullable String password, Callback callback) {
+        Session session = new Session(context.getApplicationContext(), profile, password == null ? "" : password, callback);
         session.connect();
     }
 
@@ -47,15 +52,17 @@ public final class FnOsAuthClient {
         private final Callback callback;
         private final AtomicBoolean completed = new AtomicBoolean(false);
         private final OkHttpClient client;
+        private ConnectionProfile verifiedProfile;
         private WebSocket socket;
         private Attempt attempt;
         private String requestId = "";
 
-        private Session(ConnectionProfile profile, String password, Callback callback) {
+        private Session(Context context, ConnectionProfile profile, String password, Callback callback) {
             this.profile = profile;
+            this.verifiedProfile = profile;
             this.password = password;
             this.callback = callback;
-            this.client = HttpClientFactory.create(profile);
+            this.client = HttpClientFactory.create(context, profile);
         }
 
         private void connect() {
@@ -74,6 +81,25 @@ public final class FnOsAuthClient {
 
         @Override
         public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
+            if (profile.https && profile.trustSelfSigned) {
+                String observedPin = "";
+                if (response.handshake() != null && !response.handshake().peerCertificates().isEmpty()) {
+                    Certificate certificate = response.handshake().peerCertificates().get(0);
+                    if (certificate instanceof X509Certificate) {
+                        observedPin = CertificatePin.of((X509Certificate) certificate);
+                    }
+                }
+                if (observedPin.isEmpty()) {
+                    finishError("无法读取服务器证书指纹，已拒绝自签名 HTTPS 连接。");
+                    return;
+                }
+                if (!profile.certificatePinSha256.isEmpty()
+                        && !profile.certificatePinSha256.equals(observedPin)) {
+                    finishError("服务器证书已变更，指纹与此历史连接不一致。");
+                    return;
+                }
+                verifiedProfile = profile.withCertificatePin(observedPin);
+            }
             if (password.isEmpty() && !profile.token.isEmpty()) {
                 send(Attempt.AUTH_TOKEN);
             } else if (password.isEmpty() && !profile.longToken.isEmpty()) {
@@ -104,13 +130,13 @@ public final class FnOsAuthClient {
                     || payload.optBoolean("success")
                     || payload.optInt("code", -1) == 0 && payload.has("code");
             if (success) {
-                String finalToken = token.isEmpty() ? profile.token : token;
-                String finalLongToken = longToken.isEmpty() ? profile.longToken : longToken;
+                String finalToken = token.isEmpty() ? verifiedProfile.token : token;
+                String finalLongToken = longToken.isEmpty() ? verifiedProfile.longToken : longToken;
                 if (finalToken.isEmpty()) {
                     handleAttemptFailure(messageFrom(payload, "登录成功响应中缺少会话令牌。"));
                     return;
                 }
-                finishSuccess(profile.withTokens(finalToken, finalLongToken));
+                finishSuccess(verifiedProfile.withTokens(finalToken, finalLongToken));
                 return;
             }
 
@@ -121,6 +147,13 @@ public final class FnOsAuthClient {
 
         @Override
         public void onFailure(@NonNull WebSocket webSocket, @NonNull Throwable throwable, @Nullable Response response) {
+            // finishSuccess closes the socket immediately after receiving the
+            // credential response. OkHttp may report that close as EOF/cancel.
+            if (completed.get()) return;
+            Log.w(TAG, "WebSocket authentication connection failed: host=" + profile.host
+                    + ", port=" + profile.port + ", https=" + profile.https
+                    + ", error=" + throwable.getClass().getSimpleName()
+                    + ", detail=" + safeDiagnostic(throwable));
             finishError(readableError(throwable));
         }
 
@@ -252,6 +285,9 @@ public final class FnOsAuthClient {
         String raw = throwable == null ? "" : String.valueOf(throwable.getMessage());
         String lower = raw.toLowerCase(Locale.ROOT);
         if (lower.contains("certificate") || lower.contains("sslpeer") || lower.contains("trust anchor")) {
+            if (lower.contains("pin mismatch")) {
+                return "服务器证书已变更，已拒绝连接。请确认 NAS 证书后删除该历史连接并重新建立。";
+            }
             return "HTTPS 证书校验失败；如果 NAS 使用自签名证书，请开启自签名证书兼容。";
         }
         if (lower.contains("failed to connect") || lower.contains("connection refused")) {
@@ -259,5 +295,15 @@ public final class FnOsAuthClient {
         }
         if (lower.contains("timeout")) return "连接超时，请确认 NAS 可以从手机访问。";
         return raw.isEmpty() ? "fnOS 登录连接失败。" : raw;
+    }
+
+    private static String safeDiagnostic(Throwable throwable) {
+        if (throwable == null) return "";
+        String message = throwable.getMessage();
+        Throwable cause = throwable.getCause();
+        String causeMessage = cause == null ? "" : cause.getMessage();
+        // Socket diagnostics do not include application credentials or tokens.
+        return (message == null ? "" : message) + (causeMessage == null || causeMessage.isEmpty()
+                ? "" : " cause=" + cause.getClass().getSimpleName() + ": " + causeMessage);
     }
 }

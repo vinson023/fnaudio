@@ -5,13 +5,13 @@
       {
         "type": "text",
         "field": "wizard_server_port",
-        "label": "TCP 服务端口",
-        "initValue": "18080",
-        "helpText": "默认 18080；如果端口被占用，请换一个未占用端口。",
+        "label": "当前服务端口",
+        "initValue": "53199",
+        "helpText": "修改后重启 fnAudio 生效。端口被占用时，请选择其他端口。",
         "rules": [
           {
             "required": true,
-            "message": "请输入 TCP 端口"
+            "message": "请输入服务端口"
           }
         ]
       }

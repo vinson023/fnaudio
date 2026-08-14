@@ -50,9 +50,12 @@ class PlaybackState:
     position: float = 0.0
     duration: float = 0.0
     error: str = ""
+    transport: str = "STOPPED"
+    state_version: int = 0
     updated_at: float = field(default_factory=time.time)
 
     def touch(self) -> None:
+        self.state_version += 1
         self.updated_at = time.time()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -69,5 +72,7 @@ class PlaybackState:
             "position": self.position,
             "duration": self.duration,
             "error": self.error,
+            "transport": self.transport,
+            "state_version": self.state_version,
             "updated_at": self.updated_at,
         }

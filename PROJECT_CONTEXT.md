@@ -1,5 +1,261 @@
 # fnAudio 项目上下文
 
+## 0.2.2 Offline Delivery Hardening (2026-08-14)
+
+- fnpack staging replaces the source UI cache marker with a version plus CSS/JS content hash. A same-version rebuild can therefore not reuse stale browser or WebView code.
+- `/api/diagnostics` returns a scope-protected, redacted support snapshot. Optional Chromaprint/AcoustID matching is disabled by default and requires an executable fpcalc plus `FNAUDIO_ACOUSTID_CLIENT_KEY`; its failure is isolated from the metadata queue.
+- Android Debug remains buildable without secrets. `assembleRelease` now requires all four keystore settings and fails before release preparation when any are absent. A real signed artifact still requires an owner-provided keystore.
+- Offline verification passed: 282 Python tests, Node/UI regressions, 2 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.2/fnaudio-0.2.2-fnpack.fpk`, SHA-256 `8D2BFBA65DA52CC9B2AA1685D24654C8BCF486DAE2A28F2179CB0093F3ED9727`. Android Debug APK: `artifacts/0.2.2/fnaudio-android-0.2.2-debug.apk`, SHA-256 `A2F6009AEEF2EF57046BBDC9B5B278F8F4B48A99729B5B3BB22C48F82C228737`.
+
+## Workspace Layout Cleanup (2026-08-14)
+
+- Release artifacts remain under `artifacts/0.x.y/` for rollback. Historical package inspection, temporary staging, Trim CLI sessions and FN Connect debug outputs are archived under `artifacts/_scratch/2026-08-14/` and ignored by Git.
+- `.android-avd` and `.gradle-cache` are retained as hidden, reproducible Android-test caches. They are intentionally separate from source and may be removed only when disk recovery is needed.
+
+## 0.2.1 Topbar Subtitle Cache Fix (2026-08-14)
+
+- `app.js` previously replaced the initial 0.2.0 topbar subtitle during its first library render. Both desktop and mobile default subtitle fallbacks now use “飞牛私人音乐库”. The Web asset query version is 0.2.1 and Android installation code is 272 to prevent stale JavaScript after overwrite upgrade.
+- Verified source/release version checks, JavaScript syntax, Android Debug assembly and native fnpack payload inspection. FPK: `artifacts/0.2.1/fnaudio-0.2.1-fnpack.fpk`, SHA-256 `F59FF020D739CAD35A94F6A44EEC0B6D9B86EB77C046937C1797FE3CAF6FC755`. Android Debug APK: `artifacts/0.2.1/fnaudio-android-0.2.1-debug.apk`, SHA-256 `5042A8C62CAC832EEB55F85327B45A07515D30E73AE39F32D0D64FC17043BCDE`.
+
+## 0.2.0 Branding and Release Version (2026-08-14)
+
+- Desktop and mobile topbar subtitles are “飞牛私人音乐库”. The App Center manifest description is “本地音乐播放器，支持高解析音乐库、歌词封面补全、USB DAC、DLNA 推送及 Android 锁屏控制。”.
+- User-facing release version is 0.2.0. Android retains an independently monotonically increasing installation code, now 271; `tools/build_release.ps1` validates a positive Gradle `versionCode` rather than deriving it from the display version.
+- Release verification passed: 279 Python tests, Node/UI regressions, 2 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.0/fnaudio-0.2.0-fnpack.fpk`, SHA-256 `7441A3446CD239A3F8561894736068F904885464AD47D4799A84F4B508CDE7EE`. Android Debug APK: `artifacts/0.2.0/fnaudio-android-0.2.0-debug.apk`, SHA-256 `38E61CE3D0533EB34B00AB2DFC44DB58F169E6CAAA9808A12A41CC3C64024983`.
+
+## 0.1.270 P1-P3 Backlog Reconciliation (2026-08-14)
+
+- Metadata candidate review can now select any stored candidate. The UI posts only a candidate index; the service validates the index against that specific track, updates its persisted `best` candidate and keeps safe blank-field-only Tag writeback.
+- Added a Windows GitHub Actions workflow using the same offline, Playwright, Android and fnpack verification path as local releases. The current repository has no Git remote, so cloud execution is correctly retained as an external TODO.
+- Library root merge/apply behavior now lives in `library.py`; the settings API no longer maintains a divergent server-local implementation. `TODO.md` was rewritten to reflect current P1-P3 status and external blockers.
+- Verification passed: complete offline regression suite (279 Python tests, all Node UI regressions, 2 Playwright E2E tests), Android `:app:assembleDebug`, and native fnpack inspection. The authorized LAN test host `198.51.100.24` runs `0.1.270` on port `18083`; its health endpoint reports healthy server, MPD, library and metadata services. FPK: `artifacts/0.1.270/fnaudio-0.1.270-fnpack.fpk`, SHA-256 `754F653F45A5B43A9CABC417E26A625F94A906AE89E20DE8A16C0C2A00085F10`. Android Debug APK: `artifacts/0.1.270/fnaudio-android-0.1.270-debug.apk`, SHA-256 `61679351FC93E2D9914ECD654971A7893A908FFA0A099943E830542BF4B17599`.
+
+## P1-P3 Backlog Reconciliation (2026-08-14)
+
+- Re-audited the historical P1/P2 review against the current source rather than treating its `0.1.172` findings as current. Resource gates, structured observability, inotify change monitoring, state conflict merging, Spotify removal, version synchronization, source hygiene, and DLNA ContentDirectory semantics now have concrete implementations and automated coverage.
+- Added explicit selection for review-state metadata candidates. The client submits only an index; the server validates it against the stored track-local candidate list, promotes that candidate to `best`, and retains the existing blank-fields-only Tag writeback rule.
+- Added `.github/workflows/verify.yml`, which reuses `tools/test_offline.ps1 -Browser`, Android Debug assembly, and the native fnpack release inspection. No Git remote is configured locally, so cloud execution remains an external follow-up rather than a claimed result.
+- Consolidated library root merge/apply behavior in `library.py`, removing the divergent server-local copy. `TODO.md` now distinguishes completed P1-P3 engineering work from external credentials, real-device, remote-repository, signing and backup dependencies.
+
+## 0.1.269 Cancellable Cover Prewarm (2026-08-14)
+
+- Cover thumbnail generation shares the global FFmpeg concurrency gate with playback/transcode work. Library cache prewarming runs in 24-track pages with a 150 ms inter-page delay and uses a 50 ms acquisition timeout, therefore it yields rather than competing with interactive requests.
+- The per-cache-root prewarm worker is cancellable. Re-scan requests atomically replace remaining work; application shutdown signals and joins workers. Cancellation is checked after cover extraction and before thumbnail/negative-cache writes, preventing the former temporary-directory cleanup race.
+- Verification passed: complete offline regression suite (277 Python tests, all Node UI regressions, 2 Playwright E2E tests), plus Android `:app:assembleDebug`. The authorized LAN test host `198.51.100.24` was fast-deployed with rollback protection; its manifest and live process report `0.1.269` on port `18083`, and `/api/health` reports healthy server, MPD, library, metadata and zero active FFmpeg tasks. FPK artifact: `artifacts/0.1.269/fnaudio-0.1.269-fnpack.fpk`; SHA-256 `B5B8A2ABB630762B7A5A4D71D3DA8D8386C9CA76FAA0915CBC94DD276B3F14E5`. Android debug APK: `artifacts/0.1.269/fnaudio-android-0.1.269-debug.apk`; SHA-256 `E138D7C7268BC36C155B25DF4CFA771AA39587145FAF7DF0B979737A44827ECC`.
+
+## 0.1.268 Remote Notification No-Reload Return (2026-08-14)
+
+- Fixed the notification-return regression: the `MainActivity` single-task `onNewIntent` path now ignores the notification-only action before its profile-switch `recreate()` branch. Tapping a remote media notification resumes the existing WebView without a page reload. API 35 Android-emulator regression tests passed.
+- FPK artifact: `artifacts/0.1.268/fnaudio-0.1.268-fnpack.fpk`; SHA-256 `55991775E3551F032632E1FC2752679B3D437087DF5A306AC514937848556AFE`. Android debug APK: `artifacts/0.1.268/fnaudio-android-0.1.268-debug.apk`; SHA-256 `034FDAA0F2AA59C7252D958493F583691B0D2FF569C803D8533956269D327126`.
+
+## 0.1.267 Remote Notification App Return (2026-08-14)
+
+- Remote media notifications carry an immutable content `PendingIntent` to the existing `MainActivity`. Tapping the notification restores the app rather than starting a new login flow. API 35 emulator notification checks passed, including the content intent.
+- FPK artifact: `artifacts/0.1.267/fnaudio-0.1.267-fnpack.fpk`; SHA-256 `A4698E8615AB9DA67AB8747E287BA17FE549EA800DFE284A510A809C169E9A88`. Android debug APK: `artifacts/0.1.267/fnaudio-android-0.1.267-debug.apk`; SHA-256 `958BB2F150F3BE5CF5A29CB8393F59382CCDBC1B728F3486E91651B6015F8F09`.
+
+## 0.1.266 Remote Playback Media Notification (2026-08-14)
+
+- Android remote outputs (USB DAC and UPnP/DLNA) now use the same Media3-owned foreground media notification as local playback. `PlaybackService` forces a media-style notification after binding `RemotePlaybackPlayer` to its `MediaSession`, including paused/connecting states; no independent plain notification remains to lose lock-screen controls.
+- Source and release surfaces are `0.1.266`. JavaScript and release-version checks pass; the API 35 Android emulator verified both `dac:*` and `upnp:*` targets publish a foreground `MediaStyle` notification with the active `MediaSession` token. The formal FPK passes fnpack validation.
+- FPK artifact: `artifacts/0.1.266/fnaudio-0.1.266-fnpack.fpk`; SHA-256 `B3C85534A1C36F84FCF4D2D501300D1ED74E8EB4DA45C1E8562AA6B093388DD0`. Android debug APK: `artifacts/0.1.266/fnaudio-android-0.1.266-debug.apk`; SHA-256 `26D12A4084590E84F13F2D01C61C54F1DCE3EF80858671D789A39375478F0877`.
+
+## 0.1.265 Mobile Track Menu (2026-08-14)
+
+- Source and release surfaces are `0.1.265`; touch long-press menus omit file-manager navigation and external sharing while desktop context menus retain them.
+- FPK artifact: `artifacts/0.1.265/fnaudio-0.1.265-fnpack.fpk`; SHA-256 `8453EA1E09CFB84E7D3732AB3A2BA2A87B1419E3FDB51A1D453E5F8F3A7BDCF6`.
+
+## 0.1.264 Favorite State Synchronization (2026-08-14)
+
+- Source and release surfaces are `0.1.264`; the current-track favorite controls now refresh after every server-state merge and confirmed queue/core update.
+- Favorite track IDs are normalized to strings at comparison time, preventing numeric/string transport differences from producing a false inactive state.
+- FPK artifact: `artifacts/0.1.264/fnaudio-0.1.264-fnpack.fpk`; SHA-256 `D9C6117D9D91030775ADA3ABA3D9E77E52A8F7D9AE18BAA1845DBEFE6B6B7602`.
+
+## 0.1.263 UI Tool Icon Refresh (2026-08-14)
+
+- Source and release surfaces are `0.1.263`; this patch release refreshes the player and top-bar tool iconography only.
+- FPK artifact: `artifacts/0.1.263/fnaudio-0.1.263-fnpack.fpk`; SHA-256 `578B52A58AD7BF490A64111A039A16BBD27F9D4F3B5720E503EB44AFF5805023`.
+- The FPK was built exclusively through `tools/build_release.ps1` and `tools/fnpack.exe`; its outer package and inner payload validation passed.
+
+## 0.1.262 App Center Upgrade Validation (2026-08-14)
+
+- Source and release surfaces are now `0.1.262`; the higher version is required because App Center rejected same-version `0.1.261` as already installed.
+- Formal App Center overwrite-upgrade validation is in progress. The authoritative artifact will be `artifacts/0.1.262/fnaudio-0.1.262-fnpack.fpk`.
+- Do not classify fast deployment as App Center upgrade evidence. Record service health, port, retained configuration, lifecycle logs, and rollback separately.
+
+## 0.1.261 Track Metadata Enrichment (2026-08-14)
+
+- Current implementation is no longer limited to lyrics and artwork. `metadata_track_matches` stores scored recording candidates for files with filename/unknown title, artist or album fields.
+- Existing providers are reused in a bounded background queue: MusicBrainz remains available for album lookup; NetEase, QQ, Kugou, Migu, JOOX and Qianqian provide recording candidates, lyrics and/or artwork.
+- Auto writeback requires confidence >= 0.90 and a 0.08 lead over the next candidate. It only fills blank or filename-derived metadata; existing embedded tags remain authoritative.
+- Lower-confidence or close candidates stay in `review` and are exposed through `GET /api/metadata/track?track_id=...`; `POST /api/metadata/track/apply` confirms one candidate. The UI exposes this under song actions as `元数据补全候选`.
+- Current playback prioritizes lyrics first, track matching second, album artwork next, then the serialized tag writer. All FPK release artifacts continue to be built only with fnpack.
+
+## 2026-08-13 0.1.238 Android 退出登录预填
+
+- 修复 `0.1.237` 主动退出返回登录页被统一清空的问题。MainActivity 现在显式传递 `prefill_active_profile`，登录页显示刚才连接的地址/FN ID、账号和已加密保存的密码，但不自动登录。
+- 普通冷启动仍只自动恢复会话且不闪现 FN ID；历史记录的“新增连接”仍为空白表单，三种入口互不混用。
+- Android 35 模拟器 6 项 instrumented tests 全部通过；双返回退出测试明确断言登录地址恢复为刚才使用的 `127.0.0.1:动态端口`。JVM、lint、assembleDebug 和发布校验通过。
+- APK：`artifacts/0.1.238/fnaudio-android-0.1.238-debug.apk`，SHA-256 `030EAD4ED5DF356FAB159A689E4B76010EEDBA9A8509BEEEC13CF38EF37DBDE2`。
+- FPK：`artifacts/0.1.238/fnaudio-0.1.238-fnpack.fpk`，SHA-256 `6AB548B0F6420A573FEDBCE2CEBF303A87EC2999DC0D8C45F07953A5BD8F24B1`。本次仅 Android 行为修复，物理手机未连接，未执行真机覆盖安装。
+
+## 2026-08-13 0.1.237 Android 封面认证与登录历史
+
+- Android `/cover/` 请求恢复走并发 OkHttp 资源代理，显式携带 fnOS Bearer、`X-Fnaudio-Trim-Token` 和认证 Cookie；Web session 缺少请求 Cookie 时从 CookieManager 获取。服务端 160px 持久缩略图和 immutable 缓存保持不变。
+- 登录页主动返回时为空白，不再默认显示活动 FN Connect ID。手动输入与当前记录不同的地址时，清除旧 `FN Connect - ...` 名称并生成独立 profile ID，因此新地址可以作为第二条历史记录保存。
+- Android 模拟器测试增加实际私有封面请求的三类认证信息断言。物理小米手机在本轮修改时未出现在 ADB 列表，真机安装验收待设备重新连接。
+- Android 35 模拟器 6 项 instrumented tests 全部通过：封面 GET 确认包含 Bearer、trim token、认证 Cookie，登录空表单/多历史记录、WebView、MediaSession 等回归通过。JVM、lint、assembleDebug 同样通过。
+- 内网机应用中心已安装 `0.1.237`，manifest 与 HTTP `Server` 头确认版本，后端端口仍为 `18083`，已有 228 个 160px 缩略图缓存文件保留。
+- FPK：`artifacts/0.1.237/fnaudio-0.1.237-fnpack.fpk`，SHA-256 `D4A153F949266723927FD95AA44E39D88F2CF5C7D2F50A8D616DAD23239D8281`。
+- APK：`artifacts/0.1.237/fnaudio-android-0.1.237-debug.apk`，SHA-256 `61FFA8ACB0D363665E25AE364D6F009C8B6927078D635718B4DD7EB30D3EB5A4`。物理手机未在线，未执行真机覆盖安装。
+
+## 2026-08-13 0.1.236 封面缩略图缓存
+
+- 列表封面不再传输歌曲内的原始大图：`/cover/{id}?size=160` 首次生成 JPEG 缩略图并持久保存到 `<cache_dir>/covers/thumb-160/`，播放页、歌词和 Android MediaSession 使用 `size=512`。
+- 相同封面版本并发只生成一次，全局最多同时执行两个缩图 FFmpeg；HTTP 缓存为 30 天 immutable。源文件 `modified_ns` 改变会自然使用新缓存键。
+- 无封面结果保存 `.none` 负缓存，后续音乐库响应不再下发无效 `cover_url`，前端直接显示统一音乐符号。
+- 缩略图缓存只读歌曲文件，不修改音频 Tag。定向 Python/Node 回归通过；完整测试 252 项中 251 项通过，唯一失败为 Windows 上既有的音乐目录路径边界测试，与本改动无关。
+- 真机 CGI 验证时修复无封面 `<img>` 失败回退在删除节点后访问空父节点的问题，避免 Chromium/Android WebView 控制台错误。
+- 内网机 `198.51.100.24` 已通过应用中心覆盖安装 `0.1.236`，后端继续运行于 `18083`；manifest 与 HTTP `Server` 头均确认版本正确。
+- 真机冷/热探针：`1973` 原封面 3,033,166 bytes，160px 缩略图 4,795 bytes，冷生成 241.57ms、磁盘热命中 0.17ms；无封面 `abcdefu` 首次确认 1.75ms、负缓存命中 0.09ms。
+- 真机 CGI 首屏确认列表图片 `naturalWidth=160`，当前播放图片 `naturalWidth=512`，浏览器控制台 error/warning 为 0。
+- FPK：`artifacts/0.1.236/fnaudio-0.1.236-fnpack.fpk`，SHA-256 `1DD34389105D2FDC022DDEEEB7AECCA49F63E0203395386E1F46AEBF2670BB0B`。
+
+## 2026-08-13 0.1.227 FN Connect Public Direct
+
+- Product decision: Tpps relay is removed. Android no longer includes Tpps JNI, Go runtime, remote signer, `libgojni.so`, `libsskit-native.so`, or `127.0.0.1:9018` routing.
+- FN ID discovery now probes public IPv6 first and public IPv4 only as fallback, then uses normal fnOS WebSocket token authentication and fnAudio WebView loading.
+- Xiaomi 15 Pro verified APK installation and the IPv6-first / relay-disabled policy UI. Complete FN ID login, library loading, and playback require a real network with reachability to the NAS public IPv6 route.
+
+## 2026-08-12 0.1.225 真机封面写回修复
+
+- 当前发布和内网机安装版本为 `0.1.225`；App Center 状态 `running`，HTTP 版本头为 `fnAudio/0.1.225 Python/3.12.4`。
+- 修复 `album_artist` 为空时缓存键与 Tag 写回键不一致，以及专辑封面批量入队遗漏歌曲的问题。
+- 新增一次性 `tag_write_backfill_version=1`：对已有有效缓存封面的歌曲重新排入低速 Tag 写回，不清空缓存、不重复下载，后续启动不重复迁移。
+- 真机精确探测发现 99 个有效缓存候选中有 92 个缺少内嵌封面。两个验证样本完成后降为 90；后台样本 15 秒内从 `pending` 变为 `done`。
+- `Steve Lacy - Bad Habit.mp3` 写回前后完整解码通过，提取封面哈希与缓存一致，原 title/artist/album/lyrics、duration、owner/mode 均保留。
+- FPK：`artifacts/0.1.225/fnaudio-0.1.225-fnpack.fpk`，SHA-256 `0E86B11F41519AD7D17FD49A815031EDDC0784EEA0BB5E58EC45D8C9A136C6AA`。
+- 完整证据见 `docs/REAL_DEVICE_COVER_BACKFILL_0.1.225.md` 与 `artifacts/0.1.225/real-device/`。
+
+## 2026-08-12 连续离线改造状态
+
+- 1-9 连续自动目标和后续 Android 模拟器自动化已经完成；该离线阶段发布版本为 `0.1.223`，之后已由 0.1.225 真机封面写回修复取代。
+- 目标 1：扫描、元数据、转码、FFmpeg、缓存和磁盘水位具有统一硬边界；当前歌曲可抢占普通待办，取消/超时不发布部分索引。
+- 目标 2：MPD 错误按 media/transport/decoder/output/queue/database/backend 分类；只有真实 buffer underrun 进入旧计数，损坏媒体与缺少解码器不会触发 DAC 重启。
+- 目标 3：已知源码乱码、重复作用域定义、重复字典键、不可达代码和旧 DSD->PCM 未调用路径已清理，并由源码卫生测试持续阻止回归。
+- 目标 4：`playback/http_contract.py` 集中目标、队列、SSE 和旧 API 转换；五个旧写入口保留兼容但返回明确弃用头。
+- 目标 5：HTTP、token/scope、Range、媒体流、FFmpeg 并发、MPD/FPK 生命周期和 Chromium E2E 已纳入统一离线入口；验包检查 9 个生命周期命令、权限/资源声明、wizard 和关键 payload。
+- 目标 6：Linux 使用 inotify + generation 检测变化；仅在不可用、溢出、错误或真实 dirty 时回退完整 O(n) 签名扫描。
+- 目标 7：upmpdcli 只做兼容探测，不由 fnAudio 管理或占用设备；Mixer 默认 bit-perfect `none`，hardware 仅接受真实 Playback Volume 控件，software 明确非 bit-perfect。
+- 目标 8：Android 自签名 HTTPS 在首次发送凭据前固定按连接的完整 DER 证书 SHA-256；WebSocket、OkHttp、媒体、封面和 WebView 共用指纹，变化时拒绝。
+- 目标 9：私有目录/文件为 `0700/0600`，公开 UI 为 `0755/0644`；配置和缓存原子写，SQLite 主/WAL/SHM 加固，Tag 替换保留属主/mode，扫描/CUE/真实路径/卸载 purge 阻止越界。
+- 主服务暂不降权：fnOS 共享目录、ALSA/DAC、SSDP 与 Tag 写回仍需现有权限；降权必须等待稳定 ACL 和音频组契约并做部署迁移验证。
+- `TODO.md` 已删除重复和已完成事项，只保留 fnOS/外部数据、设备/协议对端、Android 系统集成与负责人决策。
+- 详细设计见 `docs/RESOURCE_LIMITS_20260811.md`、`PLAYBACK_ERROR_TAXONOMY.md`、`PLAYBACK_API_COMPATIBILITY.md`、`LIBRARY_CHANGE_DETECTION.md`、`PLAYBACK_OUTPUT_POLICY.md`、`ANDROID_HTTPS_PINNING.md` 和 `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`。
+- 最终统一离线验证通过：238 个 Python 测试、JavaScript 语法检查、5 个 Node UI 回归和 2 个 Chromium E2E；Android 另通过 2 个 JVM 单元测试、`lintDebug` 与 `assembleDebug`。
+- 当前 FPK：`artifacts/0.1.223/fnaudio-0.1.223-fnpack.fpk`，SHA-256 `6CBE385C472EC53099EFDE1CAC412208EF09C47FD028A51E0F12CFCFA13E574B`。
+- 当前 Debug APK：`artifacts/0.1.223/fnaudio-android-0.1.223-debug.apk`，SHA-256 `7CA0EBA584FFC937F939E195979E212F58DEE26AF0E79169C4A3333A72DDE40A`；版本身份为 `versionCode=223`、`versionName=0.1.223`、`minSdk=23`，v1/v2 Debug 签名校验通过。
+- 完整复现命令、九项目标边界和验包说明见 `docs/OFFLINE_ENGINEERING_0.1.222.md` 与 `docs/ANDROID_EMULATOR_TESTING.md`；当前文件哈希以 `artifacts/0.1.223/SHA256SUMS` 为准。
+- Android API 35 ATD 模拟器自动化已完成：6 项 instrumented 测试覆盖加密多连接记录、历史界面、匹配/变化的自签名 HTTPS 指纹、Mock fnOS WebSocket 认证后的 WebView 加载与双击返回登录、Media3 远程队列和控制命令，以及 Debug APK 安装后的 `versionCode`。测试中发现并修复 `RemotePlaybackPlayer` 的 `COMMAND_RELEASE` 生命周期处理与 indexed seek 命令声明；复现入口为 `tools/test_android_emulator.ps1`，边界见 `docs/ANDROID_EMULATOR_TESTING.md`。
+
+## Earlier 0.1.222 device evidence (2026-08-11)
+
+- Non-DLNA APIs now require a loopback CGI/native proxy request carrying both
+  an fnOS token and the route's explicit scope. Direct LAN access is rejected
+  even when a caller claims scopes. Library, playback, state, settings and file
+  operations have separate permissions; `/api/health` and `/api/access` remain
+  public. Real-path containment blocks symlink escapes and shared-folder
+  deletion is limited to currently configured roots. Full verification passed
+  with 162 Python tests and all Node UI regressions.
+- DLNA outbound network access now passes through `dlna/network.py` for SSDP
+  description locations, SOAP/SCPD requests, GENA callbacks and Renderer media
+  URIs. Only credential-free HTTP(S) endpoints resolving exclusively to LAN,
+  loopback or link-local addresses are accepted; redirects and oversized XML
+  responses are rejected. Full offline verification passed with 157 Python
+  tests and all Node UI regressions.
+- `TODO.md` was consolidated into a current-action list: offline work,
+  deployment dependencies, physical-device acceptance and owner decisions are
+  separate sections. Historical release evidence remains in this document and
+  `docs/`, rather than being duplicated as active work.
+- The reproducible offline FPK release path is now `tools/build_release.ps1`.
+  It stages a disposable copy of the authoritative `src/` tree, excludes
+  local tests and bytecode, validates the fnOS, Web and Android version
+  surfaces, then verifies the outer FPK and inner app payload before writing
+  the SHA-256 beside the artifact.
+- An earlier reproducible 0.1.222 rebuild produced SHA-256
+  `9804F776935DA64D74FFA43C8FC31B75132C3B0D8B661A6F41D762C7DA89BE92`.
+  That historical same-version package has been superseded by the final
+  artifact recorded above; do not use the old hash for the current file.
+- App Center successfully upgraded the real DAC NAS to `0.1.222`; both App
+  Center status and the running HTTP `Server` header reported `fnAudio/0.1.222`.
+- A TEAC UD-301 USB DAC acceptance run traversed 20 isolated PCM tracks at
+  44.1-352.8 kHz. Every queue position was observed, maximum underrun was zero,
+  and the original 19-track stopped session was restored exactly.
+- The complete raw log is at
+  `artifacts/0.1.222/real-device/fnaudio-dac-queue-0.1.222.log`; the recovery
+  record is `docs/REAL_DEVICE_DAC_QUEUE_0.1.222.md`.
+- Do not mark the overall USB DAC P0 item complete. Physical replug, background
+  or screen-off playback, DoP-only hardware, Renderer, AirPlay and Android
+  acceptance still require real-device evidence.
+- The controlled 0.1.222 MPD restart validation passed with
+  `restart_verified=1` and `restore_verified=1`; the generic runner is
+  `tools/real_device_mpd_restart_run.sh`, and its raw log is
+  `artifacts/0.1.222/real-device/fnaudio-mpd-restart-validated-0.1.222.log`.
+- Environment discovery at the same time found no external UPnP Renderer, no
+  active AirPlay receiver tooling, and no Android device attached through ADB.
+
+## 0.1.205 当前真机状态（2026-08-10）
+
+- 当前权威安装版本为 `0.1.205`，已通过 fnOS App Center UI 覆盖安装到 `vinson023.eu.org:5666`；服务头为 `fnAudio/0.1.205 Python/3.12.4`。
+- TEAC UD-301 的 API 驱动 PCM 复验：44.1 kHz/16-bit FLAC 播放至 105.60 秒，MPD 原生队列 20 首、`fault.state=PLAYING`、`underrun.count=0`。
+- 同一 DAC 完成 API 播放控制闭环：暂停/恢复状态和进度正确，seek 到 30 秒后继续推进，next/previous 均成功且队列保持 20 首。
+- TEAC UD-301 的 DSF 与 DFF 再次分别实测为 `dsd64:2`；两者均为 Native DSD、无 PCM fallback、无 underrun。详见 `docs/REAL_DEVICE_DAC_RECHECK_0.1.205.md`。
+- DSD 测试后已通过 fnAudio API 恢复为原 20 首队列、原当前曲和 STOP 状态；`fault.state=IDLE`，不存在残留测试播放或假阳性故障。
+- 目标 1–7 仍未全部完成：物理热插拔、小时级/息屏、DoP-only DAC、外部 DLNA Renderer、Android 真机/正式签名，以及 App Center 卸载与端口生命周期仍需真实环境证据。
+- 0.1.205 TEAC UD-301 90 分钟受控长测已完成：181 个有效样本、12 个 MPD songid、11 次自然自动跨曲，测试队列始终为 20、最大 underrun 为 0；结束时逻辑队列为 20 且 STOP。后续发现历史恢复清单有无效 ID，MPD 原生恢复长度尚需以修复后的脚本重新核验；详见 `docs/REAL_DEVICE_LONG_RUN_0.1.205.md`。
+- 长测第 146–148 个样本出现 API timeout 对应的短暂 `fault.state=SUSPECT`，但 MPD 原始状态始终为 `play`、underrun 仍为 0，随后自行回到 `PLAYING`；不能将它掩盖为“零异常”。
+- `/tmp/real_device_short_queue_after_long.sh` 已完成 20 个不同短曲的自然自动下一曲；全过程测试队列保持 20、PLAYING、underrun 0。旧脚本的恢复清单有 4 个错误 ID，导致 MPD 原生队列仅 16 首；第一次独立恢复又保留了一个历史无效 ID，原生队列为 19 首。恢复清单现已根据当前音乐库查询改为 20 个有效 ID，但最终恢复命令因 SSH 中断未提交；恢复后必须确认原生队列为 20、STOP、当前曲和 fault。日志为 `/vol1/1000/fnaudio-short-queue-0.1.205.log` 与 `/vol1/1000/fnaudio-short-queue-recovery-0.1.205.log`。
+- 本轮新增恢复说明 `docs/REAL_DEVICE_AUTOMATION_0.1.205.md` 和可复用脚本 `tools/real_device_short_queue_after_long.sh`，会话删除后可凭真机持久日志继续审计。
+- 目标 2 的物理验收已准备 `tools/real_device_usb_hotplug_capture.sh` 与 `docs/USB_HOTPLUG_REAL_DEVICE_PROCEDURE.md`；脚本只读采样 `/proc/asound/cards` 与 MPD 状态，严禁 sysfs 模拟，仍需实际拔出/插回 TEAC UD-301 才能完成。
+- 目标 7 回调集成测试发现并修复安装回调端口保留顺序缺陷：已有 `19001` 在 `18080` 被占用时不再错误漂移为 `18081`；NAS 临时夹具已通过 install/config/upgrade/uninstall keep/purge 全流程。
+- 长测约 12 分钟阶段已覆盖第 0–3 首（24 个样本），仍为 `PLAYING`、20 首队列、最大 underrun 0；runner 尚未结束。
+- 长测日志已同步到真机持久路径 `/vol1/1000/fnaudio-long-play-0.1.205.log`，会话删除后可从该路径恢复证据。
+
+## 历史：0.1.202 当前状态（2026-08-09）
+
+- 版本基线已提升至 `0.1.202`，FPK/APK 产物位于 `artifacts/0.1.202/`。
+- 通过 App Center UI 覆盖安装到 `vinson023.eu.org:5666`，应用状态 `running`，HTTP Server 头为 `fnAudio/0.1.202 Python/3.12.4`。
+- 修复 ALSA 探测在 MPD 刚停止时的短暂 `EBUSY` 状态：DSD 请求强制刷新能力并最多短暂重试，仍不允许未验证 DSD 转 PCM。
+- TEAC UD-301 真机 DSF 与 DFF 短测均成功，MPD 报告 `audio: dsd64:2`，`native_dsd_verified=true`，`server_transcode=false`，`underrun.count=0`。
+- 真机短周期回归完成：20 首 PCM 原生队列自动推进到第 20 首，队列长度保持 20，`underrun.count=0`；App Center restart 后队列长度和当前索引恢复，初始 STOP 状态保留，显式 play 后可继续播放。完整证据见 `docs/REAL_DEVICE_REGRESSION_0.1.202.md`。
+- TEAC UD-301 矩阵短测完成：44.1/48/96/176.4/192 kHz PCM 与 DSF/DFF Native DSD64 均进入预期 PLAYING，384 kHz 以 502 明确拒绝且无隐式重采样，所有步骤 `underrun.count=0`；详见 `docs/PLAYBACK_MATRIX_0.1.202.md`。
+- 追加 45 秒 96 kHz FLAC 连续播放监测：9 次进度采样连续增长，MPD stream `96000:24:2`、fault state `PLAYING`、`underrun.count=0`，结束后原队列/STOP 状态恢复。
+- 真机系统日志显示为 2026-08-10，而开发环境日期为 2026-08-09；后续分析日志时间必须考虑设备时钟偏移。
+- 真机日志中的 GAYLE FLAC lost-sync 通过独立 ffmpeg 校验确认是源文件 `invalid sync code`/`invalid frame header`；后续错误处理应区分损坏媒体与 DAC/MPD 故障。
+- 真机 DLNA 探测当前 `/api/upnp/devices` 为空，`/api/dlna/renderer/status` 仅是本地控制状态，不能作为外部 Renderer 互操作完成证据。
+- Android Release 构建链路已通过，但无 keystore 时只生成 `app-release-unsigned.apk`，apksigner 验证失败；正式签名仍是目标 6 的未完成项。
+- 真机 `/api/config/library` 边界回归通过：非法端口和不存在目录被拒绝，同端口保存不触发重启，最终端口仍为 18080、音乐库 536 首、20 首播放队列保持不变。
+- App Center 三个生命周期脚本已兼容 `/ui` 扁平安装布局；旧日志中的 `/target/ui/service_port.json` 报错属于历史版本记录。
+- 目标 1–7 尚未全部完成：长时间连续播放、热插拔、DLNA Renderer、Android 多机型后台/通知和正式签名包仍需硬件验收。
+
+## 0.1.201 当前状态
+
+- 修复 `src/app/ui/app.js` 的 `restorePlaybackSession()`：持久化队列按每批 100 个 ID 请求 `api/library/items`，单批 CGI/代理失败不会清空已缓存队列。
+- 真机 `vinson023.eu.org:5666` 已通过 App Center UI 覆盖升级 0.1.201；App Center CLI 查询显示 `fnaudio` 版本 `0.1.201`、状态 `running`。
+- 真机验证：重开 fnAudio 后当前队列显示 `536` 首，当前歌曲显示“已恢复播放设备”且进度持续变化；后端 SQLite 同时保存 536 首队列和当前歌曲 ID。
+- 本地验证：Python unittest 112 项通过；Node UI 队列、移动端布局、Android bridge 回归全部通过；Android `lintDebug assembleDebug` 通过。
+- 构建产物：`artifacts/0.1.201/fnaudio-0.1.201-fnpack.fpk`（SHA-256 `8C5F550FED94D62489B7FEC382BE0FDE4F8BEE13D5B045CFA69C74E67D41F7C1`）、`artifacts/0.1.201/fnaudio-android-0.1.201-debug.apk`（SHA-256 `F67955278F3774F5C7A34DBE1A9E8CA0F162129E67DD8CE8B6CFE539389052D0`）。FPK 使用 `tools/fnpack.exe 1.2.3` 构建；FPK 通过 App Center UI 安装，CLI 因自定义向导限制不能直接完成安装。
+
+## 0.1.198 本轮进展
+
+- Android 远程输出 MediaSession 的 repeat/shuffle 命令改为携带目标值，服务端和 `PlaybackCore` 支持显式幂等更新；无目标值时仍按旧逻辑切换。
+- 新增两项回归测试；全量 Python 测试 109 项通过，Android `lintDebug` 与 `assembleDebug` 通过。
+- `vinson023.eu.org` 的 App Center/SSH 仍不可达，目标 1–7 中涉及真实 DAC、Renderer、Android 多机和 App Center 生命周期的条目继续保持未完成。
+- `src/cmd/install_callback` 已改为合并既有 `config.json`，覆盖安装不再清空 MPD/输出/DLNA 等设置；新增生命周期脚本测试，Python 总测试数增至 111。
+- 已重建 `artifacts/0.1.198/fnaudio-0.1.198-rebuild.fpk`，包内版本、app.tgz checksum 和关键源码回读通过；备用机 CLI dry-run 明确要求 App Center UI 向导，尚未安装该重建包。
+- 备用机生命周期步骤和恢复要求记录在 `docs/APPCENTER_LIFECYCLE_0.1.198.md`，后续会话可直接按该文档继续，不依赖当前对话历史。
+
+> 历史记录：`0.1.198`（2026-08-09）。该段仅保留当时的构建与连通性上下文，不是当前权威版本。
+
 ## 0.1.175 当前状态（2026-08-07）
 
 - 当前统一版本：`0.1.175`；正式构建产物位于 `artifacts/0.1.175/`。
@@ -19,7 +275,7 @@
 
 ## 测试环境注意
 
-- NAS 进程日志时间显示为 2026-08-08，而当前开发基准日期为 2026-08-07；若出现会话时间、缓存过期或日志排序异常，先核对 NAS 系统时钟/时区。
+- 当前开发基准日期与 NAS 日志日期均为 2026-08-08；若出现会话时间、缓存过期或日志排序异常，仍应先核对 NAS 系统时钟/时区。
 
 ## 0.1.173 历史开发状态（2026-08-07）
 
@@ -34,7 +290,7 @@
 - 尚未真机确认：USB DAC 首帧/停止行为、DLNA 不支持 NextURI 时的后台连续播放、Android 远程输出模式的通知栏/锁屏媒体卡片、具体“解析错误”手机及 DSD 设备矩阵。不得把本地测试描述为真机通过。
 - Volumio 与 moOde 参考源码缓存在 `C:\path\to\fnAudio\references\volumio3-backend`、`volumio2-ui`、`moode`；固定提交与分析见 `references/README.md` 和 `references/FNAUDIO_REFERENCE_ANALYSIS.md`，第三方仓库不进入 FPK/APK 或产品提交。
 
-> 更新日期：2026-08-07  
+> 更新日期：2026-08-08  
 > 当前项目根目录：`C:\path\to\fnAudio`  
 > 源码基线来源：`E:\Codex\fnaudio-0.1.7`  
 > 历史可识别发布版本：`0.1.173`  
@@ -534,3 +790,403 @@ Get-Content manifest -Encoding UTF8
 ```
 
 涉及 MPD、FFmpeg、ALSA、fnOS API、真实目录权限、SSDP 或 DLNA 的结果，必须在 fnOS 真机环境再次验证，不能只依据 Windows 本地测试判定完成。
+# 0.1.177 播放栈改造增量（2026-08-08）
+
+本轮在不引入 Volumio/moOde 运行时代码的前提下，完成了播放后端的第一批结构化改造。详细对比见 `docs/PLAYBACK_STACK_COMPARISON.md`。
+
+已完成：
+
+- `PlaybackState` 新增 `transport`、`state_version`；`PlaybackCore.sync_output_status()` 只接受当前选中输出的异步状态，避免旧输出晚到事件覆盖当前目标。
+- `OutputPlugin` 增加默认 `status()`、`supports_action()`、`owns_audio_device()`、`preload_next()`、`recover()` 契约，旧 callback 插件仍兼容。
+- MPD idle listener 现在对每次 idle 事件回调，服务端将播放、暂停、停止、输出变化合并到 PlaybackCore；不再只有 transport 切换才同步。
+- MPD status 增加 `stream` 字段，报告 `format/sample_rate/bit_depth/channels/dsd/bitperfect_candidate`；能力字段增加 `dsd_mode/native_dsd_verified/bitperfect`。
+- MPD 生成配置默认 `mixer_type none`、`dop no`，即优先 bit-perfect/native DSD；native DSD 尚未声称验证通过。
+- DLNA Control Point 解析并缓存 `GetProtocolInfo`、AVTransport SCPD actions；`SetNextAVTransportURI` 只在设备声明支持时使用，能力暴露给 UI。
+- 新增服务端 `start_remote_output_monitor()`：外部 DLNA Renderer 在后台自动续播；支持 NextURI 的设备通过当前 URI 回写队列，不支持的设备由服务端推进下一首。
+- 新增 `/api/airplay/status`，真实探测 `shairport-sync` 和 `nqptp`，缺依赖时明确不可用。
+- 前端不再和服务端竞争远端自动下一首，避免重复推进/跳歌。
+
+未完成/需真机验证：
+
+- MPD decoder underrun watchdog、有限重启和队列恢复尚未实现。
+- native DSD/DoP、USB DAC 热插拔、开头卡顿和停止残音需真实 USB DAC 验证。
+- AirPlay 目前只有依赖探测，还没有 Receiver supervisor、metadata 和 ALSA ownership。
+- DLNA 设备的 SOAP 超时、重试、Previous quirks 和 GENA eventing 仍需兼容矩阵验证。
+- 0.1.176 Android 远程播放通知/锁屏和服务重启恢复仍需真机验证。
+
+0.1.177 NAS 验证结果：
+
+- 已部署到 `198.51.100.24`，运行 manifest `0.1.177`，实际端口 `18081`；228 首歌曲和 5 首 DSD 保留。
+- MPD 0.23.12 单实例运行，配置确认 `mixer_type "none"`、`dop "no"`；测试机没有 USB ALSA 播放设备，因此 USB DAC/native DSD 仍不能宣称硬件验收完成。
+- 真实 Renderer `DESKTOP-EEIDGH9` 的 FLAC 推送、暂停、恢复、设备侧 NextURI 切换和队列回写通过。
+- DSF 源码推送最终进入 PLAYING；资源响应为 `audio/x-dsf`、长度 `145081232`、支持 Range，文件头为 `DSD `。首次尝试曾出现 SOAP 接受后 STOPPED，最终代码已加入 4 秒启动宽限与明确拒播错误。
+- NAS 未安装 `shairport-sync`/`nqptp`，`/api/airplay/status` 正确返回 unavailable；这不等于 AirPlay Receiver 已实现。
+- 升级前备份位于 `/vol1/1000/fnaudio-backup-0.1.175-before-0.1.177-20260808.tgz`。
+# 0.1.178 播放与 USB DAC 自动目标进展（2026-08-08）
+
+本轮自动目标已完成代码层改造并进入发布验证。当前重点文件：
+
+- `src/app/server/playback/mpd_client.py`、`mpd_output.py`、`services/mpd_service.py`：MPD 原生队列镜像、自然切歌、状态回写、恢复和 DSD 协商。
+- `src/app/server/playback/alsa_output.py`：稳定 DAC 身份、USB sysfs 识别、真实 ALSA `hw_params` 探测；直接 ALSA DSD 不再 PCM 兜底。
+- `src/app/server/services/process_supervisor.py`：有限重启、指数退避和重启回调。
+- `src/app/server/services/audio_output_lease.py`、`dac_profiles.py`：物理音频设备租约和 DAC quirk profile。
+
+验证结果：Python 82 项测试、Node 前端回归、Android `lintDebug`/`assembleDebug` 全部通过；产物见 `artifacts/0.1.178/`。测试 NAS 当前没有 USB DAC，且应用中心 CLI 因依赖应用状态变化要求 App Center UI；内置浏览器当前不可用，所以尚未宣称 0.1.178 已安装到 NAS。
+
+# 0.1.179 TEAC UD-301 真机验证（2026-08-08）
+
+- 真机 `vinson023.eu.org:3100` 已运行 0.1.178，USB DAC 为 TEAC UD-301，稳定身份为 `usb:0644:804a:00160000386ca1d14e45282720120016:dev0`，稳定 ALSA 地址为 `hw:CARD=UD301,DEV=0`。
+- 44.1 kHz WAV 实时 ALSA 参数为 `S16_LE / 44100 Hz / 2ch`；DFF 实时参数为 `DSD_U32_BE / 88200 Hz / 2ch`，MPD stream 为 `dsd64:2`，证明 Native DSD 源码输出未转 PCM。
+- MPD 原生队列从 WAV 自然推进到 AIF 后，PlaybackCore 当前 ID 同步更新；验证期间不需要重新清空和重建队列。
+- 真机暴露出稳定设备只驻留内存的持久化缺口，0.1.179 已修复：自动选择、旧编号迁移和事务切换成功后会写回应用 `config.json`。
+- Volumio 4 Bookworm 插件源码的主要帮助是再次确认 `libasound hw_params`、有限进程重启和配置变更后集中重启的方向；其 `mpdoutput` 主要面向 HTTP/Icecast，不适合作为 USB DAC 核心替代。
+- 尚未完成：USB 物理/驱动解绑热插拔、MPD 强制异常后的队列与进度恢复、DoP-only DAC、Android 后台/锁屏跨曲。
+
+# 0.1.180 播放队列一致性修复（2026-08-08）
+
+- 真机测试发现：直接加载不在当前前端队列中的 384 kHz FLAC 时，旧逻辑会返回“正在播放新曲”但 MPD 仍播放队列旧曲。
+- 已修复 `PlaybackCore.load`：缺失曲目先加入权威队列，再镜像到 MPD；后续格式/采样率失败会真实暴露。
+- 0.1.180 需要重新构建并安装后再验证 384 kHz 超出 DAC 能力时的错误行为。
+
+# 0.1.181 MPD 崩溃恢复防误进下一曲（2026-08-08）
+
+- 真机受控终止 MPD 后确认旧逻辑会在恢复窗口误推进到下一曲。
+- 已在 watchdog 恢复回调中设置 15 秒 STOPPED 抑制窗口，等待 MPD 恢复队列、当前歌曲和位置后再接受自然结束事件。
+## 0.1.181 真机最新状态（2026-08-08）
+
+- 已通过 fnOS App Center UI 完成 0.1.181 覆盖安装，应用中心可打开 fnAudio。
+- 真机 TEAC UD-301 已稳定识别：`usb:0644:804a:00160000386ca1d14e45282720120016:dev0`，稳定 ALSA 名称 `hw:CARD=UD301,DEV=0`。
+- 已验证 384 kHz FLAC 装载、DFF Native DSD 输出（MPD `audio=dsd64:2`）以及队列外歌曲加入权威队列后播放。
+- SSH `admin` 无法终止 root 所属 MPD，因此 root 级崩溃恢复和热插拔仍是待安排的硬件验收，不宣称已完成。
+## 0.1.183 真机最新状态（2026-08-08）
+
+- 已通过 App Center UI 完成 0.1.183 覆盖升级，服务端和 MPD 均正常启动。
+- TEAC UD-301 的 384 kHz FLAC 现在会明确返回“DAC 不支持源采样率 384000 Hz，已阻止隐式重采样”，不会再让 MPD/ALSA 静默降到 352.8 kHz。
+- 44.1 kHz PCM 和 DFF Native DSD 仍可正常播放；DFF 状态为 `dsd64:2`。
+- 尚未完成 root 级 MPD 崩溃和物理 USB 热插拔验收。
+
+# 0.1.184 播放边界与可观测性（2026-08-08）
+
+- DLNA 推送对已探测且明确不支持 DSD 的 Renderer 立即返回“设备不支持源码 DSD，已阻止 PCM 转码”，不会静默改变源码格式；未知能力仍允许兼容尝试。
+- MPD underrun、broken pipe、ALSA error 和 audio output error 会记录计数、最近错误、自动重启时间及限流抑制次数，并通过 `status().idle.underrun` 暴露给诊断界面。
+- 参考 `references/volumio-plugins-sources-bookworm (volumio 4.xxx)` 的能力协商、输出配置和有限守护思路；未直接复用其与 fnOS/MPD 不匹配的插件代码。
+- 本地验证：Python 89 项、Node bridge 回归、Android `lintDebug`/`assembleDebug` 通过。产物见 `artifacts/0.1.184/`。
+- 真机只读探测（2026-08-08）确认设备仍安装 0.1.183，TEAC UD-301 出现在 ALSA card 0；0.1.184 FPK 因 App Center CLI 要求自定义安装向导，未通过 CLI 宣称已安装，需用 App Center UI 覆盖升级后再做硬件回归。
+# 0.1.185 播放失败事务修复（2026-08-08）
+
+- PCM 采样率检查优先使用 USB DAC 稳定描述；播放中的 ALSA busy 不再触发 MPD stop/force probe。
+- 不支持的 384 kHz 等 PCM 歌曲会被拒绝，但当前歌曲、队列和 MPD 保持播放。
+- DSD 无法验证 Native DSD/DoP 时返回明确错误，不执行 PCM fallback。
+- `PlaybackCore.dispatch()` 在输出打开失败时恢复旧 current/index/position/duration/queue/transport。
+- 自动化验证：Python 91 项通过；真机需重新安装 0.1.185 后复测 384 kHz 拒绝、44.1/192 kHz、DFF Native DSD、stop/play/next 和 underrun。
+# 0.1.186 MPD 队列恢复闭环（2026-08-08）
+
+- 真机证据显示应用状态有 7 首队列，但 MPD 重启后 `playlistlength=0`；根因是启动恢复只恢复 `PlaybackCore`，未恢复 MPD 原生队列。
+- `restore_playback_session()` 现在在 MPD 目标下重新调用 `MpdService.sync_playback_queue()`，恢复队列、current、repeat、shuffle 和 position。
+- 历史停止会话恢复队列后继续保持 STOPPED；历史播放会话恢复为 PLAYING。
+- 新增 `src/tests/test_playback_restore.py`，覆盖播放中和停止会话两种恢复路径。
+
+# 0.1.186 收尾验证与发布基线（2026-08-08）
+
+- 修正 FPK 内实际提供的 UI 缓存版本和 `Server`/SSDP 版本仍停留在 `0.1.181` 的问题，统一为 `0.1.186`。
+- 本地自动化：Python 93 项、Node UI 3 项、Android `lintDebug` 与 `assembleDebug` 全部通过。
+- 重新构建并检查 FPK 内层 `app.tgz`，确认 `ui/index.html` 与 `server/server.py` 均包含 `0.1.186`。
+- 最新产物：`artifacts/0.1.186/fnaudio-0.1.186.fpk`、`artifacts/0.1.186/fnaudio-android-0.1.186-debug.apk`。
+- FPK 已上传真机并通过 App Center 重启服务；真机仍需 App Center UI 完成覆盖安装后，才能把 0.1.186 的全部硬件验收标为通过。
+- 之后通过 App Center UI 选择并确认了 0.1.186，App Center 列表显示 0.1.186；但运行中的 `server.py` 仍报告 `fnAudio/0.1.181`，说明该次升级任务未替换运行时 payload。已将此列为发布阻塞项，不能宣称真机运行 0.1.186。
+
+# 0.1.189 真机播放与恢复闭环（2026-08-08）
+
+- 通过新版本号强制 fnOS 完整替换 payload；真机运行中的服务报告 `fnAudio/0.1.189`。
+- 启动恢复实测：逻辑队列 7 首、MPD `playlistlength=7`、当前播放状态恢复成功；MPD 启动竞态由 2/5/12 秒有界重试覆盖。
+- TEAC UD-301 实测能力：稳定 ALSA `hw:CARD=UD301,DEV=0`，PCM 44.1/192 kHz 播放成功，Native DSD 输出为 `dsd64:2`，未转 PCM。
+- 384 kHz FLAC 实测被拒绝，提示“DAC 不支持源采样率 384000 Hz，已阻止隐式重采样”，旧 DSD 曲目继续播放；恢复阶段若 MPD 实际 STOP，也不再发布假 PLAYING 状态。
+- 真机 stop/play/next 控制通过，underrun 计数保持 0。
+- 最新产物：`artifacts/0.1.189/fnaudio-0.1.189.fpk`、`artifacts/0.1.189/fnaudio-android-0.1.189-debug.apk`。
+- 0.1.190：新增 AirPlayService supervisor、音频输出租约互斥和 `/api/airplay/control`；本地 97 项 Python 测试、Android assemble/lint 通过。FPK/APK 位于 `artifacts/0.1.190/`。真机只读检查确认 TEAC UD-301、MPD 0.23.12、Native DSD 和 0 underrun；App Center 非交互 FPK 安装仍受 custom wizard 限制，未宣称已覆盖安装。
+- 0.1.191：重新生成并校验 FPK，内部 manifest 为 0.1.191；使用全新文件名规避 App Center 旧包缓存。APK 同步升级到 0.1.191。
+## 0.1.194 本轮进展
+
+- MPD 队列镜像增加 `play` 参数；停止状态下同步逻辑队列会替换 MPD 原生队列但不会启动音频。
+- 真机 `vinson023.eu.org:3100` 上的 TEAC UD-301 已实测 DFF Native DSD 播放：`audio=dsd64:2`、`native_dsd_verified=true`、`underrun.count=0`。
+- 真机 384 kHz/24-bit PCM 样本被明确拒绝（DAC 最高已探测到 352.8 kHz），未发生隐式重采样。
+- 0.1.194 已通过 fnOS App Center 覆盖安装到 `vinson023.eu.org:3100`；HTTP `Server` 头为 `fnAudio/0.1.194`。停止状态队列同步实测 MPD `playlistlength=2`、`state=STOP`，没有意外启动播放。
+- 0.1.194 真机补测 DSF 与 DFF Native DSD 均报告 `audio=dsd64:2`，播放结束后已恢复原队列并保持 STOP。
+- 本地 Python 测试 100 项通过，UI/Android bridge 回归检查通过。
+- 真机 PCM 矩阵补测 44.1/48/96/176.4/192 kHz 均成功进入 `PLAYING` 并报告对应格式。
+- 真机 USB 热插拔模拟已完成：TEAC sysfs 节点 `1-4` unbind 后 MPD 自动停止，重新 bind 后约 2 秒恢复当前歌曲/队列，Native DSD 能力重新验证成功。
+- 真机 MPD gapless/自然切歌已验证：10.8 秒测试曲结束后自动进入第二首，原生队列长度保持 2，未由前端重建队列。
+- 尚未完成的硬件证据仍包括物理热插拔、DoP-only DAC、真实 DLNA Renderer、AirPlay Receiver、Android 多机型后台/锁屏与正式签名包。
+
+# 0.1.197 真机安装与播放冒烟（2026-08-09）
+
+- 使用 `artifacts/0.1.197/fnaudio-0.1.197.fpk`，通过 fnOS App Center UI 完成覆盖升级；应用中心显示版本 `0.1.197`、状态 `running`，未卸载应用或清除配置。
+- SSH 只读检查确认 `server.py` 与 MPD 进程均来自 `/vol1/@appcenter/fnaudio` 新 payload；健康接口返回 `ok=true`。
+- 真机目标探测确认 TEAC UD-301 稳定 ID 为 `usb:0644:804a:00160000386ca1d14e45282720120016:dev0`，稳定 ALSA 为 `hw:CARD=UD301,DEV=0`，Native DSD 能力已验证，`keepalive_mode=off`，MPD/FFmpeg `nice=0`。
+- PCM 冒烟：通过 MPD 原生队列执行一次真实播放/停止控制，MPD 状态机可从 `STOP` 进入 `PLAY` 再回到 `STOP`。
+- Native DSD 冒烟：播放队列中的 `NEW/Lynyrd Skynyrd - Simple Man.dsf`，MPD 报告 `audio: dsd64:2`，未发生 PCM fallback；随后已停止播放。
+- 当前仍不能据此宣称长时间播放、物理拔插、息屏后台、Android 多机型、真实 DLNA Renderer 或正式签名 APK 已验收；详见 `TODO.md` 的“真机优先目标（0.1.197，P0）”。
+
+# 0.1.198 播放状态持久化修复（2026-08-09）
+
+- 修复 `/api/playback/control` 在 stop、pause、next、previous、repeat、shuffle、seek、play 等控制后未调用 `save_current_playback_session()` 的问题。
+- 控制接口现在返回持久化 `revision`，应用重启时可读取最新 `playing`、当前歌曲、位置和队列状态，避免停止后重启又自动播放旧会话。
+- 修正 `server.py` 与 `index.html` 中残留的 `0.1.197` 硬编码，避免 App Center 版本与运行时 `Server` 头/静态缓存版本不一致。
+- Android 已加入参数化 release signing 配置；未提供 keystore 时只能构建 Debug/未签名 release，不能宣称正式发布包可用。
+- 本地验证了无密钥 `assembleRelease` 的边界：产出 `app-release-unsigned.apk`，`apksigner verify` 明确失败；正式签名仍需用户提供并保管 keystore。
+- 本地 Python unittest：107 项通过；Android Debug APK 构建通过；FPK 内 manifest 版本为 `0.1.198`。
+- 已重新生成 `SOURCE_MANIFEST.sha256`，当前包含 255 个 fnOS/Android 源码与构建入口文件。
+- 真机状态：`0.1.198` FPK 已上传并通过 App Center UI 启动覆盖升级；随后 SSH 3100 与 WebSocket 5666 同时暂时不可达，需设备恢复后确认实际运行版本和停止状态恢复。
+- 后续复测顺序已固定：App Center 版本 → `Server` 头 → MPD 队列 → 显式 STOP → App Center 重启 → STOP 保持 → PCM/DSD 冒烟；在设备恢复前不再重复重启。
+# 0.1.203 当前上下文补充（2026-08-10）
+
+0.1.203 已通过 fnOS App Center 的手动安装流程完成一次真实覆盖升级。设备为 `vinson023.eu.org`，服务端端口 18080，MPD 端口 56660；升级未清除现有配置、音乐库、队列或 DAC 选择。
+
+验证结果：HTTP `Server` 为 `fnAudio/0.1.203 Python/3.12.4`；健康检查通过；音乐库 536 首（DSD 2 首）；逻辑队列与 MPD 队列均为 20 首；TEAC UD-301 通过稳定 USB ID 和 `hw:CARD=UD301,DEV=0` 识别；`native_dsd_verified=true`、`dsd_mode=native`、`dop=false`、`underrun.count=0`；新增 `decoder_errors` 字段正常返回且当前为空。
+
+这次证据只覆盖“0.1.203 覆盖安装 + 状态保留 + 短状态回归”，不能把小时级播放、息屏自动下一曲、物理 USB 热插拔、DoP-only DAC、真实外部 DLNA Renderer、Android 多机型和正式签名包标记为完成。继续开发时应优先从 `TODO.md` 的 P0 目标 1–7 逐项补齐硬件或设备证据。
+
+## 0.1.203 长时/跨曲测试补充
+
+在同一台 TEAC UD-301 上保留原有 20 首队列，完成约 5 分 30 秒真实播放监测。第 1 首连续播放约 204 秒后自然切换到第 2 首，切换后继续增长到约 130 秒；12 个采样点全部保持 MPD `PLAY`、`fault=PLAYING`、`underrun=0`、`decoder_errors=0`。测试结束后恢复原来的第 20 首并 STOP，队列和 DAC 选择不变。停止后出现的短暂 ALSA busy 在后续状态采样中恢复为 `busy=false`。
+
+这提升了目标 1 的跨曲证据，但距离小时级、息屏和热插拔仍有明显差距，不能据此勾选完成。
+
+## 0.1.204 MPD 重启恢复修复
+
+在 0.1.203 真机播放中只终止 root MPD 进程，supervisor 自动拉起了新 PID，20 首队列、当前第 20 首和进度恢复并继续播放；同时暴露出 idle 状态仍保留旧 STOPPED 的状态同步缺口。0.1.204 新增 `normalized_transport()`，idle listener 和恢复路径都从规范化 transport/MPD 原始 state 推导状态；恢复完成后主动写入 idle/fault 状态并调用状态监听器，避免 WebView、PlaybackCore 或 Android MediaSession 误报停止。
+
+本轮本地 Python 测试为 117 项全部通过，FPK SHA-256 为 `89F2F27701A5699180A80D9DD4C01586061004D7CC8099CA1A6BFE44E637BEFC`。0.1.204 尚未完成 App Center UI 覆盖安装，因此不能把修复后的真机回归标为完成。
+
+## 当前自动目标 1–7（2026-08-10）
+
+目标 1–7 已重新设为当前 P0 顺序：USB DAC 长时播放、USB 热插拔/MPD 恢复、DSD/PCM/Native DSD/DoP 矩阵、外部 DLNA Renderer、Android 后台/通知/锁屏/USB DAC、多机型与正式发布兼容性、fnOS App Center 生命周期。
+
+本轮已完成的准备工作：
+
+- 0.1.204 FPK 已构建并复制到真机 `/vol1/1000/fnaudio-0.1.204.fpk`，下一步必须通过 App Center UI 的“从 NAS 添加”完成安装。
+- 真机当前仍报告 `fnAudio/0.1.203`；在 0.1.204 UI 安装前，不能把 MPD 重启修复视为真机已验证。
+- 本地 `PYTHONPATH=src/app/server python -m unittest discover -s src/tests -p 'test_*.py'` 共 117 项全部通过。
+- 目标 1–7 仍按“没有对应真实硬件/设备证据就不勾选完成”执行；小时级播放、息屏、物理热插拔、外部 Renderer、Android 多机和正式签名均保持未完成。
+
+## 0.1.205 USB DAC 热插拔监控改进
+
+本轮将 USB DAC 监控从“单次缺失立即停止/单次出现立即恢复”改为连续样本确认状态机。默认连续 2 次缺失才标记断开并停止 MPD，连续 2 次重新出现才触发恢复；计数器会在反向样本出现时清零。新增配置 `mpd_device_presence_samples`，有效范围 1–5，默认 2。
+
+本地 Python unittest 已增至 123 项并全部通过；新增真机自动化恢复队列一致性回归。0.1.205 FPK 已构建，SHA-256 为 `994712233E0707B85BE9759211EE71C80BA31A4BEDED9D3C41913768375FB1DE`。Android Debug APK 已按 `versionCode=205/versionName=0.1.205` 重新构建，SHA-256 为 `2B3F24FDF8488698F8679A4E6DFDD55D371C56313860AB29F7D71D5628CE2089`；Release 仍为 unsigned。FPK 已通过 App Center UI 安装到真机；物理拔插、重枚举后的队列恢复以及息屏长时播放仍需真实设备证据。
+
+随后已通过 App Center UI 完成 0.1.205 覆盖安装，并在真实 TEAC UD-301 播放中终止 root MPD。supervisor 从 PID `105795` 恢复到 PID `106803`，20 首队列、当前曲目、约 63 秒进度、`idle.transport=PLAYING`、`fault.state=PLAYING` 和 `underrun=0` 均得到确认。该证据只完成 MPD 异常恢复部分；物理 USB 拔插、小时级/息屏播放仍未完成。
+## 0.1.213 development update (2026-08-11)
+
+- Metadata service promotes the currently playing track's lyric lookup to priority 1.
+- Cached lyrics and album artwork are written back in a serialized, rate-limited background queue. Writes support MP3/FLAC/M4A/MP4 and atomically replace only successful temporary output. DSD and CUE tracks are excluded to preserve source playback behavior.
+- External metadata download remains independent from playback. Embedded lyrics are reused before an external lookup.
+- Local verification: 138 Python tests, `node --check app/ui/app.js`, and `node tests/test_ui_android_bridge.js` passed. Packaged version: `0.1.213`.
+## Metadata provider evidence (2026-08-11)
+
+The cached `references/go-music-dl` project exposes 12 online metadata sources and one local source. Its real provider registries have been exercised live with search -> returned ID -> lyrics and album search -> returned ID -> album detail chains. Evidence: `artifacts/go-music-dl-provider-smoke-20260811.jsonl`; source matrix and rerun command: `docs/GO_MUSIC_DL_PROVIDER_VALIDATION.md`.
+
+For future implementation work, treat NetEase, QQ, Kugou, Migu, JOOX and Qianqian as live-verified lyric-capable candidates. Treat NetEase, QQ, Kuwo, Jamendo, JOOX, Qianqian and Soda as live-verified album-capable candidates. Apple is currently unusable because upstream dynamic token extraction fails, and Soda song search is currently parser-incompatible. These are probe-time results, not a permanent availability guarantee. The test did not change the packaged fnAudio runtime.
+
+## Active metadata sources (2026-08-11)
+
+The fnAudio runtime source list is now intentionally limited to MusicBrainz,
+NetEase, QQ, Kugou, Migu, JOOX, and Qianqian. Spotify and Kuwo are not runtime
+providers and Spotify has no API configuration or settings UI. Legacy Spotify
+credential keys are removed as configuration is loaded and must not be restored.
+
+The reference validation matrix includes additional `go-music-dl` providers for
+comparison only; it does not expand the packaged source list. For the latest
+live smoke sample, NetEase, QQ, Migu, and JOOX yielded both cover and lyrics;
+Kugou yielded cover but no lyric; Qianqian's signed search worked but had no
+scored match for that English sample.
+
+## Current-track metadata priority (2026-08-11)
+
+The playing track is not treated as a normal library scan item. Its lyric lookup,
+album information/artwork lookup, and tag write have priorities `0`, `1`, and
+`2` respectively. Ordinary library lyrics and tag writes remain at `100` and
+`200`. The metadata reconcile loop preserves an active promotion; changing the
+playing track demotes unfinished work for the former track to avoid queue
+starvation.
+
+## Playback Startup Contract (2026-08-11)
+
+Opening or restarting fnAudio restores the logical queue, selected track,
+position, repeat/shuffle state, and selected output target, but it must not
+start audio. The persisted playback state is normalized to `STOPPED` during
+restore. A local stop always clears the browser/native media and sends the same
+authoritative `stop` command to the backend before its state is persisted.
+
+## 0.1.214 development update (2026-08-11)
+
+- Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
+- `references/music-lib` is cached at `3c4c32fd2aff2ffb9737856e52a45fd46b7ca12d`. It is reference source only and is excluded from FPK/APK runtime artifacts.
+- Local validation: 141 Python tests, UI syntax and Android bridge checks passed. Live read-only Kugou search returned a candidate; Kuwo returned no candidates from the current network and falls through without a failure.
+
+## 0.1.215 package update (2026-08-11)
+
+- The stop action now also sends the authoritative backend stop command after local browser or native playback is cleared.
+- Playback-session restore restores queue and settings only, then normalizes transport to `STOPPED`; launching fnAudio does not automatically start audio.
+- Runtime metadata providers are MusicBrainz, NetEase, QQ, Kugou, Migu, JOOX, and Qianqian. Current playback metadata work is prioritized as lyrics, artwork, then tag write.
+- FPK-only release. Android source version is kept at `0.1.215` to satisfy the repository-wide release-version contract; no APK was built in this release.
+- Artifact: `artifacts/0.1.215/fnaudio-0.1.215-fnpack.fpk`, SHA-256 `204C5C78702CD21B3B192BA819428F2391D3502B118E194BBCCCAC1989DA7C79`. Package validation is recorded beside the artifact.
+
+## 0.1.216 metadata safety fix (2026-08-11)
+
+- Fixed background tag writing that mapped only the audio stream during a lyrics-only update. Existing embedded artwork and other non-audio streams are now preserved.
+- A new downloaded cover replaces only image streams; all other original streams and container metadata remain mapped. This prevents tag writes from blanking a song that already has artwork.
+- Artifact: `artifacts/0.1.216/fnaudio-0.1.216-fnpack.fpk`, SHA-256 `AA54BE69AB6CF6B96D0E354961A1909AB447E6861971F296846555A7185A07BC`.
+- Real fnOS FFmpeg verification used an isolated generated MP3 with embedded artwork. After the exact lyrics-only remux mapping, `attached_pic=1` remained present and extracted cover SHA-256 was identical before and after; original title and new lyrics were also verified. No library files were read or modified.
+
+## TODO consolidation (2026-08-11)
+
+- `TODO.md` is now a current-only work list. Historical 0.1.202-0.1.205 execution records, duplicate hardware statements, obsolete version-specific acceptance tasks, and Spotify validation were removed from the active backlog.
+- The new highest priority is auditing and recovering media tags that may have been affected before the 0.1.216 preservation fix, followed by App Center installation validation and the remaining DAC, Renderer, Android, security, and release automation work.
+
+## Tag integrity audit tool (2026-08-11)
+
+- Added `tools/audit_tag_integrity.py` and `docs/TAG_INTEGRITY_AUDIT.md`. The tool opens `library.sqlite3` in SQLite read-only mode and reports only evidence-backed findings: fields previously scanned from Tag but now absent, or a missing local cover with a completed `tag_write` record.
+- It produces JSON and optional CSV reports with snapshot/backup restoration as the high-confidence recommendation. It does not write media, SQLite, metadata jobs, or cached assets. Local execution remains pending against a non-production music-library copy or read-only NAS snapshot.
+- A read-only baseline audit was run on the current NAS database and its 227-track library: 200 files have no local embedded/sidecar cover, but zero tracks had a Tag field regression and there were no persisted completed tag-write records. No evidence-backed loss was found and no media was changed. Reports are in `artifacts/tag-audit-0.1.216/`; a pre-0.1.213 snapshot or backup is required for attribution or recovery.
+- A follow-up read-only storage search found one ext4 data volume only (`/vol1`), with no mounted backup disk, snapshot/recycle directory, or older library database. The only old fnAudio directory is application source backup `fnaudio.backup-codex-20260731-121550`; it cannot restore media. Recovery remains blocked until a pre-0.1.213 library copy is supplied.
+
+## Tag write transparency (2026-08-11)
+
+- The Metadata settings page now shows the six most recent tag-write jobs, including a human-readable song label, current state, and any retained failure reason. Absolute media paths are deliberately not returned to the browser.
+- A `Retry failed tag writes` action resets only terminal `tag_write` failures; it does not re-run lyrics, artwork, scan, or currently pending jobs. It remains an explicit user action, so the background service cannot silently retry a completed failure indefinitely.
+- Verification: 26 focused metadata-service tests passed, along with `node --check src/app/ui/app.js`.
+
+## 0.1.217 package update (2026-08-11)
+
+- Added tag-write visibility and controlled retry to the packaged source. FPK artifact: `artifacts/0.1.217/fnaudio-0.1.217-fnpack.fpk`.
+- SHA-256: `467ECC0D647854973E7E5F4B88A220210BBC4C515B2AEAD19FA3F48055631528`. Package manifest was inspected and reports version `0.1.217`.
+- Full verification before packaging: 146 Python tests, `node --check src/app/ui/app.js`, and the Android bridge regression check passed. The NAS remains on `0.1.216`; installation is deliberately pending the P0 real-library verification.
+
+## 0.1.219 current-track lyric priority (2026-08-11)
+
+- Starting or switching to a track now requests its lyrics even while the lyrics page is closed. The request is inserted at priority `0`, ahead of ordinary metadata work and handled by a dedicated priority-lyrics worker.
+- While matching is pending, the lyrics page shows an active retrieval state and re-requests the same track every 900 ms for up to 15 attempts. A completed result renders in an already-open lyrics view without reopening it.
+- Local verification: 147 Python tests, JavaScript syntax validation, Android bridge regression, and the lyrics-priority UI regression test passed. App Center installed the final `0.1.219` package on `198.51.100.24`; `/api/health` reported `fnAudio/0.1.219` and the test-library request for `1973` returned complete lyrics while an ordinary album job was still active.
+
+## 0.1.220 repeat control clarity (2026-08-11)
+
+- Reworked the repeat control after comparing the local Volumio app's state-first icon convention. One click still cycles `off -> list -> one -> off`, but the button now redraws a distinct icon for each state: slashed repeat (off), repeat arrows (list), and repeat arrows with an integrated `1` (one).
+- The old corner text badge is removed. Tooltip and accessibility labels retain the exact state and next action.
+- App Center installed `0.1.220` on `198.51.100.24`. Browser validation clicked through `all`, `one`, and `off`; the deployed SVG changed respectively to plain loop arrows, loop arrows with an integrated `1`, and loop arrows with a slash before ending back at `off`.
+
+## P0 DAC acceptance recovery (2026-08-11)
+
+- Existing `0.1.205` logs prove a TEAC UD-301 short run, DSD DSF/DFF native output, and a 90-minute controlled playback run, but do not satisfy the remaining physical hot-plug, DoP-only, external Renderer, AirPlay, or Android device requirements.
+- Historical queue recovery used hard-coded track IDs; the long-run record explicitly notes that those IDs became invalid. Added `tools/real_device_dac_queue_run.sh` and `docs/REAL_DEVICE_DAC_QUEUE_RUN.md`. The new runner snapshots live PlaybackCore state, restores through fnAudio APIs in an exit trap, and records `restore_verified=1` only after queue/current/repeat/shuffle/transport match the original state.
+- Automated coverage verifies that the new runner has no baked-in original queue and requires a caller-provided valid queue. Git Bash `bash -n` validates its POSIX shell syntax. A new real-DAC run is still required before marking the USB DAC P0 items complete.
+- The current in-LAN test host (`198.51.100.24`) was opened through fnOS and device discovery was allowed to complete. It exposes only `当前设备 / 浏览器播放`; no USB DAC or DLNA/UPnP Renderer was found. This host is valid for Web UI/state checks only, not DAC, native DSD, Renderer, AirPlay, or physical hot-plug acceptance.
+
+## 0.1.254 CUE 封面写回与配置迁移修复（2026-08-14）
+
+- 修复 CUE 分轨的错误“已写入”状态：虚拟曲目此前跳过共享音频文件写回却仍被标记成功。现在只允许 CUE 分轨写共享专辑封面，绝不把虚拟曲目标题或歌词写入共同源文件；无须写入时状态显示为“无需写入”。
+- APE/DSF 写回改为仅替换本次提供的字段，避免仅更新封面时清除已有文字标签。
+- 修复 App Center 新配置路径未迁移旧音乐库的问题。安装/升级时会从同卷旧 `@appconf/fnaudio/config.json` 恢复音乐库与播放设置，并保留新实例选择的端口。
+- 内网真实验证：CUE APE 增加 `Cover Art (Front)` 后，其 `/cover/` 160px 端点返回 HTTP 200、`image/jpeg`、7237 字节；服务扫描根为 `/vol1/1000/test`、曲目数为 16。证据：`artifacts/0.1.254/real-device-cue-cover.json`。
+- FPK：`artifacts/0.1.254/fnaudio-0.1.254-fnpack.fpk`，SHA-256 `A71E8F246A53FFDCCB97307F1DE4AE2F19E4DDFB2B91F3DD3F0BB36C9EC18E1B`。
+
+## 0.1.255 real-device cover fallback (2026-08-14)
+
+- Added per-track artwork fallback for tracks whose album is unclassified or has no album artwork. Metadata backfill now queries NetEase and QQ with the exact title/artist before reporting completion.
+- Stored per-track artwork in `metadata_tracks.artwork_id`; cover resolution uses it when album artwork is absent. A cover-only update preserves existing lyrics.
+- Installed through fnOS App Center on `198.51.100.24` at 10:15 CST. Both reported source files now contain JPEG artwork and both production `cover/<id>?size=160` endpoints returned HTTP 200 JPEG thumbnails.
+- Evidence: `artifacts/0.1.255/real-device-track-artwork.json`. FPK SHA-256: `11F1376BB37A8EE8CB1B0EE789CC1109B1C1C0EE9E5D47E30BF18A5B76BA2B1C`.
+
+## 0.1.260 Packaging policy: fnpack only (2026-08-14)
+
+- All future FPK files must be generated directly by `tools/fnpack.exe build`. Do not alter or rearchive an FPK after fnpack produces it, because fnOS validates details of the package container.
+- The LAN fast-deploy tool may repair copied control-file permissions on the NAS, but it must never change a release FPK.
+- `artifacts/0.1.260/fnaudio-0.1.260-fnpack.fpk` is the first pure-fnpack release after this policy change; SHA-256 `2303A1490452D0D05F9DBD60FEBF579F7A6BF84BA45E25E39D29BD670155DF69`. It was fast-deployed successfully to the authorized LAN host; backup `/vol1/1000/fnaudio/fast-deploy-backups/20260814-113328`.
+
+## 0.1.259 Valid gzip FPK with executable lifecycle commands (2026-08-14)
+
+- Do not use the initial `0.1.258` package: its outer archive was accidentally emitted as an uncompressed POSIX tar, which fnOS correctly rejected as an invalid FPK.
+- The corrected release flow produces a gzip-compressed FPK and uses GNU tar only for its inner POSIX permission metadata. `cmd/main` is validated as `0755` before release output is accepted.
+- Current valid delivery: `artifacts/0.1.259/fnaudio-0.1.259-fnpack.fpk`, SHA-256 `7C4C1A7AAEC9065E73F0FF4D96889890EDEEB526602671CAF3DB1065EE081453`. It is gzip-compressed and contains executable `cmd/main`, `install_callback`, and `upgrade_callback`. The authorized LAN host was fast-deployed to `0.1.259` successfully; backup `/vol1/1000/fnaudio/fast-deploy-backups/20260814-113108`.
+
+## 0.1.258 fnOS lifecycle command permissions (2026-08-14)
+
+- Root cause of the App Center "service abnormal" state: Windows-generated FPK files marked `cmd/main`, `install_callback`, and `upgrade_callback` as `0666`; fnOS invokes `cmd/main` directly and failed with `fork/exec /var/apps/fnaudio/cmd/main: permission denied`.
+- `tools/build_release.ps1` now repacks the outer FPK with GNU tar and explicitly writes lifecycle commands as `0755`. It additionally inspects the completed FPK and fails the release if `cmd/main` is not executable. `tools/install_test_host_fast.ps1` repairs the same permissions before its control-directory swap.
+- The test host was repaired in place with `chmod 755 /var/apps/fnaudio/cmd/*`; fnAudio `main status` and the running server were confirmed healthy. Use `0.1.258` for the App Center upgrade so its versioned service state is refreshed.
+- `0.1.258` FPK: `artifacts/0.1.258/fnaudio-0.1.258-fnpack.fpk`, SHA-256 `989AF478E9AC0EF563E665E94CDB9E7130FF390A578C49BC7C32D396E196B8FE`. Android Debug APK: `artifacts/0.1.258/fnaudio-android-0.1.258-debug.apk`, SHA-256 `70D8BB66ACA90AD09F4C2F51D21798CDD84474FE522FC3B303FD0DCCFFC13FD3`. The LAN fast-deploy backup is `/vol1/1000/fnaudio/fast-deploy-backups/20260814-112505`.
+
+## 0.1.257 Mobile MP3 control and cover startup stability (2026-08-14)
+
+- Mobile/Android WebView: the MP3 transcoding mode is available in the bottom playback `More` menu as `开启 MP3 转码` or `关闭 MP3 转码`; it retains the shared `fnaudio.mp3Transcode` setting and reloads only the current local target as needed.
+- Startup cover stability: `loadPagedLibrary()` waits for the non-critical library status response before its initial list render, eliminating the follow-up full DOM replacement that restarted visible thumbnail loads. List artwork now preserves the music-symbol fallback until the image has actually loaded.
+- Version identity is `0.1.257` across FPK manifest, UI cache keys and Android `versionCode`/`versionName`.
+- Verification: `test_ui_queue_columns.js`, `test_ui_android_bridge.js`, and 15 focused Python server tests pass; the FPK package validation and Android `assembleDebug` pass. The authorized LAN test host runs `0.1.257` on port `18083`, deployed with `tools/install_test_host_fast.ps1`; rollback source is `/vol1/1000/fnaudio/fast-deploy-backups/20260814-111420`.
+- Deliverables: `artifacts/0.1.257/fnaudio-0.1.257-fnpack.fpk` (SHA-256 `9CCAB111846542EAA8D02CDC3A921502D5923603D45FF5C8E790F1950E6A4749`) and `artifacts/0.1.257/fnaudio-android-0.1.257-debug.apk` (SHA-256 `54D7C6CBD1880DCFCD7716286B9347B95F8746540C7DE0750FA5A1E2DD740693`). No ADB device/emulator was attached while this build was produced, so Android installation remains pending.
+
+## 0.1.256 WAV RIFF ID3 artwork writeback (2026-08-14)
+
+- WAV containers cannot store artwork as an FFmpeg attached-picture video stream: the target FFmpeg's WAV muxer rejects video streams. fnAudio now writes an `ID3 ` RIFF chunk containing ID3v2.3/APIC artwork and managed textual frames, without decoding or remuxing PCM audio.
+- `library.id3_tag()` scans the WAV RIFF chunks for `ID3 `, and WAV cover loading reads APIC natively before its FFmpeg compatibility fallback. This makes embedded WAV artwork available both to library metadata and to the thumbnail endpoint.
+- Installed through fnOS App Center on `198.51.100.24`; `/var/apps/fnaudio/manifest` and the running service report `0.1.256`.
+- Real-device verification: isolated WAV copy retained its two-channel 44.1 kHz / 9,930,732-frame PCM payload after write; readback returned the original 61,000-byte JPEG. The production sample `/vol1/1000/test/伍佰 - 泪桥.wav` was backed up under `/vol1/1000/fnaudio/wav-cover-0.1.256/`, written with its matching 102,031-byte cached album artwork, and visibly rendered a cover in fnAudio after service restart.
+- FPK: `artifacts/0.1.256/fnaudio-0.1.256-fnpack.fpk`; SHA-256 `1FB5DA03223BF334B3DAC2F785C602B47B6BEBF1D0EEB9D4B3C5C595805637B1`.
+
+## LAN fast deployment (2026-08-14)
+
+- `tools/install_test_host_fast.ps1` is the standard root-based iteration path for the authorized LAN test host. It uploads an already-built FPK to `/vol1/1000/fnaudio/`, validates its fnAudio manifest, stops the existing service, atomically swaps the application/control directories, runs the normal upgrade callback, starts the service, and verifies the configured listener.
+- It preserves `@appconf` and `@appdata`; each replaced application is retained under `/vol1/1000/fnaudio/fast-deploy-backups/<timestamp>/`. On any post-swap failure, its remote transaction restores both prior directories and restarts the former service.
+- App Center installation remains the release-path acceptance check, not the default loop for normal internal testing.
+
+## 0.1.252 封面读取与缓存失效修复（2026-08-14）
+
+- 修复 APE 写入 `Cover Art (Front)` 后 UI 无法读取的问题：封面读取器现在原生解析 APEv2 封面项目。
+- 修复 CUE 音频写入封面后仍显示音乐符号的问题：缩略图缓存与 `cover_url` 版本改用实际音频文件 mtime，不再错误依赖 `.cue` 文件时间或旧的无封面负缓存。
+- WAV 使用 FFmpeg 兼容回退提取嵌入封面；无法由容器存储图片时仍会显示统一音乐符号，不把“标签写入成功”误称为“封面已写入”。
+- 内网机隔离 APE 样本验证：旧负缓存失效、读取到 102031 字节 JPEG、成功生成 6242 字节 160px 缩略图。证据：`artifacts/0.1.252/real-device-cover-cache.json`。
+- FPK：`artifacts/0.1.252/fnaudio-0.1.252-fnpack.fpk`，SHA-256 `75E783BEA8BAD9478F0371D0AA75EE4FF6503A1BE0EA7A64CF31CD78603AF531`。
+
+## 0.1.250 APE/WAV/DSF Tag 真实设备验收（2026-08-14）
+
+- 已在内网 fnOS `198.51.100.24` 的 `/vol1/@apptemp/fnaudio/tag-write-0.1.250/` 使用 APE、WAV、DSF 隔离副本，通过已安装服务实际写回。
+- 三种格式的标题、艺术家、专辑、歌词均可由 fnAudio 与 ffprobe 读回，且均可解码；DSF 原封面 SHA-256 保持一致，APE 未管理 Tag 保持存在。
+- 原始音乐库样本哈希全部未变化。完整结果归档于 `artifacts/0.1.250/real-device-format-tags.json`。
+
+## Android upgrade-version correction (2026-08-11)
+
+- Android Gradle metadata exposed a release-blocking mismatch: `versionName` was `0.1.220` while integer `versionCode` remained `216`. Android package managers compare only `versionCode`, so an installed build above 216 could reject the apparent newer package.
+- Updated `android-client/app/build.gradle` to `versionCode 220`; `lintDebug` and `assembleDebug` passed. The produced debug APK reports `com.fnaudio.client`, `versionCode=220`, `versionName=0.1.220`, `minSdk=23`.
+- Artifact: `artifacts/0.1.220/fnaudio-android-0.1.220-debug.apk`, SHA-256 `B25A39297A67F3B78098D800B0FF62038284E5ED43543052893CB7DF8F288A8B`. No Android device/ADB transport is currently available, so installation evidence remains pending.
+
+## 0.1.217 NAS installation and verification (2026-08-11)
+
+- Installed `0.1.217` on `198.51.100.24` through the fnOS App Center manual-install overlay flow. The CLI correctly required the App Center UI for the dependency-change confirmation; the update preserved `/vol1/1000/test`, port `18080`, and metadata enablement.
+- `GET /api/health` returned HTTP 200 with `Server: fnAudio/0.1.217 Python/3.12.4`. `/api/metadata/status` returned the new `tag_jobs` contract, and `POST /api/metadata/retry-tag-writes` returned `{ok: true, retried: 0}` when no failed write existed.
+- The metadata settings UI rendered the completed job `痴心无名氏 - 艾薇`. Read-only `ffprobe` verification of the already-written FLAC found the audio stream plus an image stream with `attached_pic=1`; title, artist, and complete lyrics remained present. No additional tag write was triggered during this acceptance test.
+## 0.1.226 FN Connect 中继进展
+
+- Android 工程已纳入官方 `libgojni.so`（arm64-v8a）及 `go.Seq`/`tpps.Tpps` JNI 绑定。
+- 新增 `TppsTunnel`，负责应用上下文、动态 JSON 配置、9018 本地端口、状态轮询和停止。
+- `FnConnectResolver` 保留公网地址直连；删除 `fnid.fnos.net:443` 伪中继回退，仅接受动态 Tpps 配置。
+- 设备回归：小米 15 Pro 安装/启动正常；日志确认 `applyConfigJSON ok=true`、`startWithPort result=1`，无 native 崩溃。
+- 完整中继登录仍待接入官方动态 P2P 配置签发接口（`api/v1/fn/con` 只返回地址发现信息）。
+# 0.1.233 端口配置恢复（2026-08-13）
+
+- 默认后端端口为 `53199`；旧安装如果 `config.json` 仍保存 `18080/18083`，升级不会擅自覆盖，需在应用中心 fnAudio 设置中改为 `53199` 后停止并重新启动。
+- 安装向导和应用设置都提供 `wizard_server_port`。应用设置由 `cmd/config_init` 动态读取当前配置，保存由 `cmd/config_callback` 完成。
+- 不再自动扫描并切换到相邻空闲端口。配置端口被占用时保存或启动失败，以保证界面显示、配置文件、CGI 代理和实际监听端口一致。
+- 版本产物：`artifacts/0.1.233/fnaudio-0.1.233-fnpack.fpk`。
+# 0.1.234 M4A 标签写回修复（2026-08-13）
+
+- 修复 `metadata_service.py` 使用 `-map 0` 将 M4A 的 `bin_data/text` 辅助流原样复制回 `ipod` 容器而导致的写回失败。现在只映射音频与有效封面流，文件级元数据仍通过 `-map_metadata 0` 保留。
+- 失败时仍只删除临时文件，原歌曲不会被替换；新增 M4A 流映射回归测试。元数据服务及发布相关测试 39 项通过。
+- 真机 `198.51.100.24` 上的 `/vol1/1000/music/01 分手說愛你.m4a` 已复现旧错误并验证新命令；安装 `0.1.234` 后重试成功，界面显示“已写入”，文件通过 FFmpeg 三秒解码检查。
+- 设置页端口标签由“播放”改为“运行”，端口说明与当前严格占用检查保持一致。
+- FPK：`artifacts/0.1.234/fnaudio-0.1.234-fnpack.fpk`，SHA-256 `D1010658FCA0F05FA9BB4483C47E2FE84EA12147356B518C7E153D14363BA0AF`。已通过 fnOS 应用中心覆盖安装；应用中心及磁盘 manifest 均为 `0.1.234`，服务保留原端口 `18083` 和三条音乐库目录。
+# 0.1.262 App Center 覆盖升级已验收（2026-08-14）
+
+- 原生 `fnpack` FPK 已通过预检，SHA-256 为 `E210FDA0607C2D5590B87FAA45FC27A44161419F482E6DA689013C51DA1D2BF1`。
+- 内网测试机通过 fnOS 应用中心手动安装完成覆盖升级，应用中心、manifest 和 HTTP `Server` 头均确认 `0.1.262`。
+- 服务实际监听 `18083`，`/api/health` 返回 200；MPD、元数据服务和 DLNA 服务正常。
+- 原有四条音乐库路径、端口配置、SQLite 和封面缓存均保留；生命周期命令权限为 `0755`，配置权限为 `0600`。
+- 完整证据、诊断和恢复步骤见 `docs/APPCENTER_LIFECYCLE_0.1.262.md` 与 `artifacts/0.1.262/verification.json`。

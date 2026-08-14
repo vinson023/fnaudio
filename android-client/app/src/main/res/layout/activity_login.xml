@@ -1,171 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/loginRoot"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@drawable/login_background"
-    android:fillViewport="true">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:paddingLeft="20dp"
-        android:paddingTop="26dp"
-        android:paddingRight="20dp"
-        android:paddingBottom="36dp">
-
-        <ImageView
-            android:layout_width="76dp"
-            android:layout_height="76dp"
-            android:contentDescription="fnAudio"
-            android:src="@drawable/ic_launcher" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="fnAudio"
-            android:textColor="#FFFFFFFF"
-            android:textSize="28sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text="连接你的飞牛 NAS，直接进入音乐库"
-            android:textColor="#FFD6E2F2"
-            android:textSize="14sp" />
-
-        <Button
-            android:id="@+id/historyButton"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginTop="16dp"
-            android:backgroundTint="#2EFFFFFF"
-            android:minWidth="0dp"
-            android:paddingLeft="20dp"
-            android:paddingRight="20dp"
-            android:text="历史连接"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFFFF" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:background="@drawable/login_panel"
-            android:orientation="vertical">
-
-            <EditText
-                android:id="@+id/profileName"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="连接名称（例如：家里的 NAS）"
-                android:inputType="textCapSentences"
-                android:maxLines="1" />
-
-            <EditText
-                android:id="@+id/host"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:hint="网址或 IP 地址"
-                android:inputType="textUri"
-                android:maxLines="1" />
-
-            <EditText
-                android:id="@+id/port"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:inputType="number"
-                android:maxLines="1"
-                android:text="5666" />
-
-            <CheckBox
-                android:id="@+id/useHttps"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="使用 HTTPS / WSS" />
-
-            <CheckBox
-                android:id="@+id/trustSelfSigned"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="允许此连接使用自签名证书" />
-
-            <EditText
-                android:id="@+id/username"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:autofillHints="username"
-                android:hint="飞牛账号"
-                android:inputType="text"
-                android:maxLines="1" />
-
-            <EditText
-                android:id="@+id/password"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:autofillHints="password"
-                android:hint="密码"
-                android:inputType="textPassword"
-                android:maxLines="1" />
-
-            <CheckBox
-                android:id="@+id/savePassword"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="保存密码（使用 Android 系统密钥加密）"
-                android:textSize="13sp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="-2dp"
-                android:text="密码只保存在当前手机的加密区域，删除记录或清除应用数据后会移除。"
-                android:textColor="#64748B"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/loginButton"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:text="登录并打开 fnAudio"
-                android:textAllCaps="false" />
-
-            <LinearLayout
-                android:id="@+id/loginProgressRow"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ProgressBar
-                    android:layout_width="22dp"
-                    android:layout_height="22dp" />
-
-                <TextView
-                    android:id="@+id/loginStatus"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginLeft="10dp"
-                    android:layout_weight="1"
-                    android:text="正在连接…"
-                    android:textColor="#475569"
-                    android:textSize="13sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-    </LinearLayout>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/loginRoot" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/login_background" android:fillViewport="true">
+  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="600dp" android:orientation="vertical" android:paddingLeft="42dp" android:paddingTop="16dp" android:paddingRight="42dp" android:paddingBottom="24dp">
+    <ImageView android:layout_width="64dp" android:layout_height="64dp" android:layout_gravity="center_horizontal" android:layout_marginTop="10dp" android:contentDescription="fnAudio" android:src="@drawable/ic_launcher" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center_horizontal" android:layout_marginTop="6dp" android:text="fnAudio" android:textColor="#FFFFFFFF" android:textSize="21sp" android:textStyle="bold" />
+    <FrameLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="32dp"><EditText android:id="@+id/fnId" android:layout_width="match_parent" android:layout_height="48dp" android:background="@drawable/login_input" android:hint="设备地址或 FN ID" android:inputType="textUri" android:maxLines="1" android:paddingLeft="14dp" android:paddingRight="46dp" android:textColor="#FF171717" android:textColorHint="#FF8D8D8D" android:textSize="15sp" /><ImageButton android:id="@+id/historyButton" android:layout_width="44dp" android:layout_height="44dp" android:layout_gravity="end|center_vertical" android:background="#00000000" android:contentDescription="历史连接" android:padding="11dp" android:src="@drawable/ic_history" /></FrameLayout>
+    <ImageButton android:id="@+id/fnConnectButton" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" />
+    <EditText android:id="@+id/username" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp" android:autofillHints="username" android:background="@drawable/login_input" android:hint="用户名" android:inputType="text" android:maxLines="1" android:paddingLeft="14dp" android:paddingRight="14dp" android:textColor="#FF171717" android:textColorHint="#FF8D8D8D" android:textSize="15sp" />
+    <EditText android:id="@+id/password" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp" android:autofillHints="password" android:background="@drawable/login_input" android:hint="密码" android:inputType="textPassword" android:maxLines="1" android:paddingLeft="14dp" android:paddingRight="14dp" android:textColor="#FF171717" android:textColorHint="#FF8D8D8D" android:textSize="15sp" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:gravity="center_vertical" android:orientation="horizontal"><CheckBox android:id="@+id/savePassword" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" android:text="记住密码" android:textColor="#FFDCEBFC" android:textSize="13sp" /></LinearLayout>
+    <CheckBox android:id="@+id/useHttps" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="9dp" android:text="HTTPS 安全访问" android:textColor="#FFFFFFFF" android:textSize="13sp" />
+    <CheckBox android:id="@+id/trustSelfSigned" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="允许自签名证书" android:textColor="#FFDCEBFC" android:textSize="12sp" />
+    <Button android:id="@+id/loginButton" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp" android:backgroundTint="#FFFFFFFF" android:text="登录" android:textAllCaps="false" android:textColor="#FF176BEF" android:textSize="17sp" android:textStyle="bold" />
+    <LinearLayout android:id="@+id/loginProgressRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center" android:orientation="horizontal" android:visibility="gone"><ProgressBar android:layout_width="18dp" android:layout_height="18dp"/><TextView android:id="@+id/loginStatus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="8dp" android:textColor="#FFFFFFFF" android:textSize="12sp" /></LinearLayout>
+    <Space android:layout_width="1dp" android:layout_height="0dp" android:layout_weight="1" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="输入 FN ID 时，将自动使用 FN Connect 连接" android:textColor="#FFBFD7F5" android:textSize="12sp" />
+    <EditText android:id="@+id/profileName" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" /><EditText android:id="@+id/host" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" /><EditText android:id="@+id/port" android:layout_width="1dp" android:layout_height="1dp" android:text="5666" android:visibility="gone" />
+  </LinearLayout>
 </ScrollView>

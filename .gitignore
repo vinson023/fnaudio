@@ -19,23 +19,41 @@ config.json
 .env.*
 
 # Build and package outputs
+node_modules/
+test-results/
+playwright-report/
 *.fpk
 *.tgz
 *.tar.gz
 *.apk
 android-client/.gradle/
+/.gradle-cache/
 android-client/.media3-inspect/
 android-client/local.properties
 android-client/**/build/
+.android-avd/
 artifacts/*/*.fpk
 artifacts/*/stage/
+artifacts/inspect-*/
 artifacts/*/_inspect*/
 artifacts/excluded-generated-cache/
+artifacts/*/fast-deploy-*.log
 
 # Local inspection output
 builds/
 $inspect/
 tmp-*/
+/.fnpack-stage*/
+/.pkginspect*/
+/.pkgstage*/
+/.tar-mode-test-*/
+/.trim-cli-*/
+/.trim-delete-test/
+/.verify*/
+/tmp-fnaudio-*
+/remote__api_library_items.json
+/fnaudio.fpk
+/artifacts/_scratch/
 
 # Cached third-party repositories; their fixed revisions are documented in references/.
 references/FNOS-API-upstream/

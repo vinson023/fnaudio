@@ -5,7 +5,9 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
+from file_permissions import secure_directory, secure_file
 
 
 class ProcessSupervisor:
@@ -26,6 +28,11 @@ class ProcessSupervisor:
         env: Optional[Dict[str, str]] = None,
         log_path: Optional[str] = None,
         restart: bool = True,
+        max_restarts: int = 5,
+        restart_window: float = 60.0,
+        restart_backoff: float = 2.0,
+        on_restart: Optional[Callable[[str, Dict], None]] = None,
+        nice: int = 0,
     ) -> None:
         with self._lock:
             previous = self._entries.get(name) or {}
@@ -38,6 +45,14 @@ class ProcessSupervisor:
                 "env": dict(env or {}),
                 "log_path": log_path,
                 "restart": bool(restart),
+                "max_restarts": max(1, int(max_restarts)),
+                "restart_window": max(5.0, float(restart_window)),
+                "restart_backoff": max(0.01, float(restart_backoff)),
+                "restart_times": list(previous.get("restart_times") or []),
+                "restart_count": int(previous.get("restart_count") or 0),
+                "restart_exhausted": bool(previous.get("restart_exhausted")),
+                "on_restart": on_restart or previous.get("on_restart"),
+                "nice": int(nice or 0),
                 "desired": bool(previous.get("desired")) if previous else False,
                 "process": process if running else None,
                 "last_error": previous.get("last_error") or "",
@@ -59,6 +74,8 @@ class ProcessSupervisor:
             if not entry:
                 return {"ok": False, "message": "unknown process: %s" % name}
             entry["desired"] = True
+            entry["restart_exhausted"] = False
+            entry["restart_times"] = []
             result = self._start_locked(entry)
             self._ensure_monitor()
             return result
@@ -105,8 +122,11 @@ class ProcessSupervisor:
                 "desired": bool(entry.get("desired")),
                 "pid": process.pid if running else 0,
                 "command": list(entry.get("command") or []),
+                "nice": int(entry.get("nice") or 0),
                 "last_error": entry.get("last_error") or "",
                 "last_start": entry.get("last_start") or 0,
+                "restart_count": int(entry.get("restart_count") or 0),
+                "restart_exhausted": bool(entry.get("restart_exhausted")),
             }
 
     def shutdown(self) -> None:
@@ -130,10 +150,22 @@ class ProcessSupervisor:
         log_handle = None
         try:
             if log_path:
-                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                secure_directory(os.path.dirname(log_path))
                 log_handle = open(log_path, "ab", buffering=0)
+                secure_file(log_path)
                 stdout = log_handle
                 stderr = log_handle
+            preexec_fn = None
+            if os.name != "nt":
+                delta = int(entry.get("nice") or 0)
+                def _prepare_child(value=delta):
+                    os.umask(0o077)
+                    try:
+                        if value:
+                            os.nice(value)
+                    except (OSError, ValueError):
+                        pass
+                preexec_fn = _prepare_child
             process = subprocess.Popen(
                 command,
                 cwd=entry.get("cwd") or None,
@@ -142,6 +174,7 @@ class ProcessSupervisor:
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,
+                preexec_fn=preexec_fn,
             )
             entry["process"] = process
             entry["last_error"] = ""
@@ -163,14 +196,33 @@ class ProcessSupervisor:
                     if process and process.poll() is not None:
                         entry["process"] = None
                         if entry.get("desired") and entry.get("restart"):
-                            entry["restart_after"] = time.time() + 2
+                            now = time.time()
+                            window = float(entry.get("restart_window") or 60.0)
+                            recent = [stamp for stamp in entry.get("restart_times") or [] if now - float(stamp) <= window]
+                            if len(recent) >= int(entry.get("max_restarts") or 5):
+                                entry["restart_times"] = recent
+                                entry["restart_exhausted"] = True
+                                entry["desired"] = False
+                                entry["last_error"] = "restart limit reached"
+                            else:
+                                recent.append(now)
+                                entry["restart_times"] = recent
+                                entry["restart_count"] = int(entry.get("restart_count") or 0) + 1
+                                delay = min(30.0, float(entry.get("restart_backoff") or 2.0) ** min(len(recent), 5))
+                                entry["restart_after"] = now + delay
                     if (
                         entry.get("desired")
                         and entry.get("restart")
                         and not entry.get("process")
                         and time.time() >= float(entry.get("restart_after") or 0)
                     ):
-                        self._start_locked(entry)
+                        result = self._start_locked(entry)
+                        callback = entry.get("on_restart")
+                        if callback and result.get("ok"):
+                            try:
+                                callback(entry.get("name") or "", dict(result))
+                            except Exception as exc:
+                                entry["last_error"] = "restart callback failed: %s" % exc
 
 
 def _command_exists(command: str) -> bool:
