@@ -1943,31 +1943,24 @@ function measureAutoTrackColumnWidths() {
   applyTrackGridTemplate();
 }
 function trackQuality(item) {
+  if (globalThis.fnAudioTrackPresentation?.quality) return globalThis.fnAudioTrackPresentation.quality(item);
   const rate = Number(item.sample_rate || 0);
   const depth = Number(item.bit_depth || 0);
   const bitrate = Number(item.bitrate || 0);
-  const pcm = rate ? `${Math.round(rate / 1000)}kHz${depth ? `/${depth}bit` : ""}` : "";
-  return pcm || (bitrate ? `${Math.round(bitrate / 1000)}kbps` : "—");
+  return rate ? `${Math.round(rate / 1000)}kHz${depth ? `/${depth}bit` : ""}` : (bitrate ? `${Math.round(bitrate / 1000)}kbps` : "—");
 }
 function trackAddedDate(item) {
+  if (globalThis.fnAudioTrackPresentation?.addedDate) return globalThis.fnAudioTrackPresentation.addedDate(item, itemAddedTime);
   const seconds = itemAddedTime(item);
   if (!seconds) return "—";
   try { return new Date(seconds > 99999999999 ? seconds / 1000000000 : seconds * 1000).toLocaleDateString("zh-CN"); } catch (error) { return "—"; }
 }
 function trackColumnValue(item, key) {
+  if (globalThis.fnAudioTrackPresentation?.columnValue) {
+    return globalThis.fnAudioTrackPresentation.columnValue(item, key, { displayText, clock, formatSize, escapeHtml, itemAddedTime });
+  }
   const trackNo = Number(item.track_no || 0) > 0 ? String(Number(item.track_no)).padStart(2, "0") : "—";
-  const values = {
-    track_no: trackNo,
-    artist: displayText(item.artist),
-    album: displayText(item.album),
-    format: item.format || "—",
-    duration: Number(item.duration || 0) > 0 ? clock(item.duration) : "—",
-    size: formatSize(item.size) || "—",
-    quality: trackQuality(item),
-    added: trackAddedDate(item),
-    composer: displayText(item.composer),
-    genre: displayText(item.genre),
-  };
+  const values = { track_no: trackNo, artist: displayText(item.artist), album: displayText(item.album), format: item.format || "—", duration: Number(item.duration || 0) > 0 ? clock(item.duration) : "—", size: formatSize(item.size) || "—", quality: trackQuality(item), added: trackAddedDate(item), composer: displayText(item.composer), genre: displayText(item.genre) };
   return escapeHtml(values[key] || "—");
 }
 function canSortTrackColumn(key) {
@@ -2057,7 +2050,9 @@ function renderAlbumDetail(list) {
   </div>`;
 }
 function trackRowSelectionKey(item, index = 0) {
-  return `${String(item?.id || "")}::${Math.max(0, Number(index) || 0)}`;
+  return globalThis.fnAudioTrackPresentation?.rowSelectionKey
+    ? globalThis.fnAudioTrackPresentation.rowSelectionKey(item, index)
+    : `${String(item?.id || "")}::${Math.max(0, Number(index) || 0)}`;
 }
 function renderTrack(item, index = 0) {
   const localCover = coverUrl(item);

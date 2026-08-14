@@ -1,11 +1,12 @@
 # fnAudio 待办
 
-当前源码版本：`0.2.3`。本清单只记录仍然有效的工作；历史阶段事项、已完成实现和验证证据见 `PROJECT_CONTEXT.md` 与 `CHANGELOG_AI.md`。
+当前源码版本：`0.2.5`。本清单只记录仍然有效的工作；历史阶段事项、已完成实现和验证证据见 `PROJECT_CONTEXT.md` 与 `CHANGELOG_AI.md`。
 
 ## P1：可靠性与发布质量
 
 - [x] 元数据补全候选支持选择非第一候选。前端只提交候选序号，服务端仅从该歌曲已保存的候选集中取值，再执行既有的“只补空白 Tag”写回。
 - [x] 加入可复用本地验证链路的 GitHub Actions 工作流：Python/Node/Playwright、Android Debug 构建和 `fnpack` 包检查使用同一套脚本。
+- [x] Android 正式发布构建链路：`tools/build_android_release.ps1` 强制检查签名变量和 keystore，执行 Release 构建、APK 验签、版本核对和 SHA-256 归档；已通过一次性临时 keystore 离线烟雾验证。正式证书仍必须由负责人保管和提供。
 - [ ] Chromaprint/AcoustID 用于无名称或歧义歌曲：已确认测试 fnOS 有 `libchromaprint.so.1`，但没有 `fpcalc`，包内不携带该依赖，且 AcoustID 查询必须使用项目专属 client key 和配额。取得可分发二进制及 API 凭据前不得默认启用。
 
 ## P2：部署与外部系统验收
@@ -20,7 +21,7 @@
 
 - [x] 音乐库路径许可、规范化、合并与配置写入统一归属 `library.py`；设置 API、扫描与 SQLite 使用同一身份规则。
 - [x] 过期 Spotify 配置已移除；已知乱码、重复字典键、重复作用域定义和不可达控制流由源码卫生测试持续拦截。
-- [ ] 继续按可测试边界拆分 `server.py`、`library.py` 与 `app.js`。这是持续架构工作，不应为了降低行数进行大范围机械移动；每次抽取必须保留独立回归。
+- [ ] 继续按可测试边界拆分 `server.py`、`library.py` 与 `app.js`。`app.js` 的曲目展示规则已抽至 `ui/track_presentation.js` 并有独立 Node 回归；后续不得为降低行数做机械移动，每次抽取必须保留独立回归。
 - [x] 历史检查目录和构建残留已归档至 `artifacts/_scratch/`，并纳入 Git 忽略规则；正式发布包和测试缓存保留用于回滚与复现。
 
 ## P0：必须依赖真实设备或外部材料
@@ -35,7 +36,7 @@
 ## 需要项目负责人决策
 
 - [ ] 确认许可证、维护者身份、远程 Git 托管位置和正式发布策略。
-- [ ] 建立 Android 正式签名 keystore、离线备份和升级密钥策略。
+- [ ] 建立 Android 正式签名 keystore、离线备份和升级密钥策略。构建链路已就绪，但正式签名身份不能由临时代用密钥替代。
 - [ ] 决定是否提供 AcoustID client key、额度和可分发的 Chromaprint 运行时。
 - [ ] fnOS 若提供稳定的非 root 服务账号、共享目录 ACL 和 ALSA 设备组契约，再决定是否将主服务降权。
 
