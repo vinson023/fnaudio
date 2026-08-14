@@ -1032,7 +1032,12 @@
 
 - Extracted pure track quality, date, column display and row-key rules into `app/ui/track_presentation.js`; `app.js` retains state and DOM orchestration.
 - Added a standalone Node regression, release-hash coverage and package assertions for the new asset so same-version browser/WebView updates cannot reuse an older presentation module.
-- Full offline verification passed: 283 Python tests, all Node/UI regressions, 3 Playwright E2E tests and native fnpack package inspection. FPK SHA-256: `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
+- Full offline verification passed: 284 Python tests, all Node/UI regressions, 3 Playwright E2E tests and native fnpack package inspection. FPK SHA-256: `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
+
+## External DAC Upgrade Smoke Test - 2026-08-14
+
+- Extended the transactional test-host installer for non-default SSH ports, sudo-backed administration and a caller-selected temporary upload directory.
+- Upgraded the authorized external host to the current `0.2.5` FPK and verified a real TEAC UD-301 DAC playback transition to `PLAYING`, then restored its stopped 536-item queue and output target.
 
 ## 0.1.257 - 2026-08-14
 

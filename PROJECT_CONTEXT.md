@@ -10,14 +10,21 @@
 
 - `app/ui/track_presentation.js` now owns pure track quality, date, column-value and row-key rendering rules. `app.js` injects its existing display/escaping helpers and remains the owner of application state, DOM mutation and API calls.
 - The module has a standalone Node regression test and is included in both syntax verification and the release asset hash. The compatibility fallback in `app.js` exists only for isolated legacy source-slice tests; packaged browser execution loads the dedicated module first.
-- Full offline verification passed: 283 Python tests, all Node/UI regressions including the new presentation test, 3 Playwright E2E tests and native fnpack payload inspection. Current FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
+- Full offline verification passed: 284 Python tests, all Node/UI regressions including the new presentation test, 3 Playwright E2E tests and native fnpack payload inspection. Current FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`.
 
 ## 0.2.5 Mobile Control Layout Cache Recovery (2026-08-14)
 
 - Mobile controls are explicitly covered by browser E2E: top device and MP3 controls remain visible; desktop player actions are hidden; shuffle precedes previous and repeat follows next.
 - Releases use a content-derived asset build marker, so a package upgrade cannot retain an older WebView CSS/JS layout from the pre-0.2.2 cache strategy.
-- Verification passed: 282 Python tests, Node/UI regressions, 3 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `DD32D95F2E41DA780DE1DB091041991DCC3945F7F328D22201064C5E7591FA19`. Android Debug APK: `artifacts/0.2.5/fnaudio-android-0.2.5-debug.apk`, SHA-256 `FFCC86EACBFD272A662247D96CE0F2286D02A41150F22CFA3714F1C062162162`.
+- Verification passed: 284 Python tests, Node/UI regressions, 3 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.5/fnaudio-0.2.5-fnpack.fpk`, SHA-256 `7E7CC434F1DAB8C15B720D022B72588E9BA4FA4B282AA9961ADC9891A29B4210`. Android Debug APK: `artifacts/0.2.5/fnaudio-android-0.2.5-debug.apk`, SHA-256 `FFCC86EACBFD272A662247D96CE0F2286D02A41150F22CFA3714F1C062162162`.
 - LAN deployment evidence: `tools/install_test_host_fast.ps1` deployed the FPK to `198.51.100.24`, retaining backup `/vol1/1000/fnaudio/fast-deploy-backups/20260814-172218`. The live manifest and `Server` header report `0.2.5`; direct mobile-viewport inspection loaded `app.css?v=0.2.5-a09869333741` and verified the restored control layout. Screenshot: `artifacts/0.2.5/test-host-mobile-controls.png`. The test library was empty, so this validates layout and assets only, not track playback.
+
+## External DAC Upgrade Smoke Test (2026-08-14)
+
+- The current `0.2.5` FPK was transactionally upgraded on the authorized external fnOS test host through SSH `3100` using the `admin` account's sudo capability. Runtime configuration was retained: backend port `18080`, the music root and the selected TEAC UD-301 USB DAC.
+- The live service loaded `app.css`, `track_presentation.js` and `app.js` under `0.2.5-a09869333741`; health, MPD, metadata and DLNA services were healthy. The DAC reported native DSD capability, verified `DSD_U32_BE`, PCM through 352.8 kHz and bit-perfect fixed volume.
+- A six-second server-initiated DAC smoke playback entered `PLAYING` and advanced to `7.105s / 224.809s`. The pre-test 536-item queue, current item, repeat=`all`, shuffle=true, DAC target and stopped transport were restored automatically. Evidence JSON is retained on the host under `/vol1/1000/fnaudio/external-dac-test-*` and `external-dac-restore-*`.
+- `tools/install_test_host_fast.ps1` now supports non-default `SshPort`, an explicit `UseSudo` execution path and a temporary `RemotePackageDirectory`; the default root/LAN workflow is unchanged.
 
 ## 0.2.4 Mobile Album Detail Fix (2026-08-14)
 
