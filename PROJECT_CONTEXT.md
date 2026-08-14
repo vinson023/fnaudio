@@ -1068,6 +1068,12 @@ authoritative `stop` command to the backend before its state is persisted.
 - 同一轮已实际执行暂停、恢复、seek 和下一首；暂停状态为 `PAUSE`，恢复与 seek 后均回到 `PLAY`。证据目录：`/vol1/1000/fnaudio/external-dsd-smoke-20260814-185513/`，其中 `report.json` 为汇总。
 - 测试退出时通过 API 恢复原 536 首播放队列、当前曲目、循环、随机、DAC 目标与 `STOPPED` 传输状态；`restore-verification.json` 记录 `restore_verified=true`。仍未替代物理热插拔、DoP-only DAC、DLNA Renderer、AirPlay 和 Android 多设备验收。
 
+## 0.2.5 外网 PCM 与 DLNA 回归（2026-08-14）
+
+- TEAC UD-301 实测从 44.1 kHz/16-bit FLAC（`Intro`）切换到 96 kHz/24-bit FLAC（`水手公园`）均为 `PLAY`，MPD 分别上报 `44100:16:2` 与 `96000:24:2`；两次均为 `bitperfect_candidate=true`，未转码。证据：`/vol1/1000/fnaudio/external-pcm-rate-20260814-185853/report.json`，会话恢复校验通过。
+- 已发现真实电视端 Renderer，并对 `奇异果TV官方投屏(51)` 做了实际 FLAC 推送。设备接收的 URI 为 `http://198.51.100.68:18080/upnp/media/...`；加载、暂停、恢复和 seek 的控制请求均成功，seek 后设备与核心状态均为 `PLAYING`。证据：`/vol1/1000/fnaudio/external-dlna-pcm-20260814-190010/report.json`，恢复校验通过。
+- 该 Renderer 的 `ConnectionManager` 协议信息明确 `supports_dsd=false`，故不能作为原生 DSD 推送、采样率保持或自动下一首的验收设备。继续等待兼容 Renderer；不能以电视端 PCM 结果代替该项。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
