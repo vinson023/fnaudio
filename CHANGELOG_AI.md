@@ -1039,6 +1039,11 @@
 - Extended the transactional test-host installer for non-default SSH ports, sudo-backed administration and a caller-selected temporary upload directory.
 - Upgraded the authorized external host to the current `0.2.5` FPK and verified a real TEAC UD-301 DAC playback transition to `PLAYING`, then restored its stopped 536-item queue and output target.
 
+## External Native DSD and DAC Controls - 2026-08-14
+
+- Verified DSF and DFF native playback through the TEAC UD-301. MPD reported `dsd64:2`, `dsd=true` and a bit-perfect candidate for both samples.
+- Verified real DAC pause, resume, seek and next-track control, with the original queue state restored after the test.
+
 ## 0.1.257 - 2026-08-14
 
 - Restored the mobile MP3 transcoding control through the playback "More" menu. The option reflects its current state and applies the same reload behavior as the desktop control.
