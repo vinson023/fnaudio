@@ -1095,6 +1095,11 @@ authoritative `stop` command to the backend before its state is persisted.
 - 真实 TEAC UD-301 的 DSF `Simple Man`（359.648 秒）seek 至曲尾后，fnAudio 自动推进到 DFF `分手說愛你`（256.141 秒）。
 - 前后 MPD 均实际上报 `dsd64:2`、`dsd=true`、`bitperfect_candidate=true`；最终核心为第二首 `PLAYING`，未出现 PCM 回退。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-dsd-autonext-20260814-191520/report.json`。
 
+## 0.2.7 外网 SSE 权威状态回归（2026-08-14）
+
+- 在真实 TEAC UD-301 输出上订阅 `/api/playback/events`，并实际执行加载、暂停、恢复与停止。共收到 8 个播放事件，状态版本严格递增（`21,22,23,24,25,26,28,29`），覆盖 `PLAYING`、`PAUSED`、恢复 `PLAYING` 与 `STOPPED`。
+- 事件流未报错，确认输出控制由服务端状态核心合并并广播，而非客户端自行推断。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-sse-dac-20260814-191714/report.json`。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
