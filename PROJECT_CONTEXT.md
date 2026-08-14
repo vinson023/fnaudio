@@ -1100,6 +1100,11 @@ authoritative `stop` command to the backend before its state is persisted.
 - 在真实 TEAC UD-301 输出上订阅 `/api/playback/events`，并实际执行加载、暂停、恢复与停止。共收到 8 个播放事件，状态版本严格递增（`21,22,23,24,25,26,28,29`），覆盖 `PLAYING`、`PAUSED`、恢复 `PLAYING` 与 `STOPPED`。
 - 事件流未报错，确认输出控制由服务端状态核心合并并广播，而非客户端自行推断。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-sse-dac-20260814-191714/report.json`。
 
+## 0.2.7 外网 MPD 外部控制收敛回归（2026-08-14）
+
+- 在真实 TEAC UD-301 上直接通过 MPD 协议发送 `play 0`、`pause 1`、`pause 0`、`stop`，不经 fnAudio 播放控制 API。
+- fnAudio 的 MPD 状态监听依次将权威播放核心收敛至 `PLAYING`、`PAUSED`、`PLAYING`、`STOPPED`，当前曲目保持一致。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-mpd-outofband-20260814-191837/report.json`。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
