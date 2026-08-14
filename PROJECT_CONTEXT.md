@@ -1085,6 +1085,11 @@ authoritative `stop` command to the backend before its state is persisted.
 - 外网机通过正常生命周期脚本停止并启动 fnAudio 后，播放核心的 536 首队列、当前曲目、循环、随机和 TEAC UD-301 DAC 目标均与重启前一致。
 - 重启前后传输状态均为 `STOPPED`、`playing=false`，验证启动仅恢复会话而不自动播放；`/api/health` 同时确认 MPD、媒体库、元数据、转码和 DLNA 服务健康。证据：`/vol1/1000/fnaudio/external-restart-20260814-191146/report.json`。
 
+## 0.2.7 外网 DAC 自动下一首与跨采样率回归（2026-08-14）
+
+- 真实 TEAC UD-301 以隔离双曲队列播放：10.826 秒、192 kHz/24-bit FLAC `Airport Take Off` 自然结束后，fnAudio 自动推进到 76.12 秒、44.1 kHz/16-bit FLAC `Intro`。
+- 最终核心状态为第二首 `PLAYING`，MPD 实际输出为 `44100:16:2`、`bitperfect_candidate=true`，确认自动推进同时正确完成跨采样率设备重新配置。原 536 首会话恢复校验通过。证据：`/vol1/1000/fnaudio/external-dac-autonext-20260814-191331/report.json`。
+
 ## 0.1.214 development update (2026-08-11)
 
 - Extended metadata retrieval with source-level provider flows from `go-music-dl` / `music-lib`: Kuwo and Kugou now supply fallback lyrics and album artwork metadata after scored local title/artist matching.
