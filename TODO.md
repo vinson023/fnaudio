@@ -1,6 +1,6 @@
 # fnAudio 待办
 
-当前源码版本：`0.2.2`。本清单只记录仍然有效的工作；历史阶段事项、已完成实现和验证证据见 `PROJECT_CONTEXT.md` 与 `CHANGELOG_AI.md`。
+当前源码版本：`0.2.3`。本清单只记录仍然有效的工作；历史阶段事项、已完成实现和验证证据见 `PROJECT_CONTEXT.md` 与 `CHANGELOG_AI.md`。
 
 ## P1：可靠性与发布质量
 

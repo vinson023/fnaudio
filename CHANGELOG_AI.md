@@ -1,5 +1,11 @@
 # fnAudio AI 修改记录
 
+## 0.2.3 (2026-08-14)
+
+- 从 `app.js` 抽取顶部标题/副标题的纯展示规则至 `view_presentation.js`，减少视图渲染函数的职责并建立前端模块边界。
+- 发布缓存构建标识现在同时涵盖 CSS、主 UI 脚本与视图展示模块。
+- 验证通过：282 项 Python 测试、Node/UI 回归、2 项 Playwright E2E、Android Debug 构建与原生 fnpack 检查。FPK：`artifacts/0.2.3/fnaudio-0.2.3-fnpack.fpk`，SHA-256 `C9D4B744ED56C8FD6CAEAF530EB6BA055C32DFCBA997DE1017C1B98FC48BBF8E`；Android Debug APK：`artifacts/0.2.3/fnaudio-android-0.2.3-debug.apk`，SHA-256 `307E4DCF5E5B6BAB67636F14F5AE6890039344A1EDFE7E240345593F9B04540E`。
+
 ## 0.2.2 (2026-08-14)
 
 - 发布阶段静态资源改为由 CSS/JS 内容派生的构建标识，fnpack 暂存副本会自动写入缓存键，消除同版本修复残留旧脚本的风险。

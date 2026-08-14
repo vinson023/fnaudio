@@ -80,6 +80,7 @@ Assert-Contains $serverSource "server_version = APP_USER_AGENT" "src/app/server/
 Assert-Contains (Get-Content -LiteralPath $versionModulePath -Raw -Encoding UTF8) 'APP_USER_AGENT = "fnAudio/%s" % APP_VERSION' "src/app/server/version.py"
 $index = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
 Assert-Contains $index "app.css?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
+Assert-Contains $index "view_presentation.js?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
 Assert-Contains $index "app.js?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
 
 $gradle = Get-Content -LiteralPath $gradlePath -Raw -Encoding UTF8
@@ -112,8 +113,9 @@ try {
     # source retains a marker so a same-version rebuild cannot ship stale JS.
     $stageCssPath = Join-Path $stageRoot "app\ui\app.css"
     $stageJsPath = Join-Path $stageRoot "app\ui\app.js"
+    $stagePresentationPath = Join-Path $stageRoot "app\ui\view_presentation.js"
     $stageIndexPath = Join-Path $stageRoot "app\ui\index.html"
-    $assetHash = ((Get-FileHash -LiteralPath $stageCssPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stageJsPath -Algorithm SHA256).Hash).Substring(0, 12).ToLowerInvariant()
+    $assetHash = ((Get-FileHash -LiteralPath $stageCssPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stagePresentationPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stageJsPath -Algorithm SHA256).Hash).Substring(0, 12).ToLowerInvariant()
     $assetBuild = "$version-$assetHash"
     $stageIndex = Get-Content -LiteralPath $stageIndexPath -Raw -Encoding UTF8
     $stageIndex = $stageIndex.Replace("__FNAUDIO_ASSET_BUILD__", $assetBuild)
@@ -227,6 +229,7 @@ try {
     Assert-Contains (Get-Content -LiteralPath (Join-Path $payloadRoot "server\version.py") -Raw -Encoding UTF8) 'APP_USER_AGENT = "fnAudio/%s" % APP_VERSION' "packaged server/version.py"
     $packagedIndex = Get-Content -LiteralPath (Join-Path $payloadRoot "ui\index.html") -Raw -Encoding UTF8
     Assert-Contains $packagedIndex "app.css?v=$assetBuild" "packaged ui/index.html"
+    Assert-Contains $packagedIndex "view_presentation.js?v=$assetBuild" "packaged ui/index.html"
     Assert-Contains $packagedIndex "app.js?v=$assetBuild" "packaged ui/index.html"
     if (Test-Path -LiteralPath (Join-Path $payloadRoot "tests")) {
         throw "FPK payload unexpectedly contains test sources."

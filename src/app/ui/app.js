@@ -2347,19 +2347,19 @@ function render() {
   updateFavoriteControls();
   updateSortDirectionButton();
   renderPlaylistNav();
-  const labels = { all: "全部音乐", dsd: "DSD 音乐", queue: "当前队列", folders: "文件夹", albums: "专辑", artists: "歌手", composers: "作曲者", genres: "类型", random100: "随机 100 首", recent: "最近添加", favorites: "收藏歌曲" };
-  $("viewTitle").textContent = isPlaylistView()
-    ? (currentPlaylist()?.name || "播放列表")
-    : creatorAllTracks
-      ? "所有歌曲"
-      : (isAlbumSurfaceView() ? "专辑" : (labels[state.view] || "音乐库"));
-  $("viewSub").textContent = scanProgressText() || "飞牛私人音乐库";
-  $("mobileViewTitle").textContent = $("viewTitle").textContent;
-  $("mobileViewSub").textContent = creatorAllTracks
-    ? displayText(currentCreatorName())
-    : state.view === "folders" && currentFolderLabel
-      ? currentFolderLabel()
-      : "飞牛私人音乐库";
+  const presentation = window.fnAudioViewPresentation({
+    view: state.view,
+    playlistName: isPlaylistView() ? (currentPlaylist()?.name || "播放列表") : "",
+    creatorAllTracks,
+    albumSurface: isAlbumSurfaceView(),
+    scanText: scanProgressText(),
+    creatorName: displayText(currentCreatorName()),
+    folderName: state.view === "folders" && currentFolderLabel ? currentFolderLabel() : "",
+  });
+  $("viewTitle").textContent = presentation.title;
+  $("viewSub").textContent = presentation.subtitle;
+  $("mobileViewTitle").textContent = presentation.title;
+  $("mobileViewSub").textContent = presentation.mobileSubtitle;
   document.querySelectorAll(".nav-item").forEach(x => x.classList.toggle("active", x.dataset.view === state.view));
   document.querySelectorAll("[data-play]").forEach(button => button.onclick = event => {
     const row = button.closest("[data-track-row-key]");

@@ -1,5 +1,10 @@
 # fnAudio 项目上下文
 
+## 0.2.3 Frontend Presentation Boundary (2026-08-14)
+
+- The pure topbar title/subtitle mapping was extracted from `app.js` into `ui/view_presentation.js`. The release asset hash now covers this module alongside CSS and the main UI script.
+- Verification passed: 282 Python tests, Node/UI regressions, 2 Playwright E2E tests, Android Debug build and native fnpack payload inspection. FPK: `artifacts/0.2.3/fnaudio-0.2.3-fnpack.fpk`, SHA-256 `C9D4B744ED56C8FD6CAEAF530EB6BA055C32DFCBA997DE1017C1B98FC48BBF8E`. Android Debug APK: `artifacts/0.2.3/fnaudio-android-0.2.3-debug.apk`, SHA-256 `307E4DCF5E5B6BAB67636F14F5AE6890039344A1EDFE7E240345593F9B04540E`.
+
 ## 0.2.2 Offline Delivery Hardening (2026-08-14)
 
 - fnpack staging replaces the source UI cache marker with a version plus CSS/JS content hash. A same-version rebuild can therefore not reuse stale browser or WebView code.
