@@ -2395,6 +2395,11 @@ function applyRemotePlaybackSnapshot(data, options = {}) {
   const stateVersion = remoteStateVersion(data.state_version);
   if (state.remoteStateVersion > 0 && (stateVersion == null || stateVersion < state.remoteStateVersion)) return;
   state.remoteStatus = data;
+  // The server states the unit of the seconds it just reported.  A declared
+  // value wins over anything derived from local queue metadata: the SSE stream,
+  // a poll and a control reply then agree no matter which one arrives first.
+  const declaredCueSegment = data.cue_segment === true || data.cue_segment === false;
+  if (declaredCueSegment) state.remoteCueSegment = data.cue_segment === true;
   if (stateVersion != null) state.remoteStateVersion = stateVersion;
   if (Number.isFinite(Number(data.generation)) && Number(data.generation) >= 0) {
     state.remoteGeneration = Math.min(2147483647, Math.floor(Number(data.generation)));
@@ -2410,7 +2415,7 @@ function applyRemotePlaybackSnapshot(data, options = {}) {
   if (nextIndex >= 0 && nextIndex !== state.index) {
     const previousIndex = state.index;
     state.index = nextIndex;
-    state.remoteCueSegment = currentItem()?.cue_track === true && !isDacTarget();
+    if (!declaredCueSegment) state.remoteCueSegment = currentItem()?.cue_track === true && !isDacTarget();
     syncCurrentQueuePresentation(previousIndex);
   }
   if (options.allowAdvance !== false) maybeAdvanceRemoteQueue(data);
@@ -4485,6 +4490,9 @@ function seekDuration() {
   if (item?.cue_track === true && item.duration) return playbackSeconds(item.duration);
   if (item?.cue_track === true && isRemoteTarget()) {
     const remoteDuration = playbackSeconds(state.remoteStatus?.position?.duration_seconds);
+    // A declared segment already arrives folded, so its duration is the track
+    // length; subtracting cue_start again would shorten the rail.
+    if (state.remoteCueSegment) return remoteDuration;
     const cueStart = playbackSeconds(item.cue_start);
     return remoteDuration > cueStart ? remoteDuration - cueStart : 0;
   }
@@ -7801,8 +7809,10 @@ async function pushToDevice(deviceId, item = currentItem()) {
       alert(data.message || data.error || "播放设备接收失败");
       return false;
     }
+    // Same authority rule as the status snapshot: a declaration from the server
+    // wins, and only an undeclared reply may fall back to local queue metadata.
     state.remoteCueSegment = data.cue_segment === true
-      || (item?.cue_track === true && !isDacTarget(deviceId));
+      || (data.cue_segment !== false && item?.cue_track === true && !isDacTarget(deviceId));
     if (state.remoteCueSegment) {
       state.remoteStatus = {
         ...(state.remoteStatus || {}),

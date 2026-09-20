@@ -2,9 +2,16 @@
 
 from collections.abc import Mapping
 
+from playback_cue_position import cue_segment_declaration
 
-def playback_event_payload(core: Mapping, requested_target=""):
-    """Build a bounded, target-neutral payload without mutating core state."""
+
+def playback_event_payload(core: Mapping, requested_target="", item=None):
+    """Build a bounded payload in client units without mutating core state.
+
+    ``item`` is the queue mapping of the current track.  The authoritative
+    core position is already expressed in the units a client displays, so the
+    payload only declares whether those seconds are CUE-segment relative.
+    """
     if not isinstance(core, Mapping):
         core = {}
     active_target = core.get("target_id")
@@ -71,6 +78,7 @@ def playback_event_payload(core: Mapping, requested_target=""):
         "core": core,
         "transport": {"state": transport.upper()},
         "position": {"rel_seconds": position, "duration_seconds": duration},
+        "cue_segment": cue_segment_declaration(item),
     }
 
 

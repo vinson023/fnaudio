@@ -14,6 +14,7 @@ from .mpd_client import (
     mpd_status,
     mpd_update_and_wait,
 )
+from playback_cue_position import project_cue_seek
 from .mpd_errors import classify_mpd_exception, mpd_error
 from .plugins import OutputPlugin
 
@@ -186,6 +187,28 @@ class MpdOutput(OutputPlugin):
         except Exception as exc:
             return self._failure("MPD 播放失败：%s" % exc, state.target_id)
 
+    @staticmethod
+    def _current_cue_item(state: PlaybackState, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Resolve the item a seek applies to, preferring the request payload.
+
+        A control request carries the library mapping it is acting on.  When a
+        client omits it, the queue reference for the current track already holds
+        the same mapping, so the offset needs no filesystem or database lookup.
+        """
+        item = (context or {}).get("item")
+        if isinstance(item, dict) and item:
+            return item
+        queue = state.queue or []
+        track_id = state.current_track_id
+        if not queue or not track_id:
+            return {}
+        index = state.current_index
+        if isinstance(index, int) and 0 <= index < len(queue) and queue[index].track_id == track_id:
+            candidate = queue[index].item
+        else:
+            candidate = next((track.item for track in queue if track.track_id == track_id), {})
+        return candidate if isinstance(candidate, dict) else {}
+
     def command(self, command: PlaybackCommand, state: PlaybackState, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
             selected = self._select_target_output(state)
@@ -203,7 +226,15 @@ class MpdOutput(OutputPlugin):
                 return {**result, "target_id": state.target_id}
             if command.action == "stop" and self.service and hasattr(self.service, "suppress_stop_transition"):
                 self.service.suppress_stop_transition()
-            result = self.service.control(command.action, command.position) if self.service else mpd_control(command.action, command.position, **self._connection())
+            # The client reports and requests seconds inside the CUE segment.
+            # MPD is driven in source-file seconds for a native CUE track, so the
+            # seek is folded back through the inverse of the status projection.
+            requested_position = (
+                project_cue_seek(command.position, self._current_cue_item(state, context))
+                if command.action == "seek"
+                else command.position
+            )
+            result = self.service.control(command.action, requested_position) if self.service else mpd_control(command.action, requested_position, **self._connection())
             if self.service and hasattr(self.service, "refresh_status"):
                 self.service.refresh_status()
             return {**result, "target_id": state.target_id}

@@ -147,7 +147,7 @@ from playback_status_response import (
 from playback_targets_presentation import build_targets
 from playback_targets_response import compose_playback_targets_response
 from upnp_device_selection import select_upnp_device
-from playback_cue_position import normalize_cue_position
+from playback_cue_position import cue_segment_declaration, normalize_cue_position, project_cue_seek, public_cue_position
 from media_range import parse_single_byte_range
 from media_naming import safe_filename
 from static_asset_policy import (
@@ -1214,10 +1214,10 @@ class Handler(BaseHTTPRequestHandler):
                 # control command changes state. A timeout merely emits an
                 # SSE heartbeat, so idle clients consume no polling loop.
                 PLAYBACK_CORE.wait_for_version(last_version, 15.0)
-                core = PLAYBACK_CORE.snapshot()
+                core, core_item = PLAYBACK_CORE.snapshot_with_item()
                 version = safe_int(core.get("state_version"))
                 if snapshot_changed(version, last_version):
-                    payload = playback_event_payload(core, requested_target)
+                    payload = playback_event_payload(core, requested_target, core_item)
                     self.wfile.write(snapshot_frame(version, payload))
                     self.wfile.flush()
                     last_version = version
@@ -2238,12 +2238,17 @@ def restore_playback_session(config, _retry=0, _generation=None):
                 return
             tracks = [TrackRef.from_mapping(item) for item in queue]
             restored_position = safe_float(playback.get("position") or 0)
+            # The session stores client units (seconds inside the CUE segment).
+            # The native queue mirror is driven in source-file seconds, the same
+            # inverse a seek command uses.
+            restored_current = next((item for item in queue if str(item.get("id") or "") == current), None)
+            backend_start = project_cue_seek(restored_position, restored_current)
             result = MPD_SERVICE.sync_playback_queue(
                 tracks,
                 current,
                 resolver=lambda track_id: find_library_item(config, track_id),
-                current_item=next((item for item in queue if str(item.get("id") or "") == current), None),
-                start=restored_position,
+                current_item=restored_current,
+                start=backend_start,
                 repeat=str(playback.get("repeat") or "off"),
                 shuffle=playback.get("shuffle") if isinstance(playback.get("shuffle"), bool) else False,
                 play=False,
@@ -2704,13 +2709,31 @@ def playback_control(handler, payload):
     return {"ok": ok, "kind": target_kind, "message": message, "core": PLAYBACK_CORE.snapshot(), "revision": revision}, 200 if ok else 502
 
 
+def project_mpd_transport_position(status_position, item):
+    """Fold the seconds MPD reports into the units every projection shares.
+
+    MPD reports a native CUE track in source-file seconds.  Folding here, once,
+    keeps the authoritative core state, the persisted session, the polling route
+    and the SSE stream in the same unit as the seek a client sent; folding later
+    would also re-fold the optimistic value a control command already wrote.
+    """
+    reported = status_position if isinstance(status_position, dict) else {}
+    return public_cue_position(
+        reported.get("rel_seconds"),
+        reported.get("duration_seconds"),
+        item,
+    )
+
+
 def playback_status(payload_or_query):
     target_id = target_id_from_query(payload_or_query)
     target_kind = playback_target_kind(target_id)
     if target_kind == "browser":
         return browser_response(PLAYBACK_CORE.snapshot()), 200
     if target_kind == "alsa":
-        return alsa_response(dac_public_status(), PLAYBACK_CORE.snapshot()), 200
+        # The DAC plays the segment as its own stream and is seeked in whole-file
+        # seconds, which is also what its status reports: no client-side fold.
+        return alsa_response(dac_public_status(), PLAYBACK_CORE.snapshot(), cue_segment=False), 200
     if target_kind == "mpd":
         # The UI polls this endpoint frequently for the progress bar.  Keep
         # it on the lightweight MPD status path so ALSA capability probing and
@@ -2744,12 +2767,24 @@ def playback_status(payload_or_query):
                     if result.get("ok") is True and output_result.get("ok") is True:
                         probe = MPD_OUTPUT.status()
                         status = probe.get("status") or status
-        return mpd_response(probe, status, PLAYBACK_CORE.snapshot()), 200
+        return mpd_response(
+            probe,
+            status,
+            PLAYBACK_CORE.snapshot(),
+            cue_segment=cue_segment_declaration(current_item),
+        ), 200
     device = find_upnp_device(target_id)
     if not device:
         return device_not_found_response(), 404
     try:
-        return upnp_response(upnp_transport_state(device), upnp_position_info(device), PLAYBACK_CORE.snapshot()), 200
+        # The renderer receives a trimmed segment, so its seconds are already
+        # segment-relative and need no client-side offset.
+        return upnp_response(
+            upnp_transport_state(device),
+            upnp_position_info(device),
+            PLAYBACK_CORE.snapshot(),
+            cue_segment=cue_segment_declaration(PLAYBACK_CORE.current_item()),
+        ), 200
     except Exception as exc:
         return backend_error_response(str(exc)), 502
 
@@ -3216,6 +3251,11 @@ def main():
             snapshot = PLAYBACK_CORE.state
             if snapshot.current_track_id != before:
                 save_current_playback_session(config)
+        # Read the item only after the current track has been settled above, so
+        # a backend-selected song never borrows the offsets of the previous one.
+        transport_position = project_mpd_transport_position(position, PLAYBACK_CORE.current_item())
+        transport_rel = transport_position["rel_seconds"]
+        transport_duration = transport_position["duration_seconds"]
         managed_track_ended = (
             previous == "PLAYING"
             and current == "STOPPED"
@@ -3226,8 +3266,8 @@ def main():
             PLAYBACK_CORE.sync_output_status(
                 "mpd",
                 current,
-                safe_float(position.get("rel_seconds")),
-                safe_float(position.get("duration_seconds")),
+                transport_rel,
+                transport_duration,
                 str(raw.get("error") or ""),
             )
             return
@@ -3248,8 +3288,8 @@ def main():
             PLAYBACK_CORE.sync_output_status(
                 "mpd",
                 "STOPPED",
-                safe_float(position.get("rel_seconds")),
-                safe_float(position.get("duration_seconds")),
+                transport_rel,
+                transport_duration,
                 str((result.get("result") or {}).get("message") or raw.get("error") or ""),
             )
         save_current_playback_session(config)
