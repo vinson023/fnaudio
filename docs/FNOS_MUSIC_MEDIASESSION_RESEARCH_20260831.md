@@ -47,7 +47,7 @@
 
 ## 1.35.2 静态证据
 
-反编译目录：`tools/apk-analysis/fnos-1.35.2-source`。
+反编译目录：`_external/apk-analysis/fnos-1.35.2-source`。
 
 - `com.ryanheise.audioservice.AudioService extends MediaBrowserServiceCompat`。
 - `onCreate()` 创建 `MediaSessionCompat("media-session")`，设置 playback actions、callback、queue、`PARTIAL_WAKE_LOCK`，并创建网络 `WifiLock`。

@@ -13,7 +13,7 @@ The harness at `references/go-music-dl/cmd/provider-smoke/main.go` called the fo
 - `GetAlbumSearchFunc(source)` with the same query
 - `GetAlbumDetailFunc(source)` using the first returned, real album ID
 
-Raw JSONL evidence is retained at `artifacts/go-music-dl-provider-smoke-20260811.jsonl`. Each record includes the source, capability, result count or lyric byte count, latency, and any provider error. The portable Go 1.25.1 runtime used for this test is isolated under `tools/runtime/go-clean`.
+Raw JSONL evidence is retained at `artifacts/go-music-dl-provider-smoke-20260811.jsonl`. Each record includes the source, capability, result count or lyric byte count, latency, and any provider error. The portable Go 1.25.1 runtime used for this test is isolated under `_external/runtime/go-clean`.
 
 An item is considered usable for a capability only when its full operation returned non-empty data. For lyrics and album details this means the request was made with an ID returned by the immediately preceding live search.
 
@@ -54,8 +54,8 @@ Before promoting any new source into the packaged runtime, run this command agai
 
 ```powershell
 Set-Location C:\path\to\fnAudio\references\go-music-dl
-$env:PATH = "C:\path\to\fnAudio\tools\runtime\go-clean\go\bin;$env:PATH"
-$env:GOMODCACHE = 'C:\path\to\fnAudio\tools\runtime\gomodcache-clean'
-$env:GOCACHE = 'C:\path\to\fnAudio\tools\runtime\gocache-clean'
+$env:PATH = "C:\path\to\fnAudio\_external\runtime\go-clean\go\bin;$env:PATH"
+$env:GOMODCACHE = 'C:\path\to\fnAudio\_external\runtime\gomodcache-clean'
+$env:GOCACHE = 'C:\path\to\fnAudio\_external\runtime\gocache-clean'
 go run .\cmd\provider-smoke | Tee-Object C:\path\to\fnAudio\artifacts\go-music-dl-provider-smoke-YYYYMMDD.jsonl
 ```

@@ -25,4 +25,4 @@
 3. 找到官方动态 P2P 配置获取接口后，按会话启动本地隧道，再把 fnAudio API/WebSocket 指向 `127.0.0.1:<port>`。
 4. 隧道认证和 fnAudio 用户认证分开处理，不能复用或硬编码官方 token/secret。
 
-抓包文件保存在 `tools/apk-analysis/fnconnect-official-20260812.mitm`，其中可能包含敏感 Cookie，仅限本地调试使用。
+抓包文件保存在 `_external/apk-analysis/fnconnect-official-20260812.mitm`，其中可能包含敏感 Cookie，仅限本地调试使用。
