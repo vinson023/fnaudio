@@ -26,6 +26,40 @@ class QueueService:
         return {"ok": True, "song_ids": {"new": "7"}}
 
 
+
+class RecordingMpdService:
+    """Control-plane fake with only the attributes every command path needs.
+
+    It deliberately has no select_output, mixer_policy or refresh_status, so
+    MpdOutput.command takes its early-return paths and the single recorded call
+    is the whole observation.
+    """
+
+    host = "127.0.0.1"
+    port = 56660
+
+    def __init__(self):
+        self.controls = []
+
+    def control(self, action, position=None):
+        self.controls.append((action, position))
+        return {"ok": True}
+
+
+# 100s into a 210s source file, this segment is 30s long.  MPD is driven in
+# source seconds, so a client seek of 30s must reach it as 130s.
+NATIVE_CUE_ITEM = {
+    "id": "cue-2",
+    "path": "/music/disc.flac",
+    "cue_track": True,
+    "cue_start": 100.0,
+    "cue_end": 130.0,
+    "duration": 30.0,
+}
+TRANSCODED_CUE_ITEM = dict(NATIVE_CUE_ITEM, id="cue-3", path="/music/disc.ape")
+PLAIN_ITEM = {"id": "plain", "path": "/music/one.flac", "duration": 30.0}
+
+
 class FixedVolumeService:
     host = "127.0.0.1"
     port = 56660
@@ -130,6 +164,44 @@ class MpdOutputTests(unittest.TestCase):
         caps = MpdOutput(service).capabilities()
         for key in ("volume", "native_dsd", "native_dsd_verified", "dop", "bitperfect"):
             self.assertFalse(caps[key], key)
+
+    def _seek_call(self, action, position, item=None, queue_item=None):
+        service = RecordingMpdService()
+        output = MpdOutput(service)
+        state = PlaybackState(target_id="mpd:local", target_kind="mpd")
+        context = {}
+        if queue_item is not None:
+            track = TrackRef.from_mapping(queue_item)
+            state.queue = [track]
+            state.current_track_id = track.track_id
+            # Deliberately wrong so the O(1) hit fails and the identity scan runs.
+            state.current_index = 9
+        if item is not None:
+            context = {"item": item}
+        with mock.patch.object(output, "start_service", return_value={"ok": True, "running": True}):
+            result = output.command(PlaybackCommand(action=action, position=position), state, context)
+        self.assertTrue(result["ok"], result)
+        return service.controls[-1]
+
+    def test_seek_on_a_native_cue_segment_is_folded_back_to_source_seconds(self):
+        self.assertEqual(self._seek_call("seek", 30.0, item=NATIVE_CUE_ITEM), ("seek", 130.0))
+
+    def test_transcoded_and_plain_seeks_reach_mpd_in_their_own_seconds(self):
+        self.assertEqual(self._seek_call("seek", 30.0, item=TRANSCODED_CUE_ITEM), ("seek", 30.0))
+        self.assertEqual(self._seek_call("seek", 30.0, item=PLAIN_ITEM), ("seek", 30.0))
+
+    def test_only_a_seek_is_folded(self):
+        self.assertEqual(self._seek_call("pause", 30.0, item=NATIVE_CUE_ITEM), ("pause", 30.0))
+        self.assertEqual(self._seek_call("play", 30.0, item=NATIVE_CUE_ITEM), ("play", 30.0))
+
+    def test_a_seek_falls_back_to_the_queue_reference_without_an_item(self):
+        self.assertEqual(self._seek_call("seek", 30.0, queue_item=NATIVE_CUE_ITEM), ("seek", 130.0))
+        self.assertEqual(self._seek_call("seek", 30.0, queue_item=TRANSCODED_CUE_ITEM), ("seek", 30.0))
+
+    def test_an_unresolved_item_never_invents_an_offset(self):
+        self.assertEqual(self._seek_call("seek", 30.0), ("seek", 30.0))
+        self.assertEqual(self._seek_call("seek", None, item=NATIVE_CUE_ITEM), ("seek", 100.0))
+        self.assertEqual(self._seek_call("seek", -5.0, item=NATIVE_CUE_ITEM), ("seek", 100.0))
 
 
 if __name__ == "__main__":

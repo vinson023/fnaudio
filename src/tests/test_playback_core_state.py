@@ -397,6 +397,54 @@ class PlaybackCoreStateTests(unittest.TestCase):
         self.assertEqual(core.state.current_track_id, "safe")
         self.assertFalse(core.state.shuffle)
         self.assertIs(core.select_current(Explosive()), core.state)
+    def test_current_item_exposes_the_queue_mapping_that_carries_cue_offsets(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        cue = {"id": "cue-2", "title": "Cue 2", "duration": 30, "cue_track": True, "cue_start": 100.0}
+        core.set_queue([{"id": "a", "title": "A", "duration": 10}, cue], "cue-2")
+        self.assertEqual(core.state.current_index, 1)
+        self.assertEqual(core.current_item().get("cue_start"), 100.0)
+        # A stale index must not lose the item: the identity scan still finds it.
+        core.state.current_index = 0
+        self.assertEqual(core.current_item().get("cue_start"), 100.0)
+        core.state.current_index = -1
+        self.assertIs(core.current_item().get("cue_track"), True)
+
+    def test_current_item_stays_empty_when_no_track_is_current(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        self.assertEqual(core.current_item(), {})
+        core.set_queue([{"id": "a", "title": "A"}], "a")
+        core.state.current_track_id = ""
+        self.assertEqual(core.current_item(), {})
+        core.state.current_track_id = "missing"
+        self.assertEqual(core.current_item(), {})
+
+    def test_a_non_mapping_queue_item_is_not_projected(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        core.state.queue = [TrackRef(track_id="a", item="not-a-mapping")]
+        core.state.current_track_id = "a"
+        core.state.current_index = 0
+        self.assertEqual(core.current_item(), {})
+
+    def test_snapshot_with_item_pairs_one_version_with_its_own_units(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        core.set_queue([{"id": "a", "title": "A", "cue_track": True, "cue_start": 100.0}], "a")
+        before = core.state.state_version
+        snapshot, item = core.snapshot_with_item()
+        self.assertEqual(snapshot["state_version"], before)
+        self.assertIn("output", snapshot)
+        self.assertEqual(item.get("id"), "a")
+        self.assertEqual(item.get("cue_start"), 100.0)
+        # Reading must not publish: the version is bumped by mutations only.
+        self.assertEqual(core.state.state_version, before)
+        snapshot["state_version"] = 99
+        self.assertEqual(core.state.state_version, before)
+
+    def test_snapshot_with_item_matches_snapshot_for_an_empty_queue(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        snapshot, item = core.snapshot_with_item()
+        self.assertEqual(item, {})
+        self.assertEqual(snapshot, core.snapshot())
+
 
 if __name__ == "__main__":
     unittest.main()

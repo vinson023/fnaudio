@@ -378,6 +378,44 @@ class PlaybackCore:
             self._touch()
             return self.state
 
+    def _current_item_locked(self) -> Dict[str, Any]:
+        """Return the queue mapping for the current track without any I/O.
+
+        Queue entries keep the library mapping they were built from, so CUE
+        offsets are available at the point where a position is projected or a
+        seek is dispatched.  ``current_index`` is maintained by every queue and
+        transport mutation, so the O(1) hit is the normal case; the linear scan
+        is only a guard against a stale index.
+        """
+        queue = self.state.queue
+        track_id = self.state.current_track_id
+        if not queue or not track_id:
+            return {}
+        index = self.state.current_index
+        if isinstance(index, int) and 0 <= index < len(queue) and queue[index].track_id == track_id:
+            item = queue[index].item
+        else:
+            position = self._index_for(track_id)
+            item = queue[position].item if position >= 0 else {}
+        return item if isinstance(item, dict) else {}
+
+    def current_item(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._current_item_locked()
+
+    def snapshot_with_item(self):
+        """Return ``(snapshot, current_item)`` while holding one lock.
+
+        SSE projects the position through the CUE metadata of the current track.
+        Reading the snapshot and the item separately could pair a new position
+        with the offset of the previous track, so both come from the same critical
+        section.
+        """
+        with self._lock:
+            result = self.state.to_dict()
+            result["output"] = self._plugin().snapshot(self.state)
+            return result, self._current_item_locked()
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             result = self.state.to_dict()

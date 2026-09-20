@@ -114,6 +114,12 @@ class PlaybackRestoreTests(unittest.TestCase):
 
     def test_playback_event_endpoint_writes_an_initial_sse_snapshot(self):
         class FakeCore:
+            def snapshot_with_item(self):
+                return self.snapshot(), getattr(self, "cue_item", {})
+
+            def current_item(self):
+                return getattr(self, "cue_item", {})
+
             def wait_for_version(self, version, timeout):
                 return 7
 
@@ -146,6 +152,12 @@ class PlaybackRestoreTests(unittest.TestCase):
 
     def test_playback_event_endpoint_treats_closed_writer_value_error_as_disconnect(self):
         class FakeCore:
+            def snapshot_with_item(self):
+                return self.snapshot(), getattr(self, "cue_item", {})
+
+            def current_item(self):
+                return getattr(self, "cue_item", {})
+
             def wait_for_version(self, version, timeout):
                 return 7
 
@@ -168,6 +180,12 @@ class PlaybackRestoreTests(unittest.TestCase):
 
     def test_playback_event_endpoint_uses_bounded_target_policy(self):
         class FakeCore:
+            def snapshot_with_item(self):
+                return self.snapshot(), getattr(self, "cue_item", {})
+
+            def current_item(self):
+                return getattr(self, "cue_item", {})
+
             def wait_for_version(self, version, timeout):
                 raise BrokenPipeError()
 
@@ -874,6 +892,124 @@ class PlaybackRestoreTests(unittest.TestCase):
                 save_session.assert_called_once()
             finally:
                 server.MPD_SERVICE = old_service
+
+    def _restore_mpd_cue_session(self, item_path):
+        """Restore an MPD session whose current track is a CUE segment.
+
+        The saved position is in client units (seconds inside the segment) while
+        MPD's native queue mirror is driven in source-file seconds, so for a
+        native segment the two numbers must differ by the segment offset.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            fake = FakeMpdService()
+            saved = {
+                "playback": {
+                    "queue": ["a", "cue"],
+                    "current_id": "cue",
+                    "position": 17.5,
+                    "playing": True,
+                    "repeat": "off",
+                    "shuffle": False,
+                    "target_id": "mpd:usb:dac",
+                }
+            }
+            items = [
+                {"id": "a", "path": "/music/a.flac", "duration": 30},
+                {
+                    "id": "cue",
+                    "path": item_path,
+                    "cue_track": True,
+                    "cue_start": 100.0,
+                    "cue_end": 130.0,
+                    "duration": 30.0,
+                },
+            ]
+            old_service = server.MPD_SERVICE
+            try:
+                server.MPD_SERVICE = fake
+                with mock.patch.object(server, "load_user_state", return_value=saved), mock.patch.object(
+                    server, "query_library_items_by_ids", return_value=items
+                ), mock.patch.object(server, "mpd_control") as control:
+                    server.restore_playback_session({"cache_dir": root})
+                self.assertGreaterEqual(len(fake.calls), 1)
+                tracks, current, options = fake.calls[-1]
+                self.assertEqual([track.track_id for track in tracks], ["a", "cue"])
+                self.assertEqual(current, "cue")
+                self.assertIs(options["current_item"], items[1])
+                control.assert_called_once_with("stop", host=fake.host, port=fake.port)
+                return options, server.PLAYBACK_CORE.state.position
+            finally:
+                server.MPD_SERVICE = old_service
+
+    def test_restore_drives_mpd_in_source_seconds_for_a_native_cue_segment(self):
+        options, core_position = self._restore_mpd_cue_session("/music/disc.flac")
+        self.assertEqual(options["start"], 117.5)
+        # The authoritative state keeps the client unit, otherwise the progress
+        # bar jumps by the offset the moment the session is restored.
+        self.assertEqual(core_position, 17.5)
+
+    def test_restore_leaves_a_transcoded_segment_in_its_own_seconds(self):
+        options, core_position = self._restore_mpd_cue_session("/music/disc.ape")
+        self.assertEqual(options["start"], 17.5)
+        self.assertEqual(core_position, 17.5)
+
+    def test_the_mpd_listener_folds_the_seconds_before_publishing_them(self):
+        """Wiring pin for the one transport writer that runs without any client request.
+
+        ``on_mpd_transport`` lives inside the bootstrap function, so no unit test
+        can call it: every other test reaches the fold through
+        :func:`project_mpd_transport_position` directly and cannot see the fold
+        disappear at its only call site.  Were it to drop back to forwarding raw
+        numbers, the authoritative state, the persisted session and the polling
+        route would publish three different units, so the shape is pinned here and
+        labelled a wiring guard rather than behaviour coverage.
+        """
+        with open("app/server/server.py", encoding="utf-8") as source_file:
+            source = source_file.read()
+        start = source.index("def on_mpd_transport(")
+        end = source.index("MPD_SERVICE.set_status_listener(on_mpd_transport)", start)
+        listener = source[start:end]
+        self.assertEqual(listener.count("project_mpd_transport_position("), 1, listener)
+        self.assertIn("PLAYBACK_CORE.current_item()", listener)
+        self.assertEqual(
+            listener.count("transport_rel,\n                transport_duration,"),
+            2,
+            listener,
+        )
+        self.assertNotIn('safe_float(position.get("rel_seconds"))', listener)
+        self.assertNotIn('safe_float(position.get("duration_seconds"))', listener)
+
+    def test_transport_projection_folds_mpd_seconds_once(self):
+        flac = {
+            "cue_track": True,
+            "path": "/music/disc.flac",
+            "cue_start": 100.0,
+            "cue_end": 130.0,
+            "duration": 30.0,
+        }
+        self.assertEqual(
+            server.project_mpd_transport_position({"rel_seconds": 112.5, "duration_seconds": 210.0}, flac),
+            {"rel_seconds": 12.5, "duration_seconds": 30.0},
+        )
+        ape = dict(flac, path="/music/disc.ape")
+        self.assertEqual(
+            server.project_mpd_transport_position({"rel_seconds": 12.5, "duration_seconds": 210.0}, ape),
+            {"rel_seconds": 12.5, "duration_seconds": 30.0},
+        )
+        self.assertEqual(
+            server.project_mpd_transport_position({"rel_seconds": 12.5, "duration_seconds": 210.0}, None),
+            {"rel_seconds": 12.5, "duration_seconds": 210.0},
+        )
+        # A payload that is not a mapping still yields exactly the two client keys.
+        self.assertEqual(
+            server.project_mpd_transport_position("not-a-status", {}),
+            {"rel_seconds": 0.0, "duration_seconds": 0.0},
+        )
+        self.assertEqual(
+            server.project_mpd_transport_position(None, flac),
+            {"rel_seconds": 0.0, "duration_seconds": 30.0},
+        )
+
 
 
 if __name__ == "__main__":
