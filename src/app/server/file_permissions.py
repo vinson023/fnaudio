@@ -78,8 +78,15 @@ def secure_file_on_drift(path: str, mode: int = PRIVATE_FILE_MODE) -> bool:
 
 
 def secure_sqlite_files(path: str) -> None:
+    """Keep a database and its sidecars private.
+
+    Called on every read of a pooled connection, so each sidecar is probed once with
+    lstat and only chmodded when its mode actually drifted. The refresh itself stays
+    on every path: the frequency is the security invariant, and a reused handle only
+    proves the pragmas, not that another process left the files private.
+    """
     for suffix in ("", "-wal", "-shm"):
-        secure_file(path + suffix, PRIVATE_FILE_MODE)
+        secure_file_on_drift(path + suffix, PRIVATE_FILE_MODE)
 
 
 def atomic_write_text(path: str, text: str, mode: int = PRIVATE_FILE_MODE) -> None:

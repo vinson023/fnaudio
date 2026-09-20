@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import tempfile
@@ -7,9 +8,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from benchmark_large_library import (
     group_cardinality,
+    median_duration,
+    paired_ab_samples,
+    pooled_reuse_guard,
     run_benchmark,
     wide_folder_sibling_count,
 )
+
+TOOLS_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
+BENCHMARK_SOURCE = os.path.join(TOOLS_ROOT, "benchmark_large_library.py")
 
 
 class LargeLibraryBenchmarkTests(unittest.TestCase):
@@ -175,18 +182,26 @@ class LargeLibraryBenchmarkTests(unittest.TestCase):
         self.assertGreaterEqual(result["metadata_page_overlay"]["cache_misses"], 1)
         self.assertGreaterEqual(result["metadata_page_overlay"]["cache_entries"], 1)
         self.assertGreaterEqual(result["metadata_page_overlay"]["cache_limit"], 1)
-        # Reopening the index has to stay cheaper than reusing a handle, and the
-        # pool must have actually reused one, or this section measures nothing. The
-        # two counters are traffic inside this sample window only, because draining
-        # idle handles does not rewind the process-wide counters and the tool also
-        # runs after other modules may have used the pool.
+        # The pool must have actually reused a handle, or this section measured
+        # nothing. That is the pass/fail condition. The two counters are traffic inside
+        # this sample window only, because draining idle handles does not rewind the
+        # process-wide counters and the tool also runs after other modules may have used
+        # the pool. The durations below are evidence reported alongside it, not a gate:
+        # requiring the pooled arm to win used to fail on a machine that merely got busy
+        # halfway through the section (artifacts/offline-20260920-round185.log).
         connection = result["first_screen_connection"]
         self.assertEqual(connection["samples"], 5)
         self.assertEqual(connection["reuses"], connection["samples"] - 1)
         self.assertEqual(connection["creations"], 1)
         self.assertEqual(connection["idle_after_drain"], 0)
-        self.assertGreater(connection["speedup"], 1.0)
-        self.assertGreater(connection["saving_seconds"], 0.0)
+        self.assertGreater(connection["unpooled_seconds"], 0.0)
+        self.assertGreater(connection["pooled_seconds"], 0.0)
+        self.assertIsInstance(connection["saving_seconds"], float)
+        self.assertIsInstance(connection["speedup"], float)
+        self.assertGreaterEqual(connection["speedup"], 0.0)
+        self.assertIsInstance(connection["pooled_faster_pairs"], int)
+        self.assertLessEqual(0, connection["pooled_faster_pairs"])
+        self.assertLessEqual(connection["pooled_faster_pairs"], connection["samples"])
         # The tool rounds each duration on its own, so the reported saving can
         # differ from a re-subtraction of the rounded fields by its own precision.
         self.assertLess(
@@ -221,7 +236,95 @@ class LargeLibraryBenchmarkTests(unittest.TestCase):
         self.assertIn("speedup_vs_like", result["search"])
         if result["search"].get("like_baseline"):
             self.assertGreaterEqual(result["search"]["speedup_vs_like"], 0.0)
+class FirstScreenPairedSamplingTests(unittest.TestCase):
+    """The pooled first-screen section is judged by structure, never by duration."""
 
+    def test_the_two_arms_alternate_who_goes_first(self):
+        # Taking one block after the other is what let a foreign process load a core and
+        # make the second block look slower across the board. Rotation is the other half
+        # of the fix, so the exact interleaving is pinned, and with it which arm each
+        # duration belongs to.
+        order = []
+
+        def arm(key):
+            def sample():
+                order.append(key)
+                return round(len(order) / 10.0, 6)
+            return sample
+
+        taken = paired_ab_samples({"unpooled": arm("u"), "pooled": arm("p")}, 5)
+        self.assertEqual(order, ["u", "p", "p", "u", "u", "p", "p", "u", "u", "p"])
+        self.assertEqual(taken["unpooled"], [0.1, 0.4, 0.5, 0.8, 0.9])
+        self.assertEqual(taken["pooled"], [0.2, 0.3, 0.6, 0.7, 1.0])
+
+    def test_paired_sampling_refuses_any_other_shape(self):
+        # Silently measuring one arm, or reporting a median of nothing, is how a section
+        # starts passing without measuring.
+        with self.assertRaisesRegex(ValueError, "exactly two arms"):
+            paired_ab_samples({"only": lambda: 1.0}, 3)
+        with self.assertRaisesRegex(ValueError, "exactly two arms"):
+            paired_ab_samples({"a": lambda: 1.0, "b": lambda: 1.0, "c": lambda: 1.0}, 3)
+        with self.assertRaisesRegex(ValueError, "at least one sample"):
+            paired_ab_samples({"a": lambda: 1.0, "b": lambda: 1.0}, 0)
+        with self.assertRaisesRegex(ValueError, "a median needs"):
+            median_duration([])
+
+    def test_median_takes_the_middle_of_the_samples(self):
+        self.assertEqual(median_duration([3.0, 1.0, 2.0]), 2.0)
+        self.assertEqual(median_duration([7.5]), 7.5)
+        # An even count keeps the upper middle, the same rule the other sections of this
+        # tool apply when they sort their own samples.
+        self.assertEqual(median_duration([4.0, 1.0, 3.0, 2.0]), 3.0)
+
+    def test_reuse_guard_judges_the_window_not_the_absolute_counters(self):
+        # The counters are process-wide, so a fresh section can start after another window
+        # already reused ten handles and created five. Reading them as absolutes would fail
+        # a section that worked, exactly like the old duration gate did.
+        reuses, creations = pooled_reuse_guard(
+            {"reuses": 10, "creations": 5}, {"reuses": 14, "creations": 6}, 5
+        )
+        self.assertEqual((reuses, creations), (4, 1))
+
+    def test_reuse_guard_fails_a_window_that_reopened_the_index(self):
+        for after in (
+            {"reuses": 0, "creations": 5},
+            {"reuses": 3, "creations": 1},
+            {"reuses": 4, "creations": 2},
+        ):
+            with self.subTest(after=after):
+                with self.assertRaisesRegex(RuntimeError, "reopened the index"):
+                    pooled_reuse_guard({"reuses": 0, "creations": 0}, after, 5)
+
+    def test_reuse_guard_reads_a_status_that_lacks_a_key_as_zero(self):
+        # Diagnostics keys are added over time; a missing one means no traffic, not a pass.
+        self.assertEqual(pooled_reuse_guard({}, {"reuses": 4, "creations": 1}, 5), (4, 1))
+        with self.assertRaisesRegex(RuntimeError, "reopened the index"):
+            pooled_reuse_guard({}, {}, 5)
+
+    def test_a_pooled_arm_that_loses_every_round_is_reported_and_not_raised(self):
+        # This is the shape that used to abort the gate. Five paired rounds, pooled slower
+        # in every one of them, with the reuse counters proving the handle was reused.
+        unpooled = [0.9, 0.9, 0.9, 0.9, 0.9]
+        pooled = [1.4, 1.4, 1.4, 1.4, 1.4]
+        self.assertEqual(median_duration(pooled), 1.4)
+        self.assertEqual(
+            sum(1 for fast, slow in zip(unpooled, pooled) if slow < fast), 0
+        )
+        self.assertEqual(pooled_reuse_guard({}, {"reuses": 4, "creations": 1}, 5), (4, 1))
+
+    def test_the_first_screen_section_is_wired_to_the_pairing_helpers(self):
+        # Everything above is pure, so a section that quietly stopped using them would keep
+        # passing. The tool itself is therefore read here: the paired sampler takes the
+        # samples, the guard judges them, the per-arm winner count is reported, and the
+        # duration gate that a busy machine flipped is gone rather than commented out.
+        with io.open(BENCHMARK_SOURCE, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("paired_ab_samples(", source)
+        self.assertIn("pooled_reuse_guard(", source)
+        self.assertIn('"pooled_faster_pairs"', source)
+        self.assertNotIn("not faster than reopening", source)
+        self.assertNotIn("def median_sample", source)
+        self.assertNotIn("median_sample(", source)
 
 if __name__ == "__main__":
     unittest.main()

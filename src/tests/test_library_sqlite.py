@@ -166,6 +166,7 @@ class LibraryConnectionPoolingTests(unittest.TestCase):
         connection = mock.Mock()
         with mock.patch.object(library.sqlite3, "connect", return_value=connection), \
              mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files"), \
              mock.patch.object(library, "_ensure_library_schema_once"):
             with library.library_db_connect(config):
@@ -184,6 +185,7 @@ class LibraryConnectionPoolingTests(unittest.TestCase):
                 with contextlib.ExitStack() as stack:
                     for target, value in (
                         ("secure_directory", mock.Mock()),
+                        ("secure_directory_on_drift", mock.Mock()),
                         ("secure_sqlite_files", mock.Mock()),
                         ("_ensure_library_schema_once", mock.Mock(side_effect=RuntimeError("migration failed"))),
                     ):
@@ -201,6 +203,7 @@ class LibraryConnectionPoolingTests(unittest.TestCase):
         config = self._config(pooled=True)
         before = self._status()
         with mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files"), \
              mock.patch.object(library.sqlite3, "connect", side_effect=OSError("disk gone")):
             with self.assertRaisesRegex(OSError, "disk gone"):
@@ -209,6 +212,64 @@ class LibraryConnectionPoolingTests(unittest.TestCase):
         after = self._status()
         self.assertEqual(after["creations"], before["creations"])
         self.assertEqual(after["idle"], before["idle"])
+
+    def test_a_borrowed_handle_is_still_hardened_on_both_ends(self):
+        # The cheap probe is only acceptable because it stays on every read: a refresh that
+        # looks cheaper mainly because one of the two calls went away would be worse than the
+        # syscalls it replaced. A fresh handle is hardened inside its prologue and again after
+        # the close. A borrowed handle skips the prologue by design, so its answer is exactly
+        # the probe taken before the body and the one taken after it - two, both naming the
+        # index, never one.
+        config = self._config(pooled=True)
+        save_items_to_sqlite(config, [self._item("one", os.path.join(self.music_root, "one.flac"), "One", 1)], "test")
+        query_library_page(config, {"view": "all", "limit": "10", "offset": "0"})
+        self.assertEqual(self._status()["idle"], 1, "the first read did not leave a handle behind")
+        before = self._status()
+        with mock.patch.object(library, "secure_sqlite_files") as refresh:
+            query_library_page(config, {"view": "all", "limit": "10", "offset": "0"})
+        after = self._status()
+        self.assertEqual(after["reuses"], before["reuses"] + 1, "the read measured nothing")
+        self.assertEqual(refresh.call_count, 2, "a reused handle lost one of its two permission probes")
+        self.assertEqual([call.args[0] for call in refresh.call_args_list], [library.library_db_path(config)] * 2)
+
+    def test_only_the_read_entry_uses_the_cheap_directory_probe(self):
+        # The drift probe costs one lstat where the full pass costs six syscalls, so it
+        # belongs on the entry of every read, pooled or not. Both write entries keep the
+        # full pass: a scan is where the cache directory and the index are actually created,
+        # it runs a handful of times per library rather than per page, and `secure_directory`
+        # is the variant that answers with the directory it hardened. The asymmetry is the
+        # contract, so both directions are pinned here instead of being left to a grep over
+        # call sites, which is what let the two variants be swapped silently before.
+        config = self._config(pooled=True)
+        with contextlib.ExitStack() as stack:
+            drift = stack.enter_context(mock.patch.object(library, "secure_directory_on_drift"))
+            full = stack.enter_context(mock.patch.object(library, "secure_directory"))
+            stack.enter_context(mock.patch.object(library, "secure_sqlite_files"))
+            stack.enter_context(mock.patch.object(library, "_ensure_library_schema_once"))
+            stack.enter_context(mock.patch.object(library.sqlite3, "connect", return_value=mock.Mock()))
+            with library.library_db_connect(config):
+                pass
+            self.assertEqual(drift.call_count, 1, "a read must take the cheap probe exactly once")
+            self.assertEqual(full.call_count, 0, "a read must not pay for the full pass again")
+            self.assertEqual(drift.call_args.args[0], config["cache_dir"])
+            drift.reset_mock()
+            full.reset_mock()
+            with library.library_db_writer(config):
+                pass
+            self.assertEqual(full.call_count, 1, "a write must keep the full pass")
+            self.assertEqual(drift.call_count, 0, "a write must not be moved to the cheap probe")
+            drift.reset_mock()
+            full.reset_mock()
+        # The third write entry is `save_library_cache`, which a per-read test here would
+        # have to build a whole index to reach, so the shape of the module is what gets
+        # checked: exactly one read entry takes the cheap probe, and the two write entries
+        # keep calling the full pass by name.
+        with io.open(library.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertEqual(source.count('secure_directory_on_drift(config["cache_dir"])'), 1,
+                         "only one entry may take the cheap probe")
+        self.assertEqual(source.count('secure_directory(config["cache_dir"])'), 2,
+                         "both write entries must keep the full pass")
 
     def test_a_replaced_index_discards_the_idle_handle(self):
         config = self._config(pooled=True)
@@ -336,6 +397,7 @@ class LibrarySqliteTests(unittest.TestCase):
         config = {"cache_dir": "cache"}
         with mock.patch.object(library.sqlite3, "connect", return_value=connection), \
              mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files"), \
              mock.patch.object(library, "library_db_path", return_value="library.sqlite3"), \
              mock.patch.object(library, "_ensure_library_schema_once"):
@@ -352,6 +414,7 @@ class LibrarySqliteTests(unittest.TestCase):
         config = {"cache_dir": "cache"}
         with mock.patch.object(library.sqlite3, "connect", return_value=connection), \
              mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files"), \
              mock.patch.object(library, "library_db_path", return_value="library.sqlite3"), \
              mock.patch.object(library, "_ensure_library_schema_once"):
@@ -367,6 +430,7 @@ class LibrarySqliteTests(unittest.TestCase):
         config = {"cache_dir": "cache"}
         with mock.patch.object(library.sqlite3, "connect", return_value=connection), \
              mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files", side_effect=[None, None, OSError("chmod failed")]), \
              mock.patch.object(library, "library_db_path", return_value="library.sqlite3"), \
              mock.patch.object(library, "_ensure_library_schema_once"):
@@ -381,6 +445,7 @@ class LibrarySqliteTests(unittest.TestCase):
         config = {"cache_dir": "cache"}
         with mock.patch.object(library.sqlite3, "connect", return_value=connection), \
              mock.patch.object(library, "secure_directory"), \
+             mock.patch.object(library, "secure_directory_on_drift"), \
              mock.patch.object(library, "secure_sqlite_files", side_effect=[None, None, OSError("chmod failed")]), \
              mock.patch.object(library, "library_db_path", return_value="library.sqlite3"), \
              mock.patch.object(library, "_ensure_library_schema_once"):
