@@ -11,6 +11,7 @@ import math
 import xml.etree.ElementTree as ET
 from typing import Any, Callable, Dict, Optional
 from .network import fetch_lan, lan_address_cache_status, lan_http_url
+from .profiles import device_supports_native_dsd
 from .xml_policy import safe_fromstring
 
 UPNP_CACHE = {
@@ -287,8 +288,11 @@ def upnp_control(device, action, position=None):
 
 
 def device_protocol_info(control):
+    # A missing or failing ConnectionManager is silence, not a refusal: the
+    # record deliberately carries no `supports_dsd` key so `unknown` cannot be
+    # read back as "this renderer does not do DSD".
     if not control:
-        return {"source": [], "sink": [], "mime_types": [], "supports_dsd": False}
+        return {"source": [], "sink": [], "mime_types": []}
     service = "urn:schemas-upnp-org:service:ConnectionManager:1"
     try:
         response = soap_request(control, service, "GetProtocolInfo")
@@ -310,12 +314,11 @@ def device_protocol_info(control):
             "supports_dsd": bool(dsd_mimes.intersection(mime_types)),
         }
     except Exception:
-        return {"source": [], "sink": [], "mime_types": [], "supports_dsd": False}
+        return {"source": [], "sink": [], "mime_types": []}
 
 
 def device_supports_dsd(control):
-    value = device_protocol_info(control).get("supports_dsd")
-    return value if isinstance(value, bool) else False
+    return device_supports_native_dsd(device_protocol_info(control))
 
 
 def scpd_actions(url):
@@ -491,14 +494,15 @@ def discover_upnp():
             if is_local_renderer(device, udns):
                 continue
             device["capabilities"] = probe_device_capabilities(device)
-            raw_supports_dsd = (device["capabilities"].get("protocol_info") or {}).get("supports_dsd")
-            device["supports_dsd"] = raw_supports_dsd if isinstance(raw_supports_dsd, bool) else False
+            # The flat field is a display cache derived from the probe through the
+            # same predicate the push gate uses, so it can never outvote or drift
+            # from the record it was computed from.
+            device["supports_dsd"] = device_supports_native_dsd(device)
             device["online"] = bool(device["control_url"])
             devices.append(device)
         except Exception:
             device["name"] = "UPnP 播放器"
             device["online"] = False
-            device["supports_dsd"] = False
             devices.append(device)
     # Rebind rather than mutate: the discovery worker is serialized by the refresh flag, but a
     # direct caller must never observe a half-written set.
