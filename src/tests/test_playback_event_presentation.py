@@ -102,6 +102,7 @@ class PlaybackEventPresentationTests(unittest.TestCase):
             1,
             route,
         )
-if __name__ == "__main__":
 
+
+if __name__ == "__main__":
     unittest.main()

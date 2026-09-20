@@ -762,6 +762,16 @@ dialog{background:#fff!important;color:#273141!important;border:0!important;bord
 .now-playing strong,.now-playing span{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;animation:none!important;will-change:auto!important}
 .now-playing small{display:block!important;min-width:0!important;color:#91a0b0!important;font-size:11px!important;line-height:1.25!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important}
 .progress>span{display:none!important}
+/* Transport staleness lamp (TODO.md:74).  `#elapsed` and `#duration` are hidden at every
+   width, so the frozen extrapolated position this replaces had no visible tell at all.
+   Its visibility is driven by the `data-state` attribute written from app.js, and its copy
+   is static in index.html, so a poll that changes nothing still writes nothing.
+   The ID is load-bearing, not decoration: `.progress>span` above and `.progress span` at
+   :1146/:1274 hide every span in the row with !important, and (1,1,0) is the only shape
+   that out-ranks (0,1,1) inside the important cascade regardless of source order. */
+#transportStateUnknown{display:none}
+#transportStateUnknown[data-state="unknown"]{display:inline-flex!important;align-items:center!important;color:#b45309!important;font-size:10px!important;line-height:1.2!important;white-space:nowrap!important}
+@media(min-width:761px){#transportStateUnknown[data-state="unknown"]{position:absolute!important;top:-17px!important;left:14px!important;height:15px!important;padding:0 7px!important;border-radius:8px!important;background:#fff7ed!important;box-shadow:0 1px 3px #17203322!important;font-size:11px!important}}
 .now-playing .is-overflowing{width:max-content!important;max-width:none!important;overflow:visible!important;text-overflow:clip!important;animation:nowMetaMarquee 14s linear infinite!important;will-change:transform!important}
 .now-playing span.is-overflowing{animation-duration:18s!important}
 @keyframes nowMetaMarquee{0%,12%{transform:translateX(0)}48%,64%{transform:translateX(calc(-1 * var(--marquee-distance,0px)))}100%{transform:translateX(0)}}

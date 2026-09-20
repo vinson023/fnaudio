@@ -9,6 +9,18 @@ function functionSource(name) {
   assert.ok(match, `function ${name} must stay extractable for the transport regression`);
   return match[0];
 }
+function constSource(name) {
+  const match = app.match(new RegExp("^const " + name + " = [^\\n]+", "m"));
+  assert.ok(match, `const ${name} must stay extractable for the transport regression`);
+  return match[0];
+}
+const stalenessLampNames = [
+  "updateTransportStateUnknown",
+  "transportStateIsUnknown",
+  "transportExtrapolation",
+  "setDatasetStateIfChanged",
+];
+const limitConst = constSource("TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS");
 
 // Shape invariants.  Every write below is reachable from a timer, so each one has
 // to go through a compare-first helper instead of assigning unconditionally.
@@ -79,8 +91,9 @@ const sources = [
   "renderIncomingRendererSession",
   "updateRemoteUi",
   "updateIncomingRendererUi",
-].map(functionSource).join("\n");
-vm.runInNewContext(`${sources}
+].concat(stalenessLampNames).map(functionSource).join("\n");
+vm.runInNewContext(`${limitConst}
+${sources}
 globalThis.harness = { renderIncomingRendererSession, updateRemoteUi, setPlayButton, setTextContentIfChanged, setStyleVarIfChanged };`, context);
 const harness = context.harness;
 const paintSnapshot = () => Object.keys(nodes).reduce((sum, id) => sum + nodes[id].counts.text + nodes[id].counts.html + nodes[id].counts.style, 0);
@@ -179,8 +192,8 @@ const railSources = [
   "updateNowMarquee",
   "updateIncomingRendererUi",
   "renderIncomingRendererSession",
-].map(functionSource).join("\n");
-vm.runInNewContext(railSources + "\nglobalThis.rail = { renderIncomingRendererSession, updateIncomingRendererUi, updateNowMarquee };", railContext);
+].concat(stalenessLampNames).map(functionSource).join("\n");
+vm.runInNewContext(limitConst + "\n" + railSources + "\nglobalThis.rail = { renderIncomingRendererSession, updateIncomingRendererUi, updateNowMarquee };", railContext);
 const rail = railContext.rail;
 
 // One poll is one transport paint, and the marquee contributes none of its own.
