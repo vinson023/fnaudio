@@ -94,4 +94,4 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 `0.2.22` FPK 已安装到内网 fnOS并通过健康、音乐库和鉴权烟雾测试。`0.2.23` Android Debug APK 增加公网/P2P 中继显式选择，当前仍使用 Debug 证书；正式分发必须使用负责人持有的 Release keystore。
 
-项目许可证尚未明确，不应自行假设开源授权。
+项目许可证为 GPL-3.0-or-later（第 3 版或其后任一版本，由使用者选择），完整逐字正文见 `LICENSE`，版权持有人与维护者见 `AUTHORS`，再分发义务与托管现状见 `NOTICE`。2026-09-20 负责人裁定开源、暂不托管，`git remote -v` 实测为空，因此在建立公开源码地址之前，对外分发 FPK 或 APK 必须按 `NOTICE` 随包提供对应源码。

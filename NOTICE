@@ -1,0 +1,45 @@
+fnAudio 授权与版权告示（NOTICE）
+==============================
+
+本文件不是许可正文。GPL-3.0 的完整逐字正文以仓库根目录 `LICENSE` 为唯一来源，
+本文件只登记与该正文绑定的持有人信息、版本选择与再分发义务。
+
+版权
+----
+
+    fnAudio
+    Copyright (C) 2026 vinson023
+
+许可证
+------
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+即本项目采用 GPL-3.0-or-later（第 3 版或其后任一版本，由使用者选择）。
+逐字正文 sha256：3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
+该摘要由 `src/tests/test_license_files.py` 对磁盘上的 `LICENSE` 逐字节复核。
+再分发义务（本项目特别提示）
+--------------------------
+
+`LICENSE` 第六条（Conveying Non-Source Forms）要求：以二进制形式传播时，
+必须同时提供对应源码，或提供有效期不少于三年的书面源码要约。对本项目而言：
+
+- 把 FPK（fnOS 应用包）交给他人安装，即构成分发，必须同时给出该包对应的
+  完整源码：随包附上，或在包内/随附说明中写明取得该确切版本源码的地址。
+- 分发 Debug/Release APK 触发同一义务；`android-client` 与 `src` 属于同一份
+  对应源码，不得只公开服务端一侧。
+- 只在本持有人自己的设备之间使用、同步，不对外提供，不构成传播，不触发该义务。
+
+发布与托管现状
+--------------
+
+负责人裁定（2026-09-20）：开源，暂不托管。磁盘现状 `git remote -v` 输出为空。
+在建立公开源码地址之前，任何对外发包一律按上节以「随包附源码」的方式履行义务。
