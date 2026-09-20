@@ -236,6 +236,8 @@ class LargeLibraryBenchmarkTests(unittest.TestCase):
         self.assertIn("speedup_vs_like", result["search"])
         if result["search"].get("like_baseline"):
             self.assertGreaterEqual(result["search"]["speedup_vs_like"], 0.0)
+
+
 class FirstScreenPairedSamplingTests(unittest.TestCase):
     """The pooled first-screen section is judged by structure, never by duration."""
 
@@ -325,6 +327,7 @@ class FirstScreenPairedSamplingTests(unittest.TestCase):
         self.assertNotIn("not faster than reopening", source)
         self.assertNotIn("def median_sample", source)
         self.assertNotIn("median_sample(", source)
+
 
 if __name__ == "__main__":
     unittest.main()
