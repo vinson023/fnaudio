@@ -26,10 +26,17 @@ import okhttp3.WebSocketListener;
 
 public final class FnOsAuthClient {
     private static final String TAG = "FnOsAuth";
+    private static final int MAX_AUTH_MESSAGE_CHARS = 256 * 1024;
+    private static final int MAX_AUTH_VALUE_CHARS = 16 * 1024;
     public interface Callback {
         void onSuccess(ConnectionProfile authenticatedProfile);
 
         void onError(String message);
+
+        /** Called only when fnOS explicitly rejects the stored credentials. */
+        default void onCredentialRejected(String message) {
+            onError(message);
+        }
     }
 
     private enum Attempt {
@@ -40,10 +47,22 @@ public final class FnOsAuthClient {
     }
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    @Nullable private Session currentSession;
 
-    public void authenticate(Context context, ConnectionProfile profile, @Nullable String password, Callback callback) {
+    public synchronized void authenticate(Context context, ConnectionProfile profile, @Nullable String password, Callback callback) {
+        if (currentSession != null) currentSession.cancel();
         Session session = new Session(context.getApplicationContext(), profile, password == null ? "" : password, callback);
+        currentSession = session;
         session.connect();
+    }
+
+    public synchronized void cancel() {
+        if (currentSession != null) currentSession.cancel();
+        currentSession = null;
+    }
+
+    private synchronized void clear(Session session) {
+        if (currentSession == session) currentSession = null;
     }
 
     private final class Session extends WebSocketListener {
@@ -51,7 +70,9 @@ public final class FnOsAuthClient {
         private final String password;
         private final Callback callback;
         private final AtomicBoolean completed = new AtomicBoolean(false);
+        private final AtomicBoolean deliverCallback = new AtomicBoolean(true);
         private final OkHttpClient client;
+        private final Runnable timeoutRunnable = () -> finishError("连接超时，请检查地址、端口和 HTTPS 设置。");
         private ConnectionProfile verifiedProfile;
         private WebSocket socket;
         private Attempt attempt;
@@ -62,7 +83,7 @@ public final class FnOsAuthClient {
             this.verifiedProfile = profile;
             this.password = password;
             this.callback = callback;
-            this.client = HttpClientFactory.create(context, profile);
+            this.client = HttpClientFactory.createAuthenticationClient(context, profile);
         }
 
         private void connect() {
@@ -73,7 +94,7 @@ public final class FnOsAuthClient {
                         .header("User-Agent", "fnAudio-Android/" + com.fnaudio.client.BuildConfig.VERSION_NAME)
                         .build();
                 socket = client.newWebSocket(request, this);
-                mainHandler.postDelayed(() -> finishError("连接超时，请检查地址、端口和 HTTPS 设置。"), 20000);
+                mainHandler.postDelayed(timeoutRunnable, 20000);
             } catch (Exception exception) {
                 finishError(readableError(exception));
             }
@@ -107,7 +128,7 @@ public final class FnOsAuthClient {
             } else if (!password.isEmpty()) {
                 send(Attempt.LOGIN_USER);
             } else {
-                finishError("此连接没有可恢复的登录令牌，请重新输入密码。 ");
+                finishCredentialRejected("此连接没有可恢复的登录令牌，请重新输入密码。 ");
             }
         }
 
@@ -118,8 +139,9 @@ public final class FnOsAuthClient {
             if (root == null) return;
             JSONObject payload = findAuthPayload(root, 0);
             if (payload == null) return;
+            String envelopeRequestId = firstString(root, "reqid", "reqId");
             String responseRequestId = firstString(payload, "reqid", "reqId");
-            if (!responseRequestId.isEmpty() && !requestId.equals(responseRequestId)) return;
+            if (!requestIdMatches(requestId, envelopeRequestId, responseRequestId)) return;
 
             String token = firstString(payload, "token", "accessToken", "access_token");
             String longToken = firstString(payload, "longToken", "refreshToken", "refresh_token");
@@ -127,10 +149,17 @@ public final class FnOsAuthClient {
             boolean success = !token.isEmpty()
                     || "succ".equals(result)
                     || "success".equals(result)
-                    || payload.optBoolean("success")
-                    || payload.optInt("code", -1) == 0 && payload.has("code");
+                    || booleanField(payload, "success")
+                    || intField(payload, "code", -1) == 0 && payload.has("code");
             if (success) {
-                String finalToken = token.isEmpty() ? verifiedProfile.token : token;
+                String finalToken = token;
+                // authToken verifies the short token itself, so a successful
+                // response may legitimately omit a replacement. Long-token
+                // and password login must return a real session token; never
+                // resurrect the stale short token that led to the recovery.
+                if (finalToken.isEmpty() && attempt == Attempt.AUTH_TOKEN) {
+                    finalToken = verifiedProfile.token;
+                }
                 String finalLongToken = longToken.isEmpty() ? verifiedProfile.longToken : longToken;
                 if (finalToken.isEmpty()) {
                     handleAttemptFailure(messageFrom(payload, "登录成功响应中缺少会话令牌。"));
@@ -203,26 +232,55 @@ public final class FnOsAuthClient {
                 send(Attempt.LOGIN_USERNAME);
                 return;
             }
-            finishError(message);
+            finishCredentialRejected(message);
         }
 
         private void finishSuccess(ConnectionProfile authenticatedProfile) {
             if (!completed.compareAndSet(false, true)) return;
+            mainHandler.removeCallbacks(timeoutRunnable);
             if (socket != null) socket.close(1000, "authenticated");
             client.dispatcher().executorService().shutdown();
-            mainHandler.post(() -> callback.onSuccess(authenticatedProfile));
+            mainHandler.post(() -> {
+                if (deliverCallback.get()) callback.onSuccess(authenticatedProfile);
+                clear(this);
+            });
         }
 
         private void finishError(String message) {
             if (!completed.compareAndSet(false, true)) return;
+            mainHandler.removeCallbacks(timeoutRunnable);
             if (socket != null) socket.cancel();
             client.dispatcher().executorService().shutdown();
-            mainHandler.post(() -> callback.onError(message));
+            mainHandler.post(() -> {
+                if (deliverCallback.get()) callback.onError(message);
+                clear(this);
+            });
+        }
+
+        private void finishCredentialRejected(String message) {
+            if (!completed.compareAndSet(false, true)) return;
+            mainHandler.removeCallbacks(timeoutRunnable);
+            if (socket != null) socket.cancel();
+            client.dispatcher().executorService().shutdown();
+            mainHandler.post(() -> {
+                if (deliverCallback.get()) callback.onCredentialRejected(message);
+                clear(this);
+            });
+        }
+
+        private void cancel() {
+            deliverCallback.set(false);
+            completed.set(true);
+            mainHandler.removeCallbacks(timeoutRunnable);
+            if (socket != null) socket.cancel();
+            client.dispatcher().cancelAll();
+            client.dispatcher().executorService().shutdownNow();
+            client.connectionPool().evictAll();
         }
     }
 
     private static JSONObject parseJson(String text) {
-        if (text == null) return null;
+        if (text == null || text.length() > MAX_AUTH_MESSAGE_CHARS) return null;
         int start = text.indexOf('{');
         int end = text.lastIndexOf('}');
         if (start < 0 || end < start) return null;
@@ -235,8 +293,9 @@ public final class FnOsAuthClient {
 
     private static JSONObject findAuthPayload(JSONObject object, int depth) {
         if (object == null || depth > 5) return null;
-        if (object.has("token") || object.has("longToken") || object.has("result")
-                || object.has("errno") || object.has("errmsg") || object.has("error")) {
+        if (object.has("token") || object.has("longToken")
+                || object.has("accessToken") || object.has("access_token")
+                || object.has("refreshToken") || object.has("refresh_token")) {
             return object;
         }
         String[] keys = {"data", "body", "payload", "response", "rsp"};
@@ -244,25 +303,46 @@ public final class FnOsAuthClient {
             JSONObject nested = object.optJSONObject(key);
             JSONObject found = findAuthPayload(nested, depth + 1);
             if (found != null) return found;
-            String encoded = object.optString(key, "");
+            Object rawEncoded = object.opt(key);
+            String encoded = rawEncoded instanceof String ? (String) rawEncoded : "";
             JSONObject parsed = parseJson(encoded);
             found = findAuthPayload(parsed, depth + 1);
             if (found != null) return found;
         }
-        return null;
+        // Some fnOS versions put errno/result on the outer envelope and the
+        // real credentials in data/body. Only fall back to envelope status
+        // after every nested credential location has been inspected.
+        return object.has("errno") || object.has("errmsg") || object.has("error")
+                || object.has("result") || object.has("status") ? object : null;
     }
 
     private static String messageFrom(JSONObject payload, String fallback) {
         String message = firstString(payload, "errmsg", "message", "error", "msg");
         if (message.isEmpty()) message = fallback;
-        int errno = payload.optInt("errno", 0);
+        int errno = intField(payload, "errno", 0);
         return errno == 0 ? message : message + "（错误码 " + errno + "）";
+    }
+
+    private static boolean booleanField(JSONObject object, String key) {
+        Object value = object == null ? null : object.opt(key);
+        return value instanceof Boolean && (Boolean) value;
+    }
+
+    private static int intField(JSONObject object, String key, int fallback) {
+        Object value = object == null ? null : object.opt(key);
+        if (!(value instanceof Number)) return fallback;
+        double numeric = ((Number) value).doubleValue();
+        if (!Double.isFinite(numeric) || numeric != Math.rint(numeric)
+                || numeric < Integer.MIN_VALUE || numeric > Integer.MAX_VALUE) return fallback;
+        return (int) numeric;
     }
 
     private static String firstString(JSONObject object, String... keys) {
         for (String key : keys) {
             Object value = object.opt(key);
-            if (value instanceof String && !((String) value).trim().isEmpty()) return ((String) value).trim();
+            if (!(value instanceof String)) continue;
+            String text = ((String) value).trim();
+            if (!text.isEmpty() && text.length() <= MAX_AUTH_VALUE_CHARS) return text;
         }
         return "";
     }
@@ -279,6 +359,12 @@ public final class FnOsAuthClient {
         String random = UUID.randomUUID().toString().replace("-", "");
         String value = timestamp + random;
         return value.length() > 32 ? value.substring(0, 32) : value;
+    }
+
+    static boolean requestIdMatches(String expected, String envelope, String payload) {
+        if (expected == null || expected.isEmpty()) return false;
+        if (envelope != null && !envelope.isEmpty() && !expected.equals(envelope)) return false;
+        return payload == null || payload.isEmpty() || expected.equals(payload);
     }
 
     private static String readableError(Throwable throwable) {

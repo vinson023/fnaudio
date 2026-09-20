@@ -3,7 +3,7 @@ set -eu
 
 PID="${1:-110676}"
 LOG="${2:-/vol1/1000/fnaudio-short-queue-0.1.205.log}"
-BASE="http://127.0.0.1:18080"
+BASE="${FNAUDIO_BASE_URL:-http://127.0.0.1:53199}"
 DAC="mpd:usb:0644:804a:00160000386ca1d14e45282720120016:dev0"
 
 # Do not overlap the long-run test with another queue mutation.
@@ -13,11 +13,18 @@ SHORT_QUEUE='["5b95adee70bc7585","656543c542d57326","c1c0b160545cf226","a173b303
 ORIGINAL_QUEUE='["6d6e5ed0a8c0cf70","676735c3075e949f","3074ec5101f0c8b0","da316cf2d8649c32","df5702643ae3c3a5","b2feef28c42d7070","a42a74e5232023fb","302d829ea32146e3","3d76165d1d64c720","38323e37bdbf9269","656543c542d57326","5b95adee70bc7585","3ff16dc11d2c2450","15db0d446f9655a6","bb81c1f83bd6dfbe","07437485ae9441fd","17dd6b1148a6bf37","f019d3578e9831b5","992b2e65afc28859","df394c51eb4378d6"]'
 
 printf 'started=%s\n' "$(date -Iseconds)" > "$LOG"
-printf '{"queue":%s,"current_id":"5b95adee70bc7585","repeat":"off","shuffle":false}\n' "$SHORT_QUEUE" \
+python3 - "$SHORT_QUEUE" <<'PY' \
   | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG"
+import json, sys
+queue = json.loads(sys.argv[1])
+print(json.dumps({"queue": queue, "current_id": queue[0], "repeat": "off", "shuffle": False}, separators=(",", ":")))
+PY
 printf '\n' >> "$LOG"
-printf '{"target_id":"%s","track_id":"5b95adee70bc7585","position":0}\n' "$DAC" \
+python3 - "$DAC" <<'PY' \
   | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
+import json, sys
+print(json.dumps({"target_id": sys.argv[1], "track_id": "5b95adee70bc7585", "position": 0}, separators=(",", ":")))
+PY
 printf '\n' >> "$LOG"
 
 last=""
@@ -42,11 +49,17 @@ for sample in $(seq 1 600); do
   sleep 5
 done
 
-printf '{"action":"stop","target_id":"%s"}\n' "$DAC" \
+python3 - "$DAC" <<'PY' \
   | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG"
+import json, sys
+print(json.dumps({"action": "stop", "target_id": sys.argv[1]}, separators=(",", ":")))
+PY
 printf '\n' >> "$LOG"
-printf '{"queue":%s,"current_id":"df394c51eb4378d6","repeat":"off","shuffle":false}\n' "$ORIGINAL_QUEUE" \
+python3 - "$ORIGINAL_QUEUE" <<'PY' \
   | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG"
+import json, sys
+print(json.dumps({"queue": json.loads(sys.argv[1]), "current_id": "df394c51eb4378d6", "repeat": "off", "shuffle": False}, separators=(",", ":")))
+PY
 printf '\nfinished=%s changes=%s\n' "$(date -Iseconds)" "$changes" >> "$LOG"
 sleep 2
 printf 'post_restore_status=%s ' "$(date -Iseconds)" >> "$LOG"

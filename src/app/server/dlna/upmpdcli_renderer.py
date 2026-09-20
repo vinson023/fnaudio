@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from typing import Any, Dict
+
+from process_output import check_output_bounded
 
 
 def upmpdcli_binary() -> str:
@@ -15,7 +16,7 @@ def upmpdcli_version(binary: str = "") -> str:
         return ""
     for args in ([binary, "-v"], [binary, "--version"]):
         try:
-            output = subprocess.check_output(args, stderr=subprocess.STDOUT, timeout=2)
+            output = check_output_bounded(args, max_bytes=16 * 1024, timeout=2)
             text = output.decode("utf-8", "replace").strip()
             if text:
                 return text.splitlines()[0]
@@ -26,7 +27,7 @@ def upmpdcli_version(binary: str = "") -> str:
 
 def process_running(name: str) -> bool:
     try:
-        subprocess.check_output(["pgrep", "-x", name], stderr=subprocess.DEVNULL, timeout=2)
+        check_output_bounded(["pgrep", "-x", name], max_bytes=16 * 1024, timeout=2)
         return True
     except Exception:
         return False

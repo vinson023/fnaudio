@@ -71,7 +71,10 @@ class OutputPlugin(ABC):
             "volume": "volume",
         }
         capability = mapping.get(action)
-        return True if not capability else bool(capabilities.get(capability))
+        if not capability:
+            return True
+        value = capabilities.get(capability)
+        return value if isinstance(value, bool) else False
 
     def owns_audio_device(self, state: Optional[PlaybackState] = None) -> bool:
         return self.target_kind in ("alsa", "mpd")

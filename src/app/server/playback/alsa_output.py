@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import hashlib
+import math
 import ctypes
 import ctypes.util
 import shutil
@@ -13,10 +14,43 @@ import threading
 import time
 from typing import Any, Dict
 
-DAC_STATE = {"device_id": "", "item_id": "", "processes": [], "playing": False, "started_at": 0.0, "offset": 0.0, "duration": 0.0, "strategy": {}}
-DAC_LOCK = threading.Lock()
+from process_output import ProcessOutputTooLarge, check_output_bounded
+
+DAC_STATE = {"device_id": "", "item_id": "", "processes": [], "playing": False, "started_at": 0.0, "started_monotonic": 0.0, "offset": 0.0, "duration": 0.0, "strategy": {}}
+# Starting a new DAC pipeline must remain serialized with stop/pause/control.
+# A re-entrant lock lets process-failure cleanup reuse the same state guard.
+DAC_LOCK = threading.RLock()
 ALSA_CAPS_CACHE = {}
+ALSA_CAPS_CACHE_LIMIT = 64
+MAX_DAC_TEXT_BYTES = 64 * 1024
 ALSA_CAPS_LOCK = threading.Lock()
+
+
+def _alsa_caps_cache_entry(value):
+    """Treat malformed process-cache values as misses, never probe failures."""
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return dict(value)
+    except Exception:
+        return {}
+
+
+def _alsa_caps_cache_stamp(value):
+    """Rank cache eviction on the monotonic stamp, falling back to wall time."""
+    entry = _alsa_caps_cache_entry(value)
+    return safe_float(entry.get("probed_at_monotonic")) or safe_float(entry.get("probed_at"))
+
+
+def _store_alsa_caps(cache_key, result):
+    with ALSA_CAPS_LOCK:
+        ALSA_CAPS_CACHE[cache_key] = dict(result)
+        while len(ALSA_CAPS_CACHE) > ALSA_CAPS_CACHE_LIMIT:
+            oldest_key = min(
+                ALSA_CAPS_CACHE,
+                key=lambda key: _alsa_caps_cache_stamp(ALSA_CAPS_CACHE.get(key)),
+            )
+            ALSA_CAPS_CACHE.pop(oldest_key, None)
 
 
 def preserve_verified_busy_probe(previous, current):
@@ -32,27 +66,42 @@ def preserve_verified_busy_probe(previous, current):
             "available": True,
             "error": current.get("error") or "ALSA PCM is busy",
             "probed_at": current.get("probed_at") or time.time(),
+            "probed_at_monotonic": current.get("probed_at_monotonic") or time.monotonic(),
         }
     )
     return preserved
 
 
 def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _playing_elapsed(state):
+    """Return elapsed playback time without being affected by wall-clock jumps."""
+    started = safe_float((state or {}).get("started_monotonic"))
+    if started <= 0.0:
+        return 0.0
+    return max(0.0, time.monotonic() - started)
 
 
 def safe_int(value, default=0):
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return int(number) if math.isfinite(number) else default
 
 
 def seconds_to_upnp_time(value):
-    value = max(0, int(round(float(value or 0))))
+    value = max(0, int(round(safe_float(value))))
     hours, remainder = divmod(value, 3600)
     minutes, seconds = divmod(remainder, 60)
     return "%02d:%02d:%02d" % (hours, minutes, seconds)
@@ -111,10 +160,21 @@ def probe_alsa_hw_params(device, force=False, cache_seconds=300.0):
     device = dict(device or {})
     cache_key = str(device.get("stable_id") or device.get("stable_alsa_id") or device.get("alsa_id") or "")
     now = time.time()
+    now_monotonic = time.monotonic()
     with ALSA_CAPS_LOCK:
-        cached = dict(ALSA_CAPS_CACHE.get(cache_key) or {})
-    effective_cache_seconds = min(float(cache_seconds), 5.0) if cached.get("busy") else float(cache_seconds)
-    if cached and not force and now - safe_float(cached.get("probed_at")) <= max(1.0, effective_cache_seconds):
+        cached = _alsa_caps_cache_entry(ALSA_CAPS_CACHE.get(cache_key))
+    requested_cache_seconds = safe_float(cache_seconds, 300.0)
+    effective_cache_seconds = min(requested_cache_seconds, 5.0) if cached.get("busy") else requested_cache_seconds
+    # Age a cached probe on the monotonic clock.  A NAS that steps its wall
+    # clock backwards shortly after boot would otherwise keep answering "fresh"
+    # from a long-dead capability set, and that set is what decides whether a
+    # re-plugged DAC is offered Native DSD at all.
+    probed_monotonic = safe_float(cached.get("probed_at_monotonic"))
+    if probed_monotonic > 0:
+        probe_age = now_monotonic - probed_monotonic
+    else:
+        probe_age = now - safe_float(cached.get("probed_at"))
+    if cached and not force and 0 <= probe_age <= max(1.0, effective_cache_seconds):
         return cached
     result = {
         "source": "alsa-hw-params",
@@ -130,6 +190,7 @@ def probe_alsa_hw_params(device, force=False, cache_seconds=300.0):
         "native_dsd_formats": [],
         "error": "",
         "probed_at": now,
+        "probed_at_monotonic": now_monotonic,
     }
     library_path = ctypes.util.find_library("asound") or find_libasound()
     if not library_path:
@@ -176,7 +237,7 @@ def probe_alsa_hw_params(device, force=False, cache_seconds=300.0):
             # formats, but expose the current busy condition to callers.
             if result["busy"]:
                 with ALSA_CAPS_LOCK:
-                    previous = dict(ALSA_CAPS_CACHE.get(cache_key) or {})
+                    previous = _alsa_caps_cache_entry(ALSA_CAPS_CACHE.get(cache_key))
                 preserved = preserve_verified_busy_probe(previous, result)
                 if preserved is not result:
                     # Continue through the common finally block so the
@@ -226,36 +287,22 @@ def probe_alsa_hw_params(device, force=False, cache_seconds=300.0):
         except Exception:
             pass
         result["probed_at"] = time.time()
-        with ALSA_CAPS_LOCK:
-            ALSA_CAPS_CACHE[cache_key] = dict(result)
+        result["probed_at_monotonic"] = time.monotonic()
+        _store_alsa_caps(cache_key, result)
     return result
 
 
 def empty_dac_caps():
-    return {"source": "unknown", "pcm_rates": [], "pcm_max_rate": 192000, "pcm_max_bits": 24, "dsd": False, "dsd_rates": [], "notes": []}
+    """Capability record for a device that nothing was read from.
 
-
-def merge_dac_caps(base, override):
-    result = dict(base or empty_dac_caps())
-    rates = set(result.get("pcm_rates") or [])
-    rates.update(override.get("pcm_rates") or [])
-    result["pcm_rates"] = sorted(rates)
-    result["pcm_max_rate"] = max(safe_int(result.get("pcm_max_rate")), safe_int(override.get("pcm_max_rate")))
-    result["pcm_max_bits"] = max(safe_int(result.get("pcm_max_bits")), safe_int(override.get("pcm_max_bits")))
-    result["dsd"] = bool(result.get("dsd") or override.get("dsd"))
-    dsd_rates = list(result.get("dsd_rates") or [])
-    for rate in override.get("dsd_rates") or []:
-        if rate not in dsd_rates:
-            dsd_rates.append(rate)
-    result["dsd_rates"] = dsd_rates
-    notes = list(result.get("notes") or [])
-    for note in override.get("notes") or []:
-        if note not in notes:
-            notes.append(note)
-    result["notes"] = notes
-    if override.get("source") and result.get("source") == "unknown":
-        result["source"] = override.get("source")
-    return result
+    Unknown is reported as zero and never as a plausible default. This shape is
+    published twice outside the process: it feeds the local renderer's UPnP
+    ``GetProtocolInfo`` LPCM profiles (``dlna/service.py``) and the DAC capability
+    line in the UI (``device_caps_presentation.js``). A guessed 192000/24 here is
+    a claim about hardware that was never measured, and a controller that believes
+    it can push audio the DAC cannot accept.
+    """
+    return {"source": "unknown", "pcm_rates": [], "pcm_max_rate": 0, "pcm_max_bits": 0, "dsd": False, "dsd_rates": [], "notes": []}
 
 
 def parse_dac_stream_caps(card):
@@ -271,7 +318,7 @@ def parse_dac_stream_caps(card):
     for name in names:
         try:
             with open(os.path.join(base, name), "r", encoding="utf-8", errors="ignore") as fh:
-                text += "\n" + fh.read()
+                text += "\n" + fh.read(MAX_DAC_TEXT_BYTES + 1)[:MAX_DAC_TEXT_BYTES]
         except OSError:
             pass
     if not text:
@@ -286,8 +333,15 @@ def parse_dac_stream_caps(card):
             rate = safe_int(value)
             if 8000 <= rate <= 768000:
                 rates.add(rate)
-    for value in re.findall(r"\b(?:44[.,]?1|48|88[.,]?2|96|176[.,]?4|192|352[.,]?8|384|705[.,]?6|768)\s*kHz\b", text, re.I):
-        rates.add(int(float(value.replace(",", ".")) * 1000))
+    # Only the number is captured.  With the non-capturing form re.findall() returns
+    # the whole match, so "44.1 kHz" reached float() intact and raised ValueError out
+    # of parse_dac_stream_caps(), enrich_dac_device() and alsa_devices() - a single
+    # driver that spells its rates with a space before kHz takes the whole output
+    # device list, and with it ALSA selection, down with it.
+    for value in re.findall(r"\b(44[.,]?1|48|88[.,]?2|96|176[.,]?4|192|352[.,]?8|384|705[.,]?6|768)\s*kHz\b", text, re.I):
+        rate = int(round(safe_float(value.replace(",", ".")) * 1000))
+        if 8000 <= rate <= 768000:
+            rates.add(rate)
     caps["pcm_rates"] = sorted(rates)
     if rates:
         caps["pcm_max_rate"] = max(rates)
@@ -310,8 +364,11 @@ def enrich_dac_device(device):
     identity = alsa_device_identity(card, pcm_device, device)
     device.update(identity)
     caps = parse_dac_stream_caps(card)
-    if not caps.get("pcm_rates"):
-        caps["pcm_rates"] = [caps.get("pcm_max_rate") or 192000]
+    # No rate list is invented for a device that reported nothing.
+    # ``parse_dac_stream_caps`` sets ``pcm_max_rate`` only alongside a non-empty
+    # ``pcm_rates``, so an empty list genuinely means "the driver text told us
+    # nothing"; the old fallback turned that into a single fabricated 192 kHz
+    # entry, which every downstream reader then treated as measured truth.
     device["caps"] = caps
     return device
 
@@ -335,7 +392,7 @@ def _sys_sound_path(*parts):
 def _read_text(path):
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            return fh.read()
+            return fh.read(MAX_DAC_TEXT_BYTES + 1)[:MAX_DAC_TEXT_BYTES]
     except OSError:
         return ""
 
@@ -582,10 +639,10 @@ def alsa_devices():
     if not aplay:
         return []
     try:
-        result = subprocess.run([aplay, "-l"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
-    except Exception:
+        output = check_output_bounded([aplay, "-l"], max_bytes=MAX_DAC_TEXT_BYTES, timeout=5)
+    except (OSError, ProcessOutputTooLarge, subprocess.SubprocessError, ValueError):
         return []
-    text = result.stdout.decode("utf-8", "ignore")
+    text = output.decode("utf-8", "ignore")
     devices = []
     for line in text.splitlines():
         match = re.search(r"card\s+(\d+):\s*([^\[]+)\s*\[([^\]]+)\],\s*device\s+(\d+):\s*([^\[]+)\s*\[([^\]]+)\]", line, re.I)
@@ -609,13 +666,18 @@ def dac_public_status():
         if DAC_STATE.get("playing"):
             processes = list(DAC_STATE.get("processes") or [])
             if processes and any(process and process.poll() is not None for process in processes):
-                DAC_STATE["offset"] = safe_float(DAC_STATE.get("offset")) + max(0, time.time() - safe_float(DAC_STATE.get("started_at")))
+                DAC_STATE["offset"] = safe_float(DAC_STATE.get("offset")) + _playing_elapsed(DAC_STATE)
                 DAC_STATE["playing"] = False
+                DAC_STATE["started_monotonic"] = 0.0
                 DAC_STATE["processes"] = []
+                # A pipeline is only healthy while every stage is alive.  If
+                # one side exits, tear down its peer instead of leaving an
+                # orphaned ffmpeg/aplay process behind.
+                _terminate_processes(processes)
         state = dict(DAC_STATE)
     rel = safe_float(state.get("offset"))
     if state.get("playing"):
-        rel += max(0, time.time() - safe_float(state.get("started_at")))
+        rel += _playing_elapsed(state)
     duration = safe_float(state.get("duration"))
     if duration > 0:
         rel = min(rel, duration)
@@ -632,20 +694,40 @@ def stop_dac_locked():
     processes = list(DAC_STATE.get("processes") or [])
     DAC_STATE["processes"] = []
     DAC_STATE["playing"] = False
+    DAC_STATE["started_monotonic"] = 0.0
+    _terminate_processes(processes)
+
+
+def _terminate_processes(processes):
     for process in reversed(processes):
         try:
             if process and process.poll() is None:
                 process.terminate()
         except Exception:
             pass
-    deadline = time.time() + 1.5
+    deadline = time.monotonic() + 1.5
     for process in reversed(processes):
         try:
-            while process and process.poll() is None and time.time() < deadline:
+            while process and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
             if process and process.poll() is None:
                 process.kill()
         except Exception:
+            pass
+        try:
+            if process:
+                process.wait(timeout=1)
+        except Exception:
+            pass
+        # The ffmpeg -> aplay pipeline leaves the parent's stdout pipe open.
+        # Close it on every stop path instead of waiting for Popen destruction
+        # after an early player failure or a repeated DAC switch.
+        try:
+            stream = getattr(process, "stdout", None)
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                close_stream()
+        except (OSError, ValueError, AttributeError):
             pass
 
 
@@ -673,8 +755,9 @@ def dac_ffmpeg_alsa_command(item, config, alsa_id, start=0):
         raise RuntimeError("系统中未找到可用的 ffmpeg")
     profile = dac_pcm_profile(item)
     command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
-    if start and start > 0:
-        command += ["-ss", str(max(0, float(start)))]
+    start = safe_float(start)
+    if start > 0:
+        command += ["-ss", str(start)]
     command += [
         "-i", item["path"],
         "-vn",
@@ -709,7 +792,11 @@ def process_failure_message(processes, fallback):
     if not failed:
         return ""
     with DAC_LOCK:
-        stop_dac_locked()
+        current = list(DAC_STATE.get("processes") or [])
+        if current and any(process is candidate for process in processes for candidate in current):
+            stop_dac_locked()
+        else:
+            _terminate_processes(processes)
     return "; ".join(messages) or fallback
 
 
@@ -720,12 +807,27 @@ def dac_device_by_id(device_id):
 def choose_dac_strategy(item, device):
     caps = (device or {}).get("caps") or empty_dac_caps()
     rates = [safe_int(x) for x in caps.get("pcm_rates") or [] if safe_int(x)]
-    max_rate = safe_int(caps.get("pcm_max_rate")) or (max(rates) if rates else 192000)
-    max_bits = safe_int(caps.get("pcm_max_bits")) or 24
-    if caps.get("source") == "unknown":
+    # Ceiling first, from whatever the driver actually reported.
+    max_rate = safe_int(caps.get("pcm_max_rate")) or (max(rates) if rates else 0)
+    measured_bits = safe_int(caps.get("pcm_max_bits"))
+    max_bits = measured_bits or 24
+    if not max_rate:
+        # Nothing is known about this device, so nothing may be claimed about it either.
+        # The old code substituted a literal 192000 here and only applied the conservative
+        # answer when `source` was the string "unknown", which left a second, equally
+        # unmeasured shape - a driver stream file that exists but lists no parsable rate -
+        # claiming a 192 kHz ceiling. Measured: a 176.4 kHz file against such a device was
+        # sent through at 176400 instead of the 48000 a real 48 kHz DAC gets. A ceiling that
+        # was never read is a claim about hardware this process did not look at, and
+        # `empty_dac_caps()` already says why that matters: this shape is also published as
+        # the renderer's UPnP LPCM profile.
         rates = [44100]
         max_rate = 44100
-        max_bits = 16
+        # A width the driver did state survives the missing rate: `Formats: S16_LE S24_LE` is
+        # readable on many devices whose `Rates` line the parser cannot match at all
+        # (TODO.md:1831), so this is the one fact worth keeping about an otherwise
+        # unmeasured DAC. Only a device that stated nothing falls back to CD quality.
+        max_bits = measured_bits or 16
     source_rate = safe_int(item.get("sample_rate")) or 44100
     source_bits = safe_int(item.get("bit_depth")) or 16
     if item.get("is_dsd"):
@@ -735,7 +837,7 @@ def choose_dac_strategy(item, device):
             "rate": 0,
             "bits": 0,
             "needs_transcode": False,
-            "direct_possible": bool(caps.get("dsd")),
+            "direct_possible": caps.get("dsd") if isinstance(caps.get("dsd"), bool) else False,
             "actual": "blocked_no_pcm_fallback",
             "caps": caps,
         }
@@ -763,8 +865,9 @@ def dac_ffmpeg_pcm_command(item, config, start=0):
         raise RuntimeError("ffmpeg is not available")
     profile = dac_pcm_profile(item)
     command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
-    if start and start > 0:
-        command += ["-ss", str(max(0, float(start)))]
+    start = safe_float(start)
+    if start > 0:
+        command += ["-ss", str(start)]
     command += [
         "-i", item["path"],
         "-vn",
@@ -807,58 +910,69 @@ def start_dac_playback(device_id, item, config, start=0):
         quirk = dac_quirk_profile(device, (config or {}).get("dac_profiles") or [])
     except Exception:
         quirk = {"track_settle_ms": 0}
-    # Never overlap the previous aplay/ffmpeg pair with the new one.  On USB
-    # DACs that overlap can produce an ALSA busy/open retry and visible first-
-    # frame stalls.  The settle window is opt-in per DAC profile.
+    # Never overlap the previous aplay/ffmpeg pair with the new one.  Keep the
+    # state lock for the complete replacement transaction: otherwise a second
+    # start (or a concurrent stop) can miss the newly-created processes before
+    # they are published in DAC_STATE and leave an orphaned pipeline behind.
     with DAC_LOCK:
         stop_dac_locked()
-    settle_ms = max(0, min(500, safe_int(quirk.get("track_settle_ms"))))
-    if settle_ms:
-        time.sleep(settle_ms / 1000.0)
-    nice_value = safe_int((config or {}).get("ffmpeg_nice"))
-    try:
-        aplay = find_aplay()
-        if aplay:
-            ffmpeg_cmd, env, profile = dac_ffmpeg_pcm_command(playback_item, config, start)
-            ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, preexec_fn=_nice_preexec(nice_value))
-            player_process = subprocess.Popen(
-                [aplay, "-q", "-D", alsa_id, "-f", aplay_format_name(profile["sample_format"]), "-r", str(profile["rate"]), "-c", str(profile["channels"]), "-"],
-                stdin=ffmpeg_process.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                preexec_fn=_nice_preexec(nice_value),
-            )
-            if ffmpeg_process.stdout:
-                ffmpeg_process.stdout.close()
-            processes = [ffmpeg_process, player_process]
-        else:
-            if not find_libasound():
-                return False, "系统没有 aplay，也没有找到 libasound，暂时无法直接输出到 USB DAC"
-            ffmpeg_cmd, env, _profile = dac_ffmpeg_alsa_command(playback_item, config, alsa_id, start)
-            player_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                env=env,
-                preexec_fn=_nice_preexec(nice_value),
-            )
-            processes = [player_process]
-    except Exception as exc:
-        return False, str(exc)
-    failed = process_failure_message(processes, "audio output process exited immediately")
-    if failed:
-        return False, failed
-    with DAC_LOCK:
-        DAC_STATE.update({"device_id": device_id, "item_id": item["id"], "processes": processes, "playing": True, "started_at": time.time(), "offset": safe_float(start), "duration": safe_float(item.get("duration")), "strategy": strategy})
-    return True, "ok"
+        settle_ms = max(0, min(500, safe_int(quirk.get("track_settle_ms"))))
+        if settle_ms:
+            time.sleep(settle_ms / 1000.0)
+        nice_value = safe_int((config or {}).get("ffmpeg_nice"))
+        processes = []
+        try:
+            aplay = find_aplay()
+            if aplay:
+                ffmpeg_cmd, env, profile = dac_ffmpeg_pcm_command(playback_item, config, start)
+                # Do not leave stderr connected to a pipe during long playback.
+                # Neither child has a reader after startup, so noisy codecs could
+                # eventually fill the pipe and block the audio pipeline.
+                ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, preexec_fn=_nice_preexec(nice_value))
+                processes.append(ffmpeg_process)
+                player_process = subprocess.Popen(
+                    [aplay, "-q", "-D", alsa_id, "-f", aplay_format_name(profile["sample_format"]), "-r", str(profile["rate"]), "-c", str(profile["channels"]), "-"],
+                    stdin=ffmpeg_process.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    preexec_fn=_nice_preexec(nice_value),
+                )
+                processes.append(player_process)
+                if ffmpeg_process.stdout:
+                    ffmpeg_process.stdout.close()
+            else:
+                if not find_libasound():
+                    return False, "系统没有 aplay，也没有找到 libasound，暂时无法直接输出到 USB DAC"
+                ffmpeg_cmd, env, _profile = dac_ffmpeg_alsa_command(playback_item, config, alsa_id, start)
+                player_process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                    preexec_fn=_nice_preexec(nice_value),
+                )
+                processes.append(player_process)
+        except Exception as exc:
+            _terminate_processes(processes)
+            return False, str(exc)
+        failed = process_failure_message(processes, "audio output process exited immediately")
+        if failed:
+            return False, failed
+        DAC_STATE.update({"device_id": device_id, "item_id": item["id"], "processes": processes, "playing": True, "started_at": time.time(), "started_monotonic": time.monotonic(), "offset": safe_float(start), "duration": safe_float(item.get("duration")), "strategy": strategy})
+        return True, "ok"
 
 
 def dac_control(action, position=None, item=None, config=None):
     action = str(action or "").lower()
+    # The live pipeline is re-read inside every branch below.  A snapshot taken
+    # here would reach os.kill() after the lock was released and taken again, so
+    # a start or stop that replaced the pipeline in between leaves us signalling
+    # processes that are no longer ours - pids that may already have been reaped
+    # and reused - while the track that is really playing runs straight through
+    # a "pause".
     with DAC_LOCK:
         state = dict(DAC_STATE)
-        processes = list(DAC_STATE.get("processes") or [])
     if action == "stop":
         with DAC_LOCK:
             stop_dac_locked()
@@ -867,9 +981,11 @@ def dac_control(action, position=None, item=None, config=None):
         if os.name != "posix":
             return False, "DAC pause is only supported on Linux"
         with DAC_LOCK:
+            processes = list(DAC_STATE.get("processes") or [])
             if DAC_STATE.get("playing"):
-                DAC_STATE["offset"] = safe_float(DAC_STATE.get("offset")) + max(0, time.time() - safe_float(DAC_STATE.get("started_at")))
+                DAC_STATE["offset"] = safe_float(DAC_STATE.get("offset")) + _playing_elapsed(DAC_STATE)
                 DAC_STATE["playing"] = False
+                DAC_STATE["started_monotonic"] = 0.0
                 for process in processes:
                     try:
                         if process and process.poll() is None:
@@ -881,7 +997,14 @@ def dac_control(action, position=None, item=None, config=None):
         if os.name != "posix":
             return False, "DAC resume is only supported on Linux"
         with DAC_LOCK:
+            processes = list(DAC_STATE.get("processes") or [])
+            if DAC_STATE.get("playing"):
+                # Already running.  Restarting the clock here would quietly drop
+                # the seconds since the last resume, so a duplicated play would
+                # make the reported position jump backwards.
+                return True, "ok"
             DAC_STATE["started_at"] = time.time()
+            DAC_STATE["started_monotonic"] = time.monotonic()
             DAC_STATE["playing"] = True
             for process in processes:
                 try:

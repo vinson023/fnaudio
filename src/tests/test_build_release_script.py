@@ -1,8 +1,399 @@
 from pathlib import Path
+import base64
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 
+class _ScenarioResult:
+    """The three facts a fresh `powershell -File` run used to expose to these tests."""
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+# One interpreter start for several verifier scenarios.  Starting `powershell.exe` costs
+# ~0.94 s on this host while the script's own work costs ~0.45 s, and this module used to
+# pay the start eighteen separate times.  Each scenario still runs
+# `verify_release_evidence.ps1` end to end, in order, and a `throw` inside one scenario is
+# reported for that scenario alone, so no rejection reason is folded into another.
+# Fixture changes between scenarios are declared as `pre` writes (base64 bytes, or
+# `delete`) rather than mutated from Python, which is what makes the order explicit.
+_SCENARIO_DRIVER = r'''
+param([Parameter(Mandatory = $true)][string]$Verifier,
+      [Parameter(Mandatory = $true)][string]$ScenarioFile)
+$index = -1
+foreach ($line in Get-Content -LiteralPath $ScenarioFile) {
+    if (-not $line.Trim()) { continue }
+    $index = $index + 1
+    $scenario = $line | ConvertFrom-Json
+    foreach ($write in @($scenario.pre)) {
+        if ($null -eq $write) { continue }
+        $target = [IO.Path]::GetFullPath([string]$write.path)
+        $parent = Split-Path -Parent $target
+        if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
+        if ($write.delete) {
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+            continue
+        }
+        [IO.File]::WriteAllBytes($target, [Convert]::FromBase64String([string]$write.bytes))
+    }
+    $splat = [ordered]@{}
+    foreach ($property in $scenario.args.PSObject.Properties) {
+        $splat[[string]$property.Name] = $property.Value
+    }
+    $report = [ordered]@{ marker = 'fnaudio-scenario'; index = $index; returncode = 0; stdout = ''; stderr = '' }
+    try {
+        $report.stdout = (& $Verifier @splat 2>&1 | Out-String -Width 4096)
+    } catch {
+        $report.returncode = 1
+        $report.stderr = [string]$_.Exception.Message
+    }
+    (ConvertTo-Json -InputObject $report -Compress -Depth 4)
+}
+'''
+
+
 class BuildReleaseScriptTests(unittest.TestCase):
+    @staticmethod
+    def _powershell():
+        return shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
+
+    def _run_evidence_verifiers(self, scenarios):
+        """Run ``[{"args": {...}, "pre": [(path, bytes | None)]}, ...]`` in one process."""
+        powershell = self._powershell()
+        if not powershell:
+            self.skipTest("PowerShell is required to exercise the release evidence verifier")
+        verifier = str(Path(__file__).resolve().parents[2] / "tools" / "verify_release_evidence.ps1")
+        spec = []
+        for scenario in scenarios:
+            spec.append(json.dumps({
+                "args": dict(scenario.get("args", {})),
+                "pre": [
+                    {"path": str(path),
+                     "bytes": base64.b64encode(payload).decode("ascii") if payload is not None else None,
+                     "delete": payload is None}
+                    for path, payload in scenario.get("pre", ())
+                ],
+            }))
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = Path(temporary) / "scenarios.ps1"
+            driver.write_text(_SCENARIO_DRIVER, encoding="ascii")
+            scenario_file = Path(temporary) / "scenarios.jsonl"
+            scenario_file.write_text("\n".join(spec) + "\n", encoding="utf-8")
+            process = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver),
+                 "-Verifier", verifier, "-ScenarioFile", str(scenario_file)],
+                text=True, capture_output=True, check=False, timeout=30 + 30 * len(scenarios),
+            )
+        results = []
+        for line in (process.stdout or "").splitlines():
+            if not line.startswith("{"):
+                continue
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("marker") != "fnaudio-scenario":
+                continue
+            results.append((payload.get("index"), _ScenarioResult(payload.get("returncode"),
+                                                                  payload.get("stdout", ""),
+                                                                  payload.get("stderr", ""))))
+        if len(results) != len(scenarios):
+            # A driver that quietly produced fewer scenarios would otherwise let a test
+            # assert about the wrong run, so the mismatch is the failure.
+            raise AssertionError("scenario driver returned %d of %d runs: %s" % (
+                len(results), len(scenarios), ((process.stdout or "") + (process.stderr or ""))[:400]))
+        if [index for index, _result in results] != list(range(len(scenarios))):
+            # The order is part of the contract: a scenario's `pre` writes build on the
+            # previous one, so a report that arrives shuffled would be attributed to the
+            # wrong assertion while every individual message still looks plausible.
+            raise AssertionError("scenario driver reported indexes %s for %d scenarios" % (
+                [index for index, _result in results], len(scenarios)))
+        return [result for _index, result in results]
+
+    def _run_evidence_verifier(self, directory, strict=False, extra=()):
+        args = {"ArtifactDirectory": str(directory)}
+        if strict:
+            args["RequireCompleteEvidence"] = True
+        pairs = iter(extra)
+        for name in pairs:
+            args[str(name).lstrip("-")] = next(pairs, True)
+        return self._run_evidence_verifiers([{"args": args}])[0]
+
+    def test_release_script_rejects_a_real_existing_publication_before_invoking_fnpack(self):
+        """Exercise the collision gate against the real script, not a text fixture."""
+        powershell = self._powershell()
+        if not powershell:
+            self.skipTest("PowerShell is required to exercise the release collision gate")
+        root = Path(__file__).resolve().parents[2]
+        version = (root / "VERSION").read_text(encoding="utf-8").strip()
+        artifact_name = f"fnaudio-{version}-fnpack.fpk"
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            output_root = temporary_root / "artifacts"
+            destination = output_root / version
+            destination.mkdir(parents=True)
+            (destination / artifact_name).write_bytes(b"existing publication")
+            fake_fnpack = temporary_root / "must-not-run.fnpack"
+            fake_fnpack.write_bytes(b"not executable")
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(root / "tools" / "build_release.ps1"),
+                 "-OutputRoot", str(output_root), "-FnpackPath", str(fake_fnpack)],
+                text=True, capture_output=True, check=False, timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            output = result.stdout + result.stderr
+            self.assertIn("Release output already exists", output)
+            self.assertIn("Refusing to overwrite", output)
+
+    def test_release_evidence_verifier_exercises_complete_fixture_and_detects_tampering(self):
+        """Use real files so recovery checks cannot regress into text-only contracts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            (directory / "SHA256SUMS").write_text(
+                f"{artifact_hash}  {artifact.name}\n", encoding="ascii"
+            )
+            manifest = directory / "SOURCE_MANIFEST.sha256"
+            manifest.write_text(
+                f"{hashlib.sha256(b'source').hexdigest()}  app/server/example.py\n",
+                encoding="ascii",
+            )
+            manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest().upper()
+            provenance = {
+                "schema": 1,
+                "version": "9.8.7",
+                "asset_build": "9.8.7-0123456789ab",
+                "staged_file_count": 1,
+                "source_manifest_sha256": manifest_hash,
+                "artifact_sha256": artifact_hash,
+                "fnpack_sha256": "a" * 64,
+            }
+            (directory / "SOURCE_PROVENANCE.json").write_text(
+                json.dumps(provenance), encoding="utf-8"
+            )
+
+            provenance_path = directory / "SOURCE_PROVENANCE.json"
+            tampered_count = dict(provenance, staged_file_count=2)
+            boolean_count = dict(provenance, staged_file_count=True)
+            verified, rejected, rejected_boolean = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory), "RequireCompleteEvidence": True}},
+                {"args": {"ArtifactDirectory": str(directory), "RequireCompleteEvidence": True},
+                 "pre": [(provenance_path, json.dumps(tampered_count).encode("utf-8"))]},
+                {"args": {"ArtifactDirectory": str(directory), "RequireCompleteEvidence": True},
+                 "pre": [(provenance_path, json.dumps(boolean_count).encode("utf-8"))]},
+            ])
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn("EvidenceComplete", verified.stdout)
+            self.assertIn("True", verified.stdout)
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("staged file count does not match", rejected.stderr)
+
+            self.assertNotEqual(rejected_boolean.returncode, 0)
+            self.assertIn("invalid staged file count", rejected_boolean.stderr)
+
+    def test_release_evidence_verifier_checks_checksum_and_provenance(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "verify_release_evidence.ps1").read_text(encoding="utf-8")
+
+        for expected in (
+            'SHA256SUMS',
+            'SOURCE_MANIFEST.sha256',
+            'SOURCE_PROVENANCE.json',
+            'function Get-Sha256Hex',
+            'function Get-StrictJsonInteger',
+            'Get-FileHash -LiteralPath $Path -Algorithm SHA256',
+            'Security.Cryptography.SHA256',
+            'Get-Sha256Hex -Path $recordPath',
+            'source_manifest_sha256',
+            'artifact_sha256',
+            'fnpack_sha256',
+            'EvidenceComplete',
+            'Legacy artifact',
+            'must contain exactly one FPK checksum record',
+            'contains duplicate artifact records',
+            'contains an invalid checksum record',
+            'Artifact SHA-256 does not match SHA256SUMS:',
+            "(?<name>[A-Za-z0-9][A-Za-z0-9._-]{0,254})",
+            'contains duplicate records',
+            'contains duplicate paths',
+            'ToLowerInvariant',
+            'IsNullOrWhiteSpace($relativeManifestPath)',
+            '$relativeManifestPath.Length -gt 4096',
+            '$segments -contains \'\'',
+            '$segments -contains \'.\'',
+            '$relativeManifestPath = ($Matches.path -replace',
+            '$manifestHash = Get-Sha256Hex -Path $manifestPath',
+            '$manifestFile.Length -gt 64MB',
+            '$recordFile.Length -gt $MaxArtifactBytes',
+            'Release artifact exceeds the $MaxArtifactBytes byte artifact limit:',
+            '[long]$MaxArtifactBytes = 10GB',
+            '[long]$MaxAndroidArtifactBytes = 1GB',
+            '$provenanceFile.Length -gt 1MB',
+            'SOURCE_PROVENANCE.json exceeds the 1 MiB evidence limit',
+            'SOURCE_PROVENANCE.json must contain a JSON object.',
+            'exceeds the 200000-record evidence limit',
+            'unsupported schema',
+            'staged file count does not match SOURCE_MANIFEST.sha256',
+            'invalid $FieldName',
+            'invalid UI asset build',
+            'UI asset build does not match its version',
+            '[switch]$Json',
+            'ConvertTo-Json -Depth 4 -Compress',
+            'if ($Json)',
+        ):
+            self.assertIn(expected, script)
+
+    def test_build_script_supports_hash_fallback_on_minimal_powershell(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Get-Sha256Hex", script)
+        self.assertIn("Get-Command -Name Get-FileHash", script)
+        self.assertIn("Security.Cryptography.SHA256", script)
+        self.assertNotIn("$fnpackSha256 = (Get-FileHash", script)
+
+    def test_release_evidence_verifier_supports_machine_readable_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            (directory / "SHA256SUMS").write_text(f"{digest}  {artifact.name}\n", encoding="ascii")
+            verified, json_result = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory)}},
+                {"args": {"ArtifactDirectory": str(directory), "Json": True}},
+            ])
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            self.assertEqual(json_result.returncode, 0, json_result.stderr)
+            payload = json.loads(json_result.stdout)
+            self.assertTrue(payload["Validated"])
+            self.assertEqual(payload["Artifact"], artifact.name)
+            self.assertFalse(payload["EvidenceComplete"])
+
+    def test_release_evidence_verifier_accepts_and_checks_android_sidecar_checksum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            android = directory / "fnaudio-android-9.8.7-debug.apk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            android.write_bytes(b"fixture apk bytes")
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            android_hash = hashlib.sha256(android.read_bytes()).hexdigest().upper()
+            (directory / "SHA256SUMS").write_text(
+                f"{artifact_hash}  {artifact.name}\n{android_hash}  {android.name}\n",
+                encoding="ascii",
+            )
+
+            verified, rejected = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory)}},
+                {"args": {"ArtifactDirectory": str(directory)},
+                 "pre": [(android, b"tampered apk bytes")]},
+            ])
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn("Legacy artifact", verified.stdout)
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("fnaudio-android-9.8.7-debug.apk", rejected.stderr)
+
+    def test_release_evidence_verifier_checks_android_release_sidecar(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            android = directory / "fnaudio-android-9.8.7-release.apk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            android.write_bytes(b"fixture release apk bytes")
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            android_hash = hashlib.sha256(android.read_bytes()).hexdigest().upper()
+            (directory / "SHA256SUMS").write_text(
+                f"{artifact_hash}  {artifact.name}\n", encoding="ascii"
+            )
+            (directory / "ANDROID_SHA256SUMS").write_text(
+                f"{android_hash}  {android.name}\n", encoding="ascii"
+            )
+
+            verified, rejected = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory)}},
+                {"args": {"ArtifactDirectory": str(directory)},
+                 "pre": [(android, b"tampered release apk bytes")]},
+            ])
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn("AndroidValidated", verified.stdout)
+            self.assertRegex(verified.stdout, r"AndroidValidated\s*: True")
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("ANDROID_SHA256SUMS", rejected.stderr)
+
+    def test_release_evidence_index_bounds_untrusted_verifier_json_fields(self):
+        powershell = self._powershell()
+        if not powershell:
+            self.skipTest("PowerShell is required to exercise the release evidence index")
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = Path(temporary)
+            tools = temporary_root / "tools"
+            artifacts = temporary_root / "artifacts"
+            tools.mkdir()
+            (artifacts / "9.8.7").mkdir(parents=True)
+            shutil.copy2(root / "tools" / "index_release_evidence.ps1", tools / "index_release_evidence.ps1")
+            (tools / "verify_release_evidence.ps1").write_text(
+                """param([string]$ArtifactDirectory, [switch]$Json)
+$payload = [pscustomobject]@{
+    Validated = $true
+    EvidenceComplete = $true
+    Artifact = '../unsafe.fpk'
+    SHA256 = 'not-a-sha256'
+    RecoveryNote = ('x' * 513) + "`nignored"
+}
+$payload | ConvertTo-Json -Compress
+""",
+                encoding="utf-8",
+            )
+            output = temporary_root / "index.json"
+            indexed = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(tools / "index_release_evidence.ps1"),
+                 "-ArtifactRoot", str(artifacts), "-OutputPath", str(output)],
+                text=True, capture_output=True, check=False, timeout=15,
+            )
+            self.assertEqual(indexed.returncode, 0, indexed.stderr)
+            payload = json.loads(output.read_text(encoding="utf-8-sig"))
+            row = payload["releases"][0]
+            self.assertTrue(row["validated"])
+            self.assertFalse(row["android_validated"])
+            self.assertTrue(row["evidence_complete"])
+            self.assertEqual(row["artifact"], "")
+            self.assertEqual(row["sha256"], "")
+            self.assertEqual(len(row["recovery_note"]), 512)
+            self.assertNotIn("\n", row["recovery_note"])
+            self.assertFalse(row["android_validated"])
+
+    def test_release_evidence_verifier_rejects_half_complete_source_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            (directory / "SHA256SUMS").write_text(f"{digest}  {artifact.name}\n", encoding="ascii")
+            (directory / "SOURCE_MANIFEST.sha256").write_text(
+                f"{hashlib.sha256(b'source').hexdigest()}  app/server/example.py\n",
+                encoding="ascii",
+            )
+            rejected = self._run_evidence_verifier(directory)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("must be present together", rejected.stderr)
+
     def test_script_uses_a_temporary_copy_of_the_authoritative_source_tree(self):
         root = Path(__file__).resolve().parents[2]
         script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
@@ -11,6 +402,40 @@ class BuildReleaseScriptTests(unittest.TestCase):
         self.assertIn('& $FnpackPath build --directory $stageRoot', script)
         self.assertIn('/XD tests __pycache__ /XF fnaudio.fpk *.pyc', script)
         self.assertIn('Remove-Item -LiteralPath $temporaryRoot -Recurse -Force', script)
+
+    def test_release_script_treats_any_existing_artifact_path_as_a_collision(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertIn("$publicationNames", script)
+        self.assertIn("$publicationName", script)
+        self.assertIn("if (Test-Path -LiteralPath $publicationPath)", script)
+        self.assertNotIn("Test-Path -LiteralPath $artifactPath -PathType Leaf", script)
+
+    def test_release_script_treats_existing_evidence_sidecars_as_collisions_and_rolls_back_publish(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        for expected in (
+            '"SHA256SUMS"',
+            '"SOURCE_MANIFEST.sha256"',
+            '"SOURCE_PROVENANCE.json"',
+            '$publicationNames',
+            'if (Test-Path -LiteralPath $publicationPath)',
+            '$publishedPaths = [System.Collections.Generic.List[string]]::new()',
+            '$publicationBackups = [System.Collections.Generic.List[object]]::new()',
+            'if ($AllowExistingArtifact)',
+            'previous-publication',
+            'Copy-Item -LiteralPath $publicationBackup.Backup -Destination $publicationBackup.Original -Force',
+            'catch {',
+            'Remove-Item -LiteralPath $publishedPath -Force -ErrorAction SilentlyContinue',
+        ):
+            self.assertIn(expected, script)
+
+    def test_staged_manifest_normalizes_windows_path_separators(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('.Replace("\\", "/")', script)
+        self.assertNotIn('.Replace("\\\\", "/")', script)
 
     def test_script_checks_all_release_version_surfaces_and_the_payload(self):
         root = Path(__file__).resolve().parents[2]
@@ -31,8 +456,153 @@ class BuildReleaseScriptTests(unittest.TestCase):
             'FPK payload unexpectedly contains test sources.',
             '__FNAUDIO_ASSET_BUILD__',
             'content-derived cache key',
+            'Get-StampedUiAssetPaths',
+            'Staged UI asset set differs from the authoritative index.html.',
+            'Packaged stamped UI asset',
+            'has no stamped local CSS/JS assets',
+            'without the build stamp: $relative',
+
+            'SOURCE_MANIFEST.sha256',
+            'SOURCE_PROVENANCE.json',
+            'Get-SourceManifestLines',
+            'Get-GitProvenance',
+            'staged_file_count',
+            'source_manifest_sha256',
+            'fnpack_sha256',
+            'artifact_sha256',
+            'Release SHA256SUMS does not match the final FPK.',
+            'git_provenance_status',
+            '"commit_only"',
+            '"unavailable"',
+            'invalid Git provenance status',
+            'Get-Sha256Hex -Path $FnpackPath',
+            "TrimEnd([char]'\\', [char]'/' )",
+            'AllowExistingArtifact',
+            'Refusing to overwrite',
+            '(Get-Item -LiteralPath $builtPackage).Length -gt 10GB',
+            'Built FPK exceeds the 10 GiB artifact limit.',
+            '$packageStream = [System.IO.File]::OpenRead($temporaryArtifactPath)',
+            '$packageStream.Read($packageHeader, 0, $packageHeader.Length)',
+            '$publishRoot = Join-Path $temporaryRoot "publish"',
+            'Move-Item -LiteralPath $temporaryArtifactPath -Destination $artifactPath -Force',
         ):
             self.assertIn(expected, script)
+        self.assertNotIn('[System.IO.File]::ReadAllBytes($artifactPath)', script)
+
+    def test_the_build_side_ceiling_stays_in_step_with_the_verifier_default(self):
+        """R71 left the build side as literals on purpose; agreement is what must hold.
+
+        The verifier takes injected ceilings so the gate can exercise the guard with a
+        4 KiB fixture, while the build scripts guard a file they just produced and need no
+        injection.  What cannot be allowed to drift is the pair agreeing: a release that
+        builds under a looser ceiling would then fail its own evidence check, and one under
+        a tighter ceiling hides an artifact the policy considers valid.
+        """
+        root = Path(__file__).resolve().parents[2]
+        verifier = (root / "tools" / "verify_release_evidence.ps1").read_text(encoding="utf-8")
+        fpk_build = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        apk_build = (root / "tools" / "build_android_release.ps1").read_text(encoding="utf-8")
+
+        def default_of(name):
+            match = re.search(r"\[long\]\$%s = (\d+)GB" % name, verifier)
+            self.assertIsNotNone(match, "the verifier must keep a literal default for $%s" % name)
+            return int(match.group(1))
+
+        fpk_ceiling = default_of("MaxArtifactBytes")
+        apk_ceiling = default_of("MaxAndroidArtifactBytes")
+        self.assertEqual((fpk_ceiling, apk_ceiling), (10, 1),
+                         "measured release policy; move it together with both build guards")
+        self.assertIn("-gt %dGB" % fpk_ceiling, fpk_build,
+                      "build_release.ps1 no longer allows exactly what the verifier allows")
+        self.assertIn("-gt %dGB" % apk_ceiling, apk_build,
+                      "build_android_release.ps1 no longer allows exactly what the verifier allows")
+        # R71's naming promise: one pair of parameter names, never a third spelling.
+        self.assertEqual(sorted(set(re.findall(r"\$Max\w*Bytes", verifier))),
+                         ["$MaxAndroidArtifactBytes", "$MaxArtifactBytes"])
+
+    def test_release_evidence_verifier_rejects_oversized_artifact_before_hashing(self):
+        """The size guard must fire before the checksum is computed.
+
+        The ceiling is injected rather than approached with a real file: the
+        previous shape sparse-extended an artifact past 10 GiB, so a tight
+        temporary volume turned this test into ``OSError: [Errno 28] No space left
+        on device``, which reads in a gate log exactly like a product defect.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            artifact.write_bytes(b"x" * 4096)
+            # A deliberately wrong checksum: if the size guard did not run first,
+            # the failure message would be the mismatch below, so the two
+            # messages together pin the order, not merely the rejection.
+            (directory / "SHA256SUMS").write_text(
+                f"{'0' * 64}  {artifact.name}\n", encoding="ascii"
+            )
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest().upper()
+            rejected, accepted = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory), "MaxArtifactBytes": "4095"}},
+                {"args": {"ArtifactDirectory": str(directory), "MaxArtifactBytes": "4096"},
+                 "pre": [(directory / "SHA256SUMS",
+                          ("%s  %s\n" % (artifact_hash, artifact.name)).encode("ascii"))]},
+            ])
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("exceeds the 4095 byte artifact limit", rejected.stderr)
+            self.assertNotIn("does not match SHA256SUMS", rejected.stderr)
+
+            # A file exactly at the ceiling is accepted: the guard is "exceeds",
+            # and the release policy measures a 10 GiB artifact as valid.
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+    def test_release_evidence_verifier_applies_the_injected_android_artifact_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            android = directory / "fnaudio-android-9.8.7-release.apk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            android.write_bytes(b"y" * 16)
+            (directory / "SHA256SUMS").write_text(
+                "%s  %s\n" % (hashlib.sha256(artifact.read_bytes()).hexdigest().upper(), artifact.name),
+                encoding="ascii",
+            )
+            (directory / "ANDROID_SHA256SUMS").write_text(
+                "%s  %s\n" % (hashlib.sha256(android.read_bytes()).hexdigest().upper(), android.name),
+                encoding="ascii",
+            )
+            accepted, rejected = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory)}},
+                {"args": {"ArtifactDirectory": str(directory), "MaxAndroidArtifactBytes": "15"}},
+            ])
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("Android artifact exceeds the 15 byte artifact limit", rejected.stderr)
+            self.assertIn(android.name, rejected.stderr)
+
+    def test_release_evidence_verifier_rejects_a_non_positive_artifact_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            (directory / "SHA256SUMS").write_text(
+                "%s  %s\n" % (hashlib.sha256(artifact.read_bytes()).hexdigest().upper(), artifact.name),
+                encoding="ascii",
+            )
+            # Zero is enough to pin the `-lt 1` bound: with `-lt 0` the guard
+            # would accept a zero ceiling and let any artifact through, so this
+            # case fails on that mutant.  A negative value is avoided because the
+            # PowerShell argument parser reads a leading `-` as a switch name.
+            limits = ("MaxArtifactBytes", "MaxAndroidArtifactBytes")
+            scenarios = []
+            for name in limits:
+                scenarios.append({"args": {"ArtifactDirectory": str(directory), name: "0"}})
+                scenarios.append({"args": {"ArtifactDirectory": str(directory)}})
+            results = self._run_evidence_verifiers(scenarios)
+            for index, name in enumerate(limits):
+                with self.subTest(limit=name):
+                    rejected, accepted = results[2 * index], results[2 * index + 1]
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("artifact size limit is invalid", rejected.stderr)
+                    self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
     def test_script_checks_fpk_lifecycle_config_wizards_and_runtime_payload(self):
         root = Path(__file__).resolve().parents[2]
@@ -65,6 +635,13 @@ class BuildReleaseScriptTests(unittest.TestCase):
             '"target\\bin\\mpd"',
         ):
             self.assertIn(expected, script)
+
+    def test_release_script_checks_both_tar_extraction_exit_codes(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertIn("Unable to inspect the built FPK with tar", script)
+        self.assertIn("Unable to inspect the packaged app payload with tar", script)
+        self.assertGreaterEqual(script.count("if ($LASTEXITCODE -ne 0)"), 3)
 
 
 if __name__ == "__main__":

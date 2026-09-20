@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$SdkRoot = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "E:\Codex\android-sdk" }),
+    [string]$SdkRoot = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "E:\fnAudio\tools\android-sdk" }),
     [string]$AvdName = "fnaudio-api35-atd",
     [switch]$InstallSdk,
     [switch]$KeepRunning

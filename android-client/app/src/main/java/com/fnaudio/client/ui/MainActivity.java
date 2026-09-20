@@ -1,6 +1,7 @@
 package com.fnaudio.client.ui;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.annotation.SuppressLint;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -13,9 +14,11 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.JsResult;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -50,6 +53,7 @@ import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.HttpClientFactory;
 import com.fnaudio.client.network.FnOsAuthClient;
 import com.fnaudio.client.network.FnConnectResolver;
+import com.fnaudio.client.network.FnConnectSettings;
 import com.fnaudio.client.network.CertificatePin;
 import com.fnaudio.client.playback.PlaybackRuntimeConfig;
 import com.fnaudio.client.playback.PlaybackService;
@@ -69,13 +73,16 @@ import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.Headers;
 import okhttp3.Call;
@@ -92,6 +99,20 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     public static final String EXTRA_PROFILE_ID = "profile_id";
     public static final String ACTION_OPEN_PLAYBACK = "com.fnaudio.client.action.OPEN_PLAYBACK";
     private static final long ROOT_BACK_CONFIRM_WINDOW_MS = 2200L;
+    private static final int MAX_COVER_BYTES = 1024 * 1024;
+    private static final int MAX_NATIVE_HTTP_RESPONSE_BYTES = 512 * 1024;
+    private static final int MAX_NATIVE_HTTP_HEADERS_BYTES = 64 * 1024;
+    private static final int MAX_NATIVE_HTTP_REQUEST_BODY_BYTES = 512 * 1024;
+    private static final int MAX_NATIVE_HTTP_SERIALIZED_RESPONSE_CHARS = 4 * 1024 * 1024;
+    private static final int MAX_NATIVE_HTTP_RESPONSE_CHUNKS = 256;
+    private static final int MAX_NATIVE_HTTP_RESPONSE_HEADER_COUNT = 128;
+    private static final int MAX_NATIVE_HTTP_RESPONSE_HEADER_VALUE_CHARS = 4096;
+    private static final int MAX_NATIVE_HTTP_RESPONSE_HEADERS_BYTES = 64 * 1024;
+    private static final int MAX_NATIVE_HTTP_CALLS = 32;
+    private static final int MAX_NATIVE_HTTP_REQUEST_ID_CHARS = 256;
+    private static final int MAX_PENDING_CONTROLLER_COMMANDS = 64;
+    private static final int MAX_BUNDLED_TEXT_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_BUNDLED_ASSET_BYTES = 8 * 1024 * 1024;
 
     private WebView webView;
     private ProgressBar pageProgress;
@@ -99,19 +120,26 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private TextView errorMessage;
     private ConnectionProfile profile;
     private OkHttpClient webResourceClient;
+    private final Map<String, Call> nativeHttpCalls = new ConcurrentHashMap<>();
     private AuthenticatedCoverCache coverCache;
+    private FnConnectResolver fnConnectResolver;
+    private final FnOsAuthClient authClient = new FnOsAuthClient();
     private ListenableFuture<MediaController> controllerFuture;
     private MediaController mediaController;
+    private final ArrayDeque<NativePlaybackBridge.ControllerCommand> pendingControllerCommands = new ArrayDeque<>();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private boolean pageLoaded;
     private volatile boolean sessionCookiesReady;
     private boolean webBackDispatchInFlight;
     private long rootBackConfirmUntil;
+    private volatile boolean destroyed;
 
     private final Runnable playbackStateTicker = new Runnable() {
         @Override
         public void run() {
+            if (destroyed) return;
             pushPlaybackStateToWeb();
+            if (destroyed) return;
             uiHandler.postDelayed(this, 500);
         }
     };
@@ -119,6 +147,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        destroyed = false;
         configureSystemBars();
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
         setContentView(R.layout.activity_main);
@@ -134,7 +163,8 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         }
         pageProgress.setVisibility(View.VISIBLE);
         if (profile.webSession) {
-            PlaybackRuntimeConfig.activate(profile);
+            boolean switchingServer = PlaybackRuntimeConfig.activate(profile);
+            if (switchingServer) stopService(new Intent(this, PlaybackService.class));
             configureWebView();
             connectMediaController();
             requestNotificationPermission();
@@ -158,13 +188,13 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         pageProgress = findViewById(R.id.pageProgress);
         errorPanel = findViewById(R.id.errorPanel);
         errorMessage = findViewById(R.id.errorMessage);
-        findViewById(R.id.retryButton).setOnClickListener(view -> loadFnAudio());
+        findViewById(R.id.retryButton).setOnClickListener(view -> retryLoadOrAuthentication());
         findViewById(R.id.switchConnectionButton).setOnClickListener(view -> openConnectionChooser());
     }
 
     private void authenticateBeforeLoading(ConnectionProfile candidate, boolean passwordFallback) {
         String password = passwordFallback ? candidate.password : null;
-        new FnOsAuthClient().authenticate(this, candidate, password, new FnOsAuthClient.Callback() {
+        authClient.authenticate(this, candidate, password, new FnOsAuthClient.Callback() {
             @Override
             public void onSuccess(ConnectionProfile authenticatedProfile) {
                 if (isFinishing() || isDestroyed()) return;
@@ -180,17 +210,36 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
             @Override
             public void onError(String message) {
+                if (isFinishing() || isDestroyed()) return;
+                showError("连接 NAS 失败：" + message);
+            }
+
+            @Override
+            public void onCredentialRejected(String message) {
+                if (isFinishing() || isDestroyed()) return;
                 if (!passwordFallback && !candidate.password.isEmpty()) {
                     authenticateBeforeLoading(candidate, true);
                     return;
                 }
-                showError("登录令牌已失效，且自动恢复失败：" + message);
+                SecureProfileStore store = new SecureProfileStore(MainActivity.this);
+                store.upsert(candidate.withTokens("", ""), true);
+                openConnectionChooser();
             }
         });
     }
 
+    private void retryLoadOrAuthentication() {
+        errorPanel.setVisibility(View.GONE);
+        pageProgress.setVisibility(View.VISIBLE);
+        if (profile != null && !profile.webSession && webResourceClient == null) {
+            restoreFnConnectRelayThenAuthenticate(profile);
+            return;
+        }
+        loadFnAudio();
+    }
+
     private void restoreFnConnectRelayThenAuthenticate(ConnectionProfile candidate) {
-        if (!isStoredRelayProfile(candidate)) {
+        if (!isFnConnectProfile(candidate)) {
             authenticateBeforeLoading(candidate, false);
             return;
         }
@@ -200,22 +249,27 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             return;
         }
         pageProgress.setVisibility(View.VISIBLE);
-        new FnConnectResolver().resolve(fnId, new FnConnectResolver.Callback() {
+        if (fnConnectResolver != null) fnConnectResolver.close();
+        fnConnectResolver = new FnConnectResolver(this);
+        FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(candidate.fnConnectMode);
+        fnConnectResolver.resolve(fnId, connectMode, new FnConnectResolver.Callback() {
             @Override public void onResolved(ConnectionProfile route) {
+                if (isFinishing() || isDestroyed()) return;
                 ConnectionProfile refreshed = candidate.withEndpoint(route.host, route.port, route.https);
                 profile = refreshed;
                 new SecureProfileStore(MainActivity.this).upsert(refreshed, true);
                 authenticateBeforeLoading(refreshed, false);
             }
             @Override public void onError(String message) {
-                showError("FN Connect 公网地址重新解析失败：" + message);
+                if (isFinishing() || isDestroyed()) return;
+                showError("FN Connect 连接地址重新解析失败：" + message);
             }
         });
     }
 
-    private static boolean isStoredRelayProfile(ConnectionProfile candidate) {
-        return candidate != null && candidate.id.startsWith("fnconnect:")
-                && "127.0.0.1".equals(candidate.host) && candidate.port == 9018;
+    private static boolean isFnConnectProfile(ConnectionProfile candidate) {
+        return candidate != null && (candidate.id.startsWith("fnconnect:")
+                || candidate.name.startsWith("FN Connect - "));
     }
 
     private static String fnConnectId(ConnectionProfile candidate) {
@@ -250,7 +304,10 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         settings.setDatabaseEnabled(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        // An HTTPS fnAudio profile must never silently downgrade a script,
+        // cover, or API subresource to HTTP. Plain-HTTP NAS profiles are
+        // unaffected by this setting because they are not mixed content.
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
         settings.setSupportZoom(false);
@@ -266,6 +323,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             sessionCookiesReady = true;
             maybeLoadFnAudio();
         } else installSessionCookies(cookies, () -> {
+            if (destroyed || webView == null) return;
             sessionCookiesReady = true;
             maybeLoadFnAudio();
         });
@@ -277,13 +335,32 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 pageProgress.setProgress(newProgress);
                 pageProgress.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
             }
+
+            @Override
+            public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+                if (isFinishing() || isDestroyed()) {
+                    result.cancel();
+                    return true;
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("fnAudio")
+                        .setMessage(message)
+                        .setPositiveButton(android.R.string.ok, (dialog, which) -> result.confirm())
+                        .setOnCancelListener(dialog -> result.cancel())
+                        .show();
+                return true;
+            }
         });
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 pageProgress.setVisibility(View.VISIBLE);
                 errorPanel.setVisibility(View.GONE);
-                webView.setVisibility(isFnConnectProfile() ? View.INVISIBLE : View.VISIBLE);
+                // Keep the last committed frame (or the WebView's white
+                // background on first launch) visible while navigating. Some
+                // WebView versions omit or delay onPageFinished after a
+                // redirect, which previously left the whole activity blank.
+                webView.setVisibility(View.VISIBLE);
             }
 
             @Override
@@ -331,8 +408,9 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             @Override
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 String observedPin = CertificatePin.of(error.getCertificate());
-                if (profile.https && profile.trustSelfSigned && error.getUrl() != null
-                        && profile.host.equalsIgnoreCase(Uri.parse(error.getUrl()).getHost())
+                Uri errorUri = error.getUrl() == null ? null : Uri.parse(error.getUrl());
+                if (profile != null && profile.https && profile.trustSelfSigned
+                        && sameProfileOrigin(profile, errorUri)
                         && !profile.certificatePinSha256.isEmpty()
                         && profile.certificatePinSha256.equals(observedPin)) {
                     handler.proceed();
@@ -356,7 +434,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             cookies.setCookie(profile.httpOrigin(), name + "=" + encoded + flags, ignored -> {
                 if (remaining.decrementAndGet() == 0) {
                     cookies.flush();
-                    webView.post(onComplete);
+                    if (!destroyed && webView != null) webView.post(onComplete);
                 }
             });
         }
@@ -364,16 +442,25 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     @Nullable
     private WebResourceResponse interceptAuthenticatedGet(@Nullable WebResourceRequest request) {
-        if (request == null || request.isForMainFrame()
-                || !"GET".equalsIgnoreCase(request.getMethod())
-                || !sameServer(request.getUrl()) || webResourceClient == null) return null;
-        WebResourceResponse bundled = bundledFnConnectAsset(request.getUrl());
-        if (bundled != null) return bundled;
+        // WebView invokes this on its own worker. Keep local references after
+        // the lifecycle check: onDestroy can clear fields while this interceptor
+        // is still building the authenticated request.
+        OkHttpClient client = webResourceClient;
+        AuthenticatedCoverCache thumbnailCache = coverCache;
+        ConnectionProfile requestProfile = profile;
+        if (request == null || !"GET".equalsIgnoreCase(request.getMethod())
+                || !sameProfileOrigin(requestProfile, request.getUrl()) || client == null) return null;
+        if (!isCurrentWebResourceClient(client)) return null;
+        WebResourceResponse bundled = bundledAppAsset(request.getUrl(), requestProfile);
+        if (bundled != null) {
+            if (isCurrentWebResourceClient(client)) return bundled;
+            closeWebResourceResponse(bundled);
+            return null;
+        }
         // WebView does not reliably attach programmatically installed cookies
-        // to private image requests on every Android/WebView version. Proxy
-        // covers as authenticated GETs; shouldInterceptRequest is concurrent
-        // and OkHttp retains its own connection pool while the server returns
-        // persistent 160 px thumbnails with immutable cache headers.
+        // or custom CGI routing headers on every Android/WebView version.
+        // Proxy the main document and sub-resources through the same authenticated
+        // OkHttp path; thumbnails still benefit from the native disk cache below.
         Uri uri = canonicalFnAudioResourceUri(request.getUrl());
         Request.Builder builder = new Request.Builder().url(uri.toString()).get();
         String routedPath = cgiRoutedPath(uri);
@@ -384,59 +471,111 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             String lower = name.toLowerCase(Locale.ROOT);
             if (lower.equals("host") || lower.equals("connection") || lower.equals("content-length")
                     || lower.equals("accept-encoding") || lower.equals("cookie")
-                    || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")) continue;
+                    || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")
+                    || lower.equals("x-fnaudio-path")) continue;
             builder.header(name, header.getValue());
         }
-        if (!profile.webSession) {
-            builder.header("Authorization", "Bearer " + profile.token);
-            builder.header("X-Fnaudio-Trim-Token", profile.token);
+        if (!requestProfile.webSession) {
+            builder.header("Authorization", "Bearer " + requestProfile.token);
+            builder.header("X-Fnaudio-Trim-Token", requestProfile.token);
         }
         String requestCookie = request.getRequestHeaders().get("Cookie");
-        if (profile.webSession && (requestCookie == null || requestCookie.trim().isEmpty())) {
+        if (requestProfile.webSession && (requestCookie == null || requestCookie.trim().isEmpty())) {
             requestCookie = CookieManager.getInstance().getCookie(uri.toString());
         }
-        builder.header("Cookie", profile.webSession
+        builder.header("Cookie", requestProfile.webSession
                 ? (requestCookie == null ? "" : requestCookie)
-                : authenticatedCookie(requestCookie));
+                : authenticatedCookie(requestProfile, requestCookie));
+        Response response = null;
+        boolean responseOwnedByWebView = false;
         try {
             if (isListThumbnail(uri)) {
-                InputStream cached = coverCache.open(uri.toString());
+                InputStream cached = thumbnailCache == null ? null : thumbnailCache.open(profileCacheScope(requestProfile), uri.toString());
                 if (cached != null) {
+                    if (!isCurrentWebResourceClient(client)) {
+                        try {
+                            cached.close();
+                        } catch (IOException ignored) {
+                        }
+                        return null;
+                    }
                     return new WebResourceResponse("image/jpeg", null, cached);
                 }
             }
-            Response response = webResourceClient.newCall(builder.build()).execute();
-            if (response.code() >= 400 && isCriticalUiAsset(uri)) {
-                uiHandler.post(() -> showError("fnAudio 界面资源加载失败（HTTP " + response.code() + "）。请确认 NAS 已安装配套版本的 FPK。"));
+            response = client.newCall(builder.build()).execute();
+            // The request can outlive the Activity while OkHttp is connecting.
+            // Do not hand an old response to a WebView that teardown has detached.
+            if (!isCurrentWebResourceClient(client)) return null;
+            final int responseCode = response.code();
+            final String responseMessage = response.message();
+            final Map<String, String> responseHeaderValues = responseHeaders(response.headers());
+            if (request.isForMainFrame()) {
+                Log.i("FnAudioWeb", "Authenticated main-frame GET status=" + responseCode
+                        + ", route=" + routedPath + ", url=" + uri);
             }
-            syncResponseCookies(response.headers("Set-Cookie"));
+            if (responseCode >= 400 && isCriticalUiAsset(uri)) {
+                uiHandler.post(() -> showError("fnAudio 界面资源加载失败（HTTP " + responseCode + "）。请确认 NAS 已安装配套版本的 FPK。"));
+            }
+            syncResponseCookies(response.headers("Set-Cookie"), requestProfile);
             ResponseBody body = response.body();
+            MediaType mediaType = body == null ? null : body.contentType();
             InputStream stream;
-            if (isListThumbnail(uri) && response.code() == 200 && body != null) {
-                byte[] bytes = body.bytes();
-                coverCache.put(uri.toString(), bytes);
+            if (isListThumbnail(uri) && responseCode == 200 && body != null) {
+                byte[] bytes;
+                try {
+                    bytes = readBoundedBytes(body, MAX_COVER_BYTES);
+                } catch (IOException exception) {
+                    return null;
+                }
+                if (thumbnailCache != null) thumbnailCache.put(profileCacheScope(requestProfile), uri.toString(), bytes);
                 response.close();
+                response = null;
                 stream = new ByteArrayInputStream(bytes);
             } else {
                 stream = new ResponseClosingInputStream(
                         body == null ? new ByteArrayInputStream(new byte[0]) : body.byteStream(), response);
             }
-            MediaType mediaType = body == null ? null : body.contentType();
             String contentType = mediaType == null ? guessContentType(uri) : mediaType.toString();
             String mime = contentType;
             String charset = null;
             int semicolon = contentType.indexOf(';');
             if (semicolon >= 0) mime = contentType.substring(0, semicolon).trim();
-            if (mediaType != null && mediaType.charset() != null) charset = "UTF-8";
+            charset = responseCharset(mediaType, mime);
             if (charset == null && isTextMime(mime)) charset = "UTF-8";
             WebResourceResponse webResponse = new WebResourceResponse(mime, charset, stream);
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                webResponse.setStatusCodeAndReasonPhrase(response.code(), response.message().isEmpty() ? reason(response.code()) : response.message());
-                webResponse.setResponseHeaders(responseHeaders(response.headers()));
+                webResponse.setStatusCodeAndReasonPhrase(responseCode, responseMessage.isEmpty() ? reason(responseCode) : responseMessage);
+                webResponse.setResponseHeaders(responseHeaderValues);
             }
+            responseOwnedByWebView = true;
             return webResponse;
-        } catch (IOException exception) {
+        } catch (IOException | RuntimeException exception) {
+            // A WebView resource callback can race Activity teardown (which
+            // shuts down the dispatcher) or carry a rejected header value.
+            // Let WebView handle this as an unavailable resource instead of
+            // crashing its callback thread.
             return null;
+        } finally {
+            if (response != null && !responseOwnedByWebView) response.close();
+        }
+    }
+
+    private boolean isCurrentWebResourceClient(OkHttpClient client) {
+        synchronized (nativeHttpCalls) {
+            return !destroyed && webResourceClient == client;
+        }
+    }
+
+    private static String profileCacheScope(@Nullable ConnectionProfile requestProfile) {
+        if (requestProfile == null || requestProfile.id == null || requestProfile.id.length() > 4096) return "";
+        return requestProfile.id;
+    }
+
+    private static void closeWebResourceResponse(@Nullable WebResourceResponse response) {
+        if (response == null || response.getData() == null) return;
+        try {
+            response.getData().close();
+        } catch (IOException ignored) {
         }
     }
 
@@ -449,8 +588,8 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     @Nullable
-    private WebResourceResponse bundledFnConnectAsset(Uri uri) {
-        if (profile == null || !isFnConnectProfile() || uri == null || !sameProfileOrigin(uri)) return null;
+    private WebResourceResponse bundledAppAsset(Uri uri, @Nullable ConnectionProfile requestProfile) {
+        if (requestProfile == null || uri == null || !sameProfileOrigin(requestProfile, uri)) return null;
         String path = uri.getPath();
         if (path == null) return null;
         String lower = path.toLowerCase(Locale.ROOT);
@@ -461,7 +600,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         else if (lower.endsWith("/images/icon_256.png")) relative = "images/icon_256.png";
         else return null;
         try {
-            InputStream stream = getAssets().open(relative);
+            InputStream stream = new BoundedInputStream(getAssets().open(relative), MAX_BUNDLED_ASSET_BYTES);
             String mime = relative.endsWith(".css") ? "text/css"
                     : relative.endsWith(".js") ? "application/javascript" : "image/png";
             return new WebResourceResponse(mime, mime.startsWith("text/") || mime.contains("javascript") ? "UTF-8" : null, stream);
@@ -475,40 +614,90 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private String readBundledText(String name) throws IOException {
-        try (InputStream input = getAssets().open(name);
+        try (InputStream input = new BoundedInputStream(getAssets().open(name), MAX_BUNDLED_TEXT_BYTES);
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[16 * 1024];
             int count;
-            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+            while ((count = input.read(buffer)) != -1) {
+                if (count == 0) continue;
+                output.write(buffer, 0, count);
+            }
             return output.toString(StandardCharsets.UTF_8.name());
         }
     }
 
-    private String authenticatedCookie(@Nullable String existing) {
+    private static byte[] readBoundedBytes(ResponseBody body, int maxBytes) throws IOException {
+        if (body == null || maxBytes <= 0) throw new IOException("empty response body");
+        long declared = body.contentLength();
+        if (declared > maxBytes) throw new IOException("response body is too large");
+        InputStream input = body.byteStream();
+        ByteArrayOutputStream output = new ByteArrayOutputStream(
+                (int) Math.min(Math.max(declared, 0L), maxBytes));
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        int count;
+        while ((count = input.read(buffer)) != -1) {
+            if (count == 0) continue;
+            if (count > maxBytes - total) throw new IOException("response body is too large");
+            output.write(buffer, 0, count);
+            total += count;
+        }
+        return output.toByteArray();
+    }
+
+    private static String readBoundedText(ResponseBody body, int maxBytes) throws IOException {
+        return new String(readBoundedBytes(body, maxBytes), StandardCharsets.UTF_8);
+    }
+
+    private static int utf8Length(@Nullable String value) {
+        if (value == null || value.isEmpty()) return 0;
+        return value.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static String authenticatedCookie(ConnectionProfile requestProfile, @Nullable String existing) {
         String value = existing == null ? "" : existing.trim();
-        String encoded = encodeCookie(profile.token);
+        String encoded = encodeCookie(requestProfile.token);
         String auth = "fnaudio_trim_token=" + encoded + "; trim_token=" + encoded + "; token=" + encoded;
         return value.isEmpty() ? auth : value + "; " + auth;
     }
 
     @Override
     public void requestJson(String requestId, String method, String url, String headersJson, String body) {
-        OkHttpClient client = webResourceClient;
-        if (client == null || profile == null) {
-            deliverNativeHttpFailure(requestId, "原生网络服务尚未就绪");
+        final String safeRequestId = requestId == null ? "" : requestId.trim();
+        if (safeRequestId.isEmpty() || safeRequestId.length() > MAX_NATIVE_HTTP_REQUEST_ID_CHARS) return;
+        OkHttpClient client;
+        ConnectionProfile requestProfile;
+        synchronized (nativeHttpCalls) {
+            if (destroyed) {
+                deliverNativeHttpFailure(safeRequestId, "原生网络服务正在关闭，请稍后重试");
+                return;
+            }
+            client = webResourceClient;
+            requestProfile = profile;
+        }
+        if (client == null || requestProfile == null) {
+            deliverNativeHttpFailure(safeRequestId, "原生网络服务尚未就绪");
+            return;
+        }
+        if (utf8Length(headersJson) > MAX_NATIVE_HTTP_HEADERS_BYTES) {
+            deliverNativeHttpFailure(safeRequestId, "原生请求头过大");
+            return;
+        }
+        if (utf8Length(body) > MAX_NATIVE_HTTP_REQUEST_BODY_BYTES) {
+            deliverNativeHttpFailure(safeRequestId, "原生请求体过大");
             return;
         }
         Uri uri;
         try {
             uri = canonicalFnAudioResourceUri(Uri.parse(url));
         } catch (Exception exception) {
-            deliverNativeHttpFailure(requestId, "请求地址无效");
+            deliverNativeHttpFailure(safeRequestId, "请求地址无效");
             return;
         }
         String path = uri.getPath();
-        if (!sameProfileOrigin(uri) || path == null
+        if (!sameProfileOrigin(requestProfile, uri) || path == null
                 || !path.startsWith("/cgi/ThirdParty/fnaudio/index.cgi/api/")) {
-            deliverNativeHttpFailure(requestId, "原生认证请求仅允许访问当前 fnAudio API");
+            deliverNativeHttpFailure(safeRequestId, "原生认证请求仅允许访问当前 fnAudio API");
             return;
         }
 
@@ -516,12 +705,13 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (!(normalizedMethod.equals("GET") || normalizedMethod.equals("HEAD")
                 || normalizedMethod.equals("POST") || normalizedMethod.equals("PUT")
                 || normalizedMethod.equals("PATCH") || normalizedMethod.equals("DELETE"))) {
-            deliverNativeHttpFailure(requestId, "原生认证请求不支持 " + normalizedMethod);
+            deliverNativeHttpFailure(safeRequestId, "原生认证请求不支持 " + normalizedMethod);
             return;
         }
 
-        Request.Builder builder = new Request.Builder().url(uri.toString());
         String routedPath = cgiRoutedPath(uri);
+        Uri transportUri = cgiQueryRoutedUri(uri, routedPath);
+        Request.Builder builder = new Request.Builder().url(transportUri.toString());
         if (!routedPath.isEmpty()) builder.header("X-Fnaudio-Path", routedPath);
         String contentType = "application/json; charset=utf-8";
         try {
@@ -529,16 +719,19 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             Iterator<String> names = headers.keys();
             while (names.hasNext()) {
                 String name = names.next();
-                String value = headers.optString(name, "");
+                Object rawValue = headers.opt(name);
+                if (!(rawValue instanceof String)) throw new IllegalArgumentException("header value is not text");
+                String value = (String) rawValue;
                 String lower = name.toLowerCase(Locale.ROOT);
                 if (lower.equals("host") || lower.equals("connection") || lower.equals("content-length")
                         || lower.equals("accept-encoding") || lower.equals("cookie")
-                        || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")) continue;
+                        || lower.equals("authorization") || lower.equals("x-fnaudio-trim-token")
+                        || lower.equals("x-fnaudio-path")) continue;
                 if (lower.equals("content-type") && !value.trim().isEmpty()) contentType = value;
                 builder.header(name, value);
             }
         } catch (Exception exception) {
-            deliverNativeHttpFailure(requestId, "请求头格式无效");
+            deliverNativeHttpFailure(safeRequestId, "请求头格式无效");
             return;
         }
         MediaType mediaType = MediaType.parse(contentType);
@@ -548,54 +741,103 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             RequestBody requestBody = RequestBody.create(body == null ? "" : body, mediaType);
             builder.method(normalizedMethod, requestBody);
         }
-        if (!profile.webSession) {
-            builder.header("Authorization", "Bearer " + profile.token);
-            builder.header("X-Fnaudio-Trim-Token", profile.token);
-            builder.header("Cookie", authenticatedCookie(null));
+        if (!requestProfile.webSession) {
+            builder.header("Authorization", "Bearer " + requestProfile.token);
+            builder.header("X-Fnaudio-Trim-Token", requestProfile.token);
+            builder.header("Cookie", authenticatedCookie(requestProfile, null));
         } else {
             String cookie = CookieManager.getInstance().getCookie(uri.toString());
             if (cookie == null || cookie.trim().isEmpty()) {
-                deliverNativeHttpFailure(requestId, "FN Connect 登录会话已失效，请重新登录");
+                deliverNativeHttpFailure(safeRequestId, "FN Connect 登录会话已失效，请重新登录");
                 return;
             }
             builder.header("Cookie", cookie);
         }
 
-        client.newCall(builder.build()).enqueue(new Callback() {
+        Call call = client.newCall(builder.build());
+        Call previous;
+        boolean rejected;
+        synchronized (nativeHttpCalls) {
+            if (destroyed || webResourceClient != client) {
+                call.cancel();
+                deliverNativeHttpFailure(safeRequestId, "原生网络服务正在关闭，请稍后重试");
+                return;
+            }
+            previous = nativeHttpCalls.put(safeRequestId, call);
+            // The new call is inserted before the capacity check. A request-id
+            // replacement reuses an existing slot and must remain legal even
+            // when the pool is full; only a genuinely new slot may exceed the
+            // hard limit.
+            rejected = nativeHttpCalls.size() > MAX_NATIVE_HTTP_CALLS;
+            if (rejected) nativeHttpCalls.remove(safeRequestId, call);
+        }
+        if (previous != null) previous.cancel();
+        if (rejected) {
+            call.cancel();
+            deliverNativeHttpFailure(safeRequestId, "原生网络请求过多，请稍后重试");
+            return;
+        }
+        try {
+            call.enqueue(new Callback() {
             @Override
             public void onFailure(@NonNull Call call, @NonNull IOException exception) {
-                deliverNativeHttpFailure(requestId, exception.getMessage() == null ? "网络请求失败" : exception.getMessage());
+                if (!nativeHttpCalls.remove(safeRequestId, call)) return;
+                deliverNativeHttpFailure(safeRequestId, exception.getMessage() == null ? "网络请求失败" : exception.getMessage());
             }
 
             @Override
             public void onResponse(@NonNull Call call, @NonNull Response response) {
+                if (!nativeHttpCalls.remove(safeRequestId, call)) {
+                    response.close();
+                    return;
+                }
                 try (Response closeable = response) {
-                    syncResponseCookies(closeable.headers("Set-Cookie"));
+                    syncResponseCookies(closeable.headers("Set-Cookie"), requestProfile);
                     ResponseBody responseBody = closeable.body();
-                    String responseText = responseBody == null ? "" : responseBody.string();
+                    String responseText = responseBody == null ? ""
+                            : readBoundedText(responseBody, MAX_NATIVE_HTTP_RESPONSE_BYTES);
                     JSONObject payload = new JSONObject();
-                    payload.put("requestId", requestId);
+                    payload.put("requestId", safeRequestId);
                     payload.put("status", closeable.code());
                     payload.put("statusText", closeable.message());
                     payload.put("url", closeable.request().url().toString());
                     payload.put("body", responseText);
                     JSONObject responseHeaders = new JSONObject();
-                    for (String name : closeable.headers().names()) {
-                        if (!name.equalsIgnoreCase("Set-Cookie")) responseHeaders.put(name, closeable.header(name, ""));
+                    for (Map.Entry<String, String> header : responseHeaders(closeable.headers()).entrySet()) {
+                        responseHeaders.put(header.getKey(), header.getValue());
                     }
                     payload.put("headers", responseHeaders);
                     deliverNativeHttpResponse(payload);
                 } catch (Exception exception) {
-                    deliverNativeHttpFailure(requestId, exception.getMessage() == null ? "响应读取失败" : exception.getMessage());
+                    deliverNativeHttpFailure(safeRequestId, exception.getMessage() == null ? "响应读取失败" : exception.getMessage());
                 }
             }
-        });
+            });
+        } catch (RejectedExecutionException error) {
+            nativeHttpCalls.remove(safeRequestId, call);
+            deliverNativeHttpFailure(safeRequestId, "原生网络服务正在关闭，请稍后重试");
+        }
+    }
+
+    @Override
+    public void rejectRequestJson(String requestId, String message) {
+        deliverNativeHttpFailure(requestId, message == null ? "原生网络请求无效" : message);
+    }
+
+    @Override
+    public void cancelRequestJson(String requestId) {
+        String safeRequestId = requestId == null ? "" : requestId.trim();
+        if (safeRequestId.isEmpty() || safeRequestId.length() > MAX_NATIVE_HTTP_REQUEST_ID_CHARS) return;
+        Call call = nativeHttpCalls.remove(safeRequestId);
+        if (call != null) call.cancel();
     }
 
     private void deliverNativeHttpFailure(String requestId, String message) {
         try {
             JSONObject payload = new JSONObject();
-            payload.put("requestId", requestId);
+            String safeRequestId = requestId == null ? "" : requestId.trim();
+            payload.put("requestId", safeRequestId.length() > MAX_NATIVE_HTTP_REQUEST_ID_CHARS
+                    ? safeRequestId.substring(0, MAX_NATIVE_HTTP_REQUEST_ID_CHARS) : safeRequestId);
             payload.put("status", 0);
             payload.put("statusText", "");
             payload.put("url", "");
@@ -608,20 +850,54 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private void deliverNativeHttpResponse(JSONObject payload) {
+        if (destroyed) return;
         String serialized = payload.toString();
         final int chunkSize = 24 * 1024;
         int total = Math.max(1, (serialized.length() + chunkSize - 1) / chunkSize);
+        if (serialized.length() > MAX_NATIVE_HTTP_SERIALIZED_RESPONSE_CHARS || total > MAX_NATIVE_HTTP_RESPONSE_CHUNKS) {
+            Object rawRequestId = payload.opt("requestId");
+            String requestId = rawRequestId instanceof String ? (String) rawRequestId : "";
+            if (requestId.length() > MAX_NATIVE_HTTP_REQUEST_ID_CHARS) {
+                requestId = requestId.substring(0, MAX_NATIVE_HTTP_REQUEST_ID_CHARS);
+            }
+            try {
+                JSONObject fallback = new JSONObject();
+                fallback.put("requestId", requestId);
+                fallback.put("status", 0);
+                fallback.put("statusText", "");
+                fallback.put("url", "");
+                fallback.put("body", "");
+                fallback.put("headers", new JSONObject());
+                fallback.put("networkError", "响应序列化结果过大");
+                serialized = fallback.toString();
+                total = 1;
+            } catch (Exception ignored) {
+                return;
+            }
+        }
         String transferId = "native-http-" + System.nanoTime();
+        // Lambda captures must be stable: the oversized-response fallback can
+        // replace both values above before this work reaches the UI thread.
+        final String responsePayload = serialized;
+        final int responseChunkCount = total;
         uiHandler.post(() -> {
-            if (webView == null || isFinishing() || isDestroyed()) return;
-            for (int index = 0; index < total; index++) {
+            if (destroyed || webView == null || isFinishing() || isDestroyed()) return;
+            for (int index = 0; index < responseChunkCount; index++) {
+                // Activity destruction can happen between chunk evaluations.
+                // Stop the transfer before touching a WebView that is no
+                // longer owned by this Activity.
+                if (destroyed || webView == null || isFinishing() || isDestroyed()) return;
                 int start = index * chunkSize;
-                int end = Math.min(serialized.length(), start + chunkSize);
-                String chunk = serialized.substring(start, end);
+                int end = Math.min(responsePayload.length(), start + chunkSize);
+                String chunk = responsePayload.substring(start, end);
                 String script = "window.fnAudioNativeOnHttpChunk && window.fnAudioNativeOnHttpChunk("
-                        + JSONObject.quote(transferId) + "," + index + "," + total + ","
+                        + JSONObject.quote(transferId) + "," + index + "," + responseChunkCount + ","
                         + JSONObject.quote(chunk) + ");";
-                webView.evaluateJavascript(script, null);
+                try {
+                    webView.evaluateJavascript(script, null);
+                } catch (RuntimeException ignored) {
+                    return;
+                }
             }
         });
     }
@@ -650,6 +926,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         return suffix.isEmpty() ? "/" : (suffix.startsWith("/") ? suffix : "/" + suffix);
     }
 
+    private Uri cgiQueryRoutedUri(Uri uri, String routedPath) {
+        if (uri == null || routedPath == null || routedPath.isEmpty()) return uri;
+        String marker = "/cgi/ThirdParty/fnaudio/index.cgi";
+        String path = uri.getEncodedPath();
+        if (path == null || !path.startsWith(marker)) return uri;
+        return uri.buildUpon()
+                .encodedPath(marker + "/")
+                .appendQueryParameter("__fnaudio_path", routedPath)
+                .build();
+    }
+
     private boolean isCriticalUiAsset(Uri uri) {
         String path = uri.getPath();
         return path != null && (path.endsWith("/app.css") || path.endsWith("/app.js"));
@@ -664,23 +951,35 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 || lower.contains("/cover/") || lower.contains("/covers/");
     }
 
-    private void syncResponseCookies(List<String> setCookies) {
-        if (setCookies == null || setCookies.isEmpty() || webView == null) return;
+    private void syncResponseCookies(List<String> setCookies, @Nullable ConnectionProfile requestProfile) {
+        if (destroyed || setCookies == null || setCookies.isEmpty() || webView == null) return;
         webView.post(() -> {
+            if (destroyed || webView == null || profile == null || profile != requestProfile) return;
             CookieManager manager = CookieManager.getInstance();
-            for (String cookie : setCookies) manager.setCookie(profile.httpOrigin(), cookie);
+            for (String cookie : setCookies) manager.setCookie(requestProfile.httpOrigin(), cookie);
             manager.flush();
         });
     }
 
     private Map<String, String> responseHeaders(Headers headers) {
         Map<String, String> result = new HashMap<>();
+        int totalBytes = 0;
         for (String name : headers.names()) {
             String lower = name.toLowerCase(Locale.ROOT);
             if (lower.equals("connection") || lower.equals("transfer-encoding")
                     || lower.equals("content-encoding") || lower.equals("content-length")
-                    || lower.equals("set-cookie")) continue;
-            result.put(name, headers.get(name));
+                    || lower.equals("set-cookie") || lower.equals("authorization")
+                    || lower.equals("proxy-authenticate") || lower.equals("proxy-authorization")) continue;
+            if (result.size() >= MAX_NATIVE_HTTP_RESPONSE_HEADER_COUNT) break;
+            String value = headers.get(name);
+            if (value == null) value = "";
+            if (value.length() > MAX_NATIVE_HTTP_RESPONSE_HEADER_VALUE_CHARS) {
+                value = value.substring(0, MAX_NATIVE_HTTP_RESPONSE_HEADER_VALUE_CHARS);
+            }
+            int entryBytes = utf8Length(name) + utf8Length(value) + 4;
+            if (entryBytes > MAX_NATIVE_HTTP_RESPONSE_HEADERS_BYTES - totalBytes) break;
+            result.put(name, value);
+            totalBytes += entryBytes;
         }
         return result;
     }
@@ -688,6 +987,11 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private String guessContentType(Uri uri) {
         String guessed = URLConnection.guessContentTypeFromName(uri.getPath());
         return guessed == null ? "application/octet-stream" : guessed;
+    }
+
+    static String responseCharset(@Nullable MediaType mediaType, String mime) {
+        return mediaType == null || mediaType.charset() == null
+                ? null : mediaType.charset().name();
     }
 
     private boolean isTextMime(String mime) {
@@ -708,41 +1012,110 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (webView == null) return;
         pageLoaded = false;
         errorPanel.setVisibility(View.GONE);
-        webView.setVisibility(isFnConnectProfile() ? View.INVISIBLE : View.VISIBLE);
-        if (isFnConnectProfile()) {
-            loadBundledFnConnectPage();
-            return;
-        }
-        Map<String, String> headers = new LinkedHashMap<>();
-        if (profile.webSession) webView.loadUrl(profile.fnAudioUrl());
-        else {
-            headers.put("Authorization", "Bearer " + profile.token);
-            headers.put("X-Fnaudio-Trim-Token", profile.token);
-            webView.loadUrl(profile.fnAudioUrl(), headers);
-        }
+        webView.setVisibility(View.VISIBLE);
+        loadBundledAppPage();
     }
 
-    private void loadBundledFnConnectPage() {
+    private void loadBundledAppPage() {
         try {
             String html = readBundledText("index.html");
             String css = readBundledText("app.css");
+            String viewPresentation = readBundledText("view_presentation.js");
+            String trackPresentation = readBundledText("track_presentation.js");
+            String uiSyncScheduler = readBundledText("ui_sync_scheduler.js");
+            String repeatModePolicy = readBundledText("repeat_mode_policy.js");
+            String trackSortPolicy = readBundledText("track_sort_policy.js");
+            String librarySortOptionsPolicy = readBundledText("library_sort_options_policy.js");
+            String folderLabelPolicy = readBundledText("folder_label_policy.js");
+            String hostPrivacyPolicy = readBundledText("host_privacy_policy.js");
             String javascript = readBundledText("app.js");
             html = html.replaceFirst("(?s)<link\\s+rel=\"stylesheet\"[^>]*>", Matcher.quoteReplacement(
                     "<style id=\"fnaudio-bundled-css\">" + css.replace("</style", "<\\/style") + "</style>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"view_presentation\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + viewPresentation.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"track_presentation\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + trackPresentation.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"ui_sync_scheduler\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + uiSyncScheduler.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"repeat_mode_policy\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + repeatModePolicy.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"track_sort_policy\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + trackSortPolicy.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"library_sort_options_policy\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + librarySortOptionsPolicy.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"folder_label_policy\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + folderLabelPolicy.replace("</script", "<\\/script") + "</script>"));
+            html = html.replaceFirst("(?s)<script\\s+src=\"host_privacy_policy\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
+                    "<script>" + hostPrivacyPolicy.replace("</script", "<\\/script") + "</script>"));
+            // Keep every policy module version-matched with app.js. The first
+            // ten scripts above are retained as explicit replacements for
+            // older source checks; these are the remaining modules declared
+            // by index.html that must not be fetched from a possibly older NAS.
+            String[] additionalScripts = {
+                    "track_table_presentation.js", "queue_presentation.js", "lru_cache.js",
+                    "album_metadata_cache.js", "item_cache.js", "item_negative_cache.js", "item_lookup.js",
+                    "item_hydration_policy.js", "item_hydration_request.js",
+                    "library_item_request_loader.js", "batch_request_pool.js",
+                    "library_page_plan.js", "library_pager_visibility.js",
+                    "library_pager_presentation.js", "library_page_merge.js",
+                    "library_response_policy.js", "library_render_policy.js",
+                    "library_row_signature_policy.js", "library_snapshot_reuse_policy.js",
+                    "library_page_snapshot_policy.js", "metadata_row_patch_policy.js",
+                    "library_page_size_policy.js", "creator_view_policy.js",
+                    "user_media_state_policy.js", "lyrics_parse_policy.js",
+                    "metadata_response_policy.js", "playback_target_policy.js",
+                    "library_track_filter_policy.js", "library_root_label_policy.js",
+                    "library_query_params.js", "library_reference_items.js",
+                    "track_search_text.js", "device_target_presentation.js", "device_caps_presentation.js",
+                    "cover_load_scheduler.js", "shuffle_policy.js", "host_playback_session.js",
+                    "library_response_loader.js", "response_json_loader.js", "library_status_refresh_policy.js",
+                    "visible_metadata_prefetch_policy.js", "ui_metrics_policy.js",
+                    "library_metadata_merge_policy.js", "library_empty_response_policy.js",
+                    "metadata_projection_policy.js", "metadata_candidate_presentation_policy.js",
+                    "library_load_key.js", "library_page_cursor_policy.js",
+                    "access_profile_loader.js", "library_full_list_policy.js"
+            };
+            for (String scriptName : additionalScripts) {
+                html = inlineBundledScript(html, scriptName, readBundledText(scriptName));
+            }
             html = html.replaceFirst("(?s)<script\\s+src=\"app\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
                     "<script>" + javascript.replace("</script", "<\\/script") + "</script>"));
             webView.loadDataWithBaseURL(profile.fnAudioUrl(), html, "text/html", "UTF-8", profile.fnAudioUrl());
         } catch (IOException exception) {
-            showError("FN Connect 界面资源读取失败：" + exception.getMessage());
+            showError("fnAudio 界面资源读取失败：" + exception.getMessage());
         }
     }
 
+    private static String inlineBundledScript(String html, String name, String source) {
+        String pattern = "(?s)<script\\s+src=\"" + Pattern.quote(name)
+                + "(?:\\?[^\"]*)?\"[^>]*></script>";
+        return html.replaceFirst(pattern, Matcher.quoteReplacement(
+                "<script>" + source.replace("</script", "<\\/script") + "</script>"));
+    }
+
     private void connectMediaController() {
+        // Profile/server changes can reconnect while the previous controller
+        // is still non-null. Release that session before creating its
+        // replacement so commands cannot cross the connection boundary.
+        if (controllerFuture != null || mediaController != null) {
+            pendingControllerCommands.clear();
+            if (controllerFuture != null) {
+                MediaController.releaseFuture(controllerFuture);
+                controllerFuture = null;
+            }
+            if (mediaController != null) {
+                mediaController.release();
+                mediaController = null;
+            }
+        }
         SessionToken token = new SessionToken(this, new ComponentName(this, PlaybackService.class));
-        controllerFuture = new MediaController.Builder(this, token).buildAsync();
-        controllerFuture.addListener(() -> {
+        final ListenableFuture<MediaController> connectingFuture =
+                new MediaController.Builder(this, token).buildAsync();
+        controllerFuture = connectingFuture;
+        connectingFuture.addListener(() -> {
+            if (controllerFuture != connectingFuture || isFinishing() || isDestroyed()) return;
             try {
-                mediaController = controllerFuture.get();
+                mediaController = connectingFuture.get();
                 mediaController.addListener(new Player.Listener() {
                     @Override
                     public void onEvents(@NonNull Player player, @NonNull Player.Events events) {
@@ -754,22 +1127,32 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                         pushPlaybackStateToWeb();
                     }
                 });
+                while (!pendingControllerCommands.isEmpty()) {
+                    NativePlaybackBridge.ControllerCommand command = pendingControllerCommands.removeFirst();
+                    command.run(mediaController);
+                }
                 pushPlaybackStateToWeb();
                 maybeLoadFnAudio();
             } catch (ExecutionException | InterruptedException exception) {
                 if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+                if (controllerFuture != connectingFuture || isFinishing() || isDestroyed()) return;
                 showError("原生播放服务启动失败：" + String.valueOf(exception.getCause() == null ? exception.getMessage() : exception.getCause().getMessage()));
             }
         }, ContextCompat.getMainExecutor(this));
     }
 
     private void injectNativeEnvironment() {
-        if (webView == null) return;
-        webView.evaluateJavascript(
-                "document.documentElement.classList.add('fnaudio-android-client');" +
-                        "window.dispatchEvent(new CustomEvent('fnaudio-native-ready'));",
-                null
-        );
+        if (destroyed || webView == null || isFinishing() || isDestroyed()) return;
+        WebView target = webView;
+        try {
+            target.evaluateJavascript(
+                    "document.documentElement.classList.add('fnaudio-android-client');" +
+                            "window.dispatchEvent(new CustomEvent('fnaudio-native-ready'));",
+                    null
+            );
+        } catch (RuntimeException ignored) {
+            return;
+        }
         pushPlaybackStateToWeb();
     }
 
@@ -799,34 +1182,43 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             return;
         }
         String script = "window.fnAudioNativeOnState && window.fnAudioNativeOnState(" + JSONObject.quote(state.toString()) + ");";
-        webView.post(() -> webView.evaluateJavascript(script, null));
+        WebView target = webView;
+        target.post(() -> {
+            if (destroyed || webView != target || isFinishing() || isDestroyed()) return;
+            try {
+                target.evaluateJavascript(script, null);
+            } catch (RuntimeException ignored) {
+                return;
+            }
+        });
     }
 
     private boolean sameServer(Uri uri) {
-        if (uri == null || uri.getHost() == null) return false;
-        if (profile.webSession) {
-            String host = comparableHost(uri.getHost());
-            return host.equals(comparableHost(profile.host)) || host.equals("fnos.net");
-        }
-        if (!comparableHost(profile.host).equals(comparableHost(uri.getHost()))) return false;
-        int uriPort = uri.getPort();
-        return uriPort < 0 || uriPort == profile.port;
+        return sameProfileOrigin(profile, uri);
     }
 
     private boolean sameProfileOrigin(Uri uri) {
-        if (profile.webSession) {
-            return uri != null && "https".equalsIgnoreCase(uri.getScheme())
-                    && uri.getHost() != null
-                    && (comparableHost(profile.host).equals(comparableHost(uri.getHost()))
-                    || "fnos.net".equals(comparableHost(uri.getHost())));
+        return sameProfileOrigin(profile, uri);
+    }
+
+    private static boolean sameProfileOrigin(@Nullable ConnectionProfile candidate, Uri uri) {
+        if (candidate == null) return false;
+        if (candidate.webSession) {
+            if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())
+                    || uri.getHost() == null
+                    || !(comparableHost(candidate.host).equals(comparableHost(uri.getHost()))
+                    || "fnos.net".equals(comparableHost(uri.getHost())))) return false;
+            int actualPort = uri.getPort() < 0 ? 443 : uri.getPort();
+            int expectedPort = candidate.port > 0 ? candidate.port : 443;
+            return actualPort == expectedPort;
         }
         if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
-        String expectedScheme = profile.https ? "https" : "http";
+        String expectedScheme = candidate.https ? "https" : "http";
         if (!expectedScheme.equalsIgnoreCase(uri.getScheme())
-                || !comparableHost(profile.host).equals(comparableHost(uri.getHost()))) return false;
-        int defaultPort = profile.https ? 443 : 80;
+                || !comparableHost(candidate.host).equals(comparableHost(uri.getHost()))) return false;
+        int defaultPort = candidate.https ? 443 : 80;
         int actualPort = uri.getPort() < 0 ? defaultPort : uri.getPort();
-        int expectedPort = profile.port > 0 ? profile.port : defaultPort;
+        int expectedPort = candidate.port > 0 ? candidate.port : defaultPort;
         return actualPort == expectedPort;
     }
 
@@ -839,8 +1231,9 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private void showError(String message) {
-        if (isFinishing() || errorPanel == null) return;
+        if (destroyed || isFinishing() || errorPanel == null) return;
         runOnUiThread(() -> {
+            if (destroyed || isFinishing() || errorPanel == null || errorMessage == null || webView == null || pageProgress == null) return;
             errorMessage.setText(message);
             errorPanel.setVisibility(View.VISIBLE);
             webView.setVisibility(View.GONE);
@@ -850,9 +1243,19 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private ConnectionProfile resolveProfile() {
         SecureProfileStore store = new SecureProfileStore(this);
-        String id = getIntent().getStringExtra(EXTRA_PROFILE_ID);
+        String id = safeStringExtra(getIntent(), EXTRA_PROFILE_ID);
         ConnectionProfile selected = id == null ? null : store.find(id);
         return selected == null ? store.active() : selected;
+    }
+
+    private static String safeStringExtra(@Nullable Intent intent, String key) {
+        if (intent == null || key == null) return "";
+        try {
+            String value = intent.getStringExtra(key);
+            return value == null ? "" : value;
+        } catch (RuntimeException ignored) {
+            return "";
+        }
     }
 
     private void openConnectionChooser() {
@@ -875,22 +1278,29 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private void dispatchBackToFnAudio() {
         if (webBackDispatchInFlight) return;
-        if (webView == null) {
+        if (destroyed || webView == null || isFinishing() || isDestroyed()) {
             handleRootBackPress();
             return;
         }
+        WebView target = webView;
         webBackDispatchInFlight = true;
-        webView.evaluateJavascript(
-                "Boolean(window.fnAudioHandleAndroidBack && window.fnAudioHandleAndroidBack())",
-                handled -> {
-                    webBackDispatchInFlight = false;
-                    if ("true".equals(handled)) {
-                        rootBackConfirmUntil = 0L;
-                    } else {
-                        handleRootBackPress();
+        try {
+            target.evaluateJavascript(
+                    "Boolean(window.fnAudioHandleAndroidBack && window.fnAudioHandleAndroidBack())",
+                    handled -> {
+                        webBackDispatchInFlight = false;
+                        if (destroyed || isFinishing() || isDestroyed()) return;
+                        if ("true".equals(handled)) {
+                            rootBackConfirmUntil = 0L;
+                        } else {
+                            handleRootBackPress();
+                        }
                     }
-                }
-        );
+            );
+        } catch (RuntimeException ignored) {
+            webBackDispatchInFlight = false;
+            handleRootBackPress();
+        }
     }
 
     private void handleRootBackPress() {
@@ -925,6 +1335,22 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     @Override
+    public void dispatchWhenReady(NativePlaybackBridge.ControllerCommand command) {
+        if (command == null) return;
+        uiHandler.post(() -> {
+            if (destroyed || isFinishing() || isDestroyed()) return;
+            if (mediaController == null) {
+                if (pendingControllerCommands.size() >= MAX_PENDING_CONTROLLER_COMMANDS) {
+                    pendingControllerCommands.removeFirst();
+                }
+                pendingControllerCommands.addLast(command);
+                return;
+            }
+            command.run(mediaController);
+        });
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         uiHandler.removeCallbacks(playbackStateTicker);
@@ -940,12 +1366,22 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        authClient.cancel();
         uiHandler.removeCallbacks(playbackStateTicker);
+        pendingControllerCommands.clear();
+        if (fnConnectResolver != null) {
+            fnConnectResolver.close();
+            fnConnectResolver = null;
+        }
         if (controllerFuture != null) {
             MediaController.releaseFuture(controllerFuture);
             controllerFuture = null;
         }
-        mediaController = null;
+        if (mediaController != null) {
+            mediaController.release();
+            mediaController = null;
+        }
         if (webView != null) {
             webView.removeJavascriptInterface("FnAudioNative");
             webView.stopLoading();
@@ -955,10 +1391,20 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             webView = null;
         }
         if (webResourceClient != null) {
-            webResourceClient.dispatcher().cancelAll();
-            webResourceClient.connectionPool().evictAll();
-            webResourceClient.dispatcher().executorService().shutdown();
-            webResourceClient = null;
+            OkHttpClient client;
+            synchronized (nativeHttpCalls) {
+                client = webResourceClient;
+                for (Call call : nativeHttpCalls.values()) call.cancel();
+                nativeHttpCalls.clear();
+                webResourceClient = null;
+            }
+            client.dispatcher().cancelAll();
+            client.connectionPool().evictAll();
+            client.dispatcher().executorService().shutdown();
+        }
+        if (coverCache != null) {
+            coverCache.shutdown();
+            coverCache = null;
         }
         super.onDestroy();
     }
@@ -978,6 +1424,41 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             } finally {
                 response.close();
             }
+        }
+    }
+
+    private static final class BoundedInputStream extends FilterInputStream {
+        private final int limit;
+        private int total;
+
+        BoundedInputStream(InputStream stream, int limit) {
+            super(stream);
+            this.limit = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (total >= limit) {
+                int extra = super.read();
+                if (extra >= 0) throw new IOException("bundled asset is too large");
+                return -1;
+            }
+            int value = super.read();
+            if (value >= 0) total++;
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (length == 0) return 0;
+            if (total >= limit) {
+                int extra = super.read();
+                if (extra >= 0) throw new IOException("bundled asset is too large");
+                return -1;
+            }
+            int count = super.read(buffer, offset, Math.min(length, limit - total));
+            if (count > 0) total += count;
+            return count;
         }
     }
 }

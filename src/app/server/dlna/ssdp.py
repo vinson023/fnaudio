@@ -20,19 +20,39 @@ class SsdpService:
         self.roles = tuple(roles)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.RLock()
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="fnaudio-ssdp", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            try:
+                thread = threading.Thread(target=self._run, name="fnaudio-ssdp", daemon=True)
+                # Publish before starting so a parallel initializer sees the
+                # reservation during the narrow Thread.start() window.
+                self._thread = thread
+                thread.start()
+            except Exception:
+                if "thread" in locals() and self._thread is thread:
+                    self._thread = None
+                self._stop.set()
+                raise
 
     def stop(self) -> None:
-        self._stop.set()
-        self._announce("ssdp:byebye")
-        if self._thread:
-            self._thread.join(timeout=1.5)
+        with self._lifecycle_lock:
+            self._stop.set()
+            self._announce("ssdp:byebye")
+            thread = self._thread
+            if thread and thread is not threading.current_thread():
+                try:
+                    thread.join(timeout=1.5)
+                except RuntimeError:
+                    # A failed Thread.start() can leave a pre-registered,
+                    # unstarted handle. It has no worker to join.
+                    pass
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
 
     def _targets(self, role: str):
         device = "urn:schemas-upnp-org:device:Media%s:1" % ("Renderer" if role == "renderer" else "Server")
@@ -50,6 +70,14 @@ class SsdpService:
 
     def _location(self, role: str) -> str:
         return self.base_url().rstrip("/") + "/dlna/%s/description.xml" % role
+
+    def udn(self, role: str) -> str:
+        """Return the exact UDN advertised for a local DLNA role."""
+        return "uuid:%s" % self._uuid(role)
+
+    def location(self, role: str) -> str:
+        """Return the exact description URL advertised for a local DLNA role."""
+        return self._location(role)
 
     def _packet(self, role: str, target: str, nts: str = "ssdp:alive") -> bytes:
         usn = "uuid:%s" % self._uuid(role)
@@ -69,6 +97,7 @@ class SsdpService:
 
     def _run(self) -> None:
         self._announce("ssdp:alive")
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -76,6 +105,8 @@ class SsdpService:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(MULTICAST[0]) + socket.inet_aton("0.0.0.0"))
             sock.settimeout(1.0)
         except OSError:
+            if sock is not None:
+                sock.close()
             return
         last_announce = time.monotonic()
         try:
@@ -86,6 +117,15 @@ class SsdpService:
                 try:
                     data, address = sock.recvfrom(8192)
                 except socket.timeout:
+                    continue
+                except OSError:
+                    # A connected UDP socket can surface an ICMP-derived
+                    # ConnectionResetError from an earlier reply to a host
+                    # that already went away. That is transient: letting it
+                    # escape would silence DLNA discovery until the next app
+                    # restart because nothing re-creates this listener.
+                    if self._stop.wait(0.25):
+                        break
                     continue
                 text = data.decode("utf-8", "ignore")
                 if not text.upper().startswith("M-SEARCH"):
@@ -101,6 +141,11 @@ class SsdpService:
                         if response_target != usn:
                             usn += "::" + response_target
                         response = ("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\nLOCATION: %s\r\nSERVER: %s\r\nST: %s\r\nUSN: %s\r\n\r\n" % (self._location(role), UPNP_SERVER, response_target, usn)).encode("utf-8")
-                        sock.sendto(response, address)
+                        try:
+                            sock.sendto(response, address)
+                        except OSError:
+                            # A disappearing renderer must not terminate the
+                            # listener; continue serving later discoveries.
+                            continue
         finally:
             sock.close()

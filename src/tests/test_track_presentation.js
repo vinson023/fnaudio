@@ -15,5 +15,15 @@ assert.equal(presentation.rowSelectionKey({}, -2), "::0");
 assert.equal(presentation.columnValue({ track_no: 3 }, "track_no", { escapeHtml: value => value }), "03");
 assert.equal(presentation.columnValue({ title: "ignored" }, "missing", { escapeHtml: value => value }), "—");
 assert.equal(presentation.columnValue({ artist: "<artist>" }, "artist", { displayText: value => value, escapeHtml: value => value.replaceAll("<", "&lt;") }), "&lt;artist>");
+assert.deepEqual(
+  { ...presentation.columnValues({ track_no: 3, artist: "<artist>", duration: 65 }, ["track_no", "artist", "duration"], { displayText: value => value, clock: value => `${value}s`, escapeHtml: value => value.replaceAll("<", "&lt;") }) },
+  { track_no: "03", artist: "&lt;artist>", duration: "65s" },
+);
+const hostile = new Proxy({}, { get() { throw new Error("row getter"); } });
+assert.equal(presentation.quality(hostile), "—");
+assert.equal(presentation.addedDate(hostile, () => { throw new Error("clock"); }), "—");
+assert.equal(presentation.columnValue(hostile, "duration", { escapeHtml: value => value }), "—");
+assert.equal(presentation.rowSelectionKey({ id: { toString() { throw new Error("id"); } } }, { valueOf() { throw new Error("index"); } }), "::0");
+assert.match(source, /function columnValues\(item = \{\}, keys = \[\], helpers = \{\}\)/);
 
 console.log("Track presentation regression checks passed.");

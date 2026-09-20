@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+import math
 
 from .models import PlaybackCommand, PlaybackState, TrackRef
 from .mpd_client import (
@@ -73,17 +74,19 @@ class MpdOutput(OutputPlugin):
             except Exception:
                 output = {}
         volume_control = output.get("volume_control") or {}
+        def flag(value):
+            return value if isinstance(value, bool) else False
         return {
             "seek": True,
             "pause": True,
             "stop": True,
-            "volume": bool(volume_control.get("available")),
+            "volume": flag(volume_control.get("available")),
             "next_previous": True,
-            "native_dsd": bool(output.get("dsd_native")),
-            "native_dsd_verified": bool(output.get("native_dsd_verified")),
-            "dop": bool(output.get("dop")),
+            "native_dsd": flag(output.get("dsd_native")),
+            "native_dsd_verified": flag(output.get("native_dsd_verified")),
+            "dop": flag(output.get("dop")),
             "dsd_mode": output.get("dsd_mode") or "native",
-            "bitperfect": bool(output.get("bitperfect")),
+            "bitperfect": flag(output.get("bitperfect")),
             "server_transcode": False,
             "optional_backend": True,
             "volume_control": volume_control,
@@ -127,7 +130,16 @@ class MpdOutput(OutputPlugin):
                     state.target_id,
                     "output_device_missing",
                 )
-            cue_start = float(item.get("cue_start") or 0) if item.get("cue_track") else 0.0
+            try:
+                requested_position = float((context or {}).get("position") or 0.0)
+                cue_offset = float(item.get("cue_start") or 0) if item.get("cue_track") else 0.0
+                if not math.isfinite(requested_position) or not math.isfinite(cue_offset):
+                    raise ValueError("non-finite playback position")
+                requested_position = max(0.0, requested_position)
+                cue_start = max(0.0, cue_offset) + requested_position
+            except (TypeError, ValueError, OverflowError):
+                requested_position = 0.0
+                cue_start = 0.0
             if self.service and hasattr(self.service, "suppress_stop_transition"):
                 self.service.suppress_stop_transition()
             if self.service and hasattr(self.service, "sync_playback_queue"):
@@ -167,7 +179,6 @@ class MpdOutput(OutputPlugin):
                 self.service.refresh_status()
             return {
                 **result,
-                "message": "",
                 "target_id": state.target_id,
                 "track_id": track.track_id,
                 "cue_segment": bool(item.get("cue_track")),
@@ -188,20 +199,23 @@ class MpdOutput(OutputPlugin):
             if started.get("available") is False or (started.get("ok") is False and not started.get("running")):
                 return self._failure(started.get("message") or "MPD 不可用", state.target_id, "backend_unavailable")
             if command.action in ("repeat", "shuffle"):
-                result = mpd_set_playback_modes(state.repeat, state.shuffle, **self._connection())
-                return {**result, "message": "", "target_id": state.target_id}
+                result = self.service.update_playback_modes(state.repeat, state.shuffle) if self.service else mpd_set_playback_modes(state.repeat, state.shuffle, **self._connection())
+                return {**result, "target_id": state.target_id}
             if command.action == "stop" and self.service and hasattr(self.service, "suppress_stop_transition"):
                 self.service.suppress_stop_transition()
-            result = mpd_control(command.action, command.position, **self._connection())
+            result = self.service.control(command.action, command.position) if self.service else mpd_control(command.action, command.position, **self._connection())
             if self.service and hasattr(self.service, "refresh_status"):
                 self.service.refresh_status()
-            return {**result, "message": "", "target_id": state.target_id}
+            return {**result, "target_id": state.target_id}
         except Exception as exc:
             return self._failure("MPD 控制失败：%s" % exc, state.target_id)
 
     def close(self, state: PlaybackState) -> None:
         try:
-            mpd_control("stop", **self._connection())
+            if self.service:
+                self.service.control("stop")
+            else:
+                mpd_control("stop", **self._connection())
         except Exception:
             pass
 

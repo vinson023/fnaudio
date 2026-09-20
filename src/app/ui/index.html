@@ -82,7 +82,7 @@
   </section>
   <audio id="audio" preload="metadata"></audio>
   <dialog id="deviceDialog"><div class="dialog-head"><div><h2>选择播放设备</h2><span class="dialog-current-target" id="deviceCurrentTarget">当前：本机播放</span></div><button class="icon-button" id="closeDialog" title="关闭" aria-label="关闭">×</button></div><p class="dialog-help">选择浏览器、连接到 NAS 的 USB DAC，或局域网内的 DLNA/UPnP 播放设备。</p><div class="device-list-wrap" id="deviceList"></div><div class="device-dialog-footer"><span id="deviceRefreshStatus">设备会按类别显示</span><button class="secondary-button" id="scanDevices">刷新设备</button></div></dialog>
-  <dialog id="folderDialog"><div class="dialog-head"><h2>设置</h2><button class="icon-button" id="closeFolderDialog">×</button></div><div class="settings-tabs" role="tablist"><button type="button" class="active" data-settings-tab="library">音乐库</button><button type="button" data-settings-tab="runtime">运行</button><button type="button" data-settings-tab="metadata">元数据</button><button type="button" data-settings-tab="dlna">DLNA</button></div><section class="settings-pane active" data-settings-pane="library"><p class="dialog-help" id="folderPathText">手动输入音乐目录。可添加多个目录，例如：/vol1/1000/music。</p><div id="libraryPathList" class="library-path-list"></div><button class="secondary-button add-path-button" id="addLibraryPathBtn" type="button">添加音乐目录</button></section><section class="settings-pane" data-settings-pane="runtime" hidden><p class="dialog-help">当前运行端口：<strong id="serverPortValue">--</strong></p><p class="dialog-help">修改端口后，请停止并重新启动 fnAudio。端口被占用时应用将无法启动，请在应用中心设置中更换端口。</p></section><section class="settings-pane metadata-settings-pane" data-settings-pane="metadata" hidden><label class="metadata-toggle"><input id="metadataEnabledInput" type="checkbox" checked><span>启用后台元数据补全</span></label><div class="metadata-settings-grid"><label><span>删除缓存宽限天数</span><input id="metadataGraceDaysInput" type="number" min="0" max="90" value="7"></label></div><div class="metadata-settings-actions"><button class="secondary-button" id="refreshMetadataBtn" type="button">重新补全元数据</button></div><p class="dialog-help" id="metadataStatusText">正在读取后台状态...</p></section><section class="settings-pane" data-settings-pane="dlna" hidden><p class="dialog-help">查看 DLNA 播放设备访问 fnAudio 服务时留下的兼容性记录。</p><button class="secondary-button" id="dlnaDiagnosticsBtn" type="button">DLNA 兼容性记录</button></section><p class="dialog-help" id="folderSaveStatus"></p><button class="secondary-button settings-save" id="chooseFolderBtn">保存设置</button></dialog>
+  <dialog id="folderDialog"><div class="dialog-head"><h2>设置</h2><button class="icon-button" id="closeFolderDialog">×</button></div><div class="settings-tabs" role="tablist"><button type="button" class="active" data-settings-tab="library">音乐库</button><button type="button" data-settings-tab="runtime">运行</button><button type="button" data-settings-tab="metadata">元数据</button><button type="button" data-settings-tab="dlna">DLNA</button></div><section class="settings-pane active" data-settings-pane="library"><p class="dialog-help" id="folderPathText">手动输入音乐目录。可添加多个目录，例如：/vol1/1000/music。</p><div id="libraryPathList" class="library-path-list"></div><button class="secondary-button add-path-button" id="addLibraryPathBtn" type="button">添加音乐目录</button></section><section class="settings-pane" data-settings-pane="runtime" hidden><p class="dialog-help">当前运行端口：<strong id="serverPortValue">--</strong></p><p class="dialog-help">修改端口后，请停止并重新启动 fnAudio。端口被占用时应用将无法启动，请在应用中心设置中更换端口。</p></section><section class="settings-pane metadata-settings-pane" data-settings-pane="metadata" hidden><label class="metadata-toggle"><input id="metadataEnabledInput" type="checkbox"><span>启用后台元数据补全</span></label><label class="metadata-toggle"><input id="metadataTagWriteEnabledInput" type="checkbox"><span>将补全信息写入歌曲 Tag</span></label><p class="dialog-help">两项默认关闭。后台补全关闭时不会自动抓取；Tag 写回关闭时只使用缓存，不修改歌曲文件。</p><div class="metadata-settings-grid"><label><span>删除缓存宽限天数</span><input id="metadataGraceDaysInput" type="number" min="0" max="90" value="7"></label></div><div class="metadata-settings-actions"><button class="secondary-button" id="refreshMetadataBtn" type="button">重新补全元数据</button></div><p class="dialog-help" id="metadataStatusText">正在读取后台状态...</p></section><section class="settings-pane" data-settings-pane="dlna" hidden><p class="dialog-help">查看 DLNA 播放设备访问 fnAudio 服务时留下的兼容性记录。</p><button class="secondary-button" id="dlnaDiagnosticsBtn" type="button">DLNA 兼容性记录</button></section><p class="dialog-help" id="folderSaveStatus"></p><button class="secondary-button settings-save" id="chooseFolderBtn">保存设置</button></dialog>
   <dialog id="dlnaDiagnosticsDialog"><div class="dialog-head"><h2>DLNA 兼容性记录</h2><button class="icon-button" id="closeDlnaDiagnosticsDialog">×</button></div><p class="dialog-help" id="dlnaDiagnosticsSummary"></p><div class="diagnostics-list" id="dlnaDiagnosticsList"></div><button class="secondary-button" id="refreshDlnaDiagnosticsBtn" type="button">刷新记录</button></dialog>
   <dialog id="playlistDialog"><div class="dialog-head"><h2 id="playlistDialogTitle">新建播放列表</h2><button class="icon-button" id="closePlaylistDialog">×</button></div><p class="dialog-help" id="playlistDialogHelp">输入一个名字，创建后可从曲目旁边加入歌曲。</p><div class="path-entry single"><input id="playlistNameInput" placeholder="例如：夜晚听"></div><div id="playlistChoices" class="playlist-choices"></div><p class="dialog-help" id="playlistStatus"></p><button class="secondary-button" id="savePlaylistBtn">保存</button></dialog>
   <dialog id="trackActionDialog"><div class="dialog-head"><h2 id="trackActionTitle">歌曲操作</h2><button class="icon-button" id="closeTrackActionDialog">×</button></div><div id="trackActionList" class="track-action-list"></div></dialog>
@@ -103,10 +103,81 @@
     </div>
     <div class="external-share-result" id="externalShareResult" hidden><strong>外部链接已创建</strong><input id="externalShareUrl" type="text" readonly aria-label="外部链接"><p id="externalSharePasswordResult" hidden></p><div class="external-share-footer"><button class="secondary-button" id="openExternalShareDetails" type="button">文件详情</button><button class="primary-button" id="copyExternalShare" type="button">复制链接</button></div></div>
   </dialog>
+  <dialog id="deleteTrackDialog" class="native-delete-dialog">
+    <div class="native-delete-title">
+      <span class="native-delete-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6"/></svg></span>
+      <h2 id="deleteTrackTitle">确定删除吗？</h2>
+    </div>
+    <p id="deleteTrackDescription" class="native-delete-description">删除后，可在回收站中恢复。</p>
+    <p id="deleteTrackStatus" class="native-delete-status" aria-live="polite"></p>
+    <div class="native-delete-footer">
+      <button id="deleteTrackPermanently" class="native-delete-outline" type="button">彻底删除</button>
+      <div class="native-delete-primary-actions">
+        <button id="cancelDeleteTrack" class="native-delete-cancel" type="button">取消</button>
+        <button id="moveTrackToTrash" class="native-delete-confirm" type="button">移入回收站</button>
+      </div>
+    </div>
+  </dialog>
   <div id="trackContextMenu" class="track-context-menu" role="menu" hidden></div>
   <dialog id="columnsDialog"><div class="dialog-head"><h2>显示列</h2><button class="icon-button" id="closeColumnsDialog" title="关闭" aria-label="关闭">×</button></div><p class="dialog-help" id="columnDialogHelp">标题列也可以隐藏。点击表头可按支持的字段排序。</p><div class="column-choice-list" id="columnChoiceList"></div><div class="column-dialog-footer"><button class="secondary-button" id="resetColumnsBtn" type="button">恢复默认</button><button class="secondary-button" id="saveColumnsBtn" type="button">保存</button></div></dialog>
   <script src="view_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="track_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="track_table_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="queue_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="lru_cache.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="album_metadata_cache.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="item_cache.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="item_negative_cache.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="item_lookup.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="item_hydration_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="item_hydration_request.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_item_request_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="batch_request_pool.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_page_plan.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_pager_visibility.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_pager_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_page_merge.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_response_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="library_render_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="library_row_signature_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_snapshot_reuse_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_page_snapshot_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="metadata_row_patch_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_page_size_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="creator_view_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="user_media_state_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="lyrics_parse_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="metadata_response_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="response_json_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="playback_target_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="library_track_filter_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_root_label_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_query_params.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_reference_items.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="track_search_text.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="device_target_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="device_caps_presentation.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="ui_sync_scheduler.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="cover_load_scheduler.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="shuffle_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="repeat_mode_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="track_sort_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_sort_options_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="folder_label_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="host_privacy_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="host_playback_session.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_response_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_status_refresh_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="visible_metadata_prefetch_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="ui_metrics_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_metadata_merge_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_empty_response_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="metadata_projection_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="metadata_candidate_presentation_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_load_key.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_page_cursor_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="access_profile_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_full_list_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="app.js?v=__FNAUDIO_ASSET_BUILD__"></script>
 </body>
 </html>

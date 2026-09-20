@@ -1,0 +1,15 @@
+const fs = require("fs");
+const vm = require("vm");
+const path = require("path");
+const source = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "user_media_state_policy.js"), "utf8");
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioUserMediaStatePolicy;
+if (!policy) throw new Error("user media state policy was not exported");
+const normalized = policy.normalize({ favorites: [1, "1", ""], playlists: [{ id: 2, name: "Mix", trackIds: [3, 3, "4"] }] });
+if (normalized.favorites.join(",") !== "1" || normalized.playlists[0].trackIds.join(",") !== "3,4") throw new Error("normalization failed");
+const delta = policy.changes({ favorites: ["1"], playlists: normalized.playlists }, { favorites: ["1", "5"], playlists: [] });
+if (delta.favorites_add.join(",") !== "5" || delta.playlist_delete.join(",") !== "2") throw new Error("delta calculation failed");
+const merged = policy.apply({ favorites: ["1"], playlists: [] }, delta);
+if (merged.favorites.join(",") !== "1,5") throw new Error("delta application failed");
+console.log("User media state policy regression checks passed.");

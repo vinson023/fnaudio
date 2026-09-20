@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from summary_values import nonnegative_int
+
 
 ERROR_DETAILS = {
     "source_missing": ("media", "error", False, "restore_or_rescan_source"),
@@ -140,7 +142,10 @@ def empty_mpd_error_summary() -> Dict[str, Any]:
 
 
 def classify_mpd_log_errors(log_text: str, limit: int = 20) -> Dict[str, Any]:
-    limit = max(1, min(100, int(limit or 20)))
+    # `int(limit)` raised on a non-numeric value, and this feeds a diagnostics
+    # summary: a bad limit must shrink the report, never break it.  `or 20` stays
+    # first so zero keeps meaning "unset", exactly as before.
+    limit = max(1, min(100, nonnegative_int(limit or 20, 20, maximum=100)))
     lines = str(log_text or "").splitlines()[-max(200, limit * 50):]
     records = {}
     by_category = {}
@@ -183,10 +188,32 @@ def classify_mpd_log_errors(log_text: str, limit: int = 20) -> Dict[str, Any]:
     return result
 
 
+def _error_items(summary: Any) -> list:
+    """Return a playback-error summary's records as plain dicts.
+
+    Both health projections below run while the HTTP layer is building a
+    response, and the summary can be a live mapping owned by the device monitor
+    thread, so nothing is read through a caller-supplied accessor: the mapping
+    must be a real ``dict``, ``items`` must be a real ``list``, every record is
+    copied out with ``dict()`` (which for a dict subclass takes the stored
+    values without calling its overridden ``get``) and read back as plain data.
+    The list is bounded by ``classify_mpd_log_errors`` (at most 100 records).
+    """
+    if not isinstance(summary, dict):
+        return []
+    try:
+        items = summary.get("items")
+    except Exception:
+        return []
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
 def legacy_decoder_error_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     items = [
-        dict(item)
-        for item in summary.get("items") or []
+        item
+        for item in _error_items(summary)
         if item.get("domain") in ("media", "decoder", "transport")
     ]
     last = items[-1] if items else {}
@@ -199,8 +226,16 @@ def legacy_decoder_error_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def health_error_category(summary: Dict[str, Any]) -> str:
-    """Return the latest severe playback error suitable for service health."""
-    for item in reversed(list((summary or {}).get("items") or [])):
+    """Return the latest severe playback error suitable for service health.
+
+    Producer shape (audited 2026-09-18): ``classify_mpd_log_errors`` is the only
+    writer of ``items``, and each of its records carries ``severity`` alongside
+    ``category``.  ``MpdService`` keeps a rolled-up ``last_category`` state that
+    has no ``items`` list at all, so that shape reports no category here instead
+    of guessing one from a field that no longer describes the latest *severe*
+    failure.
+    """
+    for item in reversed(_error_items(summary)):
         if str(item.get("severity") or "").lower() == "error":
             return str(item.get("category") or "")
     return ""

@@ -4,14 +4,20 @@ PYTHON_BIN="/var/apps/python312/target/bin/python3"
 "${PYTHON_BIN}" - <<'PY'
 import json
 import os
+import tempfile
 
 appdest = os.environ.get("TRIM_APPDEST", "")
 pkgetc = os.environ.get("TRIM_PKGETC", "")
+if not appdest or not pkgetc:
+    raise RuntimeError("fnAudio runtime paths are unavailable")
 config_path = os.path.join(pkgetc, "config.json")
 port = 53199
 try:
     with open(config_path, encoding="utf-8") as fh:
-        port = int(json.load(fh).get("server_port") or 53199)
+        candidate = json.load(fh).get("server_port")
+        port = int(candidate) if isinstance(candidate, int) and not isinstance(candidate, bool) else 53199
+        if port < 1024 or port > 65535:
+            port = 53199
 except Exception:
     port = 53199
 
@@ -28,12 +34,19 @@ payload = [{
 }]
 for rel in ("wizard/config", "target/wizard/config"):
     target = os.path.join(appdest, rel)
+    directory = os.path.dirname(target)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".config.", dir=directory)
     try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w", encoding="utf-8") as fh:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.chmod(target, 0o644)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, target)
     except Exception:
-        pass
+        try: os.unlink(temporary)
+        except OSError: pass
+        raise
 PY
-exit 0
+exit $?

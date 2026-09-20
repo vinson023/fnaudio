@@ -26,11 +26,17 @@ assert.match(app, /virtualKeyboard\.overlaysContent = true/);
 assert.match(app, /function setMobileSearchFocusState\(active\)/);
 assert.match(app, /document\.body\.classList\.toggle\("mobile-search-active", enabled\)/);
 assert.match(app, /function updateNowMarquee\(\)\s*\{\s*if \(document\.body\.classList\.contains\("mobile-search-active"\)\) return;/);
+assert.match(app, /const nodes = \["nowTitle", "nowArtist"\]\.map\(id => \$\(id\)\)[\s\S]*?const distances = nodes\.map\([\s\S]*?distances\.forEach\(/, "Marquee must batch both layout reads before any style write");
+assert.match(app, /setStyleVarIfChanged\(node, "--marquee-distance", value\)/, "An unchanged marquee distance must not touch style during the renderer poll");
+assert.match(app, /function setStyleVarIfChanged\(node, name, value\) \{\s*if \(!node \|\| !node\.style\) return;/, "Style-variable writes need the same missing-node guard as text writes");
 assert.match(app, /function updateMobilePagerVisibility\(\)\s*\{\s*if \(document\.body\.classList\.contains\("mobile-search-active"\)\) return;/);
 assert.match(app, /mobileSearchInput\.addEventListener\("focus", \(\) => setMobileSearchFocusState\(true\)\)/);
 assert.match(app, /mobileSearchInput\.addEventListener\("blur", \(\) => setMobileSearchFocusState\(false\)\)/);
 assert.doesNotMatch(app, /window\.addEventListener\("resize", setMobileSearchFocusState/);
 assert.doesNotMatch(app, /actionButton\("显示歌词", "lyrics"\)/);
+assert.match(index, /id="deleteTrackDialog" class="native-delete-dialog"/);
+assert.match(index, /id="moveTrackToTrash"[^>]*>移入回收站<\/button>/);
+assert.match(index, /id="deleteTrackPermanently"[^>]*>彻底删除<\/button>/);
 assert.match(app, /if \(pages <= 1\) return "";/);
 assert.match(app, /function updateMobilePagerVisibility\(\)/);
 
@@ -57,5 +63,8 @@ assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none
 assert.doesNotMatch(css, /body\.mobile-search-active \.content\{height:calc\(100dvh - 60px\)!important/);
 assert.match(css, /body\.mobile-search-active \.now-playing \.is-overflowing\{animation-play-state:paused!important;/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
+assert.match(css, /#favoriteCurrentBtn:not\(\.active-control\):hover/);
+assert.match(css, /#shuffleBtn:not\(\.active-control\):hover/);
+assert.match(css, /@media \(hover:none\)/, "Touch devices must not retain a false active-looking hover state");
 
 console.log("Mobile layout regression checks passed.");

@@ -1,0 +1,20 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const source = fs.readFileSync("app/ui/item_lookup.js", "utf8");
+const context = { globalThis: {}, Array, Object, String };
+vm.runInNewContext(source, context);
+const lookup = context.globalThis.fnAudioItemLookup.lookupItem;
+const cache = new Map([["cached", { id: "cached", source: "cache" }]]);
+assert.equal(lookup("cached", cache, [], [])["source"], "cache");
+const page = { id: "page", source: "page" };
+const all = { id: "all", source: "all" };
+assert.equal(lookup("page", cache, [page], [])["source"], "page");
+assert.equal(lookup("all", cache, [], [all])["source"], "all");
+assert.equal(lookup("missing", cache, [null, "bad"], []), undefined);
+assert.equal(lookup({ toString() { throw new Error("must not stringify"); } }, cache, [], []), undefined);
+const many = Array.from({ length: 6000 }, (_, index) => ({ id: `track-${index}` }));
+assert.equal(lookup("track-4999", new Map(), [], many).id, "track-4999");
+assert.equal(lookup("track-5999", new Map(), [], many), many[5999]);
+console.log("Item lookup regression checks passed.");

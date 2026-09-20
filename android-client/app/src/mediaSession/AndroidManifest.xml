@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <queries>
+        <package android:name="com.trim.app" />
+    </queries>
+    <application
+        android:label="fnAudio MediaSession 测试版"
+        tools:replace="android:label">
+        <activity
+            android:name=".ui.LoginActivity"
+            tools:node="remove" />
+        <activity
+            android:name=".ui.FnOsMediaSessionActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

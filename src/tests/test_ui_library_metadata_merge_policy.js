@@ -1,0 +1,21 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const source = fs.readFileSync("app/ui/library_metadata_merge_policy.js", "utf8");
+const context = { globalThis: {}, console };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioLibraryMetadataMergePolicy;
+assert.ok(policy && typeof policy.merge === "function");
+const cache = new Map([["1", { id: "1", cover_url: "cache-cover", lyrics: "cached lyric", artist: "Cached Artist" }]]);
+const merged = policy.merge([{ id: "1", title: "Song", cover_url: "", lyrics: "" }], [], cache);
+assert.equal(merged[0].cover_url, "cache-cover");
+assert.equal(merged[0].lyrics, "cached lyric");
+assert.equal(merged[0].artist, "Cached Artist");
+const explicit = policy.merge([{ id: "1", cover_url: "server-cover", artist: "Server Artist" }], [], cache);
+assert.equal(explicit[0].cover_url, "server-cover");
+assert.equal(explicit[0].artist, "Server Artist");
+const sourceFallback = policy.merge([{ id: "1", metadata_source: {}, cover_url: "" }], [], new Map([["1", { id: "1", metadata_source: { cover_url: "provider" }, cover_url: "cached-cover" }]]));
+assert.deepEqual(sourceFallback[0].metadata_source, { cover_url: "provider" });
+assert.equal(sourceFallback[0].cover_url, "cached-cover");
+console.log("ui library metadata merge policy regression ok");

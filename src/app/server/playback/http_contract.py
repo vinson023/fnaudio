@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, MutableMapping
 
+from playback_event_presentation import playback_event_payload
+from metadata_track_id_policy import normalize_track_id
+
 
 LEGACY_PLAYBACK_SUCCESSORS = {
     "/api/player/state": "/api/playback/queue",
@@ -15,30 +18,40 @@ LEGACY_PLAYBACK_SUCCESSORS = {
 
 
 def target_kind(target_id: Any) -> str:
-    value = str(target_id or "local")
+    value = _target_text(target_id)
     if value in ("", "local", "browser"):
         return "browser"
-    if value.startswith("mpd:"):
+    if value == "mpd" or value.startswith("mpd:"):
         return "mpd"
-    if value.startswith("dac:"):
+    if value == "alsa" or value.startswith("dac:"):
         return "alsa"
     return "dlna_push"
 
 
 def normalize_target_id(target_id: Any) -> str:
-    value = str(target_id or "local")
+    value = _target_text(target_id)
     return "local" if target_kind(value) == "browser" else value
+
+
+def _target_text(value: Any) -> str:
+    """Keep target identities textual and bounded without coercing objects."""
+    if not isinstance(value, str):
+        return "local"
+    value = value.strip()
+    return value[:128] or "local"
 
 
 def normalize_queue_tracks(source: Any) -> List[Dict[str, Any]]:
     tracks = []
     for item in source if isinstance(source, list) else []:
         if isinstance(item, dict):
-            track_id = str(item.get("id") or item.get("track_id") or "").strip()
+            track_id = normalize_track_id(item.get("id"))
+            if not track_id:
+                track_id = normalize_track_id(item.get("track_id"))
             if track_id:
                 tracks.append(item)
             continue
-        track_id = str(item or "").strip()
+        track_id = normalize_track_id(item)
         if track_id:
             tracks.append({"id": track_id})
     return tracks
@@ -62,54 +75,30 @@ def legacy_control_payload(payload: Mapping[str, Any], default_target_id: Any = 
 
 
 def apply_legacy_player_state(payload, legacy_state: MutableMapping[str, Any], playback_core):
+    playing = payload.get("playing", legacy_state.get("playing", False))
+    if not isinstance(playing, bool):
+        playing = legacy_state.get("playing", False)
+        if not isinstance(playing, bool):
+            playing = False
     legacy_state.update(
         {
             "queue": payload.get("queue", legacy_state.get("queue", [])),
             "current": payload.get("current", legacy_state.get("current")),
-            "playing": payload.get("playing", legacy_state.get("playing", False)),
+            "playing": playing,
         }
     )
     core_state = playback_core.sync_frontend(payload)
     return {"ok": True, "state": dict(legacy_state), "core": core_state.to_dict()}
 
 
-def legacy_response_headers(path: str) -> Dict[str, str]:
-    successor = LEGACY_PLAYBACK_SUCCESSORS.get(str(path or ""))
+def legacy_response_headers(path: Any) -> Dict[str, str]:
+    if not isinstance(path, str):
+        return {}
+    successor = LEGACY_PLAYBACK_SUCCESSORS.get(path)
     if not successor:
         return {}
     return {
         "Deprecation": "true",
         "Link": '<%s>; rel="successor-version"' % successor,
-        "X-fnAudio-Deprecated-API": str(path),
-    }
-
-
-def playback_event_payload(core: Mapping[str, Any], requested_target: Any = "") -> Dict[str, Any]:
-    active_target = str(core.get("target_id") or "local")
-    if active_target == "browser":
-        active_target = "local"
-    try:
-        state_version = int(core.get("state_version") or 0)
-    except (TypeError, ValueError):
-        state_version = 0
-    try:
-        position = max(0.0, float(core.get("position") or 0))
-    except (TypeError, ValueError):
-        position = 0.0
-    try:
-        duration = max(0.0, float(core.get("duration") or 0))
-    except (TypeError, ValueError):
-        duration = 0.0
-    return {
-        "type": "playback",
-        "state_version": state_version,
-        "requested_target": str(requested_target or ""),
-        "target_id": active_target,
-        "target_kind": str(core.get("target_kind") or "browser"),
-        "core": core,
-        "transport": {"state": str(core.get("transport") or "STOPPED").upper()},
-        "position": {
-            "rel_seconds": position,
-            "duration_seconds": duration,
-        },
+        "X-fnAudio-Deprecated-API": path,
     }

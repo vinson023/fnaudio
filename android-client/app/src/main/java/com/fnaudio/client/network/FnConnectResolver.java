@@ -1,10 +1,13 @@
 package com.fnaudio.client.network;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.fnaudio.client.data.ConnectionProfile;
 
@@ -12,6 +15,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -21,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.RejectedExecutionException;
 
 import okhttp3.Call;
 import okhttp3.MediaType;
@@ -33,6 +39,12 @@ import okhttp3.ResponseBody;
 /** Resolves an FN ID to the NAS public endpoint. IPv6 is always preferred. */
 public final class FnConnectResolver {
     private static final String TAG = "FnConnect";
+    private static final int MAX_RESPONSE_BYTES = 512 * 1024;
+    private static final int MAX_HOSTS_PER_FAMILY = 64;
+    private static final int MAX_HOST_CHARS = 255;
+    private static final long DIRECT_PROBE_BUDGET_MS = 8000L;
+    private static final int DIRECT_PROBE_TIMEOUT_MS = 1800;
+    public enum Mode { AUTO, PUBLIC, RELAY }
     public interface Callback {
         void onResolved(ConnectionProfile profile);
         void onError(String message);
@@ -41,11 +53,40 @@ public final class FnConnectResolver {
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private final Handler main = new Handler(Looper.getMainLooper());
     private final OkHttpClient client = new OkHttpClient.Builder().build();
+    @Nullable private final FnConnectRelayConfigClient relayConfigClient;
+    @Nullable private final TppsTunnel tunnel;
+    private final Object callLock = new Object();
+    private Call activeCall;
+    @Nullable private Socket activeProbeSocket;
+    private long callGeneration;
+    private boolean closed;
+
+    public FnConnectResolver() {
+        this(null);
+    }
+
+    public FnConnectResolver(@Nullable Context context) {
+        relayConfigClient = context == null ? null : new FnConnectRelayConfigClient(client);
+        tunnel = context == null ? null : TppsTunnel.get(context);
+    }
 
     public void resolve(String rawFnId, Callback callback) {
+        resolve(rawFnId, Mode.AUTO, callback);
+    }
+
+    public void resolve(String rawFnId, Mode mode, Callback callback) {
         String fnId = rawFnId == null ? "" : rawFnId.trim().toLowerCase(java.util.Locale.ROOT);
+        // Reserve the request generation before constructing the request. A
+        // caller can issue two resolves concurrently; the later invocation
+        // must remain authoritative even if the earlier thread is delayed
+        // while building its payload or Call object.
+        final long generation = replaceActiveWork(null);
+        if (generation < 0L) {
+            main.post(() -> callback.onError("FN Connect 解析器已关闭"));
+            return;
+        }
         if (!fnId.matches("[a-z0-9-]{3,64}")) {
-            callback.onError("FN ID 格式不正确");
+            deliver(generation, () -> callback.onError("FN ID 格式不正确"));
             return;
         }
         JSONObject payload = new JSONObject();
@@ -60,36 +101,219 @@ public final class FnConnectResolver {
                 .header("fn-sign", fnSign)
                 .header("authx", "nonce=" + nonce + "&timestamp=" + timestamp + "&sign=" + authDigest)
                 .post(RequestBody.create(body, JSON)).build();
-        client.newCall(request).enqueue(new okhttp3.Callback() {
+        Call call = client.newCall(request);
+        if (!attachActiveCall(call, generation)) {
+            return;
+        }
+        try {
+            call.enqueue(new okhttp3.Callback() {
             @Override public void onFailure(@NonNull Call call, @NonNull IOException error) {
-                fail(callback, "无法解析 FN ID：" + readable(error));
+                finish(call, generation, () -> callback.onError("无法解析 FN ID：" + readable(error)));
             }
 
             @Override public void onResponse(@NonNull Call call, @NonNull Response response) {
+                if (!isActive(call, generation)) {
+                    response.close();
+                    return;
+                }
                 try (Response closeable = response) {
                     ResponseBody responseBody = closeable.body();
-                    String responseText = responseBody == null ? "" : responseBody.string();
+                    String responseText = readBoundedText(responseBody, MAX_RESPONSE_BYTES);
                     if (!closeable.isSuccessful()) {
-                        fail(callback, "FN Connect 解析失败（HTTP " + closeable.code() + "）");
+                        finish(call, generation, () -> callback.onError("FN Connect 解析失败（HTTP " + closeable.code() + "）"));
                         return;
                     }
                     JSONObject root = new JSONObject(responseText);
                     JSONObject data = root.optJSONObject("data");
                     if (data == null) data = root;
-                    ConnectionProfile resolved = choose(fnId, data);
+                    if (mode == Mode.RELAY) {
+                        if (relayConfigClient != null && tunnel != null) {
+                            beginRelay(call, generation, fnId, null, callback);
+                        } else {
+                            finish(call, generation, () -> callback.onError("当前环境不支持 FN Connect P2P 中继"));
+                        }
+                        return;
+                    }
+                    ConnectionProfile resolved = choose(fnId, data, generation);
                     if (resolved != null) {
-                        main.post(() -> callback.onResolved(resolved));
+                        finish(call, generation, () -> callback.onResolved(resolved));
                     } else {
-                        fail(callback, "FN Connect 未发现可直连的公网 IPv6 或 IPv4 地址");
+                        ConnectionProfile fallback = fallback(fnId, data);
+                        if (mode == Mode.AUTO && relayConfigClient != null && tunnel != null) {
+                            beginRelay(call, generation, fnId, fallback, callback);
+                        } else if (fallback != null) {
+                            finish(call, generation, () -> callback.onResolved(fallback));
+                        } else {
+                            finish(call, generation, () -> callback.onError("FN Connect 未发现可用的公网地址或中继"));
+                        }
                     }
                 } catch (Exception error) {
-                    fail(callback, "FN Connect 返回数据无法识别");
+                    finish(call, generation, () -> callback.onError("FN Connect 返回数据无法识别"));
                 }
+            }
+            });
+        } catch (RejectedExecutionException error) {
+            finish(call, generation, () -> callback.onError("FN Connect 解析器已关闭"));
+        }
+    }
+
+    private static String readBoundedText(@Nullable ResponseBody body, int maxBytes) throws IOException {
+        if (body == null || maxBytes <= 0) throw new IOException("empty response body");
+        long declared = body.contentLength();
+        if (declared > maxBytes) throw new IOException("response body is too large");
+        InputStream input = body.byteStream();
+        ByteArrayOutputStream output = new ByteArrayOutputStream(
+                (int) Math.min(Math.max(declared, 0L), maxBytes));
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        int count;
+        while ((count = input.read(buffer)) != -1) {
+            if (count == 0) continue;
+            if (count > maxBytes - total) throw new IOException("response body is too large");
+            output.write(buffer, 0, count);
+            total += count;
+        }
+        return output.toString(java.nio.charset.StandardCharsets.UTF_8.name());
+    }
+
+    public void cancel() {
+        replaceActiveWork(null);
+    }
+
+    /** Replaces all phases of one resolve request as one cancellation domain. */
+    private long replaceActiveWork(@Nullable Call replacement) {
+        synchronized (callLock) {
+            // Once closed, no new generation may be created. This also
+            // covers resolve() racing with close(): otherwise a post-close
+            // request could build a Call and fail silently on the shut
+            // dispatcher, while invalid input could report the wrong error.
+            if (closed) return -1L;
+            if (relayConfigClient != null) relayConfigClient.cancel();
+            if (tunnel != null) tunnel.cancel();
+            if (activeCall != null) activeCall.cancel();
+            if (activeProbeSocket != null) {
+                try { activeProbeSocket.close(); } catch (IOException ignored) { }
+                activeProbeSocket = null;
+            }
+            activeCall = replacement;
+            return ++callGeneration;
+        }
+    }
+
+    /** Attach a request only if its generation is still the latest one. */
+    private boolean attachActiveCall(Call call, long generation) {
+        synchronized (callLock) {
+            if (closed || callGeneration != generation) {
+                call.cancel();
+                return false;
+            }
+            activeCall = call;
+            return true;
+        }
+    }
+
+    public void close() {
+        synchronized (callLock) {
+            if (closed) return;
+            closed = true;
+            // Do not call cancel() after setting closed: replaceActiveWork()
+            // intentionally rejects new generations once closed, so that
+            // sequence would leave the current call, relay request, and
+            // probe socket running during Activity teardown.
+            ++callGeneration;
+            if (relayConfigClient != null) relayConfigClient.cancel();
+            if (tunnel != null) tunnel.cancel();
+            if (activeCall != null) {
+                activeCall.cancel();
+                activeCall = null;
+            }
+            if (activeProbeSocket != null) {
+                try { activeProbeSocket.close(); } catch (IOException ignored) { }
+                activeProbeSocket = null;
+            }
+        }
+        // This resolver owns a dedicated OkHttp dispatcher. Cancelling calls
+        // alone leaves its executor available after Activity destruction and
+        // repeated login/connection switches accumulate idle worker threads.
+        // Executor shutdown is non-blocking; avoid evicting the connection
+        // pool here because that can synchronously touch TLS sockets on the
+        // main thread on some Android builds.
+        client.dispatcher().executorService().shutdown();
+    }
+
+    private boolean isActive(Call call, long generation) {
+        synchronized (callLock) {
+            return activeCall == call && callGeneration == generation;
+        }
+    }
+
+    private void finish(Call call, long generation, Runnable callback) {
+        synchronized (callLock) {
+            if (activeCall != call || callGeneration != generation) return;
+            activeCall = null;
+        }
+        main.post(() -> {
+            synchronized (callLock) {
+                if (callGeneration != generation) return;
+            }
+            callback.run();
+        });
+    }
+
+    private void beginRelay(Call call, long generation, String fnId,
+                            @Nullable ConnectionProfile directFallback, Callback callback) {
+        synchronized (callLock) {
+            if (activeCall != call || callGeneration != generation) return;
+            activeCall = null;
+        }
+        relayConfigClient.fetch(fnId, new FnConnectRelayConfigClient.Callback() {
+            @Override
+            public void onConfig(JSONObject config) {
+                if (!isGenerationActive(generation)) return;
+                tunnel.start(config, new TppsTunnel.Callback() {
+                    @Override
+                    public void onReady(int port) {
+                        deliver(generation, () -> callback.onResolved(ConnectionProfile.create(
+                                "", "FN Connect - " + fnId, "127.0.0.1", port,
+                                false, false, "", "")));
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        relayFailed(generation, directFallback, callback, message);
+                    }
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                relayFailed(generation, directFallback, callback, message);
             }
         });
     }
 
-    private ConnectionProfile choose(String fnId, JSONObject data) {
+    private void relayFailed(long generation, @Nullable ConnectionProfile directFallback,
+                             Callback callback, String message) {
+        Log.w(TAG, message);
+        deliver(generation, () -> {
+            if (directFallback != null) callback.onResolved(directFallback);
+            else callback.onError(message);
+        });
+    }
+
+    private boolean isGenerationActive(long generation) {
+        synchronized (callLock) {
+            return callGeneration == generation;
+        }
+    }
+
+    private void deliver(long generation, Runnable callback) {
+        main.post(() -> {
+            if (isGenerationActive(generation)) callback.run();
+        });
+    }
+
+    private ConnectionProfile choose(String fnId, JSONObject data, long generation) {
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
@@ -102,44 +326,65 @@ public final class FnConnectResolver {
             collect(ipv6Hosts, network, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
-        ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort);
+        long deadlineElapsedRealtime = SystemClock.elapsedRealtime() + DIRECT_PROBE_BUDGET_MS;
+        ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, generation, deadlineElapsedRealtime);
         if (ipv6 != null) return ipv6;
-        ConnectionProfile ipv4 = firstReachable(fnId, ipv4Hosts, false, httpPort, httpsPort);
+        ConnectionProfile ipv4 = firstReachable(fnId, ipv4Hosts, false, httpPort, httpsPort, generation, deadlineElapsedRealtime);
         if (ipv4 != null) return ipv4;
         return null;
     }
 
+    @Nullable
+    private ConnectionProfile fallback(String fnId, JSONObject data) {
+        JSONObject ports = data.optJSONObject("port");
+        int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
+        int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
+        Set<String> ipv6Hosts = new LinkedHashSet<>();
+        Set<String> ipv4Hosts = new LinkedHashSet<>();
+        collect(ipv6Hosts, data, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
+        collect(ipv4Hosts, data, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
+        JSONObject network = data.optJSONObject("network");
+        if (network != null) {
+            collect(ipv6Hosts, network, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
+            collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
+        }
+        ConnectionProfile ipv6 = firstPublished(fnId, ipv6Hosts, true, httpPort, httpsPort);
+        return ipv6 != null ? ipv6 : firstPublished(fnId, ipv4Hosts, false, httpPort, httpsPort);
+    }
+
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,
-                                             int httpPort, int httpsPort) {
+                                             int httpPort, int httpsPort, long generation,
+                                             long deadlineElapsedRealtime) {
         // Keep the service order supplied by FN Connect. A device can expose
         // multiple IPv6 addresses (for example different WAN prefixes); each
         // is probed before falling back to IPv4.
-        Endpoint fallbackEndpoint = null;
-        String fallbackHost = "";
         for (String rawHost : hosts) {
+            if (!isGenerationActive(generation)) return null;
+            long remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
+            if (remainingMs <= 0L) return null;
             String host = normalizeHost(rawHost);
             if (host.isEmpty() || isIpv6(host) != ipv6) continue;
-            if (fallbackHost.isEmpty()) {
-                fallbackHost = host;
-                fallbackEndpoint = new Endpoint(httpPort, false);
-            }
             for (Endpoint endpoint : endpoints(httpPort, httpsPort)) {
-                if (!isReachable(host, endpoint.port)) continue;
+                remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
+                if (remainingMs <= 0L) return null;
+                int timeoutMs = (int) Math.min(DIRECT_PROBE_TIMEOUT_MS, Math.max(1L, remainingMs));
+                if (!isReachable(host, endpoint.port, generation, timeoutMs)) continue;
                 Log.i(TAG, ipv6 ? "resolved reachable public IPv6 endpoint" : "resolved reachable public IPv4 endpoint");
                 return ConnectionProfile.create("", "FN Connect - " + fnId, host, endpoint.port,
                         endpoint.https, false, "", "");
             }
         }
-        // fnos.net is the authority for FN Connect endpoint discovery. A
-        // short local TCP probe is useful for ranking addresses, but must not
-        // turn a valid published IPv6 address into "no address": some mobile
-        // networks delay the first IPv6 SYN or apply a transient power-save
-        // policy. Keep the first official candidate and let fnOS login report
-        // a real connection error if it ultimately cannot be reached.
-        if (!fallbackHost.isEmpty() && fallbackEndpoint != null) {
-            Log.i(TAG, ipv6 ? "using official public IPv6 fallback endpoint" : "using official public IPv4 fallback endpoint");
-            return ConnectionProfile.create("", "FN Connect - " + fnId, fallbackHost,
-                    fallbackEndpoint.port, fallbackEndpoint.https, false, "", "");
+        return null;
+    }
+
+    private ConnectionProfile firstPublished(String fnId, Set<String> hosts, boolean ipv6,
+                                              int httpPort, int httpsPort) {
+        for (String rawHost : hosts) {
+            String host = normalizeHost(rawHost);
+            if (host.isEmpty() || isIpv6(host) != ipv6) continue;
+            Endpoint endpoint = endpoints(httpPort, httpsPort).get(0);
+            return ConnectionProfile.create("", "FN Connect - " + fnId, host,
+                    endpoint.port, endpoint.https, false, "", "");
         }
         return null;
     }
@@ -157,11 +402,27 @@ public final class FnConnectResolver {
         Endpoint(int port, boolean https) { this.port = port; this.https = https; }
     }
 
-    private boolean isReachable(String host, int port) {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), 1800);
-            return true;
-        } catch (Exception ignored) { return false; }
+    private boolean isReachable(String host, int port, long generation) {
+        return isReachable(host, port, generation, DIRECT_PROBE_TIMEOUT_MS);
+    }
+
+    private boolean isReachable(String host, int port, long generation, int timeoutMs) {
+        Socket socket = new Socket();
+        try {
+            synchronized (callLock) {
+                if (callGeneration != generation) return false;
+                activeProbeSocket = socket;
+            }
+            socket.connect(new InetSocketAddress(host, port), Math.max(1, timeoutMs));
+            return isGenerationActive(generation);
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            synchronized (callLock) {
+                if (activeProbeSocket == socket) activeProbeSocket = null;
+            }
+            try { socket.close(); } catch (IOException ignored) { }
+        }
     }
 
     private static boolean isIpv6(String host) {
@@ -181,20 +442,35 @@ public final class FnConnectResolver {
     private static void collect(Set<String> hosts, JSONObject object, String... keys) {
         for (String key : keys) {
             Object value = object.opt(key);
-            if (value instanceof String && !((String) value).trim().isEmpty()) hosts.add(((String) value).trim());
+            if (value instanceof String && hosts.size() < MAX_HOSTS_PER_FAMILY) {
+                String host = ((String) value).trim();
+                if (!host.isEmpty() && host.length() <= MAX_HOST_CHARS) hosts.add(host);
+            }
             if (value instanceof JSONArray) for (int i = 0; i < ((JSONArray) value).length(); i++) {
-                String host = ((JSONArray) value).optString(i).trim();
-                if (!host.isEmpty()) hosts.add(host);
+                if (hosts.size() >= MAX_HOSTS_PER_FAMILY) break;
+                Object item = ((JSONArray) value).opt(i);
+                if (!(item instanceof String)) continue;
+                String host = ((String) item).trim();
+                if (!host.isEmpty() && host.length() <= MAX_HOST_CHARS) hosts.add(host);
             }
         }
     }
 
     private static int port(JSONObject object, String first, String second, int fallback) {
-        int value = object.optInt(first, object.optInt(second, fallback));
+        int value = intField(object, first, Integer.MIN_VALUE);
+        if (value == Integer.MIN_VALUE) value = intField(object, second, fallback);
         return value >= 1 && value <= 65535 ? value : fallback;
     }
 
-    private void fail(Callback callback, String message) { main.post(() -> callback.onError(message)); }
+    private static int intField(JSONObject object, String key, int fallback) {
+        Object value = object == null ? null : object.opt(key);
+        if (!(value instanceof Number)) return fallback;
+        double numeric = ((Number) value).doubleValue();
+        if (!Double.isFinite(numeric) || numeric != Math.rint(numeric)
+                || numeric < Integer.MIN_VALUE || numeric > Integer.MAX_VALUE) return fallback;
+        return (int) numeric;
+    }
+
     private static String readable(Exception error) { return error.getMessage() == null ? "网络错误" : error.getMessage(); }
     private static String md5(String value) { return digest("MD5", value); }
     private static String sha256(String value) { return digest("SHA-256", value); }

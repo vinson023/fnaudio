@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import html
+import math
 import re
 import threading
 import time
 import urllib.request
 import uuid
+from collections import deque
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Tuple
 from urllib.parse import quote, unquote
-from xml.etree import ElementTree as ET
+from resource_limits import ConcurrencyGate, ResourceLimitError
 from .network import fetch_lan, lan_http_url, optional_lan_http_url
+from .xml_policy import safe_fromstring
+from .event_payload import renderer_event_body
+from .text_policy import MAX_DLNA_ID_CHARS, dlna_text
+from library_browse_rows import materialize_browse_rows
+from library_query_spec import MAX_LIBRARY_OFFSET
 from version import APP_VERSION
 
 
@@ -18,6 +26,107 @@ AVTRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
 RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1"
 CONNECTION_MANAGER = "urn:schemas-upnp-org:service:ConnectionManager:1"
 CONTENT_DIRECTORY = "urn:schemas-upnp-org:service:ContentDirectory:1"
+MAX_EVENT_COUNTER = 10**12
+MAX_DLNA_ARGUMENT_CHARS = 8192
+MAX_DLNA_SOAP_ARGUMENTS = 32
+MAX_DLNA_ACTION_CHARS = 128
+MAX_EVENT_SUBSCRIPTIONS = 64
+# A GENA callback is validated by resolving its host, and ``getaddrinfo`` has no timeout of
+# its own.  Measured: 16 simultaneous SUBSCRIBE put 16 of the 32 HTTP workers inside the
+# resolver at once, so 32 of them would take the whole pool - the web UI, ``/api/health`` and
+# the playback controls included.  The delivery path already caches validated addresses
+# (`network.py:_cached_lan_addresses`); the accept path must not, because an answer that
+# outlives the moment it was checked is how a callback gets pointed somewhere new.  So bound
+# how many validations run at once instead of caching their results: at worst a quarter of the
+# pool, with a short queue and a wait shorter than a resolver timeout, so an overflow is
+# refused in about a second rather than stacking up behind a dead name.
+GENA_VALIDATION_LIMIT = 4
+GENA_VALIDATION_WAIT_SECONDS = 1.0
+GENA_VALIDATION_WAITERS = 4
+# The only Seek units this renderer can honour; a track or byte counter seek has
+# no meaning without a track table, so it is refused rather than guessed at.
+SEEK_UNITS = ("ABS_TIME", "REL_TIME")
+
+
+def _next_event_sequence(value: Any) -> int:
+    """Advance a GENA sequence without getting stuck at the safety ceiling."""
+    if isinstance(value, bool):
+        current = 0
+    else:
+        try:
+            current = max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            current = 0
+    return 0 if current >= MAX_EVENT_COUNTER else current + 1
+
+
+def _event_sequence(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        current = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, min(MAX_EVENT_COUNTER, current))
+
+
+def _is_count_number(value: Any, allow_string: bool = False) -> bool:
+    """The one type gate the forgiving numeric readers share.
+
+    ``bool`` is an ``int`` subclass, so a ``true`` from a device would otherwise read as
+    a count of one; every reader here rejects it the same way.  Strings belong to the one
+    reader that parses a UPnP field.  What happens *after* this gate stays per reader,
+    because their contracts differ: some clamp to ``MAX_EVENT_COUNTER``, some fall back.
+    None of them may convert a magnitude a float cannot hold, since ``float(10 ** 400)``
+    raises ``OverflowError`` rather than returning ``inf``.
+    """
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, (int, float, str) if allow_string else (int, float))
+
+
+def _saturating_increment(value: Any, amount: int = 1) -> int:
+    if not _is_count_number(value):
+        value = 0
+    try:
+        current = max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        current = 0
+    try:
+        delta = max(0, int(amount))
+    except (TypeError, ValueError, OverflowError):
+        delta = 0
+    return min(MAX_EVENT_COUNTER, current + delta)
+
+
+def _safe_count(value: Any, fallback: int = 0) -> int:
+    if not _is_count_number(value, allow_string=True):
+        return fallback
+    if isinstance(value, str) and len(value) > 64:
+        return fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    if not math.isfinite(number) or number < 0:
+        return fallback
+    return min(MAX_EVENT_COUNTER, int(number))
+
+
+def _provider_browse_page(value: Any, rows_key: str) -> Tuple[Any, int | None]:
+    """Split a browse provider result into its page rows and its stated total.
+
+    Only a Mapping that carries the container's real total next to its own row
+    list proves the read was bounded. Anything else - a plain row list from a
+    provider that ignores the page, or a Mapping whose rows or total are
+    unusable - comes back with no total, so the caller keeps owning the sort and
+    the slice exactly as it did before the browse providers learned to page.
+    """
+    if isinstance(value, Mapping) and rows_key in value:
+        total = _safe_count(value.get("count"), fallback=-1)
+        if total >= 0:
+            return value[rows_key], total
+    return value, None
 
 
 class UpnpActionError(ValueError):
@@ -31,19 +140,139 @@ def _tag_name(tag: str) -> str:
 
 
 def _duration(seconds: Any) -> str:
+    if isinstance(seconds, bool):
+        seconds = 0.0
     try:
-        seconds = max(0, int(float(seconds or 0)))
-    except (TypeError, ValueError):
+        numeric = float(seconds or 0)
+        seconds = max(0, int(numeric)) if math.isfinite(numeric) else 0
+    except (TypeError, ValueError, OverflowError):
         seconds = 0
     return "%d:%02d:%02d" % (seconds // 3600, (seconds % 3600) // 60, seconds % 60)
 
 
-def _seconds(value: Any) -> float:
-    match = re.match(r"^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$", str(value or "").strip())
+def _time_seconds(value: Any) -> float:
+    """Parse one UPnP clock into seconds, or raise ``ValueError``.
+
+    This is the strict half of the pair; :func:`_seconds` below is the projection
+    half that turns an unreadable value into ``0`` because a status response must
+    stay renderable.  A control that arrives from the network has to use the
+    strict half, otherwise a malformed argument quietly becomes position zero.
+    """
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError("invalid UPnP time")
+    match = re.match(r"^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$", value.strip())
     if not match:
-        return 0.0
+        raise ValueError("invalid UPnP time")
     hours, minutes, seconds, fraction = match.groups()
-    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + float("0." + (fraction or "0"))
+    try:
+        hours_value = int(hours)
+        minutes_value = int(minutes)
+        seconds_value = int(seconds)
+        if minutes_value > 59 or seconds_value > 59:
+            raise ValueError("invalid UPnP time")
+        result = hours_value * 3600 + minutes_value * 60 + seconds_value + float("0." + (fraction or "0"))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("invalid UPnP time") from error
+    if not math.isfinite(result) or result > 24 * 60 * 60:
+        raise ValueError("invalid UPnP time")
+    return result
+
+
+def _seconds(value: Any) -> float:
+    """The forgiving clock reader used for projections: unreadable means zero."""
+    try:
+        return _time_seconds(value)
+    except ValueError:
+        return 0.0
+
+
+def _finite(value: Any) -> float:
+    if not _is_count_number(value):
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        # `float(10 ** 400)` raises instead of producing an infinity, and the value this
+        # reader is documented to forgive is every unreadable shape, not just the
+        # non-numeric ones.  Answering the same way as `inf` and `nan` (zero) keeps a
+        # large integer in the transport state from turning a projection into a 500.
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def _seek_position(unit: Any, target: Any, position: Any, duration: Any) -> float:
+    """Resolve a networked Seek into the absolute position the renderer should get.
+
+    Two things used to go wrong here.  ``Unit`` was ignored, and every value the
+    clock parser could not read collapsed to ``0.0``, so a controller asking for
+    ``REL_TIME/+0:00:30`` (a legal thirty second fast forward) was rewound to the
+    start of the track and answered 200 for it.  An unreadable argument is now an
+    argument fault raised *before* the transport state moves.
+
+    A leading ``+`` or ``-`` offsets from the position the backend just reported.
+    An unsigned clock is absolute under either unit, because this server's own
+    control point sends ``REL_TIME`` with an unsigned time
+    (``control_point.upnp_control``) and refusing that would break fnAudio
+    controlling fnAudio.  ``ABS_TIME`` never accepts a sign: that combination is
+    self-contradictory, so it faults rather than guessing.
+    """
+    if unit is None:
+        unit = ""
+    if not isinstance(unit, str):
+        raise ValueError("invalid Seek unit")
+    normalized_unit = unit.strip().upper()
+    if normalized_unit and normalized_unit not in SEEK_UNITS:
+        raise ValueError("unsupported Seek unit")
+    if not isinstance(target, str):
+        raise ValueError("invalid Seek target")
+    text = target.strip()
+    sign = ""
+    if text[:1] in ("+", "-"):
+        sign, text = text[0], text[1:]
+        if normalized_unit == "ABS_TIME":
+            raise ValueError("signed target requires REL_TIME")
+    try:
+        seconds = _time_seconds(text)
+    except ValueError as error:
+        # Name the argument the controller actually sent: the fault string is what
+        # a controller logs, and "invalid UPnP time" would not say which field.
+        raise ValueError("invalid Seek target") from error
+    if not sign:
+        resolved = seconds
+    else:
+        base = _finite(position)
+        resolved = base + seconds if sign == "+" else base - seconds
+    resolved = max(0.0, resolved)
+    known_duration = _finite(duration)
+    if known_duration > 0:
+        resolved = min(resolved, known_duration)
+    return resolved
+
+
+def _volume(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("invalid volume")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        try:
+            number = int(value.strip())
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("invalid volume")
+    else:
+        raise ValueError("invalid volume")
+    return max(0, min(100, number))
+
+
+def _mute(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) > 32:
+        raise ValueError("invalid mute value")
+    normalized = value.strip().lower()
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError("invalid mute value")
 
 
 def _soap_envelope(service: str, action: str, values: Dict[str, Any]) -> bytes:
@@ -67,14 +296,31 @@ def soap_fault(code: int, description: str) -> bytes:
 
 
 def parse_soap_action(raw: bytes, soap_action_header: str = "") -> Tuple[str, Dict[str, str]]:
-    root = ET.fromstring(raw)
-    action_node = next((node for node in root.iter() if _tag_name(node.tag) not in ("Envelope", "Body")), None)
+    root = safe_fromstring(raw)
+    # The action is the Body's first element child. Walking the whole document
+    # makes any controller that sends a SOAP <Header> resolve to the header
+    # element instead, and every transport command then fails as
+    # "unsupported action: Header". An empty header is enough to trigger it.
+    body = next((node for node in root.iter() if _tag_name(node.tag) == "Body"), None)
+    candidates = list(body) if body is not None else [root]
+    action_node = next((node for node in candidates if _tag_name(node.tag) != "Header"), None)
     if action_node is None:
         raise ValueError("missing SOAP action")
     action = _tag_name(action_node.tag)
-    if soap_action_header and "#" in soap_action_header:
+    if isinstance(soap_action_header, str) and "#" in soap_action_header:
         action = soap_action_header.strip().strip('"').rsplit("#", 1)[-1]
-    return action, {_tag_name(child.tag): child.text or "" for child in action_node}
+    if not action or len(action) > MAX_DLNA_ACTION_CHARS:
+        raise ValueError("invalid SOAP action")
+    arguments = {}
+    for index, child in enumerate(action_node):
+        if index >= MAX_DLNA_SOAP_ARGUMENTS:
+            raise ValueError("too many SOAP arguments")
+        name = _tag_name(child.tag)
+        value = child.text or ""
+        if not name or len(name) > MAX_DLNA_ACTION_CHARS or not isinstance(value, str) or len(value) > MAX_DLNA_ARGUMENT_CHARS:
+            raise ValueError("invalid SOAP argument")
+        arguments[name] = value
+    return action, arguments
 
 
 def scpd(service: str) -> bytes:
@@ -135,7 +381,20 @@ def scpd(service: str) -> bytes:
         )
         for name, arguments in specs.items()
     )
-    state_table = "".join("<stateVariable sendEvents=\"no\"><name>%s</name><dataType>%s</dataType></stateVariable>" % (name, data_type) for name, data_type in states.items())
+    # The SCPD is a self-declaration: a control point may build its seek UI from the
+    # values listed here instead of letting the user type anything.  The list is read
+    # from ``SEEK_UNITS``, the very tuple ``_seek_position`` validates against, so the
+    # declaration and the handler cannot drift apart into "advertised but refused" or
+    # "accepted but undeclared".
+    allowed_values = {"A_ARG_TYPE_SeekMode": SEEK_UNITS}
+    state_table = "".join(
+        "<stateVariable sendEvents=\"no\"><name>%s</name><dataType>%s</dataType>%s</stateVariable>" % (
+            name,
+            data_type,
+            "".join("<allowedValue>%s</allowedValue>" % value for value in allowed_values.get(name, ())),
+        )
+        for name, data_type in states.items()
+    )
     return (
         '<?xml version="1.0"?><scpd xmlns="urn:schemas-upnp-org:service-1-0">'
         "<specVersion><major>1</major><minor>0</minor></specVersion><actionList>%s</actionList><serviceStateTable>%s</serviceStateTable></scpd>" % (actions, state_table)
@@ -145,44 +404,217 @@ def scpd(service: str) -> bytes:
 class DlnaEventService:
     """Small UPnP eventing implementation for renderer state changes."""
 
-    def __init__(self):
+    def __init__(self, max_workers=4, max_pending=64):
         self._lock = threading.RLock()
+        self._delivery_ready = threading.Condition(self._lock)
         self._subscriptions: Dict[str, Dict[str, Any]] = {}
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fnaudio-gena")
+        self._max_workers = self._bounded_limit(max_workers, 4, 1, 8)
+        self._max_pending = self._bounded_limit(max_pending, 64, 1, 256)
+        self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="fnaudio-gena")
+        # ThreadPoolExecutor deliberately uses an unbounded internal queue.
+        # Bound work before submit so a noisy renderer cannot retain an
+        # arbitrary number of controller notification bodies in memory.
+        self._pending_notifications = 0
+        self._active_notifications = 0
+        self._peak_notifications = 0
+        self._accepted_notifications = 0
+        self._dropped_notifications = 0
+        self._shutdown = False
+        self._validation_gate = ConcurrencyGate("gena-callback", max_waiters=GENA_VALIDATION_WAITERS)
+
+    @staticmethod
+    def _bounded_limit(value: Any, default: int, minimum: int, maximum: int) -> int:
+        if isinstance(value, bool):
+            return default
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return max(minimum, min(maximum, number))
+
+    def _hopeless_admission_reason(self) -> str:
+        """Return why a new subscription cannot be admitted, or "" when it still might.
+
+        Runs *before* the callback host is resolved.  Resolving costs a worker for as long as
+        the resolver takes, so paying for it to learn something this object already knows is
+        the waste `:22` described.  The answer must only be non-empty when refusal is
+        certain: this holds the lock for a dictionary scan and touches no I/O, and the
+        authoritative sweep and cap check still run after validation, so a race between two
+        controllers is settled by the real check rather than by this one.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if self._shutdown:
+                return "the event service is shutting down"
+            if len(self._subscriptions) < MAX_EVENT_SUBSCRIPTIONS:
+                return ""
+            if any(item.get("expires", 0) <= now for item in self._subscriptions.values()):
+                # The sweep inside the real admission path would reclaim these slots, so this
+                # request may well succeed and must still be resolved.
+                return ""
+        return "too many event subscriptions"
+
+    def _sweep_expired_locked(self, now: float) -> None:
+        """Drop lapsed leases and release the bodies still queued for them.
+
+        The caller must hold ``self._lock``.  Admission needs this on its own
+        terms: the cap counts slots, and a controller that subscribes and then
+        vanished kept its slot until some unrelated path happened to sweep, so
+        with an idle renderer and the UI closed nothing did and the table stayed
+        full of dead leases.
+        """
+        expired = [sid for sid, item in self._subscriptions.items() if item.get("expires", 0) <= now]
+        released = 0
+        for sid in expired:
+            item = self._subscriptions.pop(sid, None)
+            if item:
+                released += len(item.get("deliveries") or ())
+        if expired:
+            if released:
+                self._pending_notifications = max(0, self._pending_notifications - released)
+            self._delivery_ready.notify_all()
 
     def subscribe(self, role: str, service: str, callback: str, sid: str, timeout_header: str) -> Tuple[str, int]:
         if role != "renderer" or service not in ("avtransport", "rendering"):
             raise ValueError("eventing is not available for this service")
         timeout = self._timeout(timeout_header)
+        endpoint = ""
+        if not sid:
+            certain = self._hopeless_admission_reason()
+            if certain:
+                raise ValueError(certain)
+            # Validate the callback *before* taking the lock.  The check resolves
+            # the host, and ``socket.getaddrinfo`` has no timeout of its own: a
+            # controller naming a host on a broken resolver can block for the
+            # full resolver timeout, and this is the lock every subscription,
+            # renewal and renderer notification also needs.  Moving it out is safe
+            # because the check is a property of the URL, not of shared state.  The gate is
+            # the only thing standing between one controller's dead hostname and every other
+            # request this server can no longer answer.
+            try:
+                with self._validation_gate.slot(GENA_VALIDATION_LIMIT, GENA_VALIDATION_WAIT_SECONDS):
+                    endpoint = self._callback_url(callback)
+            except ResourceLimitError as exc:
+                # Same shape as every other rejection on this path: a reason string, which
+                # the HTTP layer turns into a 412.  A saturated validator means busy, not
+                # invalid, so the controller is free to retry.
+                raise ValueError("event callback validation is busy") from exc
         with self._lock:
             if sid:
                 item = self._subscriptions.get(sid)
-                if not item:
+                if not item or item.get("expires", 0) <= time.monotonic():
+                    if item:
+                        self._subscriptions.pop(sid, None)
+                        self._pending_notifications = max(
+                            0, self._pending_notifications - len(item.get("deliveries") or ())
+                        )
                     raise ValueError("unknown subscription")
-                item["expires"] = time.time() + timeout
+                item["expires"] = time.monotonic() + timeout
                 return sid, timeout
-            endpoint = self._callback_url(callback)
-            if len(self._subscriptions) >= 64:
+            now = time.monotonic()
+            self._sweep_expired_locked(now)
+            if len(self._subscriptions) >= MAX_EVENT_SUBSCRIPTIONS:
                 raise ValueError("too many event subscriptions")
             sid = "uuid:%s" % uuid.uuid4()
-            self._subscriptions[sid] = {"role": role, "service": service, "callback": endpoint, "expires": time.time() + timeout, "sequence": 0}
+            self._subscriptions[sid] = {
+                "role": role, "service": service, "callback": endpoint,
+                "expires": now + timeout, "sequence": 0,
+                "deliveries": deque(), "delivery_scheduled": False,
+            }
         return sid, timeout
 
     def unsubscribe(self, sid: str) -> bool:
         with self._lock:
-            return self._subscriptions.pop(str(sid or ""), None) is not None
+            removed_item = self._subscriptions.pop(str(sid or ""), None)
+            if removed_item:
+                self._pending_notifications = max(
+                    0, self._pending_notifications - len(removed_item.get("deliveries") or ())
+                )
+            removed = removed_item is not None
+            self._delivery_ready.notify_all()
+            return removed
 
     def notify_renderer(self, state: Dict[str, Any]) -> None:
         with self._lock:
-            now = time.time()
-            expired = [sid for sid, item in self._subscriptions.items() if item["expires"] <= now]
-            for sid in expired:
-                self._subscriptions.pop(sid, None)
+            if self._shutdown:
+                return
+            now = time.monotonic()
+            self._sweep_expired_locked(now)
             subscriptions = [(sid, dict(item)) for sid, item in self._subscriptions.items()]
         for sid, item in subscriptions:
             body = self._body(item["service"], state)
-            sequence = int(item.get("sequence") or 0)
-            self._executor.submit(self._send, sid, item, sequence, body)
+            with self._lock:
+                current = self._subscriptions.get(sid)
+                if not current or self._shutdown:
+                    continue
+                # Body construction happens outside the lock and may cross
+                # the lease boundary. Do not admit a notification for a
+                # subscription that expired while it was being built.
+                if current.get("expires", 0) <= time.monotonic():
+                    self._subscriptions.pop(sid, None)
+                    self._pending_notifications = max(
+                        0, self._pending_notifications - len(current.get("deliveries") or ())
+                    )
+                    continue
+                if self._pending_notifications >= self._max_pending:
+                    self._dropped_notifications = _saturating_increment(self._dropped_notifications)
+                    continue
+                sequence = _event_sequence(current.get("sequence"))
+                current["sequence"] = _next_event_sequence(sequence)
+                deliveries = current.get("deliveries")
+                if not isinstance(deliveries, deque):
+                    deliveries = deque()
+                    current["deliveries"] = deliveries
+                deliveries.append((item, sequence, body))
+                self._pending_notifications += 1
+                self._peak_notifications = min(MAX_EVENT_COUNTER, max(self._peak_notifications, self._pending_notifications))
+                self._accepted_notifications = _saturating_increment(self._accepted_notifications)
+                if current.get("delivery_scheduled"):
+                    continue
+                current["delivery_scheduled"] = True
+            try:
+                self._executor.submit(self._drain_subscription, sid)
+            except Exception:
+                with self._lock:
+                    current = self._subscriptions.get(sid)
+                    dropped = 0
+                    if current:
+                        deliveries = current.get("deliveries")
+                        if isinstance(deliveries, deque):
+                            dropped = len(deliveries)
+                            deliveries.clear()
+                        current["delivery_scheduled"] = False
+                    # A concurrent notification can append to this mailbox
+                    # after it is scheduled but before submit() fails. Release
+                    # every discarded body, not only the one that initiated
+                    # the submission, so admission pressure remains truthful.
+                    if dropped:
+                        self._pending_notifications = max(0, self._pending_notifications - dropped)
+                        self._dropped_notifications = _saturating_increment(self._dropped_notifications, dropped)
+
+    def snapshot(self) -> Dict[str, int]:
+        """Expose bounded eventing pressure counters without callback URLs."""
+        # Read the validator's own counters *before* taking the bus lock: the gate has its
+        # own condition, and no path may hold one while waiting on the other.
+        validating = self._validation_gate.snapshot()
+        with self._lock:
+            self._sweep_expired_locked(time.monotonic())
+            return {
+                "subscriptions": len(self._subscriptions),
+                "subscription_limit": MAX_EVENT_SUBSCRIPTIONS,
+                "workers": self._active_notifications,
+                "worker_limit": self._max_workers,
+                "pending": self._pending_notifications,
+                "pending_limit": self._max_pending,
+                "peak_pending": self._peak_notifications,
+                "accepted": self._accepted_notifications,
+                "dropped": self._dropped_notifications,
+                "validating": validating["active"],
+                "validation_limit": GENA_VALIDATION_LIMIT,
+                "validation_waiter_limit": validating["waiter_limit"],
+                "validation_waited": validating["waited"],
+                "validation_rejected": validating["rejected"],
+            }
 
     @staticmethod
     def _timeout(value: str) -> int:
@@ -198,30 +630,73 @@ class DlnaEventService:
 
     @staticmethod
     def _body(service: str, state: Dict[str, Any]) -> bytes:
-        if service == "rendering":
-            properties = "<Volume channel=\"Master\">%s</Volume><Mute channel=\"Master\">%s</Mute>" % (int(state.get("volume") or 0), "1" if state.get("muted") else "0")
-        else:
-            inner = '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/"><InstanceID val="0"><TransportState val="%s"/><CurrentTrackURI val="%s"/><CurrentTrackMetaData val="%s"/><RelativeTimePosition val="%s"/></InstanceID></Event>' % (html.escape(str(state.get("transport") or "STOPPED"), quote=True), html.escape(str(state.get("uri") or ""), quote=True), html.escape(str(state.get("metadata") or ""), quote=True), _duration(state.get("position")))
-            properties = "<LastChange>%s</LastChange>" % html.escape(inner)
-        return ('<?xml version="1.0"?><e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0"><e:property>%s</e:property></e:propertyset>' % properties).encode("utf-8")
+        return renderer_event_body(service, state)
 
-    def _send(self, sid: str, item: Dict[str, Any], sequence: int, body: bytes) -> None:
-        try:
-            request = urllib.request.Request(item["callback"], data=body, method="NOTIFY")
-            request.add_header("CONTENT-TYPE", "text/xml; charset=utf-8")
-            request.add_header("NT", "upnp:event")
-            request.add_header("NTS", "upnp:propchange")
-            request.add_header("SID", sid)
-            request.add_header("SEQ", str(sequence))
-            fetch_lan(request, timeout=3, max_bytes=4096)
+    def _drain_subscription(self, sid: str) -> None:
+        """Deliver one subscription serially without parking executor workers."""
+        while True:
             with self._lock:
                 current = self._subscriptions.get(sid)
-                if current:
-                    current["sequence"] = sequence + 1
-        except Exception:
-            # Controllers can disappear without unsubscribing. The lease will
-            # expire naturally and a failed callback must not affect playback.
-            pass
+                if self._shutdown or current is None:
+                    return
+                if current.get("expires", 0) <= time.monotonic():
+                    self._subscriptions.pop(sid, None)
+                    self._pending_notifications = max(
+                        0, self._pending_notifications - len(current.get("deliveries") or ())
+                    )
+                    self._delivery_ready.notify_all()
+                    return
+                deliveries = current.get("deliveries")
+                if not isinstance(deliveries, deque) or not deliveries:
+                    current["delivery_scheduled"] = False
+                    return
+                item, sequence, body = deliveries.popleft()
+                self._active_notifications += 1
+            try:
+                request = urllib.request.Request(item["callback"], data=body, method="NOTIFY")
+                request.add_header("CONTENT-TYPE", "text/xml; charset=utf-8")
+                request.add_header("NT", "upnp:event")
+                request.add_header("NTS", "upnp:propchange")
+                request.add_header("SID", sid)
+                request.add_header("SEQ", str(sequence))
+                fetch_lan(request, timeout=3, max_bytes=4096)
+            except Exception:
+                # Controllers can disappear without unsubscribing. The lease will
+                # expire naturally and a failed callback must not affect playback.
+                pass
+            finally:
+                with self._lock:
+                    self._active_notifications = max(0, self._active_notifications - 1)
+                    self._pending_notifications = max(0, self._pending_notifications - 1)
+                    self._delivery_ready.notify_all()
+
+    def shutdown(self, wait=True, timeout=3.0) -> None:
+        with self._lock:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            self._subscriptions.clear()
+            self._pending_notifications = 0
+            self._delivery_ready.notify_all()
+        # ``ThreadPoolExecutor.shutdown`` has no timeout. Cancel queued work
+        # first, then wait only for the requested interval so an unreachable
+        # controller cannot make service shutdown unbounded.
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        if not wait:
+            return
+        try:
+            bounded_timeout = float(timeout)
+        except (TypeError, ValueError, OverflowError):
+            bounded_timeout = 3.0
+        if not math.isfinite(bounded_timeout):
+            bounded_timeout = 3.0
+        deadline = time.monotonic() + max(0.0, bounded_timeout)
+        with self._lock:
+            while self._active_notifications > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._delivery_ready.wait(timeout=remaining)
 
 
 class DlnaProtocolService:
@@ -232,10 +707,15 @@ class DlnaProtocolService:
         base_url: Callable[[], str],
         renderer: Any,
         library_page: Callable[[Dict[str, Any]], Dict[str, Any]],
-        library_groups: Callable[[str], Iterable[Dict[str, Any]]],
+        # Browse providers take their container identity plus an optional
+        # bounded page ("limit", "offset", "sort_dir"). A provider that answers
+        # a bounded read with {"<rows>": ..., "count": ...} states the true
+        # table total; one that ignores the page still returns the whole row
+        # list and keeps the historical whole-table path.
+        library_groups: Callable[..., Any],
         media_mime: Callable[[Dict[str, Any]], str],
         library_roots: Callable[[], Iterable[Dict[str, Any]]] | None = None,
-        library_folders: Callable[[str, str], Iterable[Dict[str, Any]]] | None = None,
+        library_folders: Callable[..., Any] | None = None,
         output_capabilities: Callable[[], Dict[str, Any]] | None = None,
         library_item: Callable[[str], Dict[str, Any] | None] | None = None,
         system_update_id: Callable[[], int] | None = None,
@@ -258,6 +738,12 @@ class DlnaProtocolService:
 
     def unsubscribe(self, sid: str) -> bool:
         return self.events.unsubscribe(sid)
+
+    def event_status(self) -> Dict[str, int]:
+        return self.events.snapshot()
+
+    def shutdown(self) -> None:
+        self.events.shutdown()
 
     def description(self, role: str) -> bytes:
         is_renderer = role == "renderer"
@@ -312,7 +798,11 @@ class DlnaProtocolService:
             if action == "Browse":
                 return self._browse(args)
             if action == "GetSearchCapabilities":
-                return {"SearchCaps": "dc:title,upnp:artist,upnp:album"}
+                # Do not advertise Search until the complete ContentDirectory
+                # Search action and grammar are implemented. Strict clients
+                # such as UAPP otherwise issue Search after discovery and
+                # reject the server when it returns an unsupported-action fault.
+                return {"SearchCaps": ""}
             if action == "GetSortCapabilities":
                 return {"SortCaps": "dc:title,upnp:artist,upnp:album"}
             if action == "GetSystemUpdateID":
@@ -338,7 +828,8 @@ class DlnaProtocolService:
             if action == "Previous":
                 return self._result(self.renderer.command("previous"))
             if action == "Seek":
-                return self._result(self.renderer.command("seek", _seconds(args.get("Target"))))
+                target = _seek_position(args.get("Unit"), args.get("Target"), state["position"], state["duration"])
+                return self._result(self.renderer.command("seek", target))
             if action == "GetTransportInfo":
                 return {"CurrentTransportState": state["transport"], "CurrentTransportStatus": "OK", "CurrentSpeed": "1"}
             if action == "GetPositionInfo":
@@ -355,11 +846,11 @@ class DlnaProtocolService:
             if action == "GetVolume":
                 return {"CurrentVolume": str(state["volume"])}
             if action == "SetVolume":
-                return self._result(self.renderer.set_volume(int(float(args.get("DesiredVolume") or 100))))
+                return self._result(self.renderer.set_volume(_volume(args.get("DesiredVolume", ""))))
             if action == "GetMute":
                 return {"CurrentMute": "1" if state["muted"] else "0"}
             if action == "SetMute":
-                return self._result(self.renderer.set_mute(args.get("DesiredMute", "0") not in ("0", "false", "False")))
+                return self._result(self.renderer.set_mute(_mute(args.get("DesiredMute", "0"))))
             if action == "ListPresets":
                 return {"CurrentPresetNameList": "FactoryDefaults"}
             if action == "SelectPreset":
@@ -373,8 +864,8 @@ class DlnaProtocolService:
         return {}
 
     def _browse(self, args: Dict[str, str]) -> Dict[str, Any]:
-        object_id = str(args.get("ObjectID") or "0")
-        browse_flag = str(args.get("BrowseFlag") or "BrowseDirectChildren")
+        object_id = dlna_text(args.get("ObjectID"), MAX_DLNA_ARGUMENT_CHARS, "0")
+        browse_flag = dlna_text(args.get("BrowseFlag"), 128, "BrowseDirectChildren")
         if browse_flag not in ("BrowseMetadata", "BrowseDirectChildren"):
             raise UpnpActionError(402, "Invalid BrowseFlag")
         try:
@@ -404,34 +895,58 @@ class DlnaProtocolService:
             xml = "".join(self._container(item_id, "0", title, kind) for item_id, title, kind in page)
             total = len(entries)
         elif object_id in ("albums", "artists", "genres"):
-            groups = list(self.library_groups(object_id))
-            groups = self._sort_rows(groups, sort_key, sort_dir, lambda row, key: row.get({"title": "name", "artist": "artist", "album": "name"}.get(key, "name")) or "")
-            page = groups[start:start + requested]
-            xml = "".join(self._container("%s:%s" % (object_id, quote(str(row.get("name") or ""), safe="")), object_id, str(row.get("name") or ""), "object.container") for row in page)
-            total = len(groups)
+            page, total = self._group_page(object_id, start, requested, sort_key, sort_dir)
+            xml = "".join(
+                self._container(
+                    "%s:%s" % (object_id, quote(dlna_text(row.get("name"), MAX_DLNA_ID_CHARS), safe="")),
+                    object_id,
+                    dlna_text(row.get("name")),
+                    "object.container",
+                )
+                for row in page
+            )
         elif object_id == "folders":
-            roots = list(self.library_roots())
+            roots = materialize_browse_rows(self.library_roots())
             roots = self._sort_rows(roots, sort_key, sort_dir, lambda row, key: row.get("name") or row.get("root") or "")
             page = roots[start:start + requested]
-            xml = "".join(self._folder_container("folders-root:%s" % quote(str(row.get("root") or row.get("path") or ""), safe=""), "folders", str(row.get("name") or row.get("root") or "Music")) for row in page)
+            xml = "".join(
+                self._folder_container(
+                    "folders-root:%s" % quote(dlna_text(row.get("root") or row.get("path"), MAX_DLNA_ID_CHARS), safe=""),
+                    "folders",
+                    dlna_text(row.get("name") or row.get("root") or row.get("path"), fallback="Music"),
+                )
+                for row in page
+            )
             total = len(roots)
         elif object_id.startswith("folders-root:") or object_id.startswith("folder:"):
             try:
                 root, parent = self._folder_target(object_id)
             except ValueError:
                 raise UpnpActionError(701, "No such object")
-            folders = list(self.library_folders(parent, root))
-            folders = self._sort_rows(folders, sort_key, sort_dir, lambda row, key: row.get("name") or "")
-            page_folders = folders[start:start + requested]
-            xml = "".join(self._folder_container("folder:%s:%s" % (quote(root, safe=""), quote(str(row.get("path") or ""), safe="")), object_id, str(row.get("name") or "Folder")) for row in page_folders)
-            track_offset = max(0, start - len(folders))
+            page_folders, folder_total = self._folder_page(root, parent, start, requested, sort_key, sort_dir)
+            xml = "".join(
+                self._folder_container(
+                    "folder:%s:%s" % (
+                        quote(dlna_text(root, MAX_DLNA_ID_CHARS), safe=""),
+                        quote(dlna_text(row.get("path"), MAX_DLNA_ID_CHARS), safe=""),
+                    ),
+                    object_id,
+                    dlna_text(row.get("name"), fallback="Folder"),
+                )
+                for row in page_folders
+            )
+            track_offset = max(0, start - folder_total)
             remaining = max(0, requested - len(page_folders))
-            item_page = self.library_page({"view": "folders", "root": root, "folder": parent, "sort": sort_key, "dir": sort_dir, "limit": max(1, remaining), "offset": track_offset}) if remaining else {"items": [], "count": 0}
-            tracks = item_page.get("items") or []
+            # The track read happens even when the folder rows already fill the
+            # window, because the count it reports belongs to this container's
+            # total: a total that stops at the folder list makes a controller
+            # stop paging before the first track. Only the probe row is dropped.
+            item_page = self.library_page({"view": "folders", "root": root, "folder": parent, "sort": sort_key, "dir": sort_dir, "limit": max(1, remaining), "offset": track_offset}) or {}
+            tracks = (item_page.get("items") or []) if remaining else []
             # A folder can contain subfolders and tracks. Direct children are
             # always returned in that order, consistent with fnAudio's UI.
             xml += "".join(self._didl_item(item, object_id, filter_fields) for item in tracks)
-            total = len(folders) + int(item_page.get("count") or len(tracks))
+            total = folder_total + _safe_count(item_page.get("count"), len(tracks))
             returned = len(page_folders) + len(tracks)
         elif object_id == "music" or object_id.startswith(("albums:", "artists:", "genres:")):
             params: Dict[str, Any] = {"view": "all", "sort": sort_key, "dir": sort_dir, "limit": requested, "offset": start}
@@ -441,7 +956,7 @@ class DlnaProtocolService:
             page = self.library_page(params)
             items = page.get("items") or []
             xml = "".join(self._didl_item(item, object_id, filter_fields) for item in items)
-            total = int(page.get("count") or len(items))
+            total = _safe_count(page.get("count"), len(items))
         elif self.library_item(object_id):
             raise UpnpActionError(710, "Object is not a container")
         else:
@@ -449,18 +964,75 @@ class DlnaProtocolService:
         didl = self._didl(xml)
         return {"Result": didl, "NumberReturned": str(returned if returned is not None else min(requested, max(0, total - start))), "TotalMatches": str(total), "UpdateID": str(self._update_id())}
 
+    def _group_page(self, view: str, start: int, requested: int, sort_key: str, sort_dir: str) -> Tuple[list, int]:
+        """Read one page of group containers together with the whole-table total.
+
+        `query_library_groups` already orders by `name COLLATE NOCASE` and
+        states the full count next to the page, so the read can stop at the
+        requested window. The unbounded read has to materialize the table
+        first, and that materialization is capped: past the cap this container
+        reports a total equal to the cap and every later group becomes
+        unreachable for the controller. Two cases keep the whole-table path - a
+        provider that does not prove its read was bounded, and listing albums
+        by artist, where the group name is not the value being sorted.
+        """
+        paged = sort_key != "artist" and start <= MAX_LIBRARY_OFFSET
+        if paged:
+            rows, total = _provider_browse_page(
+                self.library_groups(view, limit=requested, offset=start, sort_dir=sort_dir),
+                "groups",
+            )
+            paged = total is not None
+        if not paged:
+            groups = self._sort_rows(
+                materialize_browse_rows(self.library_groups(view)),
+                sort_key,
+                sort_dir,
+                lambda row, key: row.get({"title": "name", "artist": "artist", "album": "name"}.get(key, "name")) or "",
+            )
+            return groups[start:start + requested], len(groups)
+        return materialize_browse_rows(rows), total
+
+    def _folder_page(self, root: str, parent: str, start: int, requested: int, sort_key: str, sort_dir: str) -> Tuple[list, int]:
+        """Read one page of subfolders together with the sibling total.
+
+        `query_library_folders` orders by the folder name - the order this
+        container has always shown, which is why the caller's sort key is not
+        forwarded - and states the sibling count next to the page. Without that
+        page the folder list is materialized first, so a directory with more
+        subfolders than the materialization cap reports a total that stops at
+        the cap and hides both the remaining folders and the tracks behind them.
+        """
+        paged = start <= MAX_LIBRARY_OFFSET
+        if paged:
+            rows, total = _provider_browse_page(
+                self.library_folders(parent, root, limit=requested, offset=start, sort_dir=sort_dir),
+                "folders",
+            )
+            paged = total is not None
+        if not paged:
+            folders = self._sort_rows(
+                materialize_browse_rows(self.library_folders(parent, root)),
+                sort_key,
+                sort_dir,
+                lambda row, key: row.get("name") or "",
+            )
+            return folders[start:start + requested], len(folders)
+        return materialize_browse_rows(rows), total
+
     @staticmethod
     def _didl(xml: str) -> str:
-        return '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">%s</DIDL-Lite>' % xml
+        return '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">%s</DIDL-Lite>' % xml
 
     @staticmethod
     def _filter_fields(value: str) -> set[str]:
-        fields = {entry.strip().lower() for entry in str(value or "*").split(",") if entry.strip()}
+        raw = dlna_text(value, MAX_DLNA_ARGUMENT_CHARS, "*")
+        fields = {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
         return fields or {"*"}
 
     @staticmethod
     def _sort_criteria(value: str) -> Tuple[str, str]:
-        raw = str(value or "").strip()
+        raw = dlna_text(value, 1024).strip()
         if not raw:
             return "title", "asc"
         criteria = [entry.strip() for entry in raw.split(",") if entry.strip()]
@@ -474,17 +1046,25 @@ class DlnaProtocolService:
 
     @staticmethod
     def _sort_rows(rows, key: str, direction: str, value):
-        return sorted(rows, key=lambda row: str(value(row, key) or "").casefold(), reverse=direction == "desc")
+        return sorted(rows, key=lambda row: dlna_text(value(row, key)).casefold(), reverse=direction == "desc")
 
     def _update_id(self) -> int:
+        raw = self.system_update_id()
+        if isinstance(raw, bool):
+            return 0
         try:
-            return max(0, min(0xFFFFFFFF, int(self.system_update_id())))
-        except (TypeError, ValueError):
+            return max(0, min(0xFFFFFFFF, int(raw)))
+        except (TypeError, ValueError, OverflowError):
             return 0
 
     @staticmethod
     def _container(item_id: str, parent_id: str, title: str, kind: str) -> str:
-        return '<container id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>%s</upnp:class></container>' % (html.escape(item_id, quote=True), html.escape(parent_id, quote=True), html.escape(title), html.escape(kind))
+        return '<container id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>%s</upnp:class></container>' % (
+            html.escape(dlna_text(item_id, MAX_DLNA_ID_CHARS), quote=True),
+            html.escape(dlna_text(parent_id, MAX_DLNA_ID_CHARS), quote=True),
+            html.escape(dlna_text(title)),
+            html.escape(dlna_text(kind)),
+        )
 
     def _metadata_for_object(self, object_id: str, filter_fields: set[str]) -> str:
         static = {
@@ -501,36 +1081,61 @@ class DlnaProtocolService:
         if object_id.startswith(("albums:", "artists:", "genres:")):
             parent, name = object_id.split(":", 1)
             decoded_name = unquote(name)
-            if not any(str(row.get("name") or "") == decoded_name for row in self.library_groups(parent)):
+            if not decoded_name or not self._group_exists(parent, decoded_name):
                 raise UpnpActionError(701, "No such object")
-            return self._container(object_id, parent, decoded_name, "object.container")
+            return self._container(
+                dlna_text(object_id, MAX_DLNA_ID_CHARS),
+                dlna_text(parent, MAX_DLNA_ID_CHARS),
+                decoded_name,
+                "object.container",
+            )
         if object_id.startswith("folders-root:") or object_id.startswith("folder:"):
             try:
                 root, folder = self._folder_target(object_id)
             except ValueError:
                 raise UpnpActionError(701, "No such object")
             if object_id.startswith("folders-root:"):
-                row = next((row for row in self.library_roots() if str(row.get("root") or row.get("path") or "") == root), None)
+                row = next((row for row in self.library_roots() if dlna_text(row.get("root") or row.get("path"), MAX_DLNA_ID_CHARS) == root), None)
                 if not row:
                     raise UpnpActionError(701, "No such object")
-                title = str(row.get("name") or root or "Music")
+                title = dlna_text(row.get("name") or root, fallback="Music")
                 parent = "folders"
             else:
                 parent_folder, _, title = folder.rpartition("/")
                 title = title or folder or "Music"
-                row = next((row for row in self.library_folders(parent_folder, root) if str(row.get("path") or "") == folder), None)
+                row = next((row for row in self.library_folders(parent_folder, root) if dlna_text(row.get("path"), MAX_DLNA_ID_CHARS) == folder), None)
                 if not row:
                     raise UpnpActionError(701, "No such object")
-                parent = "folders-root:%s" % quote(root, safe="") if not parent_folder else "folder:%s:%s" % (quote(root, safe=""), quote(parent_folder, safe=""))
+                safe_root = dlna_text(root, MAX_DLNA_ID_CHARS)
+                safe_parent = dlna_text(parent_folder, MAX_DLNA_ID_CHARS)
+                parent = "folders-root:%s" % quote(safe_root, safe="") if not parent_folder else "folder:%s:%s" % (quote(safe_root, safe=""), quote(safe_parent, safe=""))
             return self._folder_container(object_id, parent, title)
         item = self.library_item(object_id)
         if item:
             return self._didl_item(item, "music", filter_fields)
         raise UpnpActionError(701, "No such object")
 
+    def _group_exists(self, view: str, name: str) -> bool:
+        """Check one group label without listing every group.
+
+        ``library_groups(view)`` is called without a page, so it bypasses the
+        library query cache entirely and materializes the whole group table
+        through a NOCASE sort. Using it to answer "is this name known" made the
+        most expensive browse in the library run on every Browse and
+        BrowseMetadata request for a single album, artist, or genre. Groups are
+        projections of tracks, so one indexed page probe answers the same
+        question and matches the exact predicate the browse itself uses.
+        """
+        page = self.library_page({"view": view, "group": name, "limit": 1, "offset": 0})
+        return _safe_count(page.get("count") if isinstance(page, dict) else None) > 0
+
     @staticmethod
     def _folder_container(item_id: str, parent_id: str, title: str) -> str:
-        return '<container id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>object.container.storageFolder</upnp:class></container>' % (html.escape(item_id, quote=True), html.escape(parent_id, quote=True), html.escape(title))
+        return '<container id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title><upnp:class>object.container.storageFolder</upnp:class></container>' % (
+            html.escape(dlna_text(item_id, MAX_DLNA_ID_CHARS), quote=True),
+            html.escape(dlna_text(parent_id, MAX_DLNA_ID_CHARS), quote=True),
+            html.escape(dlna_text(title)),
+        )
 
     def protocol_info(self, role: str) -> str:
         mime_types = ["audio/mpeg", "audio/flac", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac"]
@@ -576,25 +1181,40 @@ class DlnaProtocolService:
     def _didl_item(self, item: Dict[str, Any], parent_id: str = "music", filter_fields: set[str] | None = None) -> str:
         fields = filter_fields or {"*"}
         include_all = "*" in fields
-        include = lambda name: include_all or name.lower() in fields
-        item_id = str(item.get("id") or "")
-        title = html.escape(str(item.get("title") or "Unknown title"))
-        artist = html.escape(str(item.get("artist") or ""))
-        album = html.escape(str(item.get("album") or ""))
+        def include(name: str) -> bool:
+            normalized = name.lower()
+            return include_all or normalized in fields or any(field.startswith(normalized + "@") for field in fields)
+        item_id = dlna_text(item.get("id"), MAX_DLNA_ID_CHARS)
+        title = html.escape(dlna_text(item.get("title"), fallback="Unknown title"))
+        artist = html.escape(dlna_text(item.get("artist")))
+        album = html.escape(dlna_text(item.get("album")))
         mime = html.escape(self.media_mime(item), quote=True)
-        resource_path = "%s/upnp/media/%s/%s" % (self.base_url(), quote(item_id, safe=""), quote(str(item.get("title") or "track")))
+        resource_path = "%s/upnp/media/%s/%s" % (self.base_url(), quote(item_id, safe=""), quote(dlna_text(item.get("title"), fallback="track")))
         uri = html.escape(resource_path, quote=True)
-        art = html.escape("%s/cover/%s" % (self.base_url(), quote(item_id, safe="")), quote=True)
+        # DMS artwork must be independently reachable by controllers. Browser
+        # cover URLs require fnOS auth, while a DLNA client only receives the
+        # DIDL URI. Serve a bounded JPEG_TN representation on the public
+        # UPnP media surface, like established DLNA servers do.
+        art = html.escape("%s/upnp/cover/%s?size=160" % (self.base_url(), quote(item_id, safe="")), quote=True)
         duration = _duration(item.get("duration"))
         resources = '<res protocolInfo="http-get:*:%s:*" duration="%s">%s</res>' % (mime, duration, uri) if include("res") or any(name.startswith("res@") for name in fields) else ""
         # Offer a separate, explicit fallback instead of changing the primary
         # resource. Renderers that support FLAC/DSD keep direct playback;
         # constrained clients may select this MP3 resource themselves.
-        if resources and str(item.get("format") or "").upper() != "MP3" and not item.get("cue_track"):
+        if resources and dlna_text(item.get("format")).upper() != "MP3" and not item.get("cue_track"):
             fallback = html.escape(resource_path + "?transcode=mp3", quote=True)
             resources += '<res protocolInfo="http-get:*:audio/mpeg:*" duration="%s">%s</res>' % (duration, fallback)
         creator_xml = "<dc:creator>%s</dc:creator>" % artist if include("dc:creator") else ""
         artist_xml = "<upnp:artist>%s</upnp:artist>" % artist if include("upnp:artist") else ""
         album_xml = "<upnp:album>%s</upnp:album>" % album if include("upnp:album") else ""
-        art_xml = "<upnp:albumArtURI>%s</upnp:albumArtURI>" % art if include("upnp:albumarturi") else ""
-        return '<item id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title>%s%s%s%s<upnp:class>object.item.audioItem.musicTrack</upnp:class>%s</item>' % (html.escape(item_id, quote=True), html.escape(parent_id, quote=True), title, creator_xml, artist_xml, album_xml, art_xml, resources)
+        art_xml = '<upnp:albumArtURI dlna:profileID="JPEG_TN">%s</upnp:albumArtURI>' % art if include("upnp:albumarturi") else ""
+        return '<item id="%s" parentID="%s" restricted="1"><dc:title>%s</dc:title>%s%s%s%s<upnp:class>object.item.audioItem.musicTrack</upnp:class>%s</item>' % (
+            html.escape(dlna_text(item_id, MAX_DLNA_ID_CHARS), quote=True),
+            html.escape(dlna_text(parent_id, MAX_DLNA_ID_CHARS), quote=True),
+            title,
+            creator_xml,
+            artist_xml,
+            album_xml,
+            art_xml,
+            resources,
+        )

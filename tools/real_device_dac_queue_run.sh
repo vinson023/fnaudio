@@ -5,7 +5,7 @@
 # Optional: FNAUDIO_DAC_TARGET=mpd:usb:... (otherwise keep the selected MPD target)
 set -eu
 
-BASE="${FNAUDIO_BASE_URL:-http://127.0.0.1:18080}"
+BASE="${FNAUDIO_BASE_URL:-http://127.0.0.1:53199}"
 LOG="${1:-/vol1/1000/fnaudio-dac-queue-run.log}"
 SNAPSHOT="${LOG}.before.json"
 AFTER="${LOG}.after.json"
@@ -24,8 +24,11 @@ restore() {
   if [ -f "$SNAPSHOT" ]; then
     printf 'restore_started=%s\n' "$(date -Iseconds)" >> "$LOG"
     if [ -n "$TARGET" ]; then
-      printf '{"action":"stop","target_id":"%s"}\n' "$TARGET" \
+      python3 - "$TARGET" <<'PY' \
         | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
+import json, sys
+print(json.dumps({"action": "stop", "target_id": sys.argv[1]}, separators=(",", ":")))
+PY
     else
       printf '{"action":"stop"}\n' \
         | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/control" >> "$LOG" || true
@@ -40,7 +43,7 @@ print(json.dumps({
     "queue": state["queue"],
     "current_id": state.get("current"),
     "repeat": state.get("repeat", "off"),
-    "shuffle": bool(state.get("shuffle")),
+    "shuffle": state.get("shuffle") if isinstance(state.get("shuffle"), bool) else False,
 }, separators=(",", ":")))
 PY
     printf '\n' >> "$LOG"
@@ -92,13 +95,22 @@ print(len(queue))
 PY
 )"
 
-printf '{"queue":%s,"current_id":"%s","repeat":"off","shuffle":false}\n' "$TEST_QUEUE" "$CURRENT" \
+python3 - "$TEST_QUEUE" "$CURRENT" <<'PY' \
   | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/queue" >> "$LOG"
+import json, sys
+print(json.dumps({"queue": json.loads(sys.argv[1]), "current_id": sys.argv[2], "repeat": "off", "shuffle": False}, separators=(",", ":")))
+PY
 printf '\n' >> "$LOG"
 if [ -n "$TARGET" ]; then
-  printf '{"target_id":"%s","track_id":"%s","position":0}\n' "$TARGET" "$CURRENT"
+  python3 - "$TARGET" "$CURRENT" <<'PY'
+import json, sys
+print(json.dumps({"target_id": sys.argv[1], "track_id": sys.argv[2], "position": 0}, separators=(",", ":")))
+PY
 else
-  printf '{"track_id":"%s","position":0}\n' "$CURRENT"
+  python3 - "$CURRENT" <<'PY'
+import json, sys
+print(json.dumps({"track_id": sys.argv[1], "position": 0}, separators=(",", ":")))
+PY
 fi | api -X POST -H 'Content-Type: application/json' --data-binary @- "$BASE/api/playback/load" >> "$LOG"
 printf '\n' >> "$LOG"
 

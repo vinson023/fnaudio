@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import socket
 import subprocess
+from process_output import check_output_bounded
 import time
 import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional
@@ -11,6 +13,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 56660
+MAX_MPD_LINE_BYTES = 256 * 1024
+MAX_MPD_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_MPD_COMMAND_BYTES = 16 * 1024 * 1024
 
 
 class MpdError(RuntimeError):
@@ -51,6 +56,13 @@ def local_file_uri(path: str) -> str:
     return "file://" + urllib.parse.quote(path)
 
 
+def _add_response_bytes(total: int, line: str) -> int:
+    total += len(line.encode("utf-8", "replace")) + 1
+    if total > MAX_MPD_RESPONSE_BYTES:
+        raise MpdError("MPD response is too large")
+    return total
+
+
 class MpdConnection:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 2.0):
         self.host = host or DEFAULT_HOST
@@ -60,12 +72,17 @@ class MpdConnection:
         self.file = None
 
     def __enter__(self) -> "MpdConnection":
-        self.sock = socket.create_connection((self.host, self.port), self.timeout)
-        self.file = self.sock.makefile("rwb", buffering=0)
-        greeting = self._readline()
-        if not greeting.startswith("OK MPD"):
-            raise MpdError("invalid MPD greeting: %s" % greeting)
-        return self
+        try:
+            self.sock = socket.create_connection((self.host, self.port), self.timeout)
+            self.file = self.sock.makefile("rwb", buffering=0)
+            greeting = self._readline()
+            if not greeting.startswith("OK MPD"):
+                raise MpdError("invalid MPD greeting: %s" % greeting)
+            return self
+        except Exception:
+            # __exit__ is not invoked when __enter__ itself fails.
+            self.__exit__(None, None, None)
+            raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
@@ -78,24 +95,68 @@ class MpdConnection:
     def _readline(self) -> str:
         if not self.file:
             raise MpdError("MPD connection is not open")
-        raw = self.file.readline()
+        # MPD responses are line-oriented but the peer controls line length.
+        # Bound the read before decoding so a malformed daemon cannot grow a
+        # Python bytes object without limit.
+        raw = self.file.readline(MAX_MPD_LINE_BYTES + 1)
         if not raw:
             raise MpdError("MPD connection closed")
+        if len(raw) > MAX_MPD_LINE_BYTES or not raw.endswith(b"\n"):
+            raise MpdError("MPD response line is too large or unterminated")
         return raw.decode("utf-8", "replace").rstrip("\n")
 
     def command(self, command: str, *args: Any) -> List[str]:
         if not self.file:
             raise MpdError("MPD connection is not open")
-        line = " ".join([command] + [quote_arg(arg) for arg in args]) + "\n"
-        self.file.write(line.encode("utf-8"))
+        self.file.write(self._command_line(command, args))
         lines: List[str] = []
+        response_bytes = 0
         while True:
             response = self._readline()
+            response_bytes = _add_response_bytes(response_bytes, response)
             if response == "OK":
                 return lines
             if response.startswith("ACK "):
                 raise MpdError(response)
             lines.append(response)
+
+    @staticmethod
+    def _command_line(command: str, args: Iterable[Any] = ()) -> bytes:
+        return (" ".join([str(command)] + [quote_arg(arg) for arg in args]) + "\n").encode("utf-8")
+
+    def command_list_ok(self, commands: Iterable[tuple[str, Iterable[Any]]]) -> List[List[str]]:
+        """Run commands in one MPD round trip and retain each response block.
+
+        Large logical queues used to issue one ``addid`` round trip per song.
+        On a 2,000-song queue that delays DAC output switching noticeably even
+        though MPD and fnAudio share localhost. ``command_list_ok`` is part of
+        the standard MPD protocol and preserves every generated song id.
+        """
+        if not self.file:
+            raise MpdError("MPD connection is not open")
+        payload = bytearray(b"command_list_ok_begin\n")
+        for command, args in commands:
+            line = self._command_line(command, args)
+            if len(payload) + len(line) + len(b"command_list_end\n") > MAX_MPD_COMMAND_BYTES:
+                raise MpdError("MPD command list is too large")
+            payload.extend(line)
+        payload.extend(b"command_list_end\n")
+        self.file.write(bytes(payload))
+        results: List[List[str]] = []
+        current: List[str] = []
+        response_bytes = 0
+        while True:
+            response = self._readline()
+            response_bytes = _add_response_bytes(response_bytes, response)
+            if response == "OK":
+                return results
+            if response.startswith("ACK "):
+                raise MpdError(response)
+            if response == "list_OK":
+                results.append(current)
+                current = []
+            else:
+                current.append(response)
 
     def pairs(self, command: str, *args: Any) -> Dict[str, Any]:
         return parse_pairs(self.command(command, *args))
@@ -108,8 +169,10 @@ class MpdConnection:
         line = "idle%s\n" % ((" " + " ".join(selected)) if selected else "")
         self.file.write(line.encode("utf-8"))
         lines: List[str] = []
+        response_bytes = 0
         while True:
             response = self._readline()
+            response_bytes = _add_response_bytes(response_bytes, response)
             if response == "OK":
                 return lines
             if response.startswith("ACK "):
@@ -178,7 +241,7 @@ def mpd_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, 
 def mpd_update_and_wait(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 8.0) -> Dict[str, Any]:
     with MpdConnection(host, port) as mpd:
         mpd.command("update")
-    deadline = time.monotonic() + max(0.2, float(timeout))
+    deadline = time.monotonic() + max(0.2, safe_float(timeout))
     while time.monotonic() < deadline:
         status = mpd_pairs("status", host=host, port=port)
         if not str(status.get("updating_db") or "").strip():
@@ -194,7 +257,7 @@ def mpd_probe(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, A
         version = ""
         if binary:
             try:
-                version = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT, timeout=2).decode("utf-8", "replace").splitlines()[0]
+                version = check_output_bounded([binary, "--version"], max_bytes=16 * 1024, timeout=2).decode("utf-8", "replace").splitlines()[0]
             except Exception:
                 version = ""
         status = mpd_status(host, port)
@@ -280,9 +343,19 @@ def mpd_replace_queue(
     selected_track_id = str(current_track_id or normalized[0]["track_id"])
     song_ids: Dict[str, str] = {}
     with MpdConnection(host, port) as mpd:
-        mpd.command("clear")
-        for entry in normalized:
-            response = mpd.command("addid", entry["uri"])
+        commands = [("clear", ())]
+        commands.extend(("addid", (entry["uri"],)) for entry in normalized)
+        commands.extend([
+            ("random", (1 if shuffle else 0,)),
+            ("repeat", (1 if str(repeat or "off").lower() in ("all", "one") else 0,)),
+            ("single", (1 if str(repeat or "off").lower() == "one" else 0,)),
+            ("consume", (0,)),
+        ])
+        responses = mpd.command_list_ok(commands)
+        add_responses = responses[1:1 + len(normalized)]
+        if len(add_responses) != len(normalized):
+            raise MpdError("MPD did not acknowledge the complete queue")
+        for entry, response in zip(normalized, add_responses):
             song_id = next(
                 (line.split(": ", 1)[1] for line in response if line.startswith("Id: ")),
                 "",
@@ -290,7 +363,6 @@ def mpd_replace_queue(
             if not song_id:
                 raise MpdError("MPD did not return a song id for %s" % entry["uri"])
             song_ids[entry["track_id"]] = song_id
-        _set_playback_modes(mpd, repeat, shuffle)
         selected_song_id = song_ids.get(selected_track_id) or next(iter(song_ids.values()))
         if play:
             mpd.command("playid", selected_song_id)
@@ -331,12 +403,14 @@ def mpd_set_playback_modes(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
 ) -> Dict[str, Any]:
+    shuffle = shuffle if isinstance(shuffle, bool) else False
     with MpdConnection(host, port) as mpd:
         _set_playback_modes(mpd, repeat, shuffle)
     return {"ok": True, "repeat": repeat, "shuffle": bool(shuffle)}
 
 
 def _set_playback_modes(mpd: MpdConnection, repeat: str, shuffle: bool) -> None:
+    shuffle = shuffle if isinstance(shuffle, bool) else False
     repeat_mode = str(repeat or "off").lower()
     mpd.command("random", 1 if shuffle else 0)
     mpd.command("repeat", 1 if repeat_mode in ("all", "one") else 0)
@@ -367,14 +441,17 @@ def mpd_control(action: str, position: Optional[float] = None, host: str = DEFAU
 
 
 def safe_float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def safe_int(value: Any) -> int:
     try:
         return int(float(value or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0

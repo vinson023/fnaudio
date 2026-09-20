@@ -1,0 +1,16 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const source = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "library_pager_presentation.js"), "utf8");
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const render = context.globalThis.fnAudioLibraryPagerPresentation.renderPager;
+assert.equal(render({ total: 10, pages: 1 }), "");
+const markup = render({ total: 101, page: 2, pages: 3, unit: "项" });
+assert.match(markup, /第 2 \/ 3 页/);
+assert.match(markup, /共 101 项/);
+assert.match(render({ total: 1, page: 99, pages: 2 }), /data-page-go="2"/);
+assert.doesNotThrow(() => render({ total: Symbol("bad"), page: Symbol("bad"), pages: Symbol("bad") }));
+assert.match(render({ total: 10 ** 20, page: 10 ** 20, pages: 10 ** 20 }), /共 100000000 首/);
+console.log("Library pager presentation regression checks passed.");

@@ -10,9 +10,13 @@ if [ -f "${TRIM_PKGETC}/config.json" ]; then
   current_server_port="$("${PYTHON_BIN}" - "${TRIM_PKGETC}/config.json" <<'PY'
 import json, sys
 try:
-    print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("server_port") or 53199))
+    candidate = json.load(open(sys.argv[1], encoding="utf-8")).get("server_port")
+    if isinstance(candidate, int) and not isinstance(candidate, bool) and 1024 <= candidate <= 65535:
+        print(candidate)
+    else:
+        print(53199)
 except Exception:
-    print("")
+    print(53199)
 PY
 )"
 fi
@@ -47,8 +51,8 @@ PY
 fi
 
 export FNAUDIO_SERVER_PORT="${server_port}"
-"${PYTHON_BIN}" - "${TRIM_PKGETC}/config.json" <<'PY'
-import json, os
+if ! "${PYTHON_BIN}" - "${TRIM_PKGETC}/config.json" <<'PY'
+import json, os, tempfile
 import sys
 config_path = sys.argv[1]
 try:
@@ -56,19 +60,48 @@ try:
         payload = json.load(fh)
 except Exception:
     payload = {"library_path": "", "library_paths": [], "server_name": "fnAudio"}
+if not isinstance(payload, dict):
+    payload = {"library_path": "", "library_paths": [], "server_name": "fnAudio"}
 payload["server_name"] = "fnAudio"
 payload["server_port"] = int(os.environ.get("FNAUDIO_SERVER_PORT") or 53199)
-with open(config_path, "w", encoding="utf-8") as fh:
-    json.dump(payload, fh, ensure_ascii=False)
+fd, temporary = tempfile.mkstemp(prefix=".config.json.", dir=os.path.dirname(config_path) or ".")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temporary, config_path)
+except Exception:
+    try: os.unlink(temporary)
+    except OSError: pass
+    raise
 PY
-chmod 600 "${TRIM_PKGETC}/config.json" 2>/dev/null || true
+then
+  echo "无法更新配置文件。" >&2
+  exit 1
+fi
+if ! chmod 600 "${TRIM_PKGETC}/config.json"; then
+  echo "无法设置配置文件权限。" >&2
+  exit 1
+fi
 # Do not rewrite manifest.service_port. The CGI proxy consumes the private
 # backend port written above through service_port.json.
 UI_ROOT="${TRIM_APPDEST}/target/ui"
 if [ ! -d "${UI_ROOT}" ] && [ -d "${TRIM_APPDEST}/ui" ]; then
   UI_ROOT="${TRIM_APPDEST}/ui"
 fi
-mkdir -p "${UI_ROOT}" 2>/dev/null || true
-printf '{"server_port":%s}\n' "${server_port}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
-chmod 644 "${UI_ROOT}/service_port.json" 2>/dev/null || true
+if ! mkdir -p "${UI_ROOT}"; then
+  echo "无法创建 UI 运行目录。" >&2
+  exit 1
+fi
+service_port_tmp="${UI_ROOT}/service_port.json.tmp.$$"
+if ! printf '{"server_port":%s}\n' "${server_port}" > "${service_port_tmp}" || ! mv -f -- "${service_port_tmp}" "${UI_ROOT}/service_port.json"; then
+  rm -f -- "${service_port_tmp}"
+  echo "无法写入 service_port.json。" >&2
+  exit 1
+fi
+if ! chmod 644 "${UI_ROOT}/service_port.json"; then
+  echo "无法设置 service_port.json 权限。" >&2
+  exit 1
+fi
 exit 0

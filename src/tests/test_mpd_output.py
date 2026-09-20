@@ -38,6 +38,36 @@ class FixedVolumeService:
 
 
 class MpdOutputTests(unittest.TestCase):
+    def test_open_preserves_backend_failure_message(self):
+        service = mock.Mock()
+        service.prepare_track_output.return_value = {"ok": True}
+        service.sync_playback_queue.return_value = {"ok": False, "message": "queue rejected"}
+        output = MpdOutput(service)
+        state = PlaybackState(target_id="mpd", target_kind="mpd")
+        track = TrackRef.from_mapping({"id": "track-1", "path": "/music/one.flac"})
+
+        with mock.patch.object(output, "start_service", return_value={"ok": True, "running": True}), mock.patch.object(
+            output, "_output_ready", return_value={"ok": True}
+        ):
+            result = output.open(track, state, {"item": track.item})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["message"], "queue rejected")
+
+    def test_open_replaces_non_finite_positions_before_native_queue(self):
+        service = mock.Mock()
+        service.prepare_track_output.return_value = {"ok": True}
+        service.sync_playback_queue.return_value = {"ok": True}
+        output = MpdOutput(service)
+        state = PlaybackState(target_id="mpd", target_kind="mpd")
+        track = TrackRef.from_mapping({"id": "cue", "path": "/music/cue.flac", "cue_track": True, "cue_start": float("inf")})
+        with mock.patch.object(output, "start_service", return_value={"ok": True, "running": True}), mock.patch.object(
+            output, "_output_ready", return_value={"ok": True}
+        ):
+            result = output.open(track, state, {"item": track.item, "position": float("nan")})
+        self.assertTrue(result["ok"])
+        self.assertEqual(service.sync_playback_queue.call_args.kwargs["start"], 0.0)
+
     @mock.patch("playback.mpd_output.mpd_update_and_wait", return_value={"ok": True, "updated": True})
     def test_native_queue_retries_once_after_mpd_database_update(self, update):
         service = QueueService()
@@ -89,6 +119,17 @@ class MpdOutputTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_category"], "mixer_unavailable")
         self.assertEqual(result["error"]["domain"], "output")
+
+    def test_capabilities_do_not_coerce_string_flags(self):
+        service = mock.Mock()
+        service.output_capabilities.return_value = {
+            "volume_control": {"available": "false"},
+            "dsd_native": "false", "native_dsd_verified": "false",
+            "dop": "false", "bitperfect": "false",
+        }
+        caps = MpdOutput(service).capabilities()
+        for key in ("volume", "native_dsd", "native_dsd_verified", "dop", "bitperfect"):
+            self.assertFalse(caps[key], key)
 
 
 if __name__ == "__main__":

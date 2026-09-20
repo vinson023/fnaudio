@@ -1,0 +1,14 @@
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const assert = require('assert');
+const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'ui', 'track_sort_policy.js'), 'utf8');
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioTrackSortPolicy;
+const rows = [{ title: '10', track_no: 2 }, { title: '2', track_no: 1 }, { title: '1', track_no: 0 }];
+assert.deepStrictEqual(policy.sort(rows, 'track_no').map(x => x.title), ['2', '10', '1']);
+assert.deepStrictEqual(policy.sort(rows, 'title').map(x => x.title), ['1', '2', '10']);
+assert.deepStrictEqual(policy.sort(rows, 'title', -1).map(x => x.title), ['10', '2', '1']);
+assert.strictEqual(policy.compare({ title: 'a' }, { title: 'b' }, 'title', { displayText: String }) < 0, true);
+console.log('Track sort policy regression checks passed.');

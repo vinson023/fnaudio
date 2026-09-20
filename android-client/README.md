@@ -1,6 +1,6 @@
 ﻿# fnAudio Android 客户端
 
-这是 fnAudio `0.2.11` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。
+这是 fnAudio `0.2.34` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。当前配套服务端版本基线为 `0.2.34`。
 
 ## 已实现
 
@@ -11,6 +11,7 @@
 - 登录后直接加载 `/cgi/ThirdParty/fnaudio/index.cgi/`，不打开 fnOS 桌面。
 - WebView 通过 `FnAudioNative` 桥把队列、播放、暂停、切歌、seek、音量、循环和随机发送给 Media3。
 - WebView 的 fnAudio 非 GET API 通过同一桥交给原生 OkHttp，统一附加 `Authorization`、`X-Fnaudio-Trim-Token` 和同源 token Cookie；普通浏览器仍使用标准 Fetch。
+- FN Connect 先探测官方公网候选，均不可达时在原生 ARM64 设备上通过签名 `/api/v1/visit/info` 配置 Tpps V2 回环隧道；中继凭据仅驻留内存，x86/非 ARM64 自动回退直连。
 - `MediaSessionService + ExoPlayer` 负责完整队列、自动下一首、通知、媒体按键、音频焦点、耳机拔出和唤醒锁。
 - HTTP、系统 CA HTTPS 和用户明确允许的自签名 HTTPS；自签名连接首次认证前固定完整证书 SHA-256，后续 WebSocket、API、媒体、封面和 WebView 必须匹配，证书变化会明确拒绝。
 - Android 返回键优先交给网页关闭对话框、侧栏、歌词和分类详情；根页面第一次返回显示退出提示，2.2 秒内第二次返回登录界面，并禁止登录页自动恢复上次连接。
@@ -58,7 +59,7 @@ $env:FNAUDIO_RELEASE_KEY_PASSWORD = '...'
 
 ## 与 fnAudio 服务端的配套要求
 
-必须安装 `fnAudio 0.2.11` 或更新版本。该版本包含 MPD/DLNA 服务端状态同步、Renderer 后台自动推进、DSD 原始推送、远程 MediaSession、启动 token 刷新、API scope 授权和播放快照契约。网页桥在选择当前设备时使用 ExoPlayer；选择 USB DAC、MPD 或 DLNA 时切换为仅镜像状态和转发控制的远程播放器。
+必须安装 `fnAudio 0.2.14` 或更新版本。该版本包含 MPD/DLNA 服务端状态同步、Renderer 后台自动推进、DSD 原始推送、远程 MediaSession、启动 token 刷新、API scope 授权和播放快照契约。网页桥在选择当前设备时使用 ExoPlayer；选择 USB DAC、MPD 或 DLNA 时切换为仅镜像状态和转发控制的远程播放器。
 
 ## 尚待真机确认
 

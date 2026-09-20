@@ -17,6 +17,18 @@ from typing import Any
 
 
 SAMPLE = re.compile(r"^sample=(\d+) at=([^ ]+) (.+)$")
+MAX_LOG_BYTES = 64 * 1024 * 1024
+MAX_LOG_LINE_BYTES = 1024 * 1024
+
+
+def safe_nonnegative_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return default
+    try:
+        number = int(value, 10) if isinstance(value, str) else value
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if 0 <= number <= 2**63 - 1 else default
 
 
 def decode_status(payload: str) -> dict[str, Any] | None:
@@ -36,7 +48,23 @@ def main() -> int:
     args = parser.parse_args()
 
     samples: list[dict[str, Any]] = []
-    for line in args.log.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        if args.log.stat().st_size > MAX_LOG_BYTES:
+            print("Log exceeds the 64 MiB analysis limit.", file=sys.stderr)
+            return 2
+    except OSError as exc:
+        print("Cannot read log: %s" % exc, file=sys.stderr)
+        return 2
+
+    try:
+        handle = args.log.open("r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print("Cannot read log: %s" % exc, file=sys.stderr)
+        return 2
+    with handle:
+      for line in handle:
+        if len(line.encode("utf-8", "replace")) > MAX_LOG_LINE_BYTES:
+            continue
         match = SAMPLE.match(line)
         if not match:
             continue
@@ -47,7 +75,7 @@ def main() -> int:
         idle = status.get("idle") or {}
         samples.append(
             {
-                "sample": int(match.group(1)),
+                "sample": safe_nonnegative_int(match.group(1)),
                 "at": match.group(2),
                 "songid": raw.get("songid"),
                 "song": raw.get("song"),
@@ -64,7 +92,7 @@ def main() -> int:
 
     songids = [str(item["songid"]) for item in samples if item["songid"] is not None]
     changes = sum(1 for before, after in zip(songids, songids[1:]) if after != before)
-    underruns = [int(item["underrun"] or 0) for item in samples]
+    underruns = [safe_nonnegative_int(item["underrun"]) for item in samples]
     summary = {
         "samples": len(samples),
         "first_at": samples[0]["at"],
