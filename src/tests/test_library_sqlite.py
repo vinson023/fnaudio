@@ -2683,6 +2683,88 @@ class LibrarySqliteTests(unittest.TestCase):
                         (sql, plan),
                     )
                     self.assertFalse(any("TEMP B-TREE" in detail for detail in plan), (sql, plan))
+                # The total on this path is not carried by the page statement: it
+                # rides its own covering-index count, so the count has to keep
+                # landing on the narrow (root, parent) index. Measured on fresh
+                # connections against one directory holding every sibling: 0.55 ms
+                # at 20k siblings and 4.39 ms at 50k. Drop that index and SQLite
+                # silently falls back to the wider NOCASE ordering index, which
+                # costs 5.38 ms and 14.23 ms for the same count; a plan that stops
+                # being covered reads every folder row instead of index keys only.
+                for sql in counts:
+                    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql)]
+                    self.assertTrue(
+                        any("COVERING INDEX" in detail
+                            and "idx_folders_root_parent" in detail
+                            and "nocase" not in detail for detail in plan),
+                        (sql, plan),
+                    )
+                    self.assertFalse(any("TEMP B-TREE" in detail for detail in plan), (sql, plan))
+
+    def test_repeated_folder_page_is_served_without_rereading_the_directory(self):
+        """The sibling count is a cache-miss cost, which is what made it tolerable."""
+        # Measured through query_library_folders with 50k directories under one
+        # parent: a page that misses the cache costs 9.2-11.5 ms, 4.4 ms of it in
+        # that covering count, and a deep offset page costs 16.9 ms; the same page
+        # answered again inside the current epoch costs 0.26 ms and issues no
+        # statement at all. Keeping a child count in a persistent column was
+        # therefore judged unnecessary for the served first screen - but that
+        # judgement rests on this cache, not on the numbers above, so the cache
+        # behaviour is what gets pinned here.
+        with tempfile.TemporaryDirectory() as root:
+            music_root = os.path.join(root, "music")
+            for name in ("A", "B", "c"):
+                os.makedirs(os.path.join(music_root, name))
+            config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            items = [
+                self._item("one", os.path.join(music_root, "A", "one.flac"), "Track One", 1),
+                self._item("two", os.path.join(music_root, "B", "two.flac"), "Track Two", 2),
+                self._item("three", os.path.join(music_root, "c", "three.flac"), "Track Three", 3),
+            ]
+            save_items_to_sqlite(config, items, "test")
+            statements = []
+            original_connect = library.library_db_connect
+
+            @contextmanager
+            def traced_connect(current_config):
+                with original_connect(current_config) as connection:
+                    connection.set_trace_callback(statements.append)
+                    yield connection
+
+            library.invalidate_library_query_cache(config)
+            with mock.patch.object(library, "library_db_connect", side_effect=traced_connect):
+                cold = query_library_folders(config, "", music_root, "asc", 2, 0)
+                miss_statements = list(statements)
+                warm = query_library_folders(config, "", music_root, "asc", 2, 0)
+                warm_statements = statements[len(miss_statements):]
+                # A different page of the same directory must not be served by the
+                # entry above, or the skipped count would answer for rows it never
+                # read.
+                deeper = query_library_folders(config, "", music_root, "asc", 2, 2)
+                deeper_statements = statements[len(miss_statements) + len(warm_statements):]
+            self.assertEqual([row["name"] for row in cold["folders"]], ["A", "B"])
+            self.assertTrue(
+                [sql for sql in miss_statements if "SELECT COUNT(*) FROM folders" in sql],
+                miss_statements,
+            )
+            self.assertEqual(warm_statements, [], warm_statements)
+            self.assertEqual([row["name"] for row in warm["folders"]], ["A", "B"])
+            self.assertEqual(warm["count"], cold["count"])
+            self.assertEqual([row["name"] for row in deeper["folders"]], ["c"])
+            self.assertTrue(deeper_statements, deeper_statements)
+
+            # And the skip has to end when the index changes: an added directory
+            # must be re-read and re-counted rather than served from the entry
+            # above.
+            deeper_base = len(statements)
+            fourth = os.path.join(music_root, "d")
+            os.makedirs(fourth)
+            items.append(self._item("four", os.path.join(fourth, "four.flac"), "Track Four", 4))
+            save_items_to_sqlite(config, items, "test")
+            with mock.patch.object(library, "library_db_connect", side_effect=traced_connect):
+                refreshed = query_library_folders(config, "", music_root, "asc", 2, 0)
+            self.assertEqual(refreshed["count"], 4)
+            self.assertTrue(statements[deeper_base:], statements[deeper_base:])
 
     def test_searched_folder_page_keeps_its_single_scoped_window_query(self):
         with tempfile.TemporaryDirectory() as root:
