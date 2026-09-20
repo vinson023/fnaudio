@@ -744,6 +744,17 @@ class LibrarySqliteTests(unittest.TestCase):
                         library.invalidate_library_query_cache(config)
 
     def _null_key_library(self, root, tag, artists, titles=None):
+        """Index whose label columns hold SQL NULL, the shape a library written
+        before the TODO.md:153 write-path collapse still has on disk.
+
+        ``save_items_to_sqlite`` now refuses to store NULL in a label column and
+        converges the legacy rows, so the NULL is injected underneath it with raw
+        SQL: these tests are about what the read path does with such a row, never
+        about how it got there.  The injection reaches only the columns, so the
+        stored ``item_json`` keeps spelling the value "" - the column/payload split
+        is exactly what a legacy row looks like between the one-time column repair
+        and the payload self-heal, and no assertion here depends on the JSON.
+        """
         music_root = os.path.join(root, "music")
         os.makedirs(music_root)
         config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
@@ -754,6 +765,11 @@ class LibrarySqliteTests(unittest.TestCase):
             item["artist"] = artist
             items.append(item)
         save_items_to_sqlite(config, items, tag)
+        with library.library_db_writer(config) as conn:
+            for index, item in enumerate(items):
+                for column, supplied in (("artist", artists), ("title", titles or ())):
+                    if index < len(supplied) and supplied[index] is None:
+                        conn.execute("UPDATE tracks SET %s = NULL WHERE id = ?" % column, (item["id"],))
         library.invalidate_library_query_cache(config)
         return config, items
 
@@ -833,6 +849,57 @@ class LibrarySqliteTests(unittest.TestCase):
             self.assertEqual(last["items"], [])
             self.assertNotIn("next_cursor", last)
             self.assertNotIn("has_more", last)
+
+    def test_a_legacy_index_loses_its_null_labels_on_the_next_save(self):
+        # The write-path collapse in prepare_track_persistence only covers rows the
+        # scanner rewrites.  This is the row it cannot reach: the stored item_json
+        # already spells the tag "", so the upsert's ``WHERE tracks.item_json <>
+        # excluded.item_json`` guard skips it and its legacy NULL column would outlive
+        # every later scan.  Only the migration clears it.
+        with tempfile.TemporaryDirectory() as root:
+            config, items = self._null_key_library(root, "legacy", ("", "", "Zeta"))
+            with library.library_db_writer(config) as conn:
+                # Back the index up to the state a pre-collapse build leaves behind:
+                # one NULL column and no migration marker.
+                conn.execute("UPDATE tracks SET artist = NULL WHERE id = ?", (items[0]["id"],))
+                conn.execute(
+                    "DELETE FROM library_meta WHERE key = ?", (library.NULL_LABEL_COLLAPSE_KEY,)
+                )
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM tracks WHERE artist IS NULL").fetchone()[0], 1
+                )
+            library.invalidate_library_query_cache(config)
+            save_items_to_sqlite(config, items, "legacy")
+            with library.library_db_connect(config) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM tracks WHERE artist IS NULL").fetchone()[0], 0
+                )
+                self.assertIsNotNone(conn.execute(
+                    "SELECT value FROM library_meta WHERE key = ?", (library.NULL_LABEL_COLLAPSE_KEY,)
+                ).fetchone())
+            # The browsable answer is unchanged by the repair: "" and NULL were both
+            # already the UNCLASSIFIED group, so nothing moved between pages.
+            page = query_library_page(config, {"view": "all", "sort": "artist", "dir": "asc", "limit": "3"})
+            self.assertEqual([item["id"] for item in page["items"]], [items[0]["id"], items[1]["id"], items[2]["id"]])
+
+    def test_the_null_label_collapse_is_a_one_time_migration_not_a_sweep(self):
+        # Pinning the other half of the ruling: with the marker stored the UPDATE is
+        # never issued again.  A sweep would quietly undo any future writer that
+        # reintroduced NULL, and this test is what would fail if someone made the
+        # migration run per save to "fix" a report about a legacy index.
+        with tempfile.TemporaryDirectory() as root:
+            config, items = self._null_key_library(root, "onetime", ("", "Zeta", "Adele"))
+            with library.library_db_writer(config) as conn:
+                self.assertIsNotNone(conn.execute(
+                    "SELECT value FROM library_meta WHERE key = ?", (library.NULL_LABEL_COLLAPSE_KEY,)
+                ).fetchone())
+                conn.execute("UPDATE tracks SET artist = NULL WHERE id = ?", (items[0]["id"],))
+            library.invalidate_library_query_cache(config)
+            save_items_to_sqlite(config, items, "onetime")
+            with library.library_db_connect(config) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM tracks WHERE artist IS NULL").fetchone()[0], 1
+                )
 
     def _tail_cursor(self, config, item_id):
         page = query_library_page(config, {"view": "all", "sort": "artist", "dir": "desc", "limit": "3", "offset": "0"})

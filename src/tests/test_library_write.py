@@ -151,6 +151,67 @@ class LibraryWriteTests(unittest.TestCase):
         self.assertEqual(row[2], "/music")
         self.assertEqual(cue[:4], ("7", "", "/music/a.flac", 2))
 
+    # Positions of the label columns inside the track_row tuple that
+    # prepare_track_persistence returns, matching the INSERT column list in
+    # library.save_items_to_sqlite.
+    TRACK_LABEL_SLOTS = {
+        "title": 4, "artist": 5, "album": 6, "album_artist": 8,
+        "composer": 9, "genre": 10, "format": 11, "mime": 12,
+    }
+
+    def test_prepare_track_persistence_collapses_every_none_label(self):
+        # SQL NULL in a label column is unreachable to every keyset predicate, so the
+        # writer is the boundary that has to refuse it (TODO.md:153 ruling C).  A None
+        # from a tag reader must land as "" in the column *and* in the item_json that
+        # is dumped from the same dict, or the two disagree about one track.
+        from library_write import NULLABLE_LABEL_COLUMNS, prepare_track_persistence
+        item = {"id": "nulls", "path": "/music/silent.flac"}
+        item.update({column: None for column in NULLABLE_LABEL_COLUMNS})
+        row, _cue, _path, public = prepare_track_persistence(
+            item, safe_int=lambda value: 0, safe_float=lambda value: 0.0,
+            dumps=lambda value: json.dumps(value, ensure_ascii=False),
+        )
+        self.assertEqual(len(self.TRACK_LABEL_SLOTS), len(NULLABLE_LABEL_COLUMNS))
+        for column, slot in self.TRACK_LABEL_SLOTS.items():
+            self.assertEqual(row[slot], "", "column %s must not be written as NULL" % column)
+            self.assertEqual(public[column], "", "item_json must agree with the %s column" % column)
+        # The whole row, not just the eight labels: no slot may carry the value SQLite
+        # would store as NULL, and the payload the same call dumps must agree.
+        self.assertNotIn(None, row)
+        self.assertEqual(json.loads(row[-1]), public)
+        self.assertNotIn(None, json.loads(row[-1]).values())
+
+    def test_prepare_track_persistence_leaves_an_absent_label_key_absent(self):
+        # Absent and None are the same *value* but not the same *payload*: adding the
+        # key here would change item_json for every track in an existing index and
+        # force a full rewrite for no behavioural difference.
+        from library_write import NULLABLE_LABEL_COLUMNS, prepare_track_persistence
+        row, _cue, _path, public = prepare_track_persistence(
+            {"id": "sparse", "path": "/music/a.flac", "title": "Kept"},
+            safe_int=lambda value: 0, safe_float=lambda value: 0.0, dumps=lambda value: "{}",
+        )
+        self.assertEqual(row[self.TRACK_LABEL_SLOTS["title"]], "Kept")
+        self.assertEqual(row[self.TRACK_LABEL_SLOTS["artist"]], "")
+        for column in NULLABLE_LABEL_COLUMNS:
+            if column != "title":
+                self.assertNotIn(column, public)
+
+    def test_collapse_missing_labels_prepares_a_copy_and_leaves_the_scan_item_alone(self):
+        # The helper collapses in place, which is what lets the row and its JSON come
+        # from one source; prepare_track_persistence therefore has to hand it a copy, or
+        # the scanner would see its own items rewritten under it.
+        from library_write import collapse_missing_labels, prepare_track_persistence
+        direct = {"id": "keep", "artist": None, "title": "Real"}
+        self.assertIs(collapse_missing_labels(direct), direct, "the helper is in-place by contract")
+        self.assertEqual(direct["artist"], "")
+        scanned = {"id": "keep", "artist": None, "title": "Real"}
+        row, _cue, _path, public = prepare_track_persistence(
+            scanned, safe_int=lambda value: 0, safe_float=lambda value: 0.0, dumps=lambda value: "{}",
+        )
+        self.assertEqual(row[self.TRACK_LABEL_SLOTS["artist"]], "")
+        self.assertEqual(public["artist"], "")
+        self.assertIsNone(scanned["artist"], "preparation must not touch the caller's dict")
+
     def test_prepare_track_persistence_bounds_path_without_stringification(self):
         from library_write import prepare_track_persistence
         row, cue, path, public = prepare_track_persistence(
