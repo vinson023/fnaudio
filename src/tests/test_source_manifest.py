@@ -4,24 +4,41 @@ import unittest
 from pathlib import Path
 
 
+# ``tools/update_source_manifest.ps1`` hashes the bytes that are *in the working
+# tree*, walking exactly ``src`` and ``android-client`` with the exclusions below.
+# ``.gitattributes`` declares ``* text=auto eol=lf``, so a checkout of this
+# repository always writes Unix endings -- but a tool that rewrites one of these
+# files in place can leave it with CRLF, and ``git diff`` then still reports the
+# file as unchanged because git normalises the endings away on read.  The manifest
+# is the only thing that notices: it records the CRLF hash, which no fresh checkout
+# can reproduce.  R130 measured eight such files and normalised them, so both
+# checks below share one walk -- the first keeps the manifest current, the second
+# keeps it reproducible.
+MANIFEST_SCOPE_ROOTS = ("src", "android-client")
+EXCLUDED_SEGMENTS = {".gradle", ".media3-inspect", ".idea", "build", "__pycache__"}
+EXCLUDED_NAMES = {"local.properties"}
+EXCLUDED_EXTENSIONS = {".apk", ".aab", ".aar", ".class", ".fpk", ".pyc"}
+
+
+def manifest_scoped_files(repo_root):
+    """Yield ``(relative path, absolute path)`` for every hashed file."""
+    for name in MANIFEST_SCOPE_ROOTS:
+        for path in (repo_root / name).rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(repo_root).as_posix()
+            if any(segment in EXCLUDED_SEGMENTS for segment in relative.split("/")):
+                continue
+            if path.name in EXCLUDED_NAMES or path.suffix.lower() in EXCLUDED_EXTENSIONS:
+                continue
+            yield relative, path
+
+
 class SourceManifestTests(unittest.TestCase):
     def test_root_manifest_matches_authoritative_source_tree(self):
         repo_root = Path(__file__).resolve().parents[2]
         manifest_path = repo_root / "SOURCE_MANIFEST.sha256"
-        excluded_segments = {".gradle", ".media3-inspect", ".idea", "build", "__pycache__"}
-        excluded_names = {"local.properties"}
-        excluded_extensions = {".apk", ".aab", ".aar", ".class", ".fpk", ".pyc"}
-        files = []
-        for source_root in (repo_root / "src", repo_root / "android-client"):
-            for path in source_root.rglob("*"):
-                if not path.is_file():
-                    continue
-                relative = path.relative_to(repo_root).as_posix()
-                if any(segment in excluded_segments for segment in relative.split("/")):
-                    continue
-                if path.name in excluded_names or path.suffix.lower() in excluded_extensions:
-                    continue
-                files.append(path)
+        files = [found for _relative, found in manifest_scoped_files(repo_root)]
         expected = []
         for path in sorted(files, key=lambda value: str(value).lower()):
             digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
@@ -29,6 +46,64 @@ class SourceManifestTests(unittest.TestCase):
         actual = manifest_path.read_text(encoding="ascii").splitlines()
         self.assertEqual(len(actual), len(set(actual)), "SOURCE_MANIFEST.sha256 contains duplicate records")
         self.assertEqual(sorted(actual), sorted(expected), "SOURCE_MANIFEST.sha256 is stale; run tools/update_source_manifest.ps1")
+
+    def test_the_guard_walks_the_same_scope_as_the_manifest_tool(self):
+        """The scope lists are a copy, so the copy has to be checked against its source."""
+        repo_root = Path(__file__).resolve().parents[2]
+        script = (repo_root / "tools" / "update_source_manifest.ps1").read_text(encoding="utf-8")
+        walk = [line for line in script.splitlines() if "Get-ChildItem -LiteralPath" in line]
+        self.assertEqual(len(walk), 1, "the manifest tool's walk is no longer one line")
+        self.assertEqual(
+            tuple(re.findall(r'Join-Path \$repoRoot "([^"]+)"', walk[0])),
+            MANIFEST_SCOPE_ROOTS,
+            "the guard and the manifest tool walk different directories",
+        )
+        for variable, expected in (
+            ("excludedSegments", EXCLUDED_SEGMENTS),
+            ("excludedNames", EXCLUDED_NAMES),
+            ("excludedExtensions", EXCLUDED_EXTENSIONS),
+        ):
+            declaration = [
+                line
+                for line in script.splitlines()
+                if line.strip().startswith("$" + variable + " = @(")
+            ]
+            self.assertEqual(len(declaration), 1, variable)
+            self.assertEqual(
+                set(re.findall(r'"([^"]*)"', declaration[0])),
+                set(expected),
+                "the guard and the manifest tool exclude different files: " + variable,
+            )
+
+    def test_manifest_scoped_text_files_keep_unix_line_endings(self):
+        """CRLF in the working tree makes the release manifest unreproducible."""
+        repo_root = Path(__file__).resolve().parents[2]
+        offenders = []
+        scanned = 0
+        for relative, found in manifest_scoped_files(repo_root):
+            scanned += 1
+            payload = found.read_bytes()
+            # A NUL byte is the same signal git uses to call a file binary: those
+            # payloads (shared libraries, PNGs, JARs) carry carriage returns as
+            # data, so their endings are not a line-ending question at all.
+            if b"\x00" in payload or b"\r" not in payload:
+                continue
+            offenders.append(relative)
+        # A guard that walks nothing must not report success: the scope lists above
+        # are a second copy of the manifest tool's, and drift between the two would
+        # otherwise look like a clean run.
+        self.assertGreater(
+            scanned,
+            600,
+            "the manifest-scope walk found only %d files; its exclusion lists no "
+            "longer match tools/update_source_manifest.ps1" % scanned,
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            "these files keep Unix endings in git but not on disk, so "
+            "SOURCE_MANIFEST.sha256 hashes bytes no checkout produces: %s" % offenders,
+        )
 
     def test_index_declared_local_assets_exist_and_are_cache_stamped(self):
         repo_root = Path(__file__).resolve().parents[2]
