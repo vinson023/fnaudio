@@ -1823,6 +1823,11 @@ function scanProgressText() {
   return `${prefix}${suffix}`;
 }
 function updateDeviceLabel() {
+  // Changing device repaints the row's *owner* without repainting the row: `render()`
+  // touches this label and nothing else, so a handover away from a stalled channel has to
+  // clear the lamp from here too.  The local branch writes nothing, so the extra call on
+  // every render costs zero DOM.
+  updateTransportStateUnknown();
   const label = isRemoteTarget() ? state.playTargetName : "当前设备";
   const desktopButton = $("deviceBtn");
   if (desktopButton && desktopButton.title !== label) desktopButton.title = label;
@@ -1904,9 +1909,27 @@ function syncPlayerProgress() {
   const seconds = currentSeconds();
   syncNowPlayingTime(seconds, duration);
   updateSeekRail();
+  updateTransportStateUnknown();
 }
 function updateSeekRail(value = $("seek")?.value || 0) {
   setStyleVarIfChanged($("seek"), "--seek-fill", `${seekPercent(value)}%`);
+}
+function updateTransportStateUnknown() {
+  // Say so when the transport row is running on extrapolation instead of on evidence.
+  // The two status channels are asked about separately, in the order `currentSeconds`
+  // resolves them: an incoming render session owns the row even when this app is not
+  // targeting a remote device itself.  Everything else on screen is local playback,
+  // whose authority is `audio.ontimeupdate` - that pump cannot stall while still
+  // reporting fresh numbers, so there is nothing to flag and the lamp is cleared.
+  let unknown = false;
+  if (isIncomingRendererSession()) {
+    unknown = transportStateIsUnknown(state.rendererSnapshotAt,
+      String(state.rendererSession?.transport || "").toUpperCase() === "PLAYING");
+  } else if (isRemoteTarget()) {
+    unknown = transportStateIsUnknown(state.remoteSnapshotAt,
+      String(state.remoteStatus?.transport?.state || "").toUpperCase() === "PLAYING");
+  }
+  setDatasetStateIfChanged($("transportStateUnknown"), unknown);
 }
 function externalArtworkUrl(value) {
   try {
@@ -2087,6 +2110,11 @@ function stopRemoteOnUnload() {
   stopRemoteEventStream();
 }
 function updateRemoteUi() {
+  // First statement, before either early return.  `currentSeconds` clamps an extrapolated
+  // position at the limit, so once a channel has run out of evidence the memo below keeps
+  // seeing identical numbers and returns there: a lamp written after that gate would only
+  // ever light up on a change that had already stopped moving.
+  updateTransportStateUnknown();
   if (updateIncomingRendererUi()) return;
   if (!isRemoteTarget()) return;
   const transport = state.remoteStatus?.transport?.state || "";
@@ -4004,38 +4032,6 @@ async function commitQueue(queue, currentId = "", options = {}) {
   scheduleUserStateSave();
   return data.core || {};
 }
-async function addQueue(id) {
-  const item = itemById(id);
-  if (!item || state.queue.some(x => String(x.id) === String(id))) return;
-  try {
-    await commitQueue([...state.queue, item], state.queue[state.index]?.id || "");
-    render();
-  } catch (error) {
-    alert(error.message || "播放队列保存失败");
-  }
-}
-async function addQueueAndPlay(id) {
-  const item = itemById(id);
-  if (!item) return;
-  const queue = state.queue.some(x => String(x.id) === String(id)) ? [...state.queue] : [...state.queue, item];
-  if (isPlayingNow()) {
-    try {
-      await commitQueue(queue, state.queue[state.index]?.id || "");
-      render();
-    } catch (error) {
-      alert(error.message || "播放队列保存失败");
-    }
-    return;
-  }
-  try {
-    await commitQueue(queue, id);
-  } catch (error) {
-    alert(error.message || "播放队列保存失败");
-    return;
-  }
-  loadCurrent();
-  render();
-}
 function selectedItems(ids = []) {
   return (ids || []).map(itemById).filter(Boolean);
 }
@@ -4237,28 +4233,6 @@ async function playGroup(name) {
   loadCurrent();
   render();
 }
-async function playFolder(root = state.folderRoot, path = state.folderPath) {
-  const selectedRoot = String(root || "");
-  const selectedPath = String(path || "");
-  let tracks = selectedRoot === state.folderRoot && selectedPath === state.folderPath ? state.pageItems : [];
-  if (!tracks.length && (selectedPath || selectedRoot)) {
-    tracks = await fetchAllTracksForCurrentView({ view: "folders", folder: selectedPath, root: selectedRoot });
-  }
-  if (!tracks.length) return;
-  state.streamOffset = 0;
-  state.pendingSeekTime = null;
-  state.transcodeCacheReady = false;
-  state.playSourceKind = "";
-  const queue = state.shuffle ? [...tracks].sort(() => Math.random() - 0.5) : tracks;
-  try {
-    await commitQueue(queue, queue[0]?.id || "");
-  } catch (error) {
-    alert(error.message || "播放队列保存失败");
-    return;
-  }
-  loadCurrent();
-  render();
-}
 function playableTracks() {
   if (isPagedTrackListing()) return state.pageItems;
   if (state.view === "folders") return folderTracks();
@@ -4442,6 +4416,16 @@ function transportExtrapolation(snapshotAt, playing) {
   // value here would render a negative elapsed time.
   if (!(elapsed > 0)) return 0;
   return Math.min(elapsed, TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS);
+}
+// The clamp above is what stops a dead status channel from counting up forever, but a
+// frozen counter is indistinguishable from a paused track: the row simply lies now
+// (TODO.md:74).  This reads the same budget back as "the channel has run out", so the two
+// can never disagree about where the boundary is.  It takes the snapshot time and the
+// transport state as arguments instead of reaching into `state`, which keeps it honest
+// about *which* channel it was asked about and leaves the one-gate shape asserted in
+// test_ui_transport_staleness.js intact.
+function transportStateIsUnknown(snapshotAt, playing) {
+  return playing === true && transportExtrapolation(snapshotAt, true) >= TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS;
 }
 function currentSeconds() {
   if (isIncomingRendererSession()) {
@@ -5356,6 +5340,16 @@ function setStyleVarIfChanged(node, name, value) {
   // behaviour this call site had before the check existed.
   if (node.style.getPropertyValue(name) === text) return;
   node.style.setProperty(name, text);
+}
+function setDatasetStateIfChanged(node, value) {
+  if (!node || !node.dataset) return;
+  // "unknown" is the only state worth naming; clearing writes the empty string rather
+  // than deleting the attribute.  Both match no `[data-state="unknown"]` selector, and a
+  // plain value means a second, third and hundredth identical call all have nothing left
+  // to do - the 500ms poll must not touch the DOM when the transport row did not change.
+  const next = value === true ? "unknown" : "";
+  if ((node.dataset.state || "") === next) return;
+  node.dataset.state = next;
 }
 function updateLibraryStatusDecorations() {
   const serverPortValue = $("serverPortValue");
@@ -7432,7 +7426,7 @@ function runTrackAction(action) {
   closeTrackContextMenu();
   if (action === "play") playSelectedTracks(selected);
   else if (action === "play-from-current") playFromCurrentTrack(trackId);
-  else if (action === "queue" || action === "queue-play") addSelectedToQueue(selected);
+  else if (action === "queue") addSelectedToQueue(selected);
   else if (action === "favorite") toggleSelectedFavorites(selected);
   else if (action === "favorite-add") addSelectedFavorites(selected);
   else if (action === "playlist") openPlaylistDialogForTracks(selected);

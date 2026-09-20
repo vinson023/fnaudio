@@ -712,8 +712,13 @@ assert.match(timeupdateBody[0], /if \(isRemoteTarget\(\)\) return;\s*const item 
 
 // TODO.md:60 - the poll really does tick the progress pair twice (`updateIncomingRendererUi` and
 // then `updateNowMarquee`). Measure what the second one costs before deciding to merge them.
+// syncPlayerProgress grew a third writer, so the cost measurement has to run the real
+// staleness lamp next to it: an extra text or style write per tick is exactly what the
+// two assertions below are counting.
 const progressSource = ["setTextContentIfChanged", "setStyleVarIfChanged", "clock", "seekPercent",
-                        "syncNowPlayingTime", "updateSeekRail", "syncPlayerProgress"]
+                        "syncNowPlayingTime", "updateSeekRail", "syncPlayerProgress",
+                        "updateTransportStateUnknown", "transportStateIsUnknown",
+                        "transportExtrapolation", "setDatasetStateIfChanged"]
   .map(name => {
     const found = app.match(new RegExp("function " + name + "\\([\\s\\S]*?\\) \\{[\\s\\S]*?\\n\\}"));
     assert.ok(found, `${name} must stay a top-level function for the cost measurement`);
@@ -728,9 +733,13 @@ const progressContext = {
   currentSeconds: () => 42,
   seekDuration: () => 180,
   state: { seeking: false },
+  isIncomingRendererSession: () => false,
+  isRemoteTarget: () => false,
   String, Math, Number,
 };
-vm.runInNewContext(progressSource + "; globalThis.tick = syncPlayerProgress;", progressContext);
+const progressLimit = app.match(/^const TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS = [^\n]+/m);
+assert.ok(progressLimit, "the extrapolation limit must stay a top-level const for the cost measurement");
+vm.runInNewContext(progressLimit[0] + ";\n" + progressSource + "; globalThis.tick = syncPlayerProgress;", progressContext);
 progressContext.tick();
 assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 2,
   "a real progress change costs exactly one text write and one rail write");
