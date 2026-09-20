@@ -22,7 +22,7 @@ from typing import Any, Dict
 
 from transcode import find_ffmpeg
 from resource_limits import bounded_int
-from file_permissions import atomic_write_json, secure_directory, secure_file, secure_sqlite_files
+from file_permissions import atomic_write_json, secure_directory, secure_directory_on_drift, secure_file, secure_sqlite_files
 from config import DEFAULT_PORT
 from library_connection_pool import LibraryConnectionPool
 from library_query_cache import LibraryQueryCache
@@ -2091,7 +2091,11 @@ def library_db_connect(config):
     after its own transaction committed, so it cannot carry a stale WAL snapshot
     into the next reader.
     """
-    secure_directory(config["cache_dir"])
+    # Every read still hardens the cache directory; only the probe gets cheaper. The
+    # drift path is one lstat where the full pass is six syscalls, and it falls back
+    # to secure_directory when the directory is missing or is not a directory, so a
+    # cache_dir created by an older build or removed underneath us behaves as before.
+    secure_directory_on_drift(config["cache_dir"])
     db_path = library_db_path(config)
     pooled = _library_connection_pool_enabled(config)
     database = os.path.abspath(db_path)

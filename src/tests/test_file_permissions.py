@@ -73,7 +73,7 @@ class FilePermissionTests(unittest.TestCase):
         # `secure_directory_on_drift` replaces a six-syscall pass that `Observability.write`
         # used to pay per log line, so the decision has to stay identical: already private means
         # nothing to do, anything else means harden. `_chmod` is a no-op on Windows
-        # (file_permissions.py:85), so the assertion is about the call and its arguments rather
+        # (os.name is "nt"), so the assertion is about the call and its arguments rather
         # than about a mode this machine cannot change - it would pass vacuously otherwise.
         wanted = file_permissions.PRIVATE_DIRECTORY_MODE
         with tempfile.TemporaryDirectory() as root:
@@ -123,7 +123,7 @@ class FilePermissionTests(unittest.TestCase):
         # `secure_file_on_drift` replaces the per-log-line chmod, so it has to keep `secure_file`
         # 's exact answers: a missing path and a symlink are False, a directory is not a file, and
         # only a mode that differs produces a chmod. On Windows `_chmod` returns before touching
-        # the OS (file_permissions.py:85), so the assertions are about calls, not resulting modes.
+        # the OS (os.name is "nt"), so the assertions are about calls, not resulting modes.
         wanted = file_permissions.PRIVATE_FILE_MODE
         with tempfile.TemporaryDirectory() as root:
             target = os.path.join(root, "app.log")
@@ -167,6 +167,55 @@ class FilePermissionTests(unittest.TestCase):
             self.assertTrue(os.path.isdir(target))
             self.assertEqual(file_permissions.secure_directory_on_drift(target), returned)
 
+
+    def test_sqlite_sidecars_are_probed_once_and_chmodded_only_on_drift(self):
+        # `secure_sqlite_files` is the hottest permission path in the server: a pooled read
+        # calls it on entry and again on exit, and every write calls it too. In the steady
+        # state it has to cost one lstat per sidecar, which means it must not fall back to
+        # `secure_file` - that existence check plus the pair of link probes is what this
+        # removes. The decision still has to match the full pass exactly, so every case
+        # below pins both the probes made and the chmods that followed them. `_chmod` does
+        # nothing on Windows, so asserting the call and its arguments is the only shape that
+        # cannot pass vacuously here.
+        wanted = file_permissions.PRIVATE_FILE_MODE
+        private = stat.S_IFREG | wanted
+        absent = FileNotFoundError(2, "sqlite has not created this sidecar")
+        cases = (
+            ("all three private", (private, private, private), (False, False, False)),
+            ("wal drifted", (private, stat.S_IFREG | 0o666, private), (False, True, False)),
+            ("both sidecars absent", (private, absent, absent), (False, False, False)),
+            ("shm is a symlink", (private, private, stat.S_IFLNK | 0o777), (False, False, False)),
+            ("wal is a directory", (private, stat.S_IFDIR | wanted, private), (False, False, False)),
+        )
+        with tempfile.TemporaryDirectory() as root:
+            base = os.path.join(root, "library.sqlite3")
+            suffixes = ("", "-wal", "-shm")
+            abspathed = [os.path.abspath(base + suffix) for suffix in suffixes]
+            for label, probed, expect_chmod in cases:
+                with self.subTest(case=label):
+                    served = dict(zip(abspathed, probed))
+                    seen = []
+
+                    def fake_lstat(target):
+                        seen.append(target)
+                        value = served[target]
+                        if isinstance(value, OSError):
+                            raise value
+                        return SimpleNamespace(st_mode=value)
+
+                    def refuse(*args, **kwargs):
+                        raise AssertionError("the full multi-syscall probe is back")
+
+                    with mock.patch.object(file_permissions, "secure_file", side_effect=refuse), \
+                            mock.patch.object(file_permissions, "_chmod") as chmod, \
+                            mock.patch.object(file_permissions.os, "lstat", side_effect=fake_lstat):
+                        self.assertIsNone(file_permissions.secure_sqlite_files(base))
+                    self.assertEqual(seen, abspathed, "every sidecar must be probed exactly once, in order")
+                    self.assertEqual(
+                        [call.args for call in chmod.call_args_list],
+                        [(target, wanted) for target, expected in zip(abspathed, expect_chmod) if expected],
+                        "chmod must run on the drifted sidecar only, with the private mode",
+                    )
 
 if __name__ == "__main__":
     unittest.main()
