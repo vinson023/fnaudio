@@ -140,7 +140,7 @@ configuration needed to start Tpps.
 An isolated test APK is stored under:
 
 ```text
-tools/apk-analysis/trimp2p-smoke
+_external/apk-analysis/trimp2p-smoke
 ```
 
 It packages the official dex bindings and `libgojni.so` under a different
@@ -258,13 +258,13 @@ Do not enable Tpps until all of the following are available:
 ## Evidence locations
 
 ```text
-tools/apk-analysis/fnconnect-native-api34.pcap
-tools/apk-analysis/fnconnect-native-api34-login.logcat.txt
-tools/apk-analysis/fnconnect-success-api34.logcat.txt
-tools/apk-analysis/fnconnect-emulator-api34.mitm
-tools/apk-analysis/fnos-1.33.4-source
-tools/apk-analysis/fnos-1.33.4-native
-tools/apk-analysis/trimp2p-smoke
+_external/apk-analysis/fnconnect-native-api34.pcap
+_external/apk-analysis/fnconnect-native-api34-login.logcat.txt
+_external/apk-analysis/fnconnect-success-api34.logcat.txt
+_external/apk-analysis/fnconnect-emulator-api34.mitm
+_external/apk-analysis/fnos-1.33.4-source
+_external/apk-analysis/fnos-1.33.4-native
+_external/apk-analysis/trimp2p-smoke
 ```
 
 The packet capture and login logs may contain network identifiers or session
@@ -315,8 +315,8 @@ network-change lifecycle remain an ARM64 physical-device acceptance item.
 Additional local evidence:
 
 ```text
-tools/apk-analysis/fnconnect-relay-forced.pcap
-tools/apk-analysis/fnconnect-relay-config-20260816.mitm
-tools/apk-analysis/hook_tpps_config.js
-tools/apk-analysis/fnaudio-0.1.226-source
+_external/apk-analysis/fnconnect-relay-forced.pcap
+_external/apk-analysis/fnconnect-relay-config-20260816.mitm
+_external/apk-analysis/hook_tpps_config.js
+_external/apk-analysis/fnaudio-0.1.226-source
 ```
