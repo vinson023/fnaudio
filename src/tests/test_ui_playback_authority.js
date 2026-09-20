@@ -158,11 +158,21 @@ assert.equal(local.state.playSourceKind, "", "The advance resets the source kind
 assert.equal(local.state.pendingSeekTime, null, "The advance clears a pending seek");
 assert.equal(local.state.transcodeCacheReady, false, "The advance invalidates the transcode cache");
 
-// 3. Both at once: cast on screen *and* the local element at its own tail.
+// 3. Both at once: cast on screen *and* the local element at its own tail.  This
+//    used to advance the queue, and TODO.md:72 ruling D-1 removed the state it
+//    described - a cast now stops the local element the moment it starts, so the
+//    pair cannot legitimately meet any more.  The host player is the one survivor,
+//    because its reported position lags one state callback behind that stop, and an
+//    automatic queue walk is not a local play intent, so it must never preempt the
+//    caster either.  Pinned here: while a render session owns the output, the tail
+//    stays inert and paints only.
 const both = setup({ rendererSession: castSession({ position: 5, duration: 300 }), item: cueItem() });
 both.audio.currentTime = 29.95;
 both.run();
-assert.equal(both.state.index, 4, "A local tail advances even while a cast is on screen");
+assert.equal(both.state.index, 3, "A cast on screen suspends the local cue tail");
+assert.deepEqual(both.calls.filter(name => name === "loadCurrent" || name === "audio.pause" || name === "mediaPlayback"), [],
+  "Suspending the tail is not a playback action either");
+assert.equal(both.nodes.elapsed.textContent, "0:05", "The visible row still follows the caster");
 
 // 4. Nothing to advance to: pause instead of walking off the end.
 const last = setup({ next: -1, item: cueItem() });

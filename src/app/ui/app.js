@@ -293,6 +293,9 @@ state.deviceSwitchInFlight = false;
 state.deviceTargetRevision = 0;
 state.rendererSession = null;
 state.rendererSnapshotAt = 0;
+// The uri of a cast this browser stopped with a local play intent (TODO.md:72
+// ruling D-2). The status poll would otherwise hand the row straight back to it.
+state.rendererPreemptedUri = "";
 state.rendererRequestInFlight = false;
 state.rendererRequestToken = 0;
 state.rendererRequestController = null;
@@ -2029,13 +2032,43 @@ async function refreshRendererSession() {
     if (token !== state.rendererRequestToken || state.rendererRequestController !== controller) return;
     const session = data.available === true ? (data.state || {}) : {};
     const transport = String(session.transport || "").toUpperCase();
-    const active = typeof session.uri === "string" && session.uri.length > 0
+    let active = typeof session.uri === "string" && session.uri.length > 0
       && !["STOPPED", "NO_MEDIA_PRESENT"].includes(transport);
+    // A stop issued by a local play intent (TODO.md:72 ruling D-2) can lose the
+    // race: a command that was already on the wire, or one the bridge refused,
+    // leaves the caster active, and this poll would hand the transport row back and
+    // silence what this browser just started. The session this browser preempted is
+    // therefore no session at all for as long as local playback still runs. Another
+    // uri is a new cast, and the moment nothing plays locally the claim lapses, so a
+    // later cast is never ignored.
+    if (active && state.rendererPreemptedUri && session.uri === state.rendererPreemptedUri
+      && localIsPlayingNow()) {
+      active = false;
+    } else {
+      state.rendererPreemptedUri = "";
+    }
     const previousActive = isIncomingRendererSession();
     state.rendererSession = active ? session : null;
     state.rendererSnapshotAt = Date.now();
-    if (active) renderIncomingRendererSession(session);
-    else if (previousActive) restoreLibraryNowPlaying();
+    if (active) {
+      // Ruling D-1: a cast takes the audible output, so the local decoder stops with
+      // it. Both used to run at once - two decoders and two bandwidth draws behind a
+      // row that only ever showed the caster - on the element *and* on the host
+      // player, which is what the native stop inside stopLocalAudio covers. Only the
+      // transition stops: this poll repeats every 1.5s and tearing the element down on
+      // every tick would reload the same source over and over.
+      if (!previousActive && localIsPlayingNow()) stopLocalAudio();
+      renderIncomingRendererSession(session);
+    } else if (previousActive) {
+      // Ruling D-3: an ended cast does not resume local playback. The library row
+      // comes back and the transport icon is reset with it, because the render paint
+      // last set that icon from the caster's transport state. No play command is
+      // issued, and coreControl("stop") is deliberately not called either, so the
+      // queue position a local session held is still there for a manual resume.
+      restoreLibraryNowPlaying();
+      setPlayButton(false);
+      updateMediaSessionPlaybackState();
+    }
   } catch (error) {
   } finally {
     if (token === state.rendererRequestToken && state.rendererRequestController === controller) {
@@ -2067,6 +2100,22 @@ function stopLocalAudio() {
   audio.removeAttribute("src");
   audio.load();
   setPlayButton(false);
+}
+function preemptIncomingRendererForLocalPlayback() {
+  // TODO.md:72 ruling D-2: loading a track locally, or pressing play on the host, is
+  // a local playback intent, and it outranks whoever is casting. The claim on the
+  // transport row is dropped synchronously, before this browser touches its own
+  // element, so no poll and no continuation can repaint the caster in between. The
+  // stop itself is not awaited on purpose: an unreachable bridge must not stall local
+  // playback, and what the stop really achieved is reported by the next status poll,
+  // which finds this uri already marked as preempted.
+  if (!isIncomingRendererSession()) return false;
+  const uri = String(state.rendererSession?.uri || "");
+  state.rendererPreemptedUri = uri;
+  state.rendererSession = null;
+  state.rendererSnapshotAt = 0;
+  controlIncomingRenderer("stop");
+  return true;
 }
 async function stopPlayback() {
   if (state.deviceSwitchInFlight) return false;
@@ -2326,11 +2375,19 @@ function setupMediaSession() {
     } catch (error) {}
   };
   setHandler("play", () => {
+    // The host transport keys drive whatever owns the transport row, exactly like the
+    // on-screen play button below. Without this branch the play key would wake the
+    // local element that ruling D-1 stopped the moment the cast started, which is
+    // precisely the second decoder this entry is about.
+    if (isIncomingRendererSession()) { controlIncomingRenderer("play"); return; }
     if (isRemoteTarget()) remoteControl("play");
     else if (!audio.src && state.queue.length) loadCurrent();
     else audio.play().catch(() => {});
   });
   setHandler("pause", () => {
+    // Same reason as the play key: pausing a cast is a request to the caster, not a
+    // request to pause a local element that is already stopped.
+    if (isIncomingRendererSession()) { controlIncomingRenderer("pause"); return; }
     if (isRemoteTarget()) remoteControl("pause");
     else audio.pause();
   });
@@ -4330,6 +4387,12 @@ async function loadCurrent() {
     updateNowMarquee();
     return;
   }
+  // TODO.md:72 ruling D-2: reaching this point means the user asked *this* browser to
+  // play, which now takes the output back from an incoming cast instead of decoding
+  // both at once. The branch above is the opposite intent - the user pushed this
+  // track to another device deliberately - so it preempt nothing. The call has no
+  // suspension point, so the load token taken at the top still matches afterwards.
+  preemptIncomingRendererForLocalPlayback();
   const needsMp3 = shouldTranscodeToMp3(item);
   if (needsMp3 && !state.transcodeCacheReady) {
     state.transcodeCacheReady = await warmCurrentTrackCache(item);
@@ -4497,10 +4560,11 @@ function localPlaybackDuration() {
   // cue-tail decision is made from, and a remote target has its own cue arithmetic, so answering
   // from the local element there would advance *this* browser's queue on the device's progress.
   // Fail loudly instead: one boolean per local tick is not a cost, and a wrong queue advance is
-  // (TODO.md:49). An *incoming* render session is deliberately not part of this check - a cast
-  // paints the transport row from the caster's stream while local playback may still be running,
-  // and this helper is exactly the local half of that pair (test_ui_playback_authority.js drives
-  // `audio.ontimeupdate` with a cast active).
+  // (TODO.md:49). An *incoming* render session is still not part of this check, but it no
+  // longer excuses overlapping playback either: TODO.md:72 ruling D-1 ended the state where a
+  // cast and the local element ran together, and the handler now refuses to read a cue tail at
+  // all while a caster owns the row. This helper stays the plain local half of the pair, which
+  // is what its remaining callers ask for (test_ui_playback_authority.js case 3 pins both).
   if (isRemoteTarget()) {
     throw new TypeError("localPlaybackDuration requires a caller that excluded remote playback");
   }
@@ -8191,7 +8255,14 @@ audio.ontimeupdate = () => {
   // browser's own queue.  Painting below keeps using the shared getters.
   const localSeconds = localPlaybackSeconds();
   const localDuration = localPlaybackDuration();
-  if (item?.cue_track === true && localDuration > 0 && localSeconds >= Math.max(0, localDuration - 0.25)) {
+  // Ruling D-1 stops the element as soon as a cast takes over, so on the ordinary path
+  // this handler is not even ticking during a cast. The host player is the case that
+  // still can, because its reported position lags one state callback behind the stop.
+  // Walking the queue on our own is not a local play intent either, so it must never
+  // preempt the caster: the tail simply does not fire while a render session owns the
+  // output.
+  if (item?.cue_track === true && !isIncomingRendererSession()
+    && localDuration > 0 && localSeconds >= Math.max(0, localDuration - 0.25)) {
     const next = nextIndex();
     if (next >= 0) {
       state.streamOffset = 0;

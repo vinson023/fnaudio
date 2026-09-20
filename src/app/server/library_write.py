@@ -14,6 +14,44 @@ from library_paths import bounded_library_path_text as _bounded_path
 MAX_ROOT_CANDIDATES = 64
 MAX_SCAN_TEXT = 4096
 
+# The label columns a browse page groups, sorts, or cursor-seeks on.  A row that
+# stores SQL NULL in one of them is invisible to every continuation predicate this
+# project can build: ``artist > ?``, ``artist = ?`` and ``(title, id) > (?, ?)`` all
+# answer unknown for NULL, so a page ending there has more rows it cannot name
+# (docs/LIBRARY_CURSOR_NULL_GROUPS.md).  A sentinel key value was rejected as the
+# fix, because the COALESCE expression that would have to match it costs the
+# artist/album/genre pages their index seek (library.py:1135-1143).
+#
+# "" is already this project's "no value" for these columns - an item that omits a
+# key reaches the row as "" through ``source.get(name, "")``, and the display layer
+# folds "" into UNCLASSIFIED - so the writer normalises an explicit None to the
+# same value instead of letting the two spellings diverge.
+NULLABLE_LABEL_COLUMNS = (
+    "title",
+    "artist",
+    "album",
+    "album_artist",
+    "composer",
+    "genre",
+    "format",
+    "mime",
+)
+
+
+def collapse_missing_labels(source):
+    """Replace an explicit ``None`` tag with "" across the label columns.
+
+    Mutating the prepared copy is enough, and is the point: the same dict is what
+    ``dumps`` stores in ``item_json``, so the column and its JSON copy can never
+    disagree about whether a track carries a tag.  Only keys that are *present* are
+    touched - absent keys already mean "" downstream, and writing them here would
+    rewrite every ``item_json`` in an existing index for no behavioural gain.
+    """
+    for column in NULLABLE_LABEL_COLUMNS:
+        if column in source and source[column] is None:
+            source[column] = ""
+    return source
+
 
 def scan_text(value, limit=MAX_SCAN_TEXT):
     """Return bounded scanner text without invoking arbitrary conversions."""
@@ -128,6 +166,7 @@ def prepare_track_persistence(item, *, safe_int, safe_float, dumps):
     """
     source = dict(item or {})
     source.pop("_index_root", None)
+    collapse_missing_labels(source)
     path = _bounded_path(source.get("path"))
     index_root = _bounded_path(item.get("_index_root")) if isinstance(item, dict) else ""
     track_row = (

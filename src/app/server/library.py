@@ -70,7 +70,15 @@ from cue_reader import read_cue_lines as _read_cue_lines
 from id3_parser import decode_id3_text, id3_frame_size
 from library_status_presentation import status_message
 from library_rows import MAX_ITEM_JSON_BYTES, decode_item_row, decode_item_rows
-from library_write import iter_track_persistence_batches, normalize_scan_items, prepare_track_persistence, root_index_summary, scan_text
+from library_write import (
+    NULLABLE_LABEL_COLUMNS,
+    collapse_missing_labels,
+    iter_track_persistence_batches,
+    normalize_scan_items,
+    prepare_track_persistence,
+    root_index_summary,
+    scan_text,
+)
 from library_count_policy import (
     GROUP_COUNT_KEYS,
     browse_page_total,
@@ -2471,6 +2479,51 @@ def library_db_writer(config):
             raise close_error
 
 
+NULL_LABEL_COLLAPSE_KEY = "null_label_collapse"
+
+
+def _collapse_null_labels(conn):
+    """Converge one legacy index, once, so no label column holds SQL NULL.
+
+    ``prepare_track_persistence`` no longer writes NULL into a label column, which
+    keeps new rows clean; this repairs the rows that predate that rule.  An
+    unchanged row is not rewritten by the upsert - it is skipped by the
+    ``WHERE tracks.item_json <> excluded.item_json`` guard at the end of the
+    statement - so a legacy NULL outlives every later scan on its own.
+
+    The repair is deliberately a migration and not a periodic sweep.  A sweep that
+    ran on every save would silently undo any future write path that reintroduced
+    NULL, which is exactly the regression the writer-side guard exists to make
+    visible; it would also turn a stable cost into one paid per track per scan.
+    With the marker stored, an injected NULL survives the next save, and
+    ``test_the_null_label_collapse_is_a_one_time_migration_not_a_sweep`` pins that.
+
+    Only the columns are rewritten.  A legacy ``item_json`` still carrying ``null``
+    heals by itself: once the scanner reports the same track without the ``None``,
+    the two JSON spellings differ, the upsert guard stops skipping the row, and the
+    columns and the payload are rewritten together.
+    """
+    try:
+        marked = conn.execute(
+            "SELECT value FROM library_meta WHERE key = ?", (NULL_LABEL_COLLAPSE_KEY,)
+        ).fetchone()
+    except Exception:
+        # A library_meta table this old cannot hold the marker either; the collapse
+        # still runs, and re-running it is harmless, so nothing is lost.
+        marked = None
+    if marked is not None:
+        return 0
+    clauses = " OR ".join("%s IS NULL" % column for column in NULLABLE_LABEL_COLUMNS)
+    affected = conn.execute("SELECT COUNT(*) FROM tracks WHERE %s" % clauses).fetchone()[0]
+    for column in NULLABLE_LABEL_COLUMNS:
+        conn.execute("UPDATE tracks SET %s = '' WHERE %s IS NULL" % (column, column))
+    conn.execute(
+        "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
+        (NULL_LABEL_COLLAPSE_KEY, str(int(affected))),
+    )
+    return affected
+
+
 def save_items_to_sqlite(config, items, signature):
     # A scan is also the recovery path after a user clears a broken index.
     # Force migrations here so a recreated database is never mistaken for the
@@ -2599,6 +2652,15 @@ def save_items_to_sqlite(config, items, signature):
                     AND COALESCE(tracks.cue_path, '') <> ''
               )
         """)
+        # Runs after the upserts so a rewritten row is not counted as legacy, and
+        # before the collected change set is turned into the group tables, the folder
+        # index, and the search index.  None of that tail can observe the order: both
+        # spellings fold into UNCLASSIFIED through ``COALESCE(NULLIF(artist, ''), ?)``,
+        # folders never read a label, and an external-content FTS5 row indexes NULL and
+        # "" as the same empty text.  So moving this call below them is a mutation this
+        # suite cannot catch (R125 V17) - the ordering is defensive, and the consumer
+        # the collapse exists for is the read path in ``query_library_page``.
+        _collapse_null_labels(conn)
         _refresh_group_tables_for_changes(conn, collect=False)
         _rebuild_folders_for_changes(conn)
         conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("library_path", display_library_path(config)))
