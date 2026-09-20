@@ -2268,6 +2268,103 @@ class MetadataServiceTests(unittest.TestCase):
                 service._track_page_cache_put(("page",), value)
             self.assertEqual(service._track_page_cache_status()["entries"], 0)
 
+    def _seed_page_overlay_fixture(self, root, count=2):
+        """Seed `count` rows, each with a stored auto match and provider artwork."""
+        config = self._config(root)
+        music = config["library_paths"][0]
+        items = [
+            self._item("track-%03d" % index, os.path.join(music, "track-%03d.flac" % index),
+                       "Song %d" % index, index + 1)
+            for index in range(count)
+        ]
+        save_items_to_sqlite(config, items, "first")
+        service = MetadataService(config)
+        now = int(time.time())
+        with service._connect() as conn:
+            for index, item in enumerate(items):
+                best = {
+                    "title": "Matched %d" % index, "artist": "Matched Artist",
+                    "album": "Matched Album", "album_artist": "Matched Artist",
+                    "source": "musicbrainz", "provider_id": "rec-%d" % index,
+                    "confidence": 0.93,
+                }
+                payload = {"best": best, "candidates": [best, dict(best, confidence=0.41)]}
+                conn.execute(
+                    """INSERT OR REPLACE INTO metadata_track_matches(
+                        track_id,fields_json,source,provider_id,confidence,status,fetched_at,expires_at,orphaned_at
+                    ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                    (item["id"], json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                     "musicbrainz", "rec-%d" % index, 0.93, "auto", now, now + 3600),
+                )
+                conn.execute(
+                    """INSERT OR REPLACE INTO metadata_tracks(
+                        track_id,lyrics,artwork_id,lyrics_source,provider_id,confidence,fetched_at,expires_at,orphaned_at
+                    ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                    (item["id"], "[00:01.00]cached", "AB" * 32, "lrclib", "lyr-%d" % index,
+                     0.8, now, now + 3600),
+                )
+        return config, items, service
+
+    def test_track_page_overlay_projects_each_match_once_not_on_every_hit(self):
+        """A repeated first page must reuse the finished projection, not re-decode it.
+
+        The stored match text used to be decoded and re-bounded for every row of
+        every request that hit the overlay cache, which cost more than the copy it
+        was protecting. Discriminating: serving the cached text again doubles the
+        decode count relative to the row count.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            _, items, service = self._seed_page_overlay_fixture(root)
+            real = metadata_service.project_match_fields
+            decoded = []
+
+            def counting(fields_json):
+                decoded.append(fields_json)
+                return real(fields_json)
+
+            def page():
+                return {"items": [dict(item) for item in items]}
+
+            with patch("metadata_service.project_match_fields", side_effect=counting):
+                first = service.enrich_track_page(page())
+                cold = len(decoded)
+                second = service.enrich_track_page(page())
+                third = service.enrich_track_page(page())
+            self.assertEqual(cold, len(items))
+            self.assertEqual(len(decoded), cold)
+            self.assertGreaterEqual(service._track_page_cache_status()["hits"], 2)
+            self.assertEqual(first, second)
+            self.assertEqual(second, third)
+            self.assertEqual(second["items"][0]["title"], "Matched 0")
+            self.assertEqual(second["items"][0]["metadata_artwork_id"], "ab" * 32)
+
+    def test_track_page_cache_stores_the_finished_overlay_projection(self):
+        """The cache entry holds a bounded projection and a folded artwork id."""
+        with tempfile.TemporaryDirectory() as root:
+            _, items, service = self._seed_page_overlay_fixture(root)
+            service.enrich_track_page({"items": [dict(item) for item in items]})
+            cached = next(iter(service._track_page_cache.values()))[1]
+            row = cached[items[0]["id"]]
+            self.assertEqual(sorted(row), ["artwork_id", "projected"])
+            self.assertNotIn("fields_json", row)
+            self.assertEqual(row["artwork_id"], "ab" * 32)
+            self.assertEqual(row["projected"]["album"], "Matched Album")
+
+    def test_track_page_enrichment_normalizes_each_row_identity_once(self):
+        """One page of rows pays for exactly one identity normalisation pass."""
+        with tempfile.TemporaryDirectory() as root:
+            _, items, service = self._seed_page_overlay_fixture(root)
+            real = metadata_service.normalize_track_id
+            seen = []
+
+            def counting(value):
+                seen.append(value)
+                return real(value)
+
+            with patch("metadata_service.normalize_track_id", side_effect=counting):
+                service.enrich_track_page({"items": [dict(item) for item in items]})
+            self.assertEqual(len(seen), len(items))
+
     def test_track_page_enrichment_bounds_oversized_input_before_projection(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))

@@ -1892,6 +1892,17 @@ class _LaneRelease(threading.local):
 _lane_release = _LaneRelease()
 
 
+def _overlay_artwork_id(value):
+    """Bound and case-fold one cached artwork id while its row is being read.
+
+    Every consumer of the overlay wanted the same folded form, so the merge loop
+    repeated the bound/strip/lower chain for each visible row of each request.
+    Doing it once on the cold read keeps that work off the hot path and
+    guarantees the cached value is a plain string.
+    """
+    return _provider_text(value, 128).strip().lower()
+
+
 class MetadataService:
     def __init__(self, config):
         self.config = config
@@ -4333,13 +4344,18 @@ class MetadataService:
                 return ""
             return value[:160] if isinstance(value, str) else ""
 
-        ids = list(dict.fromkeys(track_id for track_id in (_page_track_id(item) for item in items) if track_id))
+        # Normalise every row identity once per call. The same page used to run
+        # the guard three times per row (id collection, the per-id index, and
+        # the merge loop below), so the repeated work scaled with the page while
+        # establishing nothing the first pass had not already established.
+        track_ids = [_page_track_id(item) for item in items]
+        ids = list(dict.fromkeys(track_id for track_id in track_ids if track_id))
         if not ids:
             return page
         # Include a bounded presentation fingerprint so a scan that updates a
         # file's Tag/cover cannot briefly reuse an older projection under the
         # same track ID. Keep the key compact and deterministic.
-        item_by_id = {track_id: item for item in items if (track_id := _page_track_id(item))}
+        item_by_id = {track_id: item for track_id, item in zip(track_ids, items) if track_id}
         # Include the visible projection revision in the key as a second line
         # of defence against a concurrent metadata commit.  The normal write
         # path eagerly clears this cache, but a reader can already be between
@@ -4384,9 +4400,14 @@ class MetadataService:
             )
                 cached = {}
                 for row in cache_rows:
+                    # Finish the projection here, on the read that already paid
+                    # for the row. The cache entry now holds the bounded field
+                    # dict and the folded artwork id instead of the raw
+                    # `fields_json` text, so a repeated first page no longer
+                    # re-decodes and re-bounds every stored match it serves.
                     overlay = {
-                        "artwork_id": row["artwork_id"] or "",
-                        "fields_json": row["fields_json"] or "",
+                        "artwork_id": _overlay_artwork_id(row["artwork_id"] or ""),
+                        "projected": project_match_fields(row["fields_json"] or ""),
                     }
                     if include_lyrics:
                         # Ordinary song-list pages never render a lyric body, so
@@ -4399,11 +4420,11 @@ class MetadataService:
             self._track_page_cache_put(cache_key, cached)
         matches = {}
         for track_id, row in cached.items():
-            projected = project_match_fields(row.get("fields_json"))
+            projected = row.get("projected")
             if projected:
                 matches[str(track_id)] = projected
-        for item in items:
-            track_id = _page_track_id(item)
+        for index, item in enumerate(items):
+            track_id = track_ids[index]
             source = item.get("metadata_source") if isinstance(item.get("metadata_source"), dict) else {}
             for field in TRACK_METADATA_FIELDS:
                 value = (matches.get(track_id) or {}).get(field) or ""
@@ -4414,7 +4435,9 @@ class MetadataService:
             row = cached.get(track_id)
             if include_lyrics and row and row.get("lyrics") and not item.get("lyrics"):
                 item["lyrics"] = str(row["lyrics"])
-            row_artwork_id = _provider_text(row.get("artwork_id") if row else "", 128).strip().lower()
+            # `_overlay_artwork_id` already bounded and case-folded this value
+            # when its row was read, so the merge loop stays a plain lookup.
+            row_artwork_id = row.get("artwork_id") if row else ""
             if valid_artwork_id(row_artwork_id) and not item.get("metadata_artwork_id"):
                 item["metadata_artwork_id"] = row_artwork_id
         result = dict(page)
