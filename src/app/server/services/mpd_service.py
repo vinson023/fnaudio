@@ -9,6 +9,10 @@ import signal
 import socket
 import struct
 import subprocess
+import tempfile
+from contextlib import contextmanager
+from process_output import check_output_bounded
+from summary_values import nonnegative_int
 import threading
 import time
 import urllib.parse
@@ -19,6 +23,7 @@ from playback.mpd_client import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     mpd_binary,
+    mpd_control,
     mpd_idle,
     mpd_load_uri,
     mpd_play_queue_item,
@@ -36,9 +41,38 @@ from playback.mpd_errors import (
 from playback.alsa_output import alsa_devices, find_ffmpeg, probe_alsa_hw_params
 from transcode import transcode_to_audio
 from .process_supervisor import ProcessSupervisor
+
+MAX_MPD_PROC_CMDLINE_BYTES = 4096
+MAX_MPD_PID_FILE_BYTES = 256
+MAX_MPD_LOG_TAIL_BYTES = 8192
+MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS = 5.0
+MAX_MPD_QUEUE_ENTRIES = 50000
 from .audio_output_lease import AUDIO_OUTPUT_LEASE
 from .dac_profiles import dac_quirk_profile
 from file_permissions import atomic_write_text, secure_directory, secure_file
+
+
+def _config_text(value: Any, fallback: str = "", maximum: int = 4096) -> str:
+    """Accept only bounded text from the mutable runtime configuration."""
+    if not isinstance(value, str) or len(value) > maximum:
+        return fallback
+    return value
+
+
+def _config_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
+    """Accept only bounded integral settings from mutable runtime config."""
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and len(value) <= 16 and re.fullmatch(r"[+-]?\d+", value.strip()):
+        try:
+            number = int(value, 10)
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+    else:
+        return fallback
+    return min(maximum, max(minimum, number))
 
 
 def device_presence_transition(state: Optional[Dict[str, Any]], present: bool, threshold: int = 2):
@@ -51,10 +85,12 @@ def device_presence_transition(state: Optional[Dict[str, Any]], present: bool, t
     ``reconnected`` or ``""``.
     """
     current = dict(state or {})
-    threshold = max(1, int(threshold or 1))
-    missing = int(current.get("missing_samples") or 0)
-    present_samples = int(current.get("present_samples") or 0)
-    was_missing = bool(current.get("missing"))
+    threshold = _config_int(threshold, 2, 1, 1000)
+    missing = _config_int(current.get("missing_samples"), 0, 0, 10**6)
+    present_samples = _config_int(current.get("present_samples"), 0, 0, 10**6)
+    # Persisted state must use strict booleans.  Truthiness would interpret
+    # a damaged value such as "false" as a real disconnect.
+    was_missing = current.get("missing") if isinstance(current.get("missing"), bool) else False
     if present:
         missing = 0
         present_samples += 1
@@ -90,7 +126,7 @@ class MpdService:
         self.app_config_path = os.path.abspath(app_config_path) if app_config_path else ""
         self.app_root = app_root or os.environ.get("TRIM_APPDEST") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         self.host = DEFAULT_HOST
-        self.port = self._select_port(int(config.get("mpd_port") or DEFAULT_PORT))
+        self.port = self._select_port(_config_int(config.get("mpd_port"), DEFAULT_PORT, 1024, 65535))
         self.config["mpd_port"] = self.port
         self.binary = self._find_binary()
         self.lib_dir = os.path.join(self.app_root, "target", "lib")
@@ -100,6 +136,10 @@ class MpdService:
         self.log_path = os.path.join(self.data_root, "mpd.log")
         self.supervisor = ProcessSupervisor()
         self._configured = False
+        # Process setup, companion-worker admission and shutdown form one
+        # lifecycle transaction. Command/queue locks intentionally stay
+        # separate so ordinary transport requests are not serialized here.
+        self._lifecycle_lock = threading.RLock()
         self._idle_stop = threading.Event()
         self._idle_thread: Optional[threading.Thread] = None
         self._idle_lock = threading.Lock()
@@ -112,13 +152,35 @@ class MpdService:
         self._output_caps_lock = threading.Lock()
         self._output_caps_cache: Dict[str, Any] = {}
         self._output_caps_cache_at = 0.0
-        self._output_caps_refreshing = False
+        self._output_caps_builders = 0
+        # Set while no capability scan is running, so a caller that arrives
+        # during a cold scan can wait for the shared result.
+        self._output_caps_idle = threading.Event()
+        self._output_caps_idle.set()
         self._output_caps_ttl = 4.0
         self._binary_version_cache: Optional[str] = None
         self._status_listener = None
         self._last_transport = ""
         self._suppress_stop_until = 0.0
         self._queue_lock = threading.RLock()
+        # MPD exposes one process-wide queue. Queue replacement, transport
+        # controls and Renderer loads must therefore be serialized even when
+        # they originate from different HTTP/idle/recovery threads.
+        self._command_lock = threading.RLock()
+
+        # `select_output` and `test_output` rewrite the ALSA selection around
+        # MPD restarts. They must not interleave with each other, and a reader
+        # must never persist the temporary value.
+        self._output_selection_lock = threading.RLock()
+        self._output_selection_transition = False
+        self._recovery_active = threading.Event()
+        self._service_stop = threading.Event()
+        self._recovery_thread: Optional[threading.Thread] = None
+        self._recovery_thread_lock = threading.Lock()
+        # A service instance can stop and start again before an old recovery
+        # thread has unwound. Bind recovery work to this monotonically growing
+        # lifecycle marker so that thread cannot rebuild a newer MPD queue.
+        self._recovery_generation = 0
         self._queue_fingerprint = ()
         self._queue_song_ids: Dict[str, str] = {}
         self._queue_song_tracks: Dict[str, str] = {}
@@ -132,8 +194,8 @@ class MpdService:
         self._device_monitor_thread: Optional[threading.Thread] = None
         self._selected_device_missing = False
         self._device_presence = {"missing_samples": 0, "present_samples": 0, "missing": False}
-        self._device_presence_threshold = max(1, int(config.get("mpd_device_presence_samples") or 2))
-        self._last_underrun_restart = 0.0
+        self._device_presence_threshold = _config_int(config.get("mpd_device_presence_samples"), 2, 1, 5)
+        self._last_underrun_restart = float("-inf")
         self._underrun_state: Dict[str, Any] = {
             "count": 0,
             "last_detected": 0.0,
@@ -150,6 +212,9 @@ class MpdService:
             "by_category": {},
         }
         self._last_log_size = 0
+        # Guards the underrun/playback-error dictionaries that the device
+        # monitor rewrites while every status poll copies them.
+        self._error_state_lock = threading.Lock()
         self._fault_lock = threading.Lock()
         self._fault_state: Dict[str, Any] = {
             "state": "IDLE",
@@ -170,6 +235,17 @@ class MpdService:
             return bool(save_config(self.app_config_path, self.config))
         except Exception:
             return False
+
+    @contextmanager
+    def _exclusive_output_selection(self):
+        """Own the ALSA selection while it is temporarily rewritten."""
+        with self._output_selection_lock:
+            outer = self._output_selection_transition
+            self._output_selection_transition = True
+            try:
+                yield
+            finally:
+                self._output_selection_transition = outer
 
     def set_status_listener(self, callback) -> None:
         """Receive every normalized MPD idle snapshot.
@@ -212,7 +288,7 @@ class MpdService:
             return int(sock.getsockname()[1])
 
     def _data_root(self) -> str:
-        configured = str(self.config.get("mpd_data_dir") or "").strip()
+        configured = _config_text(self.config.get("mpd_data_dir"), maximum=1024).strip()
         if configured:
             return os.path.abspath(os.path.expanduser(configured))
         return os.path.join(self.app_root, "share", "mpd")
@@ -220,11 +296,12 @@ class MpdService:
     def _library_paths(self) -> List[str]:
         paths = self.config.get("library_paths")
         if isinstance(paths, list):
-            values = [str(x).strip() for x in paths if str(x).strip()]
+            values = [_config_text(x, maximum=4096).strip() for x in paths]
+            values = [value for value in values if value]
         else:
             values = []
         if not values and self.config.get("library_path"):
-            values = [x.strip() for x in str(self.config.get("library_path")).replace(";", "\n").splitlines() if x.strip()]
+            values = [x.strip() for x in _config_text(self.config.get("library_path"), maximum=4096).replace(";", "\n").splitlines() if x.strip()]
         return values or ["/"]
 
     def uri_for_path(self, path: str) -> str:
@@ -300,7 +377,17 @@ class MpdService:
         has_cue = False
         current_cue_ape = False
         generated_mpd_media = False
-        for track in list(queue or []):
+        try:
+            queue_iterator = iter(queue)
+        except Exception:
+            queue_iterator = iter(())
+        for _ in range(MAX_MPD_QUEUE_ENTRIES):
+            try:
+                track = next(queue_iterator)
+            except StopIteration:
+                break
+            except Exception:
+                break
             track_id = str(getattr(track, "track_id", "") or "")
             item = dict(getattr(track, "item", {}) or {})
             if callable(resolver):
@@ -343,7 +430,8 @@ class MpdService:
             # root. Refresh before addid so MPD can resolve its relative URI.
             mpd_update_and_wait(host=self.host, port=self.port)
         fingerprint = tuple((entry["track_id"], entry["uri"]) for entry in entries)
-        with self._queue_lock:
+        self._wait_for_recovery_window()
+        with self._command_lock, self._queue_lock:
             reusable = fingerprint == self._queue_fingerprint and bool(self._queue_song_ids)
             selected_song_id = self._queue_song_ids.get(str(current_track_id or "")) if reusable else ""
             if selected_song_id and play:
@@ -356,7 +444,7 @@ class MpdService:
                     port=self.port,
                 )
                 self._queue_current_track_id = str(current_track_id or "")
-                self._last_position = max(0.0, float(start or 0))
+                self._last_position = _safe_float(start)
                 self._queue_repeat = str(repeat or "off")
                 self._queue_shuffle = bool(shuffle)
                 return {**result, "queue_reused": True, "queue_count": len(entries), "cue_transcoded": current_cue_ape}
@@ -375,7 +463,7 @@ class MpdService:
             self._queue_song_tracks = {song_id: track_id for track_id, song_id in self._queue_song_ids.items()}
             self._queue_entries = list(entries)
             self._queue_current_track_id = str(current_track_id or entries[0]["track_id"])
-            self._last_position = max(0.0, float(start or 0))
+            self._last_position = _safe_float(start)
             self._queue_repeat = str(repeat or "off")
             self._queue_shuffle = bool(shuffle)
             return {**result, "queue_reused": False, "queue_count": len(entries), "cue_single_mode": has_cue, "cue_transcoded": current_cue_ape}
@@ -388,10 +476,29 @@ class MpdService:
             return str(self._queue_song_tracks.get(song_id) or "")
 
     def update_playback_modes(self, repeat: str, shuffle: bool) -> Dict[str, Any]:
-        with self._queue_lock:
-            self._queue_repeat = str(repeat or "off")
-            self._queue_shuffle = bool(shuffle)
-        return mpd_set_playback_modes(repeat, shuffle, host=self.host, port=self.port)
+        self._wait_for_recovery_window()
+        with self._command_lock:
+            with self._queue_lock:
+                self._queue_repeat = str(repeat or "off")
+                self._queue_shuffle = bool(shuffle)
+            return mpd_set_playback_modes(repeat, shuffle, host=self.host, port=self.port)
+
+    def control(self, action: str, position: Optional[float] = None) -> Dict[str, Any]:
+        self._wait_for_recovery_window()
+        with self._command_lock:
+            return mpd_control(action, position, host=self.host, port=self.port)
+
+    def load_uri(self, uri: str, start: float = 0.0) -> Dict[str, Any]:
+        self._wait_for_recovery_window()
+        with self._command_lock:
+            return mpd_load_uri(uri, host=self.host, port=self.port, start=start)
+
+    def _wait_for_recovery_window(self, timeout: float = 10.0) -> bool:
+        """Wait until restart recovery has rebuilt MPD's process-local queue."""
+        deadline = time.monotonic() + _safe_float(timeout)
+        while self._recovery_active.is_set() and time.monotonic() < deadline:
+            time.sleep(0.025)
+        return not self._recovery_active.is_set()
 
     def preload_status(self, track_id: str) -> Dict[str, Any]:
         with self._queue_lock:
@@ -417,7 +524,7 @@ class MpdService:
             return {"ok": True, "dsd": False}
         descriptor_caps = dict(selected.get("caps") or {})
         quirk = dac_quirk_profile(selected, self.config.get("dac_profiles") or [])
-        source_rate = int(float((item or {}).get("sample_rate") or 0))
+        source_rate = int(_safe_float((item or {}).get("sample_rate")))
         descriptor_rates = set(descriptor_caps.get("pcm_rates") or [])
         # Do not stop an active MPD instance merely to probe a PCM rate. The
         # USB descriptor is stable and sufficient to reject unsupported
@@ -494,7 +601,7 @@ class MpdService:
         mixer_type = mixer["mode"]
         dop = "yes" if bool(self.config.get("mpd_dop")) else "no"
         quirk = dac_quirk_profile(output_device, self.config.get("dac_profiles") or [])
-        keepalive_mode = str(self.config.get("dac_keepalive_mode") or quirk.get("keepalive_mode") or "off").lower()
+        keepalive_mode = _config_text(self.config.get("dac_keepalive_mode")).lower() or _config_text(quirk.get("keepalive_mode"), "off").lower()
         if keepalive_mode not in ("off", "pcm_only"):
             keepalive_mode = "off"
         quirk["keepalive_mode"] = keepalive_mode
@@ -560,13 +667,20 @@ class MpdService:
             "dsd_mode": "dop" if dop == "yes" else "native",
             "dac_profile": quirk,
             "keepalive_mode": keepalive_mode,
-            "mpd_nice": int(self.config.get("mpd_nice") or 0),
+            "mpd_nice": _config_int(self.config.get("mpd_nice"), 0, -5, 10),
             "config_changed": config_changed,
             "host": self.host,
             "port": self.port,
         }
 
     def start(self) -> Dict[str, Any]:
+        with self._lifecycle_lock:
+            return self._start_locked()
+
+    def _start_locked(self) -> Dict[str, Any]:
+        self._recovery_generation += 1
+        self._recovery_active.clear()
+        self._service_stop.clear()
         setup = self.ensure_config()
         if not setup.get("ok"):
             return setup
@@ -575,24 +689,34 @@ class MpdService:
             return {**setup, "ok": False, "running": False, "message": lease.get("message")}
         if not self.supervisor.status("mpd").get("running"):
             self._cleanup_stale_instances()
-        self.supervisor.register(
-            "mpd",
-            [self.binary, "--no-daemon", self.config_path],
-            cwd=self.data_root,
-            env=self._runtime_env(),
-            log_path=self.log_path,
-            restart=True,
-            max_restarts=4,
-            restart_window=90.0,
-            on_restart=self._schedule_playback_recovery,
-            nice=int(self.config.get("mpd_nice") or 0),
-        )
-        running_status = self.supervisor.status("mpd")
-        scheduling_changed = int(running_status.get("nice") or 0) != int(self.config.get("mpd_nice") or 0)
-        if (setup.get("config_changed") or scheduling_changed) and running_status.get("running"):
-            result = self.supervisor.restart("mpd")
-        else:
-            result = self.supervisor.start("mpd")
+        try:
+            self.supervisor.register(
+                "mpd",
+                [self.binary, "--no-daemon", self.config_path],
+                cwd=self.data_root,
+                env=self._runtime_env(),
+                log_path=self.log_path,
+                restart=True,
+                max_restarts=4,
+                restart_window=90.0,
+                on_restart=self._schedule_playback_recovery,
+                on_exhaust=self._release_audio_output,
+                nice=_config_int(self.config.get("mpd_nice"), 0, -5, 10),
+            )
+            running_status = self.supervisor.status("mpd")
+            scheduling_changed = _config_int(running_status.get("nice"), 0, -5, 10) != _config_int(
+                self.config.get("mpd_nice"), 0, -5, 10
+            )
+            if (setup.get("config_changed") or scheduling_changed) and running_status.get("running"):
+                result = self.supervisor.restart("mpd")
+            else:
+                result = self.supervisor.start("mpd")
+        except Exception:
+            try:
+                self.supervisor.stop("mpd")
+            finally:
+                AUDIO_OUTPUT_LEASE.release("mpd")
+            raise
         if not result.get("ok"):
             AUDIO_OUTPUT_LEASE.release("mpd")
             return {**setup, **result}
@@ -607,15 +731,40 @@ class MpdService:
                 "pid": result.get("pid", 0),
                 "message": ready.get("message") or "MPD did not become ready",
             }
-        self._start_idle_listener()
-        self._start_device_monitor()
-        startup_delay = int(((setup.get("dac_profile") or {}).get("startup_delay_ms") or 0))
-        if startup_delay > 0 and (setup.get("config_changed") or result.get("pid")):
-            time.sleep(startup_delay / 1000.0)
-        self.refresh_status()
+        try:
+            self._start_idle_listener()
+            self._start_device_monitor()
+            startup_delay = _config_int(
+                ((setup.get("dac_profile") or {}).get("startup_delay_ms")),
+                0,
+                0,
+                60000,
+            )
+            if startup_delay > 0 and (setup.get("config_changed") or result.get("pid")):
+                time.sleep(startup_delay / 1000.0)
+            self.refresh_status()
+        except Exception:
+            # MPD is already running at this point. Roll back the whole
+            # runtime if a companion worker cannot be admitted, otherwise a
+            # failed start leaves a live daemon and a held output lease.
+            self.shutdown()
+            raise
         return {**setup, **result, **ready}
 
     def stop(self) -> Dict[str, Any]:
+        with self._lifecycle_lock:
+            return self._stop_locked()
+
+    def _stop_locked(self) -> Dict[str, Any]:
+        self._recovery_generation += 1
+        self._recovery_active.clear()
+        # An explicit stop is a terminal state for the current runtime. The
+        # DAC monitor must not interpret a later hotplug event as permission
+        # to start MPD again.
+        self._service_stop.set()
+        self._device_monitor_stop.set()
+        if self._device_monitor_thread and self._device_monitor_thread.is_alive():
+            self._device_monitor_thread.join(timeout=1.0)
         self._idle_stop.set()
         if self._idle_thread and self._idle_thread.is_alive():
             self._idle_thread.join(timeout=1.0)
@@ -627,6 +776,13 @@ class MpdService:
         return result
 
     def restart(self) -> Dict[str, Any]:
+        with self._lifecycle_lock:
+            return self._restart_locked()
+
+    def _restart_locked(self) -> Dict[str, Any]:
+        self._recovery_generation += 1
+        self._recovery_active.clear()
+        self._service_stop.clear()
         setup = self.ensure_config()
         if not setup.get("ok"):
             return setup
@@ -635,19 +791,27 @@ class MpdService:
             return {**setup, "ok": False, "running": False, "message": lease.get("message")}
         if not self.supervisor.status("mpd").get("running"):
             self._cleanup_stale_instances()
-        self.supervisor.register(
-            "mpd",
-            [self.binary, "--no-daemon", self.config_path],
-            cwd=self.data_root,
-            env=self._runtime_env(),
-            log_path=self.log_path,
-            restart=True,
-            max_restarts=4,
-            restart_window=90.0,
-            on_restart=self._schedule_playback_recovery,
-            nice=int(self.config.get("mpd_nice") or 0),
-        )
-        result = self.supervisor.restart("mpd")
+        try:
+            self.supervisor.register(
+                "mpd",
+                [self.binary, "--no-daemon", self.config_path],
+                cwd=self.data_root,
+                env=self._runtime_env(),
+                log_path=self.log_path,
+                restart=True,
+                max_restarts=4,
+                restart_window=90.0,
+                on_restart=self._schedule_playback_recovery,
+                on_exhaust=self._release_audio_output,
+                nice=_config_int(self.config.get("mpd_nice"), 0, -5, 10),
+            )
+            result = self.supervisor.restart("mpd")
+        except Exception:
+            try:
+                self.supervisor.stop("mpd")
+            finally:
+                AUDIO_OUTPUT_LEASE.release("mpd")
+            raise
         if not result.get("ok"):
             AUDIO_OUTPUT_LEASE.release("mpd")
             return {**setup, **result}
@@ -662,8 +826,12 @@ class MpdService:
                 "pid": result.get("pid", 0),
                 "message": ready.get("message") or "MPD did not become ready",
             }
-        self._start_idle_listener()
-        self.refresh_status()
+        try:
+            self._start_idle_listener()
+            self.refresh_status()
+        except Exception:
+            self.shutdown()
+            raise
         return {**setup, **result, **ready}
 
     def status(self, light: bool = False) -> Dict[str, Any]:
@@ -712,6 +880,7 @@ class MpdService:
                 "status": status,
                 "message": "",
                 "cached_at": time.time(),
+                "cached_monotonic": time.monotonic(),
             }
         except Exception as exc:
             probe = {
@@ -723,6 +892,7 @@ class MpdService:
                 "status": {},
                 "message": str(exc),
                 "cached_at": time.time(),
+                "cached_monotonic": time.monotonic(),
             }
         with self._status_lock:
             self._status_cache = probe
@@ -731,8 +901,9 @@ class MpdService:
 
     def _record_status_latency(self, elapsed_ms: float) -> None:
         with self._fault_lock:
-            samples = int(self._fault_state.get("status_samples") or 0) + 1
-            previous = float(self._fault_state.get("status_latency_ms") or 0.0)
+            samples = _safe_counter(self._fault_state.get("status_samples")) + 1
+            previous = _safe_float(self._fault_state.get("status_latency_ms"))
+            elapsed_ms = _safe_float(elapsed_ms)
             self._fault_state["status_samples"] = samples
             self._fault_state["status_latency_ms"] = previous + (elapsed_ms - previous) / samples
 
@@ -748,7 +919,7 @@ class MpdService:
         with self._fault_lock:
             current = str(self._fault_state.get("state") or "IDLE")
             next_state = current
-            failures = int(self._fault_state.get("consecutive_failures") or 0)
+            failures = _safe_counter(self._fault_state.get("consecutive_failures"))
             if error:
                 failures += 1
                 next_state = "SUSPECT" if failures < 2 else "DEGRADED"
@@ -780,7 +951,7 @@ class MpdService:
 
     def _mark_recovered(self, transport: str = "") -> None:
         with self._fault_lock:
-            self._fault_state["recovery_count"] = int(self._fault_state.get("recovery_count") or 0) + 1
+            self._fault_state["recovery_count"] = _safe_counter(self._fault_state.get("recovery_count")) + 1
             self._fault_state["consecutive_failures"] = 0
             self._fault_state["state"] = str(transport or "PLAYING").upper() if transport else "PLAYING"
             self._fault_state["last_error"] = ""
@@ -793,9 +964,19 @@ class MpdService:
     def _cached_probe(self) -> Dict[str, Any]:
         with self._status_lock:
             cached = dict(self._status_cache)
-        if not cached or time.time() - float(cached.get("cached_at") or 0) > 2.0:
+        if not cached or self._probe_age_seconds(cached) > 2.0:
             return self.refresh_status()
         return self._project_cached_probe(cached)
+
+    @staticmethod
+    def _probe_age_seconds(probe: Mapping[str, Any]) -> float:
+        cached_monotonic = _safe_float(probe.get("cached_monotonic"))
+        if cached_monotonic > 0.0:
+            return max(0.0, time.monotonic() - cached_monotonic)
+        # Compatibility for probes assembled by older callers that only carry
+        # the diagnostic wall-clock timestamp.
+        cached_at = _safe_float(probe.get("cached_at"))
+        return max(0.0, time.time() - cached_at) if cached_at > 0.0 else float("inf")
 
     def _project_cached_probe(self, probe: Dict[str, Any]) -> Dict[str, Any]:
         result = dict(probe)
@@ -803,13 +984,41 @@ class MpdService:
         position = dict(status.get("position") or {})
         transport = dict(status.get("transport") or {})
         if transport.get("state") == "PLAYING":
-            elapsed = max(0.0, time.time() - float(result.get("cached_at") or time.time()))
+            cached_monotonic = _safe_float(result.get("cached_monotonic"))
+            if cached_monotonic > 0.0:
+                elapsed = max(0.0, time.monotonic() - cached_monotonic)
+            else:
+                cached_at = _safe_float(result.get("cached_at")) or time.time()
+                elapsed = max(0.0, time.time() - cached_at)
             base = _safe_float(position.get("rel_seconds"))
             duration = _safe_float(position.get("duration_seconds"))
             position["rel_seconds"] = min(duration, base + elapsed) if duration > 0 else base + elapsed
             status["position"] = position
         result["status"] = status
+        self._update_recovery_checkpoint(result)
         return result
+
+    def _update_recovery_checkpoint(self, probe: Mapping[str, Any], backend_track_id: str = "") -> None:
+        """Keep a live song/position checkpoint for an unexpected MPD restart.
+
+        MPD idle events do not fire as playback time advances. Status polling
+        must therefore refresh the checkpoint too. Once recovery starts, the
+        newly spawned MPD may briefly report position zero before fnAudio has
+        rebuilt its queue; that transient state must not erase the checkpoint.
+        """
+        transport = normalized_transport(probe)
+        if transport not in ("PLAYING", "PAUSED"):
+            return
+        with self._fault_lock:
+            if str(self._fault_state.get("state") or "").upper() == "RECOVERING":
+                return
+        status = dict((probe or {}).get("status") or {})
+        position = dict(status.get("position") or {})
+        resolved_track_id = str(backend_track_id or self.track_id_for_status(dict(probe or {})) or "")
+        with self._queue_lock:
+            if resolved_track_id:
+                self._queue_current_track_id = resolved_track_id
+            self._last_position = max(0.0, _safe_float(position.get("rel_seconds")))
 
     def invalidate_output_capabilities(self) -> None:
         """Drop the cached ALSA descriptor after a device/config change."""
@@ -824,40 +1033,77 @@ class MpdService:
         running.  This keeps the playback-status request responsive even when
         a USB DAC is busy or the kernel's ALSA enumeration is slow.
         """
-        now = time.time()
+        now = time.monotonic()
+        wait_for_builder = False
+        owns_build = False
         with self._output_caps_lock:
             cached = dict(self._output_caps_cache)
             age = now - self._output_caps_cache_at if self._output_caps_cache_at else float("inf")
-            refreshing = self._output_caps_refreshing
-            if cached and not force and age <= self._output_caps_ttl:
-                return cached
+            building = self._output_caps_builders > 0
             if cached and not force:
-                if not refreshing:
-                    self._output_caps_refreshing = True
-                    threading.Thread(target=self._refresh_output_capabilities, name="fnaudio-alsa-caps", daemon=True).start()
+                if age > self._output_caps_ttl and not building:
+                    self._begin_output_caps_build_locked()
+                    try:
+                        threading.Thread(
+                            target=self._refresh_output_capabilities,
+                            name="fnaudio-alsa-caps",
+                            daemon=True,
+                        ).start()
+                    except Exception:
+                        # A temporary thread-admission failure must not leave
+                        # the refresh latch set forever; otherwise every
+                        # later status poll serves stale capabilities forever.
+                        self._end_output_caps_build_locked()
                 return cached
-            if refreshing and cached and not force:
-                return cached
-            self._output_caps_refreshing = True
+            if building and not force:
+                wait_for_builder = True
+            else:
+                self._begin_output_caps_build_locked()
+                owns_build = True
+        if wait_for_builder:
+            # The cache is cold and a scan is already running, so share that
+            # result instead of stacking a second scan behind it. A cold build
+            # spawns one `amixer` process per card and probes hw_params, which
+            # every concurrent first-screen status poll used to pay for alone.
+            self._output_caps_idle.wait(timeout=MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS)
+            with self._output_caps_lock:
+                result = dict(self._output_caps_cache)
+                if not result:
+                    # The in-flight scan is wedged or found nothing usable. An
+                    # empty descriptor would make mpd_output report "no sound
+                    # card" and drop native DSD, so build it here instead.
+                    self._begin_output_caps_build_locked()
+                    owns_build = True
+            if result:
+                return result
         try:
-            result = self._build_output_capabilities()
-            with self._output_caps_lock:
-                self._output_caps_cache = dict(result)
-                self._output_caps_cache_at = time.time()
-            return result
+            return self._publish_output_capabilities(self._build_output_capabilities())
         finally:
-            with self._output_caps_lock:
-                self._output_caps_refreshing = False
+            if owns_build:
+                with self._output_caps_lock:
+                    self._end_output_caps_build_locked()
+
+    def _begin_output_caps_build_locked(self) -> None:
+        self._output_caps_builders += 1
+        self._output_caps_idle.clear()
+
+    def _end_output_caps_build_locked(self) -> None:
+        self._output_caps_builders = max(0, self._output_caps_builders - 1)
+        if self._output_caps_builders == 0:
+            self._output_caps_idle.set()
+
+    def _publish_output_capabilities(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        with self._output_caps_lock:
+            self._output_caps_cache = dict(result)
+            self._output_caps_cache_at = time.monotonic()
+        return result
 
     def _refresh_output_capabilities(self) -> None:
         try:
-            result = self._build_output_capabilities()
-            with self._output_caps_lock:
-                self._output_caps_cache = dict(result)
-                self._output_caps_cache_at = time.time()
+            self._publish_output_capabilities(self._build_output_capabilities())
         finally:
             with self._output_caps_lock:
-                self._output_caps_refreshing = False
+                self._end_output_caps_build_locked()
 
     def _build_output_capabilities(self) -> Dict[str, Any]:
         devices = []
@@ -894,7 +1140,7 @@ class MpdService:
             )
         verified = bool(selected_hw.get("verified"))
         rates = selected_hw.get("pcm_rates") if verified else selected_caps.get("pcm_rates") or []
-        max_bits = int(selected_hw.get("pcm_max_bits") or selected_caps.get("pcm_max_bits") or 0)
+        max_bits = int(_safe_float(selected_hw.get("pcm_max_bits") or selected_caps.get("pcm_max_bits")))
         dsd_text = " ".join(str(x) for x in selected_caps.get("dsd_rates") or []).lower()
         dsd_native = bool(selected_hw.get("native_dsd")) if verified else False
         dsd_advertised = bool(selected_caps.get("dsd"))
@@ -913,9 +1159,9 @@ class MpdService:
             "dsd_advertised": dsd_advertised,
             "dop": dop,
             "dsd_mode": "dop" if bool(self.config.get("mpd_dop")) else "native",
-            "keepalive_mode": str(self.config.get("dac_keepalive_mode") or "off"),
+            "keepalive_mode": _config_text(self.config.get("dac_keepalive_mode"), "off"),
             "keepalive_active": False,
-            "mpd_nice": int(self.config.get("mpd_nice") or 0),
+            "mpd_nice": _config_int(self.config.get("mpd_nice"), 0, -5, 10),
             "native_dsd_verified": bool(verified and selected_hw.get("native_dsd")),
             "hw_params": selected_hw,
             "bitperfect": bool(mixer_policy.get("bitperfect")),
@@ -929,17 +1175,35 @@ class MpdService:
     def idle_status(self) -> Dict[str, Any]:
         with self._idle_lock:
             result = dict(self._idle_state)
-        result["underrun"] = dict(self._underrun_state)
-        result["playback_errors"] = dict(self._playback_error_state)
+        # The device monitor rewrites both dictionaries from its own thread.
+        # Copying them unlocked can hand the status endpoint a torn snapshot
+        # (a fresh count paired with the previous category breakdown).
+        with self._error_state_lock:
+            result["underrun"] = dict(self._underrun_state)
+            result["playback_errors"] = dict(self._playback_error_state)
         result["fault"] = self.fault_status()
         return result
 
     def _start_idle_listener(self) -> None:
-        if self._idle_thread and self._idle_thread.is_alive():
-            return
+        old_thread = self._idle_thread
+        if old_thread and old_thread.is_alive():
+            if not self._idle_stop.is_set():
+                return
+            old_thread.join(timeout=1.0)
+            if old_thread.is_alive():
+                raise RuntimeError("MPD idle listener is still stopping")
+            if self._idle_thread is old_thread:
+                self._idle_thread = None
         self._idle_stop.clear()
-        self._idle_thread = threading.Thread(target=self._idle_loop, name="fnaudio-mpd-idle", daemon=True)
-        self._idle_thread.start()
+        try:
+            thread = threading.Thread(target=self._idle_loop, name="fnaudio-mpd-idle", daemon=True)
+            self._idle_thread = thread
+            thread.start()
+        except Exception:
+            if "thread" in locals() and self._idle_thread is thread:
+                self._idle_thread = None
+            self._idle_stop.set()
+            raise
 
     def _idle_loop(self) -> None:
         while not self._idle_stop.is_set():
@@ -961,10 +1225,7 @@ class MpdService:
                 status_payload = dict(refreshed.get("status") or {})
                 position_payload = dict(status_payload.get("position") or {})
                 backend_track_id = self.track_id_for_status(refreshed)
-                with self._queue_lock:
-                    if backend_track_id:
-                        self._queue_current_track_id = backend_track_id
-                    self._last_position = max(0.0, _safe_float(position_payload.get("rel_seconds")))
+                self._update_recovery_checkpoint(refreshed, backend_track_id)
                 suppressed_stop = transport == "STOPPED" and time.monotonic() <= self._suppress_stop_until
                 if suppressed_stop:
                     self._suppress_stop_until = 0.0
@@ -991,38 +1252,85 @@ class MpdService:
         # A process crash briefly looks like a normal MPD STOPPED event. Keep
         # the transport listener from advancing the logical queue while the
         # supervisor brings MPD back and restores the saved song/position.
+        if self._service_stop.is_set():
+            return
         self.suppress_stop_transition(15.0)
         self._mark_recovering()
-        threading.Thread(target=self._recover_playback_after_restart, name="fnaudio-mpd-recovery", daemon=True).start()
+        self._recovery_active.set()
+        generation = self._recovery_generation
+        try:
+            with self._recovery_thread_lock:
+                if self._recovery_thread and self._recovery_thread.is_alive():
+                    return
+                thread = threading.Thread(
+                    target=self._recover_playback_after_restart,
+                    args=(generation,),
+                    name="fnaudio-mpd-recovery",
+                    daemon=True,
+                )
+                self._recovery_thread = thread
+                # Registration and start must be one atomic transition. A
+                # concurrent supervisor callback otherwise sees a non-live
+                # gap and can overwrite this tracked recovery thread.
+                thread.start()
+        except Exception as exc:
+            with self._recovery_thread_lock:
+                if "thread" in locals() and self._recovery_thread is thread:
+                    self._recovery_thread = None
+                elif "thread" not in locals():
+                    self._recovery_thread = None
+            self._recovery_active.clear()
+            self._observe_fault(error="MPD playback recovery could not start: %s" % exc)
+            with self._idle_lock:
+                self._idle_state["error"] = "MPD playback recovery could not start: %s" % exc
+            raise
 
-    def _recover_playback_after_restart(self) -> None:
+    def _recover_playback_after_restart(self, generation: Optional[int] = None) -> None:
+        if generation is None:
+            generation = self._recovery_generation
+        if generation != self._recovery_generation:
+            return
         if not self._recovery_lock.acquire(False):
             return
+        self._recovery_active.set()
         try:
-            ready = self._wait_ready(8.0)
-            if not ready.get("running"):
+            if generation != self._recovery_generation or self._service_stop.is_set():
                 return
-            with self._queue_lock:
-                entries = list(self._queue_entries)
-                current_track_id = self._queue_current_track_id
-                position = self._last_position
-                repeat = self._queue_repeat
-                shuffle = self._queue_shuffle
-            if not entries or not current_track_id:
-                return
-            result = mpd_replace_queue(
-                entries,
-                current_track_id=current_track_id,
-                start=max(0.0, position - 0.35),
-                repeat=repeat,
-                shuffle=shuffle,
-                host=self.host,
-                port=self.port,
-            )
-            with self._queue_lock:
-                self._queue_song_ids = dict(result.get("song_ids") or {})
-                self._queue_song_tracks = {song_id: track_id for track_id, song_id in self._queue_song_ids.items()}
+            with self._command_lock:
+                if generation != self._recovery_generation or self._service_stop.is_set():
+                    return
+                ready = self._wait_ready(8.0)
+                if generation != self._recovery_generation or self._service_stop.is_set():
+                    return
+                if not ready.get("running"):
+                    self._observe_fault(error=ready.get("message") or "MPD recovery timed out")
+                    return
+                with self._queue_lock:
+                    entries = list(self._queue_entries)
+                    current_track_id = self._queue_current_track_id
+                    position = self._last_position
+                    repeat = self._queue_repeat
+                    shuffle = self._queue_shuffle
+                if generation != self._recovery_generation or self._service_stop.is_set():
+                    return
+                if not entries or not current_track_id:
+                    self._mark_recovered("STOPPED")
+                    return
+                result = mpd_replace_queue(
+                    entries,
+                    current_track_id=current_track_id,
+                    start=max(0.0, position - 0.35),
+                    repeat=repeat,
+                    shuffle=shuffle,
+                    host=self.host,
+                    port=self.port,
+                )
+                with self._queue_lock:
+                    self._queue_song_ids = dict(result.get("song_ids") or {})
+                    self._queue_song_tracks = {song_id: track_id for track_id, song_id in self._queue_song_ids.items()}
             probe = self.refresh_status()
+            if generation != self._recovery_generation or self._service_stop.is_set():
+                return
             transport = normalized_transport(probe)
             if not transport:
                 transport = "PLAYING" if entries else "STOPPED"
@@ -1052,9 +1360,17 @@ class MpdService:
                 self._idle_state["error"] = "MPD playback recovery failed: %s" % exc
         finally:
             self._recovery_lock.release()
+            with self._recovery_thread_lock:
+                owns_tracked_thread = self._recovery_thread is threading.current_thread()
+                if owns_tracked_thread:
+                    self._recovery_thread = None
+                if generation == self._recovery_generation and (
+                    owns_tracked_thread or self._recovery_thread is None
+                ):
+                    self._recovery_active.clear()
 
     def _wait_ready(self, timeout: float = 5.0) -> Dict[str, Any]:
-        deadline = time.monotonic() + max(0.2, float(timeout))
+        deadline = time.monotonic() + max(0.2, _safe_float(timeout))
         last = "MPD is not accepting connections"
         while time.monotonic() < deadline:
             supervisor = self.supervisor.status("mpd")
@@ -1071,51 +1387,95 @@ class MpdService:
         return {"running": False, "message": last}
 
     def shutdown(self) -> None:
+        with self._lifecycle_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
+        self._service_stop.set()
+        with self._recovery_thread_lock:
+            recovery_thread = self._recovery_thread
         self._device_monitor_stop.set()
         if self._device_monitor_thread and self._device_monitor_thread.is_alive():
             self._device_monitor_thread.join(timeout=1.0)
         self._idle_stop.set()
         if self._idle_thread and self._idle_thread.is_alive():
             self._idle_thread.join(timeout=1.0)
+        if recovery_thread and recovery_thread.is_alive() and recovery_thread is not threading.current_thread():
+            recovery_thread.join(timeout=1.0)
         self.supervisor.shutdown()
+        AUDIO_OUTPUT_LEASE.release("mpd")
         self._cleanup_stale_instances()
 
+    def _release_audio_output(self, _name: str = "", _status: Dict[str, Any] | None = None) -> None:
+        AUDIO_OUTPUT_LEASE.release("mpd")
+
     def _start_device_monitor(self) -> None:
-        if self._device_monitor_thread and self._device_monitor_thread.is_alive():
-            return
+        old_thread = self._device_monitor_thread
+        if old_thread and old_thread.is_alive():
+            if not self._device_monitor_stop.is_set():
+                return
+            old_thread.join(timeout=1.0)
+            if old_thread.is_alive():
+                raise RuntimeError("MPD device monitor is still stopping")
+            if self._device_monitor_thread is old_thread:
+                self._device_monitor_thread = None
         self._device_monitor_stop.clear()
-        self._device_monitor_thread = threading.Thread(
-            target=self._device_monitor_loop,
-            name="fnaudio-usb-dac-monitor",
-            daemon=True,
-        )
-        self._device_monitor_thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._device_monitor_loop,
+                name="fnaudio-usb-dac-monitor",
+                daemon=True,
+            )
+            self._device_monitor_thread = thread
+            thread.start()
+        except Exception:
+            if "thread" in locals() and self._device_monitor_thread is thread:
+                self._device_monitor_thread = None
+            self._device_monitor_stop.set()
+            raise
 
     def _device_monitor_loop(self) -> None:
         while not self._device_monitor_stop.wait(2.0):
-            stable_id = str(self.config.get("mpd_output_stable_id") or "")
-            if stable_id:
-                selected = self._find_output_device(stable_id)
-                self._device_presence, transition = device_presence_transition(
-                    self._device_presence,
-                    bool(selected),
-                    self._device_presence_threshold,
-                )
-                if transition == "disconnected" and self.supervisor.status("mpd").get("running"):
-                    self._selected_device_missing = True
-                    self.suppress_stop_transition(5.0)
-                    self.supervisor.stop("mpd")
-                    AUDIO_OUTPUT_LEASE.release("mpd")
-                    with self._idle_lock:
-                        self._idle_state["error"] = "selected USB DAC disconnected"
-                elif transition == "reconnected" and self._selected_device_missing:
-                    self._selected_device_missing = False
-                    self.config["mpd_output_alsa_id"] = selected.get("alsa_id") or ""
-                    self._configured = False
-                    started = self.start()
-                    if started.get("running"):
-                        self._schedule_playback_recovery("mpd", started)
-            self._watch_for_playback_errors()
+            if self._service_stop.is_set():
+                return
+            # One failed tick must not retire the monitor: it is the only thread
+            # that notices an unplugged USB DAC and the only reader of MPD's log
+            # for output/decoder errors. Work is retried on the next tick and the
+            # failure stays observable through fault_status().
+            try:
+                stable_id = _config_text(self.config.get("mpd_output_stable_id"))
+                if stable_id:
+                    selected = self._find_output_device(stable_id)
+                    self._device_presence, transition = device_presence_transition(
+                        self._device_presence,
+                        bool(selected),
+                        self._device_presence_threshold,
+                    )
+                    if transition == "disconnected" and self.supervisor.status("mpd").get("running"):
+                        self._selected_device_missing = True
+                        self.suppress_stop_transition(5.0)
+                        self.supervisor.stop("mpd")
+                        AUDIO_OUTPUT_LEASE.release("mpd")
+                        with self._idle_lock:
+                            self._idle_state["error"] = "selected USB DAC disconnected"
+                    elif transition == "reconnected" and self._selected_device_missing:
+                        # The stop flag and the restart decision must be checked
+                        # under the same lifecycle lock. Otherwise stop() can set
+                        # the flag after this check but before start() acquires
+                        # the lock; start() would then clear the flag and revive
+                        # MPD after an explicit user stop.
+                        with self._lifecycle_lock:
+                            if self._service_stop.is_set():
+                                return
+                            self._selected_device_missing = False
+                            self.config["mpd_output_alsa_id"] = selected.get("alsa_id") or ""
+                            self._configured = False
+                            started = self._start_locked()
+                        if started.get("running"):
+                            self._schedule_playback_recovery("mpd", started)
+                self._watch_for_playback_errors()
+            except Exception as exc:
+                self._observe_fault(error=str(exc))
 
     def _watch_for_playback_errors(self) -> None:
         if not os.path.isfile(self.log_path) or not self._queue_entries:
@@ -1127,8 +1487,8 @@ class MpdService:
             if size == self._last_log_size:
                 return
             with open(self.log_path, "rb") as handle:
-                handle.seek(max(self._last_log_size, size - 8192))
-                chunk = handle.read().decode("utf-8", "ignore").lower()
+                handle.seek(max(self._last_log_size, size - MAX_MPD_LOG_TAIL_BYTES))
+                chunk = handle.read(MAX_MPD_LOG_TAIL_BYTES + 1)[:MAX_MPD_LOG_TAIL_BYTES].decode("utf-8", "ignore").lower()
             self._last_log_size = size
         except OSError:
             return
@@ -1136,19 +1496,21 @@ class MpdService:
         if not summary.get("count"):
             return
         latest = (summary.get("items") or [{}])[-1]
-        counts = dict(self._playback_error_state.get("by_category") or {})
-        for category, count in (summary.get("by_category") or {}).items():
-            counts[category] = int(counts.get(category) or 0) + int(count or 0)
-        self._playback_error_state.update(
-            {
-                "count": int(self._playback_error_state.get("count") or 0) + int(summary.get("occurrences") or 0),
-                "last_detected": time.time(),
-                "last_category": str(latest.get("category") or ""),
-                "last_domain": str(latest.get("domain") or ""),
-                "last_message": str(latest.get("message") or ""),
-                "by_category": counts,
-            }
-        )
+        with self._error_state_lock:
+            counts = dict(self._playback_error_state.get("by_category") or {})
+            for category, count in (summary.get("by_category") or {}).items():
+                counts[category] = _safe_counter(counts.get(category)) + _safe_counter(count)
+            self._playback_error_state.update(
+                {
+                    "count": _safe_counter(self._playback_error_state.get("count"))
+                    + _safe_counter(summary.get("occurrences")),
+                    "last_detected": time.time(),
+                    "last_category": str(latest.get("category") or ""),
+                    "last_domain": str(latest.get("domain") or ""),
+                    "last_message": str(latest.get("message") or ""),
+                    "by_category": counts,
+                }
+            )
         output_items = [item for item in summary.get("items") or [] if item.get("domain") == "output"]
         if not output_items:
             return
@@ -1156,25 +1518,30 @@ class MpdService:
         category = str(output_error.get("category") or "")
         marker = str(output_error.get("message") or category)
         now = time.monotonic()
-        if int((summary.get("by_category") or {}).get("buffer_underrun") or 0):
-            self._underrun_state.update(
-                {
-                    "count": int(self._underrun_state.get("count") or 0)
-                    + int(summary["by_category"]["buffer_underrun"]),
-                    "last_detected": time.time(),
-                    "last_message": marker,
-                }
-            )
+        underruns = _safe_counter((summary.get("by_category") or {}).get("buffer_underrun"))
+        if underruns:
+            with self._error_state_lock:
+                self._underrun_state.update(
+                    {
+                        "count": _safe_counter(self._underrun_state.get("count")) + underruns,
+                        "last_detected": time.time(),
+                        "last_message": marker,
+                    }
+                )
         self._observe_fault(error=marker)
         if category in ("output_device_missing", "output_format_unsupported"):
             return
         if now - self._last_underrun_restart < 30.0:
-            self._underrun_state["restart_suppressed"] = int(self._underrun_state.get("restart_suppressed") or 0) + 1
+            with self._error_state_lock:
+                self._underrun_state["restart_suppressed"] = _safe_counter(
+                    self._underrun_state.get("restart_suppressed")
+                ) + 1
             return
         self._last_underrun_restart = now
         result = self.restart()
         if result.get("running"):
-            self._underrun_state["last_restart"] = time.time()
+            with self._error_state_lock:
+                self._underrun_state["last_restart"] = time.time()
             self._schedule_playback_recovery("mpd", result)
 
     def _watch_for_underrun(self) -> None:
@@ -1196,7 +1563,7 @@ class MpdService:
             return self._binary_version_cache
         try:
             env = {**os.environ, **self._runtime_env()}
-            value = subprocess.check_output([self.binary, "--version"], stderr=subprocess.STDOUT, env=env, timeout=3).decode("utf-8", "replace").splitlines()[0]
+            value = check_output_bounded([self.binary, "--version"], max_bytes=16 * 1024, timeout=3, env=env).decode("utf-8", "replace").splitlines()[0]
         except Exception:
             value = ""
         self._binary_version_cache = value
@@ -1210,7 +1577,8 @@ class MpdService:
         if os.path.isfile(pid_file):
             try:
                 with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    pid = int(str(fh.read()).strip().splitlines()[0])
+                    pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
+                    pid = int(pid_text.strip().splitlines()[0])
                 if pid > 1 and self._pid_matches_mpd(pid):
                     stale_pids.add(pid)
             except Exception:
@@ -1242,7 +1610,8 @@ class MpdService:
         cmdline = f"/proc/{pid}/cmdline"
         try:
             with open(cmdline, "rb") as fh:
-                raw = fh.read().replace(b"\x00", b" ").decode("utf-8", "ignore")
+                raw = fh.read(MAX_MPD_PROC_CMDLINE_BYTES + 1)
+                raw = raw[:MAX_MPD_PROC_CMDLINE_BYTES].replace(b"\x00", b" ").decode("utf-8", "ignore")
         except Exception:
             return False
         if not raw:
@@ -1263,8 +1632,8 @@ class MpdService:
                 os.kill(pid, signal.SIGTERM)
         except Exception:
             return
-        deadline = time.time() + 2.5
-        while time.time() < deadline:
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
             if not self._pid_alive(pid):
                 return
             time.sleep(0.1)
@@ -1291,6 +1660,12 @@ class MpdService:
     def _prepare_music_directory(self, roots: List[str]) -> str:
         if len(roots) <= 1:
             return roots[0] if roots else "/"
+        # This directory is app-owned state, not a user library root.  Never
+        # follow a replacement symlink here: alias creation and stale-link
+        # cleanup would otherwise operate on an arbitrary external directory.
+        if os.path.lexists(self.music_root) and (
+                os.path.islink(self.music_root) or not os.path.isdir(self.music_root)):
+            raise OSError("MPD music alias directory is not a regular directory")
         os.makedirs(self.music_root, exist_ok=True)
         wanted = set()
         for index, root in enumerate(roots):
@@ -1310,7 +1685,7 @@ class MpdService:
             except OSError:
                 pass
         for name in os.listdir(self.music_root):
-            if name not in wanted:
+            if name not in wanted and re.fullmatch(r"\d{2}_[A-Za-z0-9_.-]+", name):
                 stale = os.path.join(self.music_root, name)
                 try:
                     if os.path.islink(stale):
@@ -1368,46 +1743,55 @@ class MpdService:
         return None
 
     def select_output(self, alsa_id: str) -> Dict[str, Any]:
-        alsa_id = urllib.parse.unquote(str(alsa_id or "").strip())
+        if not isinstance(alsa_id, str) or len(alsa_id) > 512:
+            return {"ok": False, "message": "输出设备标识无效", "alsa_id": ""}
+        alsa_id = urllib.parse.unquote(alsa_id.strip())
         devices = alsa_devices()
         selected = self._find_output_device(alsa_id, devices)
         if not selected:
             return {"ok": False, "message": "没有找到这个 MPD 输出设备", "alsa_id": alsa_id}
-        previous = str(self.config.get("mpd_output_alsa_id") or "")
-        previous_stable = str(self.config.get("mpd_output_stable_id") or "")
+        previous = _config_text(self.config.get("mpd_output_alsa_id"), maximum=512)
+        previous_stable = _config_text(self.config.get("mpd_output_stable_id"), maximum=512)
         wanted_runtime = str(selected.get("alsa_id") or "")
         wanted_stable = str(selected.get("stable_id") or "")
         changed = previous != wanted_runtime or previous_stable != wanted_stable
         if not changed:
             return {"ok": True, "selected_output": self._public_output(selected), "changed": False}
-        self.invalidate_output_capabilities()
-        was_running = bool(self.supervisor.status("mpd").get("running"))
-        previous_dop = bool(self.config.get("mpd_dop"))
-        if was_running:
-            self.suppress_stop_transition(5.0)
-            self.stop()
-        self.config["mpd_output_alsa_id"] = wanted_runtime
-        self.config["mpd_output_stable_id"] = wanted_stable
-        self._configured = False
-        verification = probe_alsa_hw_params(selected, force=True)
-        if not verification.get("available"):
-            self.config.update({"mpd_output_alsa_id": previous, "mpd_output_stable_id": previous_stable, "mpd_dop": previous_dop})
-            self._configured = False
+        with self._exclusive_output_selection():
             self.invalidate_output_capabilities()
-            rollback = self.start() if was_running else {"running": False}
-            return {"ok": False, "message": "ALSA 输出验证失败，已恢复原输出", "verification": verification, "rollback": rollback}
-        activated = self.start() if was_running else self.ensure_config()
-        if not activated.get("ok") or (was_running and not activated.get("running")):
-            self.config.update({"mpd_output_alsa_id": previous, "mpd_output_stable_id": previous_stable, "mpd_dop": previous_dop})
+            was_running = bool(self.supervisor.status("mpd").get("running"))
+            previous_dop = bool(self.config.get("mpd_dop"))
+            if was_running:
+                self.suppress_stop_transition(5.0)
+                self.stop()
+            # One update: a poll that resolves the selection must never see a
+            # half-written pair, or it rewrites the runtime id from the old card.
+            self.config.update({
+                "mpd_output_alsa_id": wanted_runtime,
+                "mpd_output_stable_id": wanted_stable,
+            })
             self._configured = False
-            rollback = self.start() if was_running else self.ensure_config()
-            return {"ok": False, "message": "新输出启动失败，已回滚原输出", "activation": activated, "rollback": rollback}
-        self._persist_app_config()
-        self.invalidate_output_capabilities()
-        return {"ok": True, "selected_output": self._public_output(selected), "changed": True, "verification": verification, "activation": activated}
+            verification = probe_alsa_hw_params(selected, force=True)
+            if not verification.get("available"):
+                self.config.update({"mpd_output_alsa_id": previous, "mpd_output_stable_id": previous_stable, "mpd_dop": previous_dop})
+                self._configured = False
+                self.invalidate_output_capabilities()
+                rollback = self.start() if was_running else {"running": False}
+                return {"ok": False, "message": "ALSA 输出验证失败，已恢复原输出", "verification": verification, "rollback": rollback}
+            activated = self.start() if was_running else self.ensure_config()
+            if not activated.get("ok") or (was_running and not activated.get("running")):
+                self.config.update({"mpd_output_alsa_id": previous, "mpd_output_stable_id": previous_stable, "mpd_dop": previous_dop})
+                self._configured = False
+                rollback = self.start() if was_running else self.ensure_config()
+                return {"ok": False, "message": "新输出启动失败，已回滚原输出", "activation": activated, "rollback": rollback}
+            self._persist_app_config()
+            self.invalidate_output_capabilities()
+            return {"ok": True, "selected_output": self._public_output(selected), "changed": True, "verification": verification, "activation": activated}
 
     def test_output(self, alsa_id: str, duration: float = 1.2) -> Dict[str, Any]:
-        alsa_id = str(alsa_id or "").strip()
+        if not isinstance(alsa_id, str) or len(alsa_id) > 512:
+            return {"ok": False, "message": "输出设备标识无效", "alsa_id": "", "devices": []}
+        alsa_id = alsa_id.strip()
         devices = alsa_devices()
         device = self._find_output_device(alsa_id, devices)
         if not device:
@@ -1420,52 +1804,79 @@ class MpdService:
             "caps": device.get("caps") or {},
             "attempts": [],
         }
-        previous_selection = {
-            "mpd_output_alsa_id": str(self.config.get("mpd_output_alsa_id") or ""),
-            "mpd_output_stable_id": str(self.config.get("mpd_output_stable_id") or ""),
-            "mpd_dop": bool(self.config.get("mpd_dop")),
-        }
-        was_running = bool(self.supervisor.status("mpd").get("running"))
-        # The bundled ffmpeg on fnOS may not include the ALSA muxer. Route the
-        # test tone through MPD so the test exercises the same output path as
-        # normal playback.
-        try:
-            previous = str(self.config.get("mpd_output_alsa_id") or "")
-            self.config["mpd_output_alsa_id"] = alsa_id
-            self.config["mpd_output_stable_id"] = str(device.get("stable_id") or "")
-            self._configured = False
-            started = self.start()
-            if not started.get("running"):
-                return {"ok": False, "message": started.get("message") or "MPD 未能启动", **diagnostics}
-            test_root = self._library_paths()[0] if self._library_paths() else self.data_root
-            test_path = os.path.join(test_root, ".fnaudio-output-test.wav")
-            _write_test_wav(test_path, duration)
-            loaded = mpd_load_uri(self.uri_for_path(test_path), host=self.host, port=self.port)
-            diagnostics["attempts"].append({"target": alsa_id, "method": "mpd-wav", "mpd": loaded})
-            time.sleep(max(0.4, min(2.0, float(duration or 1.2))))
-            if previous != alsa_id:
-                self.config["mpd_output_alsa_id"] = previous
-                self._configured = False
-                self.restart()
+        with self._exclusive_output_selection():
+            previous_selection = {
+                "mpd_output_alsa_id": _config_text(self.config.get("mpd_output_alsa_id"), maximum=512),
+                "mpd_output_stable_id": _config_text(self.config.get("mpd_output_stable_id"), maximum=512),
+                "mpd_dop": bool(self.config.get("mpd_dop")),
+            }
+            was_running = bool(self.supervisor.status("mpd").get("running"))
+            # The bundled ffmpeg on fnOS may not include the ALSA muxer. Route the
+            # test tone through MPD so the test exercises the same output path as
+            # normal playback.
+            fd = -1
+            test_path = ""
+            started_for_test = False
             try:
-                os.unlink(test_path)
-            except OSError:
-                pass
-            return {"ok": True, "message": "测试音已通过 MPD 发送到 %s" % (device.get("name") or alsa_id), "used_target": alsa_id, **diagnostics}
-        except Exception as exc:
-            return {"ok": False, "message": "MPD 测试音播放失败：%s" % exc, **diagnostics}
-
-        finally:
-            selection_changed = any(self.config.get(key) != value for key, value in previous_selection.items())
-            self.config.update(previous_selection)
-            if selection_changed:
+                previous = _config_text(self.config.get("mpd_output_alsa_id"), maximum=512)
+                # One update: a poll that resolves the selection must never see a
+                # half-written pair, or it rewrites the runtime id from the old card.
+                self.config.update({
+                    "mpd_output_alsa_id": alsa_id,
+                    "mpd_output_stable_id": str(device.get("stable_id") or ""),
+                })
                 self._configured = False
-                if was_running:
+                started = self.start()
+                started_for_test = not was_running and bool(started.get("running"))
+                if not started.get("running"):
+                    return {"ok": False, "message": started.get("message") or "MPD 未能启动", **diagnostics}
+                test_root = self._library_paths()[0] if self._library_paths() else self.data_root
+                fd, test_path = tempfile.mkstemp(prefix=".fnaudio-output-test-", suffix=".wav", dir=test_root)
+                os.close(fd)
+                fd = -1
+                _write_test_wav(test_path, duration)
+                loaded = mpd_load_uri(self.uri_for_path(test_path), host=self.host, port=self.port)
+                diagnostics["attempts"].append({"target": alsa_id, "method": "mpd-wav", "mpd": loaded})
+                time.sleep(max(0.4, min(2.0, _safe_float(duration) or 1.2)))
+                if previous != alsa_id and was_running:
+                    # Restore the whole selection. Leaving the tested device's
+                    # stable id behind would make the next read resolve straight
+                    # back to the tested device and persist it again.
+                    self.config.update(previous_selection)
+                    self._configured = False
                     self.restart()
+                return {"ok": True, "message": "测试音已通过 MPD 发送到 %s" % (device.get("name") or alsa_id), "used_target": alsa_id, **diagnostics}
+            except Exception as exc:
+                return {"ok": False, "message": "MPD 测试音播放失败：%s" % exc, **diagnostics}
+
+            finally:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                if test_path:
+                    try:
+                        os.unlink(test_path)
+                    except OSError:
+                        pass
+                selection_changed = any(self.config.get(key) != value for key, value in previous_selection.items())
+                self.config.update(previous_selection)
+                if selection_changed:
+                    self._configured = False
+                    # Whatever a concurrent poll wrote to disk while the test tone
+                    # was playing, the caller's own selection must be what survives.
+                    self._persist_app_config()
+                if was_running and selection_changed:
+                    self.restart()
+                elif started_for_test:
+                    # Output testing may start MPD temporarily. Restore the
+                    # caller's original stopped state after the test finishes.
+                    self.stop()
 
     def _selected_alsa_output(self) -> Dict[str, Any]:
-        stable_wanted = str(self.config.get("mpd_output_stable_id") or "").strip()
-        wanted = str(self.config.get("mpd_output_alsa_id") or "").strip()
+        stable_wanted = _config_text(self.config.get("mpd_output_stable_id"), maximum=512).strip()
+        wanted = _config_text(self.config.get("mpd_output_alsa_id"), maximum=512).strip()
         devices = alsa_devices()
         if stable_wanted:
             selected = self._find_output_device(stable_wanted, devices)
@@ -1473,21 +1884,42 @@ class MpdService:
                 runtime_id = selected.get("alsa_id") or ""
                 if self.config.get("mpd_output_alsa_id") != runtime_id:
                     self.config["mpd_output_alsa_id"] = runtime_id
-                    self._persist_app_config()
+                    self._persist_output_selection()
                 return self._public_output(selected, "stable-selected")
         if wanted:
             selected = self._find_output_device(wanted, devices)
             if selected:
-                self.config["mpd_output_stable_id"] = selected.get("stable_id") or ""
-                self.config["mpd_output_alsa_id"] = selected.get("alsa_id") or ""
-                self._persist_app_config()
+                # One update: a poll that resolves the selection must never see a
+                # half-written pair, or it rewrites the runtime id from the old card.
+                self.config.update({
+                    "mpd_output_alsa_id": selected.get("alsa_id") or "",
+                    "mpd_output_stable_id": selected.get("stable_id") or "",
+                })
+                self._persist_output_selection()
                 return self._public_output(selected, "legacy-migrated")
         selected = self._preferred_alsa_output()
         if selected and selected.get("alsa_id") != "default":
-            self.config["mpd_output_stable_id"] = selected.get("stable_id") or ""
-            self.config["mpd_output_alsa_id"] = selected.get("alsa_id") or ""
-            self._persist_app_config()
+            # One update: a poll that resolves the selection must never see a
+            # half-written pair, or it rewrites the runtime id from the old card.
+            self.config.update({
+                "mpd_output_alsa_id": selected.get("alsa_id") or "",
+                "mpd_output_stable_id": selected.get("stable_id") or "",
+            })
+            self._persist_output_selection()
         return selected
+
+    def _persist_output_selection(self) -> None:
+        """Persist a resolved selection, but never while one is being changed.
+
+        `select_output` and `test_output` rewrite the ALSA selection triple
+        around MPD restarts, and every status poll resolves it through this
+        class. Letting that read path persist a temporary value would keep a
+        device that failed verification - or one that was only being tested -
+        selected after the next service start.
+        """
+        if self._output_selection_transition:
+            return
+        self._persist_app_config()
 
     def _public_output(self, selected: Dict[str, Any], reason: str = "selected") -> Dict[str, Any]:
         return {
@@ -1515,7 +1947,7 @@ class MpdService:
             command += ["-c", card]
         command += ["scontents"]
         try:
-            output = subprocess.check_output(command, stderr=subprocess.STDOUT, timeout=2).decode("utf-8", "ignore")
+            output = check_output_bounded(command, max_bytes=256 * 1024, timeout=2).decode("utf-8", "ignore")
         except Exception as exc:
             return {"available": False, "controls": [], "message": str(exc)}
         controls = []
@@ -1526,7 +1958,7 @@ class MpdService:
                 continue
             if re.search(r"(?im)^\s*Capabilities:.*\bpvolume\b", block) or re.search(r"(?im)^\s*(?:Mono|Front Left|Front Right):\s+Playback\s+\d+", block):
                 controls.append(match.group(1).strip())
-        preferred = self._preferred_mixer_control(controls, str(self.config.get("mpd_mixer_control") or ""))
+        preferred = self._preferred_mixer_control(controls, _config_text(self.config.get("mpd_mixer_control"), maximum=128))
         return {
             "available": bool(controls),
             "controls": controls,
@@ -1559,7 +1991,7 @@ class MpdService:
         return "hw:" + body
 
     def mixer_policy(self, device: Optional[Dict[str, Any]] = None, mixer_probe: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        requested = str(self.config.get("mpd_mixer_type") or "none").strip().lower()
+        requested = _config_text(self.config.get("mpd_mixer_type"), "none", 32).strip().lower()
         if requested not in ("none", "software", "hardware"):
             requested = "none"
         if requested == "none":
@@ -1589,7 +2021,7 @@ class MpdService:
         device = device or self._selected_alsa_output()
         probe = dict(mixer_probe) if mixer_probe is not None else self._mixer_for_device(device)
         controls = [str(control) for control in probe.get("controls") or []]
-        control = self._preferred_mixer_control(controls, str(self.config.get("mpd_mixer_control") or ""))
+        control = self._preferred_mixer_control(controls, _config_text(self.config.get("mpd_mixer_control"), maximum=128))
         if not probe.get("available") or not control:
             return {
                 "requested_mode": requested,
@@ -1620,20 +2052,26 @@ def _mpd_quote(value: str) -> str:
 
 
 def _read_text(path: str) -> str:
+    max_bytes = 1024 * 1024
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return fh.read()
+            return fh.read(max_bytes + 1)[:max_bytes]
     except OSError:
         return ""
 
 
 def _tail_text(path: str, limit: int = 4000) -> str:
+    # The normalisation has to happen outside the `except OSError` below: that
+    # handler covers the file work, and `int(limit)` used to raise straight through
+    # it for a non-numeric bound, turning a diagnostics read into a 500.
+    limit = max(1, min(MAX_MPD_LOG_TAIL_BYTES, nonnegative_int(limit, 4000,
+                                                                maximum=MAX_MPD_LOG_TAIL_BYTES)))
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - max(1, int(limit))))
-            return fh.read().decode("utf-8", "replace")
+            fh.seek(max(0, size - limit))
+            return fh.read(limit + 1)[:limit].decode("utf-8", "replace")
     except OSError:
         return ""
 
@@ -1675,15 +2113,34 @@ def _tcp_port_available(host: str, port: int) -> bool:
 
 
 def _safe_float(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return 0.0
+    if isinstance(value, str) and len(value) > 64:
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return max(0.0, number) if math.isfinite(number) else 0.0
+
+
+def _safe_counter(value: Any, maximum: int = 10**12) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return 0
+    if isinstance(value, str) and len(value) > 64:
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not math.isfinite(number) or number < 0:
+        return 0
+    return min(int(number), maximum)
 
 
 def _write_test_wav(path: str, duration: float = 1.2) -> None:
     sample_rate = 44100
-    frames = int(sample_rate * max(0.3, min(5.0, float(duration or 1.2))))
+    frames = int(sample_rate * max(0.3, min(5.0, _safe_float(duration) or 1.2)))
     with wave.open(path, "wb") as wav:
         wav.setnchannels(2)
         wav.setsampwidth(2)

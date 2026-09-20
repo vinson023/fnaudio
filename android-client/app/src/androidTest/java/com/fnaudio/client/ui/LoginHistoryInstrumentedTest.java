@@ -22,6 +22,7 @@ import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
+import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 
 @RunWith(AndroidJUnit4.class)
 public final class LoginHistoryInstrumentedTest {
@@ -62,8 +63,11 @@ public final class LoginHistoryInstrumentedTest {
             onView(withId(R.id.historyButton)).perform(click());
             onView(withText("家里的 NAS")).check(matches(isDisplayed()));
             onView(withText("远程 NAS")).check(matches(isDisplayed()));
-            onView(withText("http://198.51.100.24:5666")).check(matches(isDisplayed()));
-            onView(withText("https://music.example.test:5667")).check(matches(isDisplayed()));
+            // Scope endpoint assertions to the dynamic history container. The
+            // same endpoint can also be rendered in an accessibility/header
+            // node on OEM WebViews, which must not make Espresso ambiguous.
+            onView(withId(R.id.historyList)).check(matches(hasDescendant(withText("http://198.51.100.24:5666"))));
+            onView(withId(R.id.historyList)).check(matches(hasDescendant(withText("https://music.example.test:5667"))));
         }
     }
 

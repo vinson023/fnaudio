@@ -8,26 +8,31 @@ if [ -f "${legacy_config}" ]; then
   export FNAUDIO_CONFIG_PATH="${config_path}"
   export FNAUDIO_LEGACY_CONFIG_PATH="${legacy_config}"
   export FNAUDIO_DEFAULT_LIBRARY_PATH="${TRIM_APPDEST}/share/music"
-  "${PYTHON_BIN}" - <<'PY'
-import json, os
+  if ! "${PYTHON_BIN}" - <<'PY'
+import json, os, tempfile
 
 target = os.environ["FNAUDIO_CONFIG_PATH"]
 legacy = os.environ["FNAUDIO_LEGACY_CONFIG_PATH"]
 default_library = os.environ["FNAUDIO_DEFAULT_LIBRARY_PATH"]
 try:
-    current = json.load(open(target, encoding="utf-8"))
+    with open(target, encoding="utf-8") as handle:
+        current = json.load(handle)
 except Exception:
     current = {}
 try:
-    previous = json.load(open(legacy, encoding="utf-8"))
+    with open(legacy, encoding="utf-8") as handle:
+        previous = json.load(handle)
 except Exception:
     previous = {}
 if not isinstance(current, dict): current = {}
 if not isinstance(previous, dict): previous = {}
-current_paths = current.get("library_paths") or [current.get("library_path")]
-current_paths = [str(value).strip() for value in current_paths if str(value or "").strip()]
-previous_paths = previous.get("library_paths") or [previous.get("library_path")]
-previous_paths = [str(value).strip() for value in previous_paths if str(value or "").strip()]
+def paths_from(payload):
+    raw = payload.get("library_paths") or [payload.get("library_path")]
+    if not isinstance(raw, list):
+        raw = [payload.get("library_path")]
+    return [value.strip() for value in raw if isinstance(value, str) and value.strip()]
+current_paths = paths_from(current)
+previous_paths = paths_from(previous)
 if previous_paths and (not current_paths or current_paths == [default_library]):
     port = current.get("server_port")
     merged = dict(previous)
@@ -36,31 +41,102 @@ if previous_paths and (not current_paths or current_paths == [default_library]):
     merged["library_paths"] = previous_paths
     if port is not None:
         merged["server_port"] = port
-    with open(target, "w", encoding="utf-8") as handle:
-        json.dump(merged, handle, ensure_ascii=False)
+    fd, temporary = tempfile.mkstemp(prefix=".config.json.", dir=os.path.dirname(target) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(merged, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except Exception:
+        try: os.unlink(temporary)
+        except OSError: pass
+        raise
 PY
+  then
+    echo "无法迁移旧配置。" >&2
+    exit 1
+  fi
 fi
 UI_ROOT="${TRIM_APPDEST}/target/ui"
 if [ ! -d "${UI_ROOT}" ] && [ -d "${TRIM_APPDEST}/ui" ]; then
   UI_ROOT="${TRIM_APPDEST}/ui"
+fi
+RUNTIME_TARGET="${UI_ROOT%/ui}"
+if [ ! -e /var/apps/fnaudio/target ] && [ -d "${RUNTIME_TARGET}/ui" ]; then
+  ln -s "$(readlink -f -- "${RUNTIME_TARGET}")" /var/apps/fnaudio/target 2>/dev/null || true
 fi
 chmod 755 "${UI_ROOT}/index.cgi" "${UI_ROOT}/cgi_proxy.py" 2>/dev/null || true
 if [ -f "${TRIM_PKGETC}/config.json" ]; then
   configured_port="$(sed -n 's/.*"server_port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${TRIM_PKGETC}/config.json" | head -n 1)"
   case "${configured_port}" in
     ''|*[!0-9]*) configured_port="53199" ;;
+    ???????*) configured_port="53199" ;;
   esac
+  if [ "${configured_port}" -lt 1024 ] || [ "${configured_port}" -gt 65535 ]; then
+    configured_port="53199"
+  fi
   # Do not make manifest.service_port follow this private backend port. The
   # CGI proxy consumes the independently selected value below.
-  mkdir -p "${UI_ROOT}" 2>/dev/null || true
-  printf '{"server_port":%s}\n' "${configured_port}" > "${UI_ROOT}/service_port.json" 2>/dev/null || true
-  chmod 644 "${UI_ROOT}/service_port.json" 2>/dev/null || true
+  if ! mkdir -p "${UI_ROOT}"; then
+    echo "无法创建 UI 运行目录。" >&2
+    exit 1
+  fi
+  service_port_tmp="${UI_ROOT}/service_port.json.tmp.$$"
+  if ! printf '{"server_port":%s}\n' "${configured_port}" > "${service_port_tmp}" || ! mv -f -- "${service_port_tmp}" "${UI_ROOT}/service_port.json"; then
+    rm -f -- "${service_port_tmp}"
+    echo "无法写入 service_port.json。" >&2
+    exit 1
+  fi
+  if ! chmod 644 "${UI_ROOT}/service_port.json"; then
+    echo "无法设置 service_port.json 权限。" >&2
+    exit 1
+  fi
   old_path="${TRIM_APPDEST}/../share/music"
   new_path="${TRIM_APPDEST}/share/music"
-  if grep -q "\"library_path\":\"${old_path}\"" "${TRIM_PKGETC}/config.json" 2>/dev/null; then
-    mkdir -p "${new_path}" 2>/dev/null || true
-    sed -i "s#\"library_path\":\"${old_path}\"#\"library_path\":\"${new_path}\"#" "${TRIM_PKGETC}/config.json"
+  export FNAUDIO_CONFIG_PATH="${TRIM_PKGETC}/config.json"
+  export FNAUDIO_OLD_LIBRARY_PATH="${old_path}"
+  export FNAUDIO_NEW_LIBRARY_PATH="${new_path}"
+  if ! "${PYTHON_BIN}" - <<'PY'
+import json, os, tempfile
+
+path = os.environ["FNAUDIO_CONFIG_PATH"]
+old = os.path.normpath(os.environ["FNAUDIO_OLD_LIBRARY_PATH"])
+new = os.path.normpath(os.environ["FNAUDIO_NEW_LIBRARY_PATH"])
+try:
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+except Exception:
+    payload = {}
+if isinstance(payload, dict):
+    raw_paths = payload.get("library_paths") or [payload.get("library_path")]
+    if not isinstance(raw_paths, list):
+        raw_paths = [payload.get("library_path")]
+    paths = [value.strip() for value in raw_paths if isinstance(value, str) and value.strip()]
+    migrated = [new if os.path.normpath(value) == old else value for value in paths]
+    if migrated != paths:
+        os.makedirs(new, exist_ok=True)
+        payload["library_paths"] = migrated
+        payload["library_path"] = "\n".join(migrated)
+        fd, temporary = tempfile.mkstemp(prefix=".config.json.", dir=os.path.dirname(path) or ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            try: os.unlink(temporary)
+            except OSError: pass
+            raise
+PY
+  then
+    echo "无法迁移曲库路径配置。" >&2
+    exit 1
   fi
 fi
-chmod 600 "${TRIM_PKGETC}/config.json" 2>/dev/null || true
+if ! chmod 600 "${TRIM_PKGETC}/config.json"; then
+  echo "无法设置配置文件权限。" >&2
+  exit 1
+fi
 exit 0

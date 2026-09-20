@@ -10,13 +10,20 @@ import android.os.ParcelFileDescriptor;
 import android.service.notification.StatusBarNotification;
 
 import androidx.core.content.ContextCompat;
+import androidx.media3.session.MediaController;
+import androidx.media3.session.SessionToken;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import org.json.JSONObject;
+
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.fail;
 
@@ -29,12 +36,16 @@ public final class PlaybackServiceRemoteNotificationInstrumentedTest {
     @Before
     public void setUp() {
         context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        context.getSharedPreferences("fnaudio_remote_session", Context.MODE_PRIVATE).edit()
+                .clear().commit();
         grantNotificationPermission();
     }
 
     @After
     public void tearDown() {
         context.stopService(new Intent(context, PlaybackService.class));
+        context.getSharedPreferences("fnaudio_remote_session", Context.MODE_PRIVATE).edit()
+                .clear().commit();
     }
 
     @Test
@@ -44,6 +55,61 @@ public final class PlaybackServiceRemoteNotificationInstrumentedTest {
 
         startRemoteTarget("upnp:renderer-test", "DLNA Renderer");
         assertMediaNotification("DLNA");
+    }
+
+    @Test
+    public void remoteUpdateWithStaleIdentityDoesNotReplaceSession() throws Exception {
+        startRemoteTarget("dac:identity-test", "USB DAC");
+        Thread.sleep(400L);
+        Intent stale = new Intent(context, PlaybackService.class)
+                .setAction(PlaybackService.ACTION_REMOTE_UPDATE)
+                .putExtra(PlaybackService.EXTRA_TARGET_ID, "dac:identity-test")
+                .putExtra(PlaybackService.EXTRA_SESSION_GENERATION, 9999L)
+                .putExtra(PlaybackService.EXTRA_ENGINE_EPOCH, 9999L)
+                .putExtra(PlaybackService.EXTRA_INDEX, 0)
+                .putExtra(PlaybackService.EXTRA_POSITION_MS, 123456L)
+                .putExtra(PlaybackService.EXTRA_DURATION_MS, 180000L)
+                .putExtra(PlaybackService.EXTRA_PLAYING, true);
+        ContextCompat.startForegroundService(context, stale);
+        Thread.sleep(500L);
+        assertMediaNotification("stale identity");
+    }
+
+    @Test
+    public void explicitRemoteEnableWinsOverQueuedRestore() throws Exception {
+        context.getSharedPreferences("fnaudio_remote_session", Context.MODE_PRIVATE).edit()
+                .putString("snapshot", new JSONObject()
+                        .put("schema", 1)
+                        .put("saved_at_ms", System.currentTimeMillis())
+                        .put("target_id", "dac:old-restore")
+                        .put("target_name", "Old target")
+                        .put("queue_json", "[{\"id\":\"old-track\"}]")
+                        .put("index", 0)
+                        .put("position_ms", 0)
+                        .put("duration_ms", 0)
+                        .put("playing", false)
+                        .put("repeat_mode", 0)
+                        .put("shuffle", false)
+                        .put("generation", 1)
+                        .put("engine_epoch", 1)
+                        .toString())
+                .commit();
+
+        startRemoteTarget("dac:new-session", "New target");
+        ListenableFuture<MediaController> future = new MediaController.Builder(
+                context, new SessionToken(context, new ComponentName(context, PlaybackService.class)))
+                .buildAsync();
+        MediaController controller = future.get(5, TimeUnit.SECONDS);
+        try {
+            long deadline = System.currentTimeMillis() + 3000L;
+            while (System.currentTimeMillis() < deadline
+                    && !"test-track".equals(currentMediaId(controller))) {
+                Thread.sleep(50L);
+            }
+            org.junit.Assert.assertEquals("test-track", currentMediaId(controller));
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> MediaController.releaseFuture(future));
+        }
     }
 
     private void startRemoteTarget(String targetId, String targetName) {
@@ -57,6 +123,21 @@ public final class PlaybackServiceRemoteNotificationInstrumentedTest {
                 .putExtra(PlaybackService.EXTRA_DURATION_MS, 180000L)
                 .putExtra(PlaybackService.EXTRA_PLAYING, false);
         ContextCompat.startForegroundService(context, intent);
+    }
+
+    private static <T> T onMain(java.util.concurrent.Callable<T> callable) throws Exception {
+        java.util.concurrent.atomic.AtomicReference<T> result = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            try { result.set(callable.call()); } catch (Throwable error) { failure.set(error); }
+        });
+        if (failure.get() != null) throw new RuntimeException(failure.get());
+        return result.get();
+    }
+
+    private static String currentMediaId(MediaController controller) throws Exception {
+        androidx.media3.common.MediaItem item = onMain(controller::getCurrentMediaItem);
+        return item == null ? "" : item.mediaId;
     }
 
     private void assertMediaNotification(String target) throws InterruptedException {

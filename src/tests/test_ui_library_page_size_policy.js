@@ -1,0 +1,20 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const source = fs.readFileSync("app/ui/library_page_size_policy.js", "utf8");
+const sandbox = { globalThis: {}, window: null };
+sandbox.window = sandbox;
+vm.runInNewContext(source, sandbox);
+const policy = sandbox.fnAudioLibraryPageSizePolicy;
+const mobile = { matchMedia: query => ({ matches: query === "(max-width: 760px)" }) };
+const desktop = { matchMedia: () => ({ matches: false }) };
+assert.equal(policy.defaultPageSize(mobile), 60);
+assert.equal(policy.defaultPageSize(desktop), 96);
+assert.equal(policy.resolvePageSize({ getItem: () => "" }, mobile), 60);
+assert.equal(policy.resolvePageSize({ getItem: () => "" }, desktop), 96);
+assert.equal(policy.resolvePageSize({ getItem: () => "240" }, mobile), 240);
+assert.equal(policy.resolvePageSize({ getItem: () => "999999" }, desktop), 500);
+assert.equal(policy.resolvePageSize({ getItem: () => "invalid" }, mobile), 60);
+assert.equal(policy.resolvePageSize({ getItem: () => { throw new Error("storage"); } }, desktop), 96);
+console.log("Library page-size policy regression checks passed.");

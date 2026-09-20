@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import errno
 import hashlib
+import heapq
 import json
-import mimetypes
+import math
 import os
 import random
 import re
@@ -15,13 +17,103 @@ import struct
 import threading
 import time
 import tempfile
-import wave
 from contextlib import contextmanager
 from typing import Any, Dict
 
 from transcode import find_ffmpeg
 from resource_limits import bounded_int
 from file_permissions import atomic_write_json, secure_directory, secure_file, secure_sqlite_files
+from config import DEFAULT_PORT
+from library_connection_pool import LibraryConnectionPool
+from library_query_cache import LibraryQueryCache
+from library_query_cache_key import MAX_CACHE_KEY_VALUES
+from library_cache_failure_policy import increment_failure, project_failures
+from library_query_spec import LIBRARY_ITEM_ID_LIMIT, first_param, normalize_library_item_id, normalize_library_item_sequence, parse_library_folder_query, parse_library_group_query, parse_library_page_query, parse_library_root_search
+from library_pagination import counted_page_rows, paged_rows_with_total
+from library_track_filter_policy import build_track_filters
+from library_item_hydration import hydrate_items_by_ids
+from library_group_presentation import project_folder_rows, project_group_rows
+from library_item_lookup import lookup_memory_item, lookup_sqlite_item
+from library_item_location import resolve_item_location
+from library_root_summary import decode_root_summary
+from library_root_query_policy import configured_root_filter
+from library_root_presentation import project_root_rows
+from library_paths import (
+    apply_library_paths,
+    canonical_library_path,
+    display_library_path,
+    is_allowed_library_path,
+    library_root_label,
+    library_root_labels,
+    merge_library_paths,
+    MAX_LIBRARY_PATH_TEXT,
+    normalize_library_paths,
+    relative_folder_for_path,
+)
+from library_cache_payload import project_legacy_cache
+from scan_control import ScanCancelled, ScanDeadline, ScanTimedOut, check_scan_deadline as _check_scan_deadline
+from scan_reuse_policy import can_reuse_cached_item
+from scan_error_policy import append_scan_error, scan_error_text, snapshot_scan_errors
+from metadata_text import artist_title_from_filename, clean_tag, cue_time_seconds, cue_value, display_name, normalize_probe_tags, parse_track_number
+
+
+def _bounded_wait_timeout(value, default):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(0.0, number) if math.isfinite(number) else default
+from native_audio_info import read_native_audio_info
+from probe_metadata import normalize_probe_payload
+from cue_parser import parse_cue_structure
+from cue_reader import read_cue_lines as _read_cue_lines
+from id3_parser import decode_id3_text, id3_frame_size
+from library_status_presentation import status_message
+from library_rows import MAX_ITEM_JSON_BYTES, decode_item_row, decode_item_rows
+from library_write import iter_track_persistence_batches, normalize_scan_items, prepare_track_persistence, root_index_summary, scan_text
+from library_count_policy import (
+    GROUP_COUNT_KEYS,
+    browse_page_total,
+    group_count_key,
+    project_saved_count,
+    saved_count_key,
+)
+from library_refresh_policy import cancel_refresh, enqueue_refresh, take_refresh
+from library_search_policy import track_search_condition
+from library_search_index_policy import cache_token, search_index_status, uses_fts
+from library_group_policy import group_match_condition as build_group_match_condition
+from library_memory_query import memory_field
+from library_memory_page import build_memory_library_page
+from library_random_sample import MAX_RANDOM_ROWID_CANDIDATES, random_rowid_candidates
+from library_cursor_policy import cursor_group_tail_where, cursor_next_group_where, cursor_page, decode_track_cursor
+from library_browse_cursor_policy import (
+    browse_cursor_group_tail_where,
+    browse_cursor_next_group_where,
+    browse_cursor_page,
+    decode_browse_cursor,
+    encode_browse_cursor,
+)
+from library_page_result_policy import decode_track_cursor_page_rows as _decode_track_cursor_page_rows
+from library_page_result_policy import track_page_result as _track_page_result
+from library_page_result_policy import track_page_select as _track_page_select
+from library_metadata_presentation import library_metadata
+from library_scan_presentation import build_audio_item
+from library_scan_results import build_previous_item_index, digest_signature_parts, finalize_scan_results, partition_previous_items, sort_scan_items
+from library_scan_file_policy import classify_filename
+from summary_values import strict_bool
+from library_browse_rows import materialize_browse_rows
+from cue_item_presentation import build_cue_item
+from cue_numeric_policy import cue_segment_end
+from scan_numeric_policy import safe_counter, safe_float, safe_int
+from metadata_tag_resolution import resolve_metadata_tags
+from vorbis_reader import read_vorbis_comments as _read_vorbis_comments
+from cover_readers import read_ape_cover, read_flac_cover
+from cover_dispatch import cover_kind
+from id3_container import id3_payload, id3_tag, read_id3, read_id3_cover, read_id3v1
+from sidecar_cover import read_sidecar_cover
+from ffmpeg_cover import MAX_COVER_FILE_BYTES, extract_cover as _extract_ffmpeg_cover
+from probe_runner import read_audio_info as _read_audio_info
+from probe_runner import read_probe_metadata as _read_probe_metadata
 
 SUPPORTED = {
     ".flac": "audio/flac", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
@@ -29,13 +121,56 @@ SUPPORTED = {
     ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".ape": "audio/ape", ".dsf": "audio/x-dsf", ".dff": "audio/x-dff", ".cue": "application/x-cue",
 }
 METADATA_VERSION = 16
+MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"
+MAX_LIBRARY_SIGNATURE_PARTS = 200_000
+MAX_LIBRARY_SIGNATURE_BYTES = 8 * 1024 * 1024
+SEARCH_INDEX_VERSION = "1"
 MUSIC_CACHE = {"stamp": 0, "items": []}
 FS_CACHE = {"signature": ""}
+# SQLite is deliberately kept as the source of truth.  This small process
+# cache only avoids repeating identical count + page queries while a user is
+# clicking between views or more than one client is open.  It is invalidated
+# synchronously after every index write, so it cannot outlive a scan or a
+# metadata update.
+LIBRARY_QUERY_CACHE_TTL_SECONDS = 20.0
+LIBRARY_QUERY_CACHE_LIMIT = 160
+LIBRARY_QUERY_CACHE = LibraryQueryCache(LIBRARY_QUERY_CACHE_TTL_SECONDS, LIBRARY_QUERY_CACHE_LIMIT)
+# Status polling only needs the persisted count/signature summary. Keep this
+# tiny cache separate from dynamic scan state so frequent clients do not
+# reopen SQLite for identical summaries, while writes invalidate it eagerly.
+LIBRARY_SUMMARY_CACHE_TTL_SECONDS = 2.0
+LIBRARY_SUMMARY_CACHE_LIMIT = 32
+LIBRARY_SUMMARY_CACHE = {}
+LIBRARY_SUMMARY_CACHE_LOCK = threading.RLock()
+# A burst of status polls can otherwise all miss the tiny TTL cache before
+# the first SQLite summary has been stored.  Keep only active leaders here;
+# followers wait for the leader's cache write and never retain a per-client
+# lock after the request has finished.
+LIBRARY_SUMMARY_INFLIGHT_LIMIT = 32
+LIBRARY_SUMMARY_INFLIGHT = {}
+# Cache restore/write failures are intentionally counted instead of being
+# silently swallowed.  The counters are operational metadata only; paths and
+# exception text are never exposed through the public status payload.
+LIBRARY_CACHE_FAILURES = {"load": 0, "save": 0}
+LIBRARY_CACHE_FAILURES_LOCK = threading.Lock()
+# Map the stable cache path to the filesystem identity of the SQLite main
+# file.  A path-only set is unsafe when a cleanup tool deletes and recreates
+# the index while fnAudio is still running.
+LIBRARY_SCHEMA_READY = {}
+LIBRARY_SCHEMA_READY_LOCK = threading.RLock()
+LIBRARY_SCHEMA_READY_LIMIT = 32
+LIBRARY_SEARCH_INDEX_MODE = {}
+LIBRARY_SEARCH_INDEX_LOCK = threading.RLock()
+LIBRARY_SEARCH_INDEX_MODE_LIMIT = 32
 LIBRARY_CHANGE_MONITOR = None
 SCAN_STATE = {
     "running": False,
+    "queued": False,
+    "queued_force": False,
+    "worker_active": False,
+    "result": "idle",
     "cancelled": False,
     "timed_out": False,
     "deadline": 0,
@@ -48,9 +183,29 @@ SCAN_STATE = {
     "errors": [],
 }
 SCAN_LOCK = threading.Lock()
+SCAN_REQUEST_LOCK = threading.Lock()
 SCAN_CANCEL_EVENT = threading.Event()
+SCAN_WORKER_THREAD = None
+SCAN_REFRESH_GENERATION = 0
+LIBRARY_WATCH_STOP_EVENT = threading.Event()
+LIBRARY_WATCH_THREAD = None
+LIBRARY_WATCH_CURRENT_STOP_EVENT = None
+LIBRARY_WATCH_LOCK = threading.RLock()
 LIBRARY_JSON_CACHE_LIMIT = 5000
-ALLOWED_LIBRARY_PREFIXES = ("/vol", "/volume", "/mnt", "/share", "/var/apps/fnaudio/share")
+# The legacy JSON cache is only a compatibility fallback; SQLite is the
+# authoritative index.  Keep its recovery path bounded as well so a damaged
+# or unexpectedly large cache cannot be materialized wholesale.
+LIBRARY_JSON_CACHE_MAX_BYTES = 32 * 1024 * 1024
+LIBRARY_WRITE_BATCH_SIZE = 500
+MAX_LIBRARY_INOTIFY_WATCHES = 4096
+
+
+def _bounded_database_state_put(entries, database, value, limit):
+    """Update a per-database process map without retaining retired roots."""
+    entries.pop(database, None)
+    while len(entries) >= limit:
+        entries.pop(next(iter(entries)), None)
+    entries[database] = value
 
 
 class LibraryChangeMonitor:
@@ -83,49 +238,71 @@ class LibraryChangeMonitor:
         self._libc = None
         self._watches = {}
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
 
     def start(self):
-        if os.name != "posix" or not self.roots:
-            return False
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            libc.inotify_init1.argtypes = [ctypes.c_int]
-            libc.inotify_init1.restype = ctypes.c_int
-            libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
-            libc.inotify_add_watch.restype = ctypes.c_int
-            flags = int(getattr(os, "O_NONBLOCK", 0)) | int(getattr(os, "O_CLOEXEC", 0))
-            fd = libc.inotify_init1(flags)
-            if fd < 0:
-                raise OSError(ctypes.get_errno(), "inotify_init1 failed")
-            self._libc = libc
-            self._fd = fd
-            for root in self.roots:
-                if os.path.isdir(root):
-                    self._add_tree(root)
-            if not self._watches:
-                raise OSError("no readable library directories could be watched")
-            self.available = True
-            self._thread = threading.Thread(target=self._run, name="fnaudio-library-inotify", daemon=True)
-            self._thread.start()
-            return True
-        except (AttributeError, OSError):
-            self.stop()
-            return False
+        with self._lifecycle_lock:
+            if os.name != "posix" or not self.roots:
+                return False
+            existing = self._thread
+            if existing is not None and existing.is_alive():
+                return bool(self.available)
+            # Event instances are one-shot. A monitor can be restarted after a
+            # configuration reload, so a previous stop must not poison the new
+            # watcher thread.
+            self._stop.clear()
+            try:
+                libc = ctypes.CDLL(None, use_errno=True)
+                libc.inotify_init1.argtypes = [ctypes.c_int]
+                libc.inotify_init1.restype = ctypes.c_int
+                libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+                libc.inotify_add_watch.restype = ctypes.c_int
+                flags = int(getattr(os, "O_NONBLOCK", 0)) | int(getattr(os, "O_CLOEXEC", 0))
+                fd = libc.inotify_init1(flags)
+                if fd < 0:
+                    raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+                self._libc = libc
+                self._fd = fd
+                for root in self.roots:
+                    if os.path.isdir(root):
+                        self._add_tree(root)
+                if not self._watches:
+                    raise OSError("no readable library directories could be watched")
+                self.available = True
+                thread = threading.Thread(target=self._run, name="fnaudio-library-inotify", daemon=True)
+                # Publish before starting so a concurrent caller cannot create
+                # a second inotify fd in the narrow Thread.start() window.
+                self._thread = thread
+                thread.start()
+                return True
+            except (AttributeError, OSError, RuntimeError):
+                self.stop()
+                return False
 
     def stop(self):
-        self._stop.set()
-        fd = self._fd
-        self._fd = -1
-        self.available = False
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        with self._lock:
-            self._watches.clear()
+        with self._lifecycle_lock:
+            self._stop.set()
+            thread = self._thread
+            self._thread = None
+            fd = self._fd
+            self._fd = -1
+            self.available = False
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            with self._lock:
+                self._watches.clear()
+            if thread is not None and thread is not threading.current_thread():
+                try:
+                    thread.join(timeout=1.0)
+                except RuntimeError:
+                    # A failed Thread.start() leaves the pre-registered
+                    # lifecycle handle unstarted; there is nothing to join.
+                    pass
 
     def needs_scan(self):
         with self._lock:
@@ -155,6 +332,9 @@ class LibraryChangeMonitor:
     def _watch_path(self, path):
         if self._fd < 0 or self._libc is None:
             return
+        with self._lock:
+            if len(self._watches) >= MAX_LIBRARY_INOTIFY_WATCHES:
+                raise OSError(errno.ENOSPC, "library inotify watch limit reached", path)
         wd = self._libc.inotify_add_watch(self._fd, os.fsencode(path), self.WATCH_MASK)
         if wd < 0:
             error = ctypes.get_errno()
@@ -198,14 +378,27 @@ class LibraryChangeMonitor:
                         self._add_tree(path)
                     except OSError:
                         self._mark_dirty(True)
+                        # A directory tree beyond the local watch ceiling is
+                        # no longer fully observable. Fall back to the
+                        # periodic signature check instead of clearing this
+                        # dirty bit after one scan and silently missing later
+                        # changes below the unwatchable subtree.
+                        with self._lock:
+                            self.available = False
                 continue
             if not name or os.path.splitext(name)[1].lower() in SUPPORTED:
                 self._mark_dirty()
 
     def _run(self):
+        # Keep this worker on the fd generation it was started with.  Reading
+        # the mutable instance field here can otherwise make a fast stop/start
+        # cycle consume events from the replacement monitor.
+        fd = self._fd
         while not self._stop.wait(0.25):
+            if self._fd != fd or self._stop.is_set():
+                return
             try:
-                payload = os.read(self._fd, 256 * 1024)
+                payload = os.read(fd, 256 * 1024)
             except BlockingIOError:
                 continue
             except OSError:
@@ -217,388 +410,19 @@ class LibraryChangeMonitor:
                 self._handle_events(payload)
 
 
-class ScanCancelled(RuntimeError):
-    pass
-
-
-class ScanTimedOut(ScanCancelled):
-    pass
-
-
 def check_scan_deadline(deadline=None):
-    if SCAN_CANCEL_EVENT.is_set():
-        raise ScanCancelled("library scan cancelled")
-    if deadline is not None and time.monotonic() >= float(deadline):
-        raise ScanTimedOut("library scan timed out")
+    return _check_scan_deadline(deadline, SCAN_CANCEL_EVENT)
 
 
 def record_scan_error(path, message):
-    errors = SCAN_STATE.setdefault("errors", [])
-    errors.append({"path": str(path or ""), "message": str(message or "")})
-    if len(errors) > 20:
-        del errors[:-20]
+    SCAN_STATE["errors"] = append_scan_error(SCAN_STATE.setdefault("errors", []), path, message)
 
-
-def is_allowed_library_path(path):
-    if os.name == "nt":
-        return True
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(path or "")))
-    if re.match(r"^/vol\d+(/|$)", root):
-        return True
-    return any(root == prefix or root.startswith(prefix + os.sep) for prefix in ALLOWED_LIBRARY_PREFIXES)
-
-
-def canonical_library_path(path):
-    value = os.path.abspath(os.path.expanduser(str(path or "")))
-    # Windows may expand an 8.3 temporary path to its long form in realpath(),
-    # which breaks the path identity stored in SQLite. Linux still resolves
-    # symlinks here so configured roots cannot escape the allowed boundary.
-    return value if os.name == "nt" else os.path.realpath(value)
-
-
-def normalize_library_paths(config):
-    values = []
-    raw_paths = config.get("library_paths")
-    if isinstance(raw_paths, list):
-        values.extend(raw_paths)
-    raw = config.get("library_path", "")
-    if isinstance(raw, str):
-        values.extend(re.split(r"[\r\n;]+", raw))
-    paths = []
-    seen = set()
-    for value in values:
-        raw_value = str(value or "").strip()
-        if not raw_value:
-            continue
-        path = canonical_library_path(raw_value)
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths or [canonical_library_path(config.get("library_path", "."))]
-
-
-def merge_library_paths(current_paths, extra_paths):
-    """Merge configured roots using the same identity as scanning and SQLite."""
-    paths = []
-    seen = set()
-    for value in list(current_paths or []) + list(extra_paths or []):
-        raw_value = str(value or "").strip()
-        if not raw_value:
-            continue
-        path = canonical_library_path(raw_value)
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths
-
-
-def apply_library_paths(config, paths):
-    config["library_path"] = "\n".join(paths)
-    config["library_paths"] = list(paths)
-
-
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-def clean_tag(value):
-    return re.sub(r"\s+", " ", str(value or "").replace("\x00", "")).strip()
-
-def safe_int(value):
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-def parse_track_number(value):
-    """Return the numeric part of common track tags such as 03/12."""
-    text = clean_tag(value)
-    if not text:
-        return 0
-    match = re.match(r"^\s*(\d+)", text)
-    return int(match.group(1)) if match else 0
-
-def display_library_path(config):
-    return "\n".join(normalize_library_paths(config))
-
-def library_root_labels(config):
-    roots = normalize_library_paths(config)
-    if len(roots) <= 1:
-        return {}
-    base_counts = {}
-    for root in roots:
-        base = os.path.basename(root.rstrip(os.sep)) or root.strip(os.sep).replace(os.sep, "-") or "音乐目录"
-        base_counts[base] = base_counts.get(base, 0) + 1
-    labels = {}
-    for root in roots:
-        base = os.path.basename(root.rstrip(os.sep)) or root.strip(os.sep).replace(os.sep, "-") or "音乐目录"
-        if base_counts.get(base, 0) > 1:
-            parent = os.path.basename(os.path.dirname(root.rstrip(os.sep))) or "目录"
-            labels[os.path.abspath(root)] = "%s/%s" % (parent, base)
-        else:
-            labels[os.path.abspath(root)] = base
-    return labels
-
-def library_root_label(root, config):
-    return library_root_labels(config or {}).get(os.path.abspath(root), "")
-
-def relative_folder_for_path(path, root):
-    try:
-        rel = os.path.dirname(os.path.relpath(os.path.abspath(path), os.path.abspath(root)))
-    except (OSError, ValueError):
-        return ""
-    parts = os.path.normpath(rel).split(os.sep)
-    return "/".join(x for x in parts if x and x != ".")
-
-def decode_id3_text(data):
-    if not data:
-        return ""
-    encoding = data[0]
-    raw = data[1:]
-    try:
-        if encoding == 0:
-            for codec in ("utf-8", "gb18030", "latin1"):
-                try:
-                    return raw.decode(codec)
-                except UnicodeError:
-                    continue
-            return raw.decode("latin1", "ignore")
-        if encoding == 1:
-            return raw.decode("utf-16", "ignore")
-        if encoding == 2:
-            return raw.decode("utf-16-be", "ignore")
-        return raw.decode("utf-8", "ignore")
-    except UnicodeError:
-        return raw.decode("utf-8", "ignore")
-
-def read_id3_header_at(fh, offset):
-    try:
-        fh.seek(offset)
-        header = fh.read(10)
-        if header[:3] != b"ID3":
-            return None, b""
-        size = 0
-        for byte in header[6:10]:
-            size = (size << 7) | (byte & 0x7F)
-        return header, fh.read(size)
-    except OSError:
-        return None, b""
-
-def id3_payload(path):
-    header, data = id3_tag(path)
-    return data
-
-def id3_tag(path):
-    try:
-        with open(path, "rb") as fh:
-            header, data = read_id3_header_at(fh, 0)
-            if header:
-                return header, data
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".wav":
-                fh.seek(0)
-                riff = fh.read(12)
-                if riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
-                    return None, b""
-                limit = min(os.path.getsize(path), 8 + int.from_bytes(riff[4:8], "little"))
-                offset = 12
-                while offset + 8 <= limit:
-                    fh.seek(offset)
-                    chunk_id = fh.read(4)
-                    chunk_size = int.from_bytes(fh.read(4), "little")
-                    payload = offset + 8
-                    if payload + chunk_size > limit:
-                        break
-                    if chunk_id.lower() == b"id3 ":
-                        return read_id3_header_at(fh, payload)
-                    offset = payload + chunk_size + (chunk_size & 1)
-                return None, b""
-            if ext != ".dsf":
-                return None, b""
-            fh.seek(0)
-            dsf_header = fh.read(28)
-            if dsf_header[:4] != b"DSD " or len(dsf_header) < 28:
-                return None, b""
-            metadata_offset = int.from_bytes(dsf_header[20:28], "little")
-            if metadata_offset <= 0:
-                return None, b""
-            return read_id3_header_at(fh, metadata_offset)
-    except OSError:
-        return None, b""
-
-def id3_frame_size(data, offset, major):
-    raw = data[offset + 4:offset + 8]
-    if major == 4:
-        size = 0
-        for byte in raw:
-            size = (size << 7) | (byte & 0x7F)
-        return size
-    return int.from_bytes(raw, "big")
-
-def read_id3(path):
-    tags = {}
-    header, data = id3_tag(path)
-    if not data:
-        return read_id3v1(path)
-    major = header[3] if header else 3
-    offset = 0
-    while offset + 10 <= len(data):
-        frame_id = data[offset:offset + 4].decode("latin1", "ignore")
-        frame_size = id3_frame_size(data, offset, major)
-        if not frame_id.strip("\x00") or frame_size <= 0:
-            break
-        frame = data[offset + 10:offset + 10 + frame_size]
-        field = {
-            "TIT2": "title",
-            "TPE1": "artist",
-            "TALB": "album",
-            "TCOM": "composer",
-            "TCON": "genre",
-            "TRCK": "track_no",
-        }.get(frame_id)
-        if field:
-            value = decode_id3_text(frame).split("\x00", 1)[0]
-            tags[field] = parse_track_number(value) if field == "track_no" else clean_tag(value)
-        offset += 10 + frame_size
-    return tags
-
-def read_id3_cover(path):
-    header, data = id3_tag(path)
-    major = header[3] if header else 3
-    offset = 0
-    while offset + 10 <= len(data):
-        frame_id = data[offset:offset + 4].decode("latin1", "ignore")
-        frame_size = id3_frame_size(data, offset, major)
-        if not frame_id.strip("\x00") or frame_size <= 0:
-            break
-        frame = data[offset + 10:offset + 10 + frame_size]
-        if frame_id == "APIC" and frame:
-            encoding = frame[0]
-            pos = 1
-            mime_end = frame.find(b"\x00", pos)
-            if mime_end < 0:
-                break
-            mime = frame[pos:mime_end].decode("latin1", "ignore") or "image/jpeg"
-            pos = mime_end + 2
-            if encoding in (1, 2):
-                end = frame.find(b"\x00\x00", pos)
-                pos = end + 2 if end >= 0 else pos
-            else:
-                end = frame.find(b"\x00", pos)
-                pos = end + 1 if end >= 0 else pos
-            image = frame[pos:]
-            if image:
-                return mime, image
-        offset += 10 + frame_size
-    return None, None
-
-def read_flac_cover(path):
-    try:
-        with open(path, "rb") as fh:
-            if fh.read(4) != b"fLaC":
-                return None, None
-            while True:
-                header = fh.read(4)
-                if len(header) < 4:
-                    return None, None
-                block_type = header[0] & 0x7F
-                last = bool(header[0] & 0x80)
-                size = int.from_bytes(header[1:4], "big")
-                data = fh.read(size)
-                if block_type == 6 and len(data) > 32:
-                    mime_len = int.from_bytes(data[4:8], "big")
-                    pos = 8
-                    mime = data[pos:pos + mime_len].decode("utf-8", "ignore") or "image/jpeg"
-                    pos += mime_len
-                    desc_len = int.from_bytes(data[pos:pos + 4], "big")
-                    pos += 4 + desc_len + 16
-                    image_len = int.from_bytes(data[pos:pos + 4], "big")
-                    pos += 4
-                    return mime, data[pos:pos + image_len]
-                if last:
-                    return None, None
-    except OSError:
-        return None, None
 
 def read_m4a_cover(path, config=None):
     cover = read_mp4_covr_cover(path)
     if cover[1]:
         return cover
-    ffmpeg = find_ffmpeg(config or {})
-    if not ffmpeg:
-        return None, None
-    fd, target = tempfile.mkstemp(prefix="fnaudio-cover-", suffix=".jpg")
-    os.close(fd)
-    command = [
-        ffmpeg, "-v", "error", "-y", "-i", path,
-        "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2",
-        "-f", "image2", target,
-    ]
-    env = os.environ.copy()
-    if "/usr/trim/lib/mediasrv/bin" in ffmpeg:
-        env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
-    try:
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, env=env, check=False)
-        with open(target, "rb") as fh:
-            body = fh.read()
-    except (OSError, subprocess.SubprocessError):
-        body = b""
-    finally:
-        try:
-            os.unlink(target)
-        except OSError:
-            pass
-    if body.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg", body
-    if body.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png", body
-    if body.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif", body
-    return None, None
-
-def read_ape_cover(path):
-    """Read APEv2 Cover Art (Front) without decoding the audio stream."""
-    try:
-        with open(path, "rb") as fh:
-            body = fh.read()
-    except OSError:
-        return None, None
-    if len(body) < 32 or body[-32:-24] != b"APETAGEX":
-        return None, None
-    total = int.from_bytes(body[-20:-16], "little")
-    count = int.from_bytes(body[-16:-12], "little")
-    start = len(body) - total
-    if total < 32 or start < 0 or count > 4096:
-        return None, None
-    offset = start
-    try:
-        for _ in range(count):
-            if offset + 9 > len(body) - 32:
-                return None, None
-            value_size = int.from_bytes(body[offset:offset + 4], "little")
-            key_end = body.index(b"\x00", offset + 8, min(len(body) - 32, offset + 8 + 1024))
-            key = body[offset + 8:key_end].decode("utf-8", "replace").casefold()
-            value_start = key_end + 1
-            value_end = value_start + value_size
-            if value_end > len(body) - 32:
-                return None, None
-            if key == "cover art (front)":
-                image = body[value_start:value_end].split(b"\x00", 1)[1]
-                if image.startswith(b"\xff\xd8\xff"):
-                    return "image/jpeg", image
-                if image.startswith(b"\x89PNG\r\n\x1a\n"):
-                    return "image/png", image
-                if image.startswith((b"GIF87a", b"GIF89a")):
-                    return "image/gif", image
-                return None, None
-            offset = value_end
-    except (ValueError, IndexError):
-        return None, None
-    return None, None
+    return _extract_ffmpeg_cover(path, config, find_ffmpeg, subprocess.run)
 
 def read_wav_cover(path, config=None):
     """Extract an embedded WAV artwork stream when the muxer stores one."""
@@ -608,35 +432,13 @@ def read_wav_cover(path, config=None):
     # WAV artwork is not standardized across muxers. FFmpeg understands the
     # common ID3-in-RIFF representation, so use the same bounded extraction
     # path as M4A when the native RIFF scanner has no result.
-    ffmpeg = find_ffmpeg(config or {})
-    if not ffmpeg:
-        return None, None
-    fd, target = tempfile.mkstemp(prefix="fnaudio-cover-", suffix=".jpg")
-    os.close(fd)
-    command = [ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2", "-f", "image2", target]
-    env = os.environ.copy()
-    if "/usr/trim/lib/mediasrv/bin" in ffmpeg:
-        env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
-    try:
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, env=env, check=False)
-        with open(target, "rb") as fh:
-            body = fh.read()
-    except (OSError, subprocess.SubprocessError):
-        body = b""
-    finally:
-        try:
-            os.unlink(target)
-        except OSError:
-            pass
-    if body.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg", body
-    if body.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png", body
-    return None, None
+    return _extract_ffmpeg_cover(path, config, find_ffmpeg, subprocess.run)
 
 def read_mp4_covr_cover(path):
     """Read JPEG/PNG artwork from the MP4/M4A ilst/covr atom."""
     containers = {b"moov", b"udta", b"meta", b"ilst", b"covr"}
+    max_depth = 32
+    oversized_covr = False
 
     def image_from_bytes(data):
         if data.startswith(b"\xff\xd8\xff"):
@@ -675,7 +477,10 @@ def read_mp4_covr_cover(path):
         with open(path, "rb") as fh:
             end = os.fstat(fh.fileno()).st_size
 
-            def walk(start, limit):
+            def walk(start, limit, depth=0):
+                nonlocal oversized_covr
+                if depth > max_depth:
+                    return None, None
                 position = start
                 while position + 8 <= limit:
                     fh.seek(position)
@@ -695,14 +500,17 @@ def read_mp4_covr_cover(path):
                     payload = position + header_size
                     payload_end = position + size
                     if kind == b"data" and payload + 16 <= payload_end:
+                        if payload_end - payload - 8 > MAX_COVER_FILE_BYTES:
+                            oversized_covr = True
+                            return None, None
                         fh.seek(payload + 8)
-                        body = fh.read(payload_end - payload - 8)
+                        body = fh.read(MAX_COVER_FILE_BYTES + 1)
                         mime, image = image_from_bytes(body)
                         if image:
                             return mime, image
                     elif kind in containers:
                         child_start = payload + 4 if kind == b"meta" else payload
-                        result = walk(child_start, payload_end)
+                        result = walk(child_start, payload_end, depth + 1)
                         if result[1]:
                             return result
                     position += size
@@ -711,52 +519,24 @@ def read_mp4_covr_cover(path):
             result = walk(0, end)
             if result[1]:
                 return result
+            if oversized_covr:
+                return None, None
             return scan_covr_payload(fh, 0, end)
     except (OSError, ValueError):
         return None, None
 
 def read_cover(path, config=None):
-    ext = os.path.splitext(path)[1].lower()
-    if ext in (".mp3", ".dsf", ".dff"):
+    kind = cover_kind(path)
+    if kind == "id3":
         return read_id3_cover(path)
-    if ext == ".ape":
+    if kind == "ape":
         return read_ape_cover(path)
-    if ext == ".wav":
+    if kind == "wav":
         return read_wav_cover(path, config)
-    if ext == ".flac":
+    if kind == "flac":
         return read_flac_cover(path)
-    if ext in (".m4a", ".mp4"):
+    if kind == "mp4":
         return read_m4a_cover(path, config)
-    return None, None
-
-def read_sidecar_cover(*paths):
-    names = ("cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.jpeg", "folder.png")
-    dirs = []
-    for path in paths:
-        if path:
-            directory = os.path.dirname(path)
-            if directory and directory not in dirs:
-                dirs.append(directory)
-    for directory in dirs:
-        try:
-            entries = {name.lower(): name for name in os.listdir(directory)}
-        except OSError:
-            continue
-        for name in names:
-            actual = entries.get(name)
-            if not actual:
-                continue
-            target = os.path.join(directory, actual)
-            if not _path_under(target, directory):
-                continue
-            try:
-                with open(target, "rb") as fh:
-                    body = fh.read()
-                mime = mimetypes.guess_type(target)[0] or ("image/png" if actual.lower().endswith(".png") else "image/jpeg")
-                if body:
-                    return mime, body
-            except OSError:
-                continue
     return None, None
 
 def read_cover_for_item(item, config=None):
@@ -766,248 +546,39 @@ def read_cover_for_item(item, config=None):
     return read_sidecar_cover(item.get("cue_path"), item.get("path"))
 
 def read_vorbis_comments(path):
-    tags = {}
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read(1024 * 1024)
-    except OSError:
-        return tags
-    for key, value in re.findall(rb"(?i)(TITLE|ARTIST|ALBUM|COMPOSER|GENRE|TRACKNUMBER)=([^\x00\r\n]+)", data):
-        name = key.decode().lower()
-        tags["track_no" if name == "tracknumber" else name] = (
-            parse_track_number(value.decode("utf-8", "ignore"))
-            if name == "tracknumber" else clean_tag(value.decode("utf-8", "ignore"))
-        )
-    return tags
+    return _read_vorbis_comments(path)
 
 def read_probe_metadata(path, config=None):
-    ffprobe = find_ffprobe(config or {})
-    if not ffprobe:
-        return {}, read_native_audio_info(path)
-    command = [
-        ffprobe,
-        "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "format=duration:format_tags:stream_tags:stream=sample_rate,bits_per_raw_sample,bits_per_sample,bit_rate",
-        "-of", "json",
+    return _read_probe_metadata(
         path,
-    ]
-    env = os.environ.copy()
-    if "/usr/trim/lib/mediasrv/bin" in ffprobe:
-        env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
-    try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, env=env)
-        data = json.loads(result.stdout.decode("utf-8", "ignore") or "{}")
-        raw_tags = {}
-        for source in ((data.get("format") or {}).get("tags") or {},):
-            raw_tags.update(source)
-        stream = (data.get("streams") or [{}])[0]
-        for stream in data.get("streams") or []:
-            if stream.get("tags"):
-                raw_tags.update(stream.get("tags") or {})
-    except Exception:
-        return {}, {}
-    tags = {}
-    aliases = {
-        "title": ("title", "tit2", "\xa9nam"),
-        "artist": ("artist", "artists", "album_artist", "albumartist", "performer", "performers", "author", "tpe1", "\xa9art"),
-        "album": ("album", "talb", "\xa9alb"),
-        "composer": ("composer", "composers", "tcom", "\xa9wrt"),
-        "genre": ("genre", "genres", "tcon", "\xa9gen"),
-        "track_no": ("track", "tracknumber", "track_number", "trck", "trkn", "\xa9trk", "tracknum", "disktrack"),
-    }
-    normalized_tags = {str(key or "").strip().lower(): value for key, value in raw_tags.items()}
-    for field, keys in aliases.items():
-        for key in keys:
-            value = normalized_tags.get(key)
-            if value:
-                tags[field] = parse_track_number(value) if field == "track_no" else clean_tag(value)
-                break
-    for key, value in raw_tags.items():
-        normalized = str(key or "").lower()
-        if normalized in ("title", "artist", "album", "composer", "genre") and value:
-            tags.setdefault(normalized, clean_tag(value))
-    stream = (data.get("streams") or [{}])[0]
-    audio_info = {
-        "sample_rate": safe_int(stream.get("sample_rate")),
-        "bit_depth": safe_int(stream.get("bits_per_raw_sample") or stream.get("bits_per_sample")),
-        "bit_rate": safe_int(stream.get("bit_rate")),
-        "duration": safe_float((data.get("format") or {}).get("duration")),
-    }
-    native_info = read_native_audio_info(path)
-    for key, value in native_info.items():
-        if not audio_info.get(key):
-            audio_info[key] = value
-    return tags, audio_info
+        config,
+        ffprobe_resolver=find_ffprobe,
+        native_reader=read_native_audio_info,
+        payload_normalizer=normalize_probe_payload,
+    )
 
-
-def read_native_audio_info(path):
-    ext = os.path.splitext(str(path or ""))[1].lower()
-    if ext == ".wav":
-        try:
-            with wave.open(path, "rb") as handle:
-                rate = int(handle.getframerate() or 0)
-                channels = int(handle.getnchannels() or 0)
-                bits = int(handle.getsampwidth() or 0) * 8
-                frames = int(handle.getnframes() or 0)
-            return {
-                "sample_rate": rate,
-                "bit_depth": bits,
-                "bit_rate": rate * channels * bits,
-                "duration": frames / float(rate) if rate > 0 else 0.0,
-            }
-        except (OSError, EOFError, wave.Error):
-            return {}
-    if ext != ".dff":
-        return {}
-    try:
-        with open(path, "rb") as handle:
-            if handle.read(4) != b"FRM8":
-                return {}
-            form_size = int.from_bytes(handle.read(8), "big")
-            if handle.read(4) != b"DSD ":
-                return {}
-            end = min(os.path.getsize(path), 12 + form_size)
-            sample_rate = 0
-            channels = 0
-            dsd_bytes = 0
-
-            def chunks(first, limit):
-                position = first
-                while position + 12 <= limit:
-                    handle.seek(position)
-                    chunk_id = handle.read(4)
-                    size = int.from_bytes(handle.read(8), "big")
-                    payload = position + 12
-                    if payload + size > limit:
-                        break
-                    yield chunk_id, payload, size
-                    position = payload + size + (size % 2)
-
-            for chunk_id, payload, size in chunks(16, end):
-                if chunk_id == b"PROP" and size >= 4:
-                    handle.seek(payload)
-                    if handle.read(4) != b"SND ":
-                        continue
-                    for prop_id, prop_payload, prop_size in chunks(payload + 4, payload + size):
-                        handle.seek(prop_payload)
-                        if prop_id == b"FS  " and prop_size >= 4:
-                            sample_rate = int.from_bytes(handle.read(4), "big")
-                        elif prop_id == b"CHNL" and prop_size >= 2:
-                            channels = int.from_bytes(handle.read(2), "big")
-                elif chunk_id == b"DSD ":
-                    dsd_bytes = size
-            duration = (dsd_bytes * 8) / float(sample_rate * channels) if sample_rate > 0 and channels > 0 else 0.0
-            return {
-                "sample_rate": sample_rate,
-                "bit_depth": 1,
-                "bit_rate": sample_rate * channels,
-                "duration": duration,
-            } if sample_rate and channels else {}
-    except (OSError, ValueError):
-        return {}
 
 def read_probe_tags(path, config=None):
     tags, _ = read_probe_metadata(path, config)
     return tags
 
-def decode_id3v1_field(data):
-    raw = data.rstrip(b"\x00 ").strip()
-    for encoding in ("utf-8", "gb18030", "latin1"):
-        try:
-            return clean_tag(raw.decode(encoding))
-        except UnicodeError:
-            continue
-    return clean_tag(raw.decode("latin1", "ignore"))
-
-def read_id3v1(path):
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(-128, os.SEEK_END)
-            data = fh.read(128)
-    except OSError:
-        return {}
-    if len(data) != 128 or data[:3] != b"TAG":
-        return {}
-    tags = {
-        "title": decode_id3v1_field(data[3:33]),
-        "artist": decode_id3v1_field(data[33:63]),
-        "album": decode_id3v1_field(data[63:93]),
-    }
-    return {key: value for key, value in tags.items() if value}
-
 def read_metadata(path, root, config=None, probe_tags=None):
-    ext = os.path.splitext(path)[1].lower()
-    tags = dict(probe_tags or read_probe_tags(path, config or {}))
-    local_tags = read_id3(path) if ext in (".mp3", ".dsf", ".dff", ".wav") else read_vorbis_comments(path)
-    for key, value in local_tags.items():
-        tags.setdefault(key, value)
-    tag_title = clean_tag(tags.get("title"))
-    tag_artist = clean_tag(tags.get("artist"))
-    filename_artist, filename_title = artist_title_from_filename(path)
-    title = tag_title or filename_title or display_name(path)
-    artist = tag_artist or filename_artist or "未知艺术家"
-    album = clean_tag(tags.get("album")) or UNCLASSIFIED
+    # ffprobe already provides the canonical values for most files. Avoid a
+    # second full-file ID3/Vorbis scan when all fields needed by the library
+    # are present; retain the native fallback for partial or probe-less tags.
+    tags = resolve_metadata_tags(
+        path,
+        probe_tags,
+        lambda value: read_probe_tags(value, config or {}),
+        read_id3,
+        read_vorbis_comments,
+    )
     folder = relative_folder_for_path(path, root)
     root_label = library_root_label(root, config or {})
-    return {
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "composer": tags.get("composer") or "未知作曲者",
-        "genre": tags.get("genre") or "未分类",
-        "track_no": parse_track_number(tags.get("track_no")),
-        "folder": folder,
-        "library_root": root_label,
-        "metadata_source": {
-            "title": "tag" if tag_title else "filename",
-            "artist": "tag" if tag_artist else ("filename" if filename_artist else "unknown"),
-            "album": "tag" if clean_tag(tags.get("album")) else "unknown",
-        },
-    }
-
-def artist_title_from_filename(path):
-    name = os.path.splitext(os.path.basename(path))[0]
-    name = re.sub(r"^\d{1,3}[\s._-]+", "", name).replace("_", " ").strip()
-    for separator in (" - ", " – ", " — ", " -", "- "):
-        if separator not in name:
-            continue
-        left, right = name.split(separator, 1)
-        left = clean_tag(left)
-        right = clean_tag(right)
-        if len(left) >= 1 and len(right) >= 1:
-            return left, right
-    return "", ""
-
-def display_name(path):
-    name = os.path.splitext(os.path.basename(path))[0]
-    name = re.sub(r"^\d{1,3}[\s._-]+", "", name)
-    return name.replace("_", " ").strip() or "未知曲目"
-
-def cue_time_seconds(value):
-    match = re.match(r"(\d+):(\d+):(\d+)", str(value or ""))
-    if not match:
-        return 0.0
-    minutes, seconds, frames = [int(x) for x in match.groups()]
-    return minutes * 60 + seconds + frames / 75.0
-
-def cue_value(line):
-    match = re.search(r'"([^"]*)"', line)
-    if match:
-        return clean_tag(match.group(1))
-    parts = line.split(None, 1)
-    return clean_tag(parts[1] if len(parts) > 1 else "")
+    return library_metadata(path, tags, folder, root_label, UNCLASSIFIED)
 
 def read_cue_lines(cue_path):
-    for encoding in ("utf-8-sig", "gb18030", "big5", "latin1"):
-        try:
-            with open(cue_path, "r", encoding=encoding) as fh:
-                return fh.read().splitlines()
-        except UnicodeError:
-            continue
-        except OSError:
-            return []
-    return []
+    return _read_cue_lines(cue_path)
 
 def parse_cue_tracks(cue_path, root, config=None, deadline=None):
     if not _path_under(cue_path, root):
@@ -1015,40 +586,17 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
     text = read_cue_lines(cue_path)
     if not text:
         return []
-    album = os.path.splitext(os.path.basename(cue_path))[0]
-    album_artist = "未知艺术家"
-    current_file = ""
-    current = None
-    tracks = []
-    for raw in text:
-        line = raw.strip()
-        upper = line.upper()
-        if upper.startswith("FILE "):
-            current_file = cue_value(line)
-        elif upper.startswith("TITLE ") and current is None:
-            album = cue_value(line) or album
-        elif upper.startswith("PERFORMER ") and current is None:
-            album_artist = cue_value(line) or album_artist
-        elif upper.startswith("TRACK "):
-            if current:
-                tracks.append(current)
-            number = re.findall(r"\d+", line)
-            current = {"track_no": int(number[0]) if number else len(tracks) + 1, "file": current_file, "title": "", "artist": "", "start": 0.0}
-        elif current and upper.startswith("TITLE "):
-            current["title"] = cue_value(line)
-        elif current and upper.startswith("PERFORMER "):
-            current["artist"] = cue_value(line)
-        elif current and upper.startswith("INDEX 01"):
-            parts = line.split()
-            current["start"] = cue_time_seconds(parts[-1] if parts else "")
-    if current:
-        tracks.append(current)
-    for index, track in enumerate(tracks):
-        track["end"] = 0.0
-        for candidate in tracks[index + 1:]:
-            if candidate.get("file") == track.get("file") and safe_float(candidate.get("start")) > safe_float(track.get("start")):
-                track["end"] = safe_float(candidate.get("start"))
-                break
+    # The CUE file can disappear between the bounded read above and track
+    # construction (for example while a library is being reorganized). Read
+    # its identity once and let the whole CUE skip cleanly if it is gone.
+    try:
+        cue_stat = os.stat(cue_path)
+    except OSError:
+        return []
+    parsed = parse_cue_structure(text, os.path.splitext(os.path.basename(cue_path))[0])
+    album = parsed["album"]
+    album_artist = parsed["album_artist"]
+    tracks = parsed["tracks"]
     items = []
     cue_dir = os.path.dirname(cue_path)
     for track in tracks:
@@ -1074,19 +622,25 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
         metadata["metadata_source"] = {"title": "cue", "artist": "cue", "album": "cue"}
         metadata["folder"] = relative_folder_for_path(cue_path, root)
         cue_start = safe_float(track.get("start"))
-        cue_end = safe_float(track.get("end")) or safe_float(audio_info.get("duration"))
-        cue_duration = max(0.0, cue_end - cue_start) if cue_end > cue_start else 0.0
-        items.append({"id": item_id, **metadata, "format": ext[1:].upper(), "mime": SUPPORTED[ext], "is_dsd": ext in (".dsf", ".dff"), "size": stat.st_size, **audio_info, "duration": cue_duration, "path": audio_path, "cue_path": cue_path, "cue_track": True, "cue_start": cue_start, "cue_end": cue_end, "added": int(time.time()), "added_ns": int(time.time() * 1000000000), "modified": int(os.path.getmtime(cue_path)), "modified_ns": os.stat(cue_path).st_mtime_ns, "metadata_version": METADATA_VERSION})
+        # The parser answers the boundary in three states and only a final track may
+        # borrow the duration of its source file: a positive value is the next track
+        # on that file, 0.0 is the end of the file, and None means the boundary is
+        # unknown.  Folding those together used to store a full-file cue_end for a
+        # sheet that says nothing about where the segment stops.
+        cue_end = cue_segment_end(track.get("end"), safe_float(audio_info.get("duration")))
+        items.append(build_cue_item(
+            item_id, metadata, ext, SUPPORTED[ext], ext in (".dsf", ".dff"),
+            stat.st_size, audio_info, audio_path, cue_path, True, cue_start,
+            cue_end, time.time(), cue_stat.st_mtime,
+            cue_stat.st_mtime_ns, METADATA_VERSION,
+        ))
     return items
 
-def scan_library(root, previous_items=None, config=None, deadline=None):
+def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0):
     items = []
     signature_parts = []
-    previous = {}
     scan_started = time.time()
-    for item in previous_items or []:
-        if item.get("path"):
-            previous[item["path"]] = item
+    previous = build_previous_item_index(previous_items)
     root = canonical_library_path(root)
     if not is_allowed_library_path(root) or not os.path.isdir(root):
         return items, ""
@@ -1098,7 +652,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None):
         SCAN_STATE["current"] = base
         for filename in files:
             check_scan_deadline(deadline)
-            if os.path.splitext(filename)[1].lower() != ".cue":
+            if classify_filename(filename, SUPPORTED) != "cue":
                 continue
             full = os.path.join(base, filename)
             if not _path_under(full, root):
@@ -1107,7 +661,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None):
             cue_items = parse_cue_tracks(full, root, config or {}, deadline)
             items.extend(cue_items)
             cue_audio_paths.update(os.path.abspath(item.get("path", "")) for item in cue_items if item.get("path"))
-            SCAN_STATE["found"] = len(items)
+            SCAN_STATE["found"] = found_offset + len(items)
             try:
                 stat = os.stat(full)
                 signature_parts.append("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
@@ -1128,9 +682,10 @@ def scan_library(root, previous_items=None, config=None, deadline=None):
         for filename in files:
             check_scan_deadline(deadline)
             SCAN_STATE["scanned"] += 1
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in SUPPORTED:
+            classification = classify_filename(filename, SUPPORTED)
+            if classification != "audio":
                 continue
+            ext = os.path.splitext(filename)[1].lower()
             full = os.path.join(base, filename)
             if ext == ".cue":
                 continue
@@ -1146,58 +701,39 @@ def scan_library(root, previous_items=None, config=None, deadline=None):
                 continue
             signature_parts.append("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
             cached = previous.get(full)
-            if cached and cached.get("size") == stat.st_size and cached.get("modified_ns") == stat.st_mtime_ns and cached.get("metadata_version") == METADATA_VERSION:
+            if can_reuse_cached_item(cached, stat.st_size, stat.st_mtime_ns, METADATA_VERSION):
                 items.append(cached)
-                SCAN_STATE["found"] = len(items)
+                SCAN_STATE["found"] = found_offset + len(items)
                 continue
             item_id = hashlib.sha1(full.encode("utf-8", "ignore")).hexdigest()[:16]
             probe_tags, audio_info = read_probe_metadata(full, config or {})
             metadata = read_metadata(full, root, config, probe_tags)
-            items.append(
-                {
-                    "id": item_id,
-                    **metadata,
-                    "format": ext[1:].upper(),
-                    "mime": SUPPORTED[ext],
-                    "is_dsd": ext in (".dsf", ".dff"),
-                    "size": stat.st_size,
-                    "duration": 0,
-                    **audio_info,
-                    "path": full,
-                    "added": int(scan_started),
-                    "added_ns": int(scan_started * 1000000000),
-                    "modified": int(stat.st_mtime),
-                    "modified_ns": stat.st_mtime_ns,
-                    "metadata_version": METADATA_VERSION,
-                }
-            )
-            SCAN_STATE["found"] = len(items)
+            items.append(build_audio_item(
+                item_id, metadata, ext, SUPPORTED[ext], ext in (".dsf", ".dff"),
+                stat.st_size, audio_info, full, scan_started, stat,
+                metadata_version=METADATA_VERSION,
+            ))
+            SCAN_STATE["found"] = found_offset + len(items)
         if len(items) and len(items) % 500 == 0:
             time.sleep(0.01)
     check_scan_deadline(deadline)
-    items.sort(key=lambda x: (x["artist"].lower(), x["album"].lower(), x["title"].lower()))
+    items = sort_scan_items(items)
     signature_parts.append("metadata_version:%s" % METADATA_VERSION)
-    signature = hashlib.sha1("|".join(sorted(signature_parts)).encode("utf-8", "ignore")).hexdigest()
+    signature = digest_signature_parts(signature_parts)
     return items, signature
 
 def scan_libraries(config, previous_items=None, deadline=None):
     all_items = []
     signatures = []
-    for root in normalize_library_paths(config):
+    roots = normalize_library_paths(config)
+    previous_by_root = partition_previous_items(previous_items, roots, _path_under)
+    for index, root in enumerate(roots):
         check_scan_deadline(deadline)
-        items, signature = scan_library(root, previous_items, config, deadline)
+        items, signature = scan_library(root, previous_by_root[index], config, deadline, len(all_items))
         all_items.extend(items)
         if signature:
             signatures.append("%s:%s" % (root, signature))
-    seen = set()
-    unique = []
-    for item in all_items:
-        if item.get("id") in seen:
-            continue
-        seen.add(item.get("id"))
-        unique.append(item)
-    unique.sort(key=lambda x: (x["artist"].lower(), x["album"].lower(), x["title"].lower()))
-    return unique, hashlib.sha1("|".join(sorted(signatures)).encode("utf-8", "ignore")).hexdigest()
+    return finalize_scan_results(all_items, signatures)
 
 
 def library_signature_for_config(config, deadline=None):
@@ -1208,58 +744,83 @@ def library_signature_for_config(config, deadline=None):
         signature = library_signature(root, deadline)
         if signature:
             signatures.append("%s:%s" % (root, signature))
-    return hashlib.sha1("|".join(sorted(signatures)).encode("utf-8", "ignore")).hexdigest()
+    return digest_signature_parts(signatures)
+
+
+def _scan_state_value(key, default=None):
+    """Read a scan-state field without trusting a mutable runtime mapping."""
+    try:
+        return SCAN_STATE.get(key, default) if isinstance(SCAN_STATE, dict) else default
+    except Exception:
+        return default
+
+
+def _scan_state_bool(key):
+    try:
+        return strict_bool(_scan_state_value(key, False))
+    except Exception:
+        return False
+
+
+def _record_library_cache_failure(kind):
+    if kind not in ("load", "save"):
+        return
+    try:
+        with LIBRARY_CACHE_FAILURES_LOCK:
+            updated = increment_failure(LIBRARY_CACHE_FAILURES, kind)
+            LIBRARY_CACHE_FAILURES.update(updated)
+    except Exception:
+        return
+
+
+def library_cache_failure_status():
+    try:
+        with LIBRARY_CACHE_FAILURES_LOCK:
+            return project_failures(LIBRARY_CACHE_FAILURES)
+    except Exception:
+        return {"load": 0, "save": 0}
+
 
 def library_status(config):
     roots = normalize_library_paths(config)
-    root = roots[0] if roots else os.path.abspath(os.path.expanduser(config["library_path"]))
+    root = roots[0] if roots else canonical_library_path(".")
     db_summary = library_summary_from_sqlite(config)
-    count = int(db_summary.get("count", len(MUSIC_CACHE["items"])))
-    dsd_count = int(db_summary.get("dsd_count", sum(1 for item in MUSIC_CACHE["items"] if item.get("is_dsd"))))
+    count = safe_counter(db_summary.get("count", len(MUSIC_CACHE["items"])))
+    dsd_count = safe_counter(db_summary.get("dsd_count", sum(1 for item in MUSIC_CACHE["items"] if item.get("is_dsd"))))
     status = {
         "library_path": root,
         "library_paths": roots,
-        "server_port": int(config.get("server_port", 18080)),
+        "server_port": bounded_int(config, "server_port", DEFAULT_PORT, 1024, 65535),
         "allowed": is_allowed_library_path(root),
         "exists": os.path.exists(root),
         "is_dir": os.path.isdir(root),
         "readable": os.access(root, os.R_OK),
         "count": count,
         "dsd_count": dsd_count,
-        "scanning": SCAN_STATE["running"],
-        "cancelled": bool(SCAN_STATE.get("cancelled")),
-        "timed_out": bool(SCAN_STATE.get("timed_out")),
-        "deadline": int(SCAN_STATE.get("deadline") or 0),
-        "last_error": SCAN_STATE["last_error"],
-        "last_scan": SCAN_STATE["last_scan"],
-        "current": SCAN_STATE.get("current", ""),
-        "phase": SCAN_STATE.get("phase", ""),
-        "scanned": SCAN_STATE.get("scanned", 0),
-        "found": SCAN_STATE.get("found", 0),
-        "errors": list(SCAN_STATE.get("errors") or []),
+        "scanning": _scan_state_bool("running"),
+        "queued": _scan_state_bool("queued"),
+        "result": str(_scan_state_value("result") or "idle")[:32],
+        "cancelled": _scan_state_bool("cancelled"),
+        "timed_out": _scan_state_bool("timed_out"),
+        "deadline": safe_int(_scan_state_value("deadline", 0)),
+        "last_error": scan_error_text(_scan_state_value("last_error", "")),
+        "last_scan": safe_float(_scan_state_value("last_scan", 0), 0.0),
+        "current": scan_error_text(_scan_state_value("current", "")),
+        "phase": scan_error_text(_scan_state_value("phase", "")),
+        "scanned": safe_counter(_scan_state_value("scanned", 0)),
+        "found": safe_counter(_scan_state_value("found", 0)),
+        "errors": snapshot_scan_errors(_scan_state_value("errors")),
+        "cache_failures": library_cache_failure_status(),
+        "storage": library_storage_status(config),
         "change_detection": (
             LIBRARY_CHANGE_MONITOR.status()
             if LIBRARY_CHANGE_MONITOR is not None
             else {"mode": "polling", "watched_directories": 0, "dirty": True, "overflowed": False}
         ),
+        "search_index": library_search_index_status(config),
         "supported_formats": sorted(x[1:].upper() for x in SUPPORTED),
     }
-    if not status["allowed"]:
-        status["message"] = "出于安全保护，这个路径不能作为音乐目录"
-        return status
-    if not status["exists"]:
-        status["message"] = "音乐目录不存在，请在应用设置里选择正确的音乐文件夹"
-        return status
-    if not status["is_dir"]:
-        status["message"] = "音乐路径不是文件夹"
-        return status
-    if not status["readable"]:
-        status["message"] = "应用没有权限读取这个音乐文件夹"
-        return status
-    if status["scanning"] and not status["count"]:
-        status["message"] = "正在扫描音乐目录"
-    else:
-        status["message"] = "音乐库已就绪" if status["count"] else "没有在这个目录里找到支持的音乐文件"
+    status["message"] = status_message(status)
     return status
 
 def browsable_roots():
@@ -1274,23 +835,47 @@ def browsable_roots():
     return roots
 
 def list_music_directories(path):
-    root = os.path.abspath(os.path.expanduser(path or ""))
+    if not isinstance(path, str) or not path.strip():
+        return browsable_roots()
+    root = os.path.abspath(os.path.expanduser(path.strip()))
     if not root:
         return browsable_roots()
     if not is_allowed_library_path(root) or not os.path.isdir(root):
         return []
-    dirs = []
+    max_directories = 512
     try:
         with os.scandir(root) as entries:
-            for entry in entries:
-                if entry.is_dir(follow_symlinks=False):
-                    dirs.append(entry.path)
+            # Keep directory browsing bounded without changing the existing
+            # alphabetical presentation. nsmallest retains only the page
+            # prefix instead of materializing every NAS child directory.
+            dirs = heapq.nsmallest(
+                max_directories,
+                (entry.path for entry in entries if entry.is_dir(follow_symlinks=False)),
+                key=lambda value: value.lower(),
+            )
     except OSError:
         return []
-    return sorted(dirs, key=lambda x: x.lower())
+    return dirs
 
 def library_signature(root, deadline=None):
     parts = []
+    total_signature_bytes = 0
+    metadata_part = "metadata_version:%s" % METADATA_VERSION
+
+    def append_signature_part(value):
+        nonlocal total_signature_bytes
+        if len(parts) >= max(0, MAX_LIBRARY_SIGNATURE_PARTS - 1) or not isinstance(value, str):
+            return
+        bounded = value[:4096]
+        remaining = MAX_LIBRARY_SIGNATURE_BYTES - len(metadata_part) - total_signature_bytes
+        if remaining <= 0:
+            return
+        bounded = bounded[:remaining]
+        if not bounded:
+            return
+        parts.append(bounded)
+        total_signature_bytes += len(bounded)
+
     root = os.path.abspath(os.path.expanduser(root))
     if not is_allowed_library_path(root) or not os.path.isdir(root):
         return ""
@@ -1299,9 +884,10 @@ def library_signature(root, deadline=None):
         check_scan_deadline(deadline)
         for filename in files:
             check_scan_deadline(deadline)
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in SUPPORTED:
+            classification = classify_filename(filename, SUPPORTED)
+            if classification == "ignore":
                 continue
+            ext = os.path.splitext(filename)[1].lower()
             full = os.path.join(base, filename)
             if not _path_under(full, root):
                 continue
@@ -1309,38 +895,68 @@ def library_signature(root, deadline=None):
                 stat = os.stat(full)
             except OSError:
                 continue
-            parts.append("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
-    parts.append("metadata_version:%s" % METADATA_VERSION)
-    return hashlib.sha1("|".join(sorted(parts)).encode("utf-8", "ignore")).hexdigest()
+            append_signature_part("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
+    if MAX_LIBRARY_SIGNATURE_PARTS > 0 and MAX_LIBRARY_SIGNATURE_BYTES >= len(metadata_part):
+        parts.append(metadata_part)
+    return digest_signature_parts(parts)
 
-def refresh_library_if_changed(config, force=False, change_monitor=None):
-    if not SCAN_LOCK.acquire(False):
+def refresh_library_if_changed(config, force=False, change_monitor=None, _refresh_generation=None):
+    # Requested scans wait behind the change monitor instead of disappearing
+    # when both notice the same filesystem update at nearly the same time.
+    SCAN_LOCK.acquire()
+    cancelled_before_start = False
+    with SCAN_REQUEST_LOCK:
+        if (
+            _refresh_generation is not None
+            and _refresh_generation != SCAN_REFRESH_GENERATION
+        ):
+            SCAN_STATE["running"] = False
+            SCAN_STATE["result"] = "cancelled"
+            SCAN_STATE["cancelled"] = True
+            SCAN_STATE["timed_out"] = False
+            SCAN_STATE["deadline"] = 0
+            SCAN_STATE["current"] = ""
+            SCAN_STATE["phase"] = ""
+            SCAN_STATE["last_error"] = "扫描已取消"
+            cancelled_before_start = True
+        else:
+            # Clear only while the request state is reserved. Otherwise a
+            # cancel between `running=True` and clear() can be lost and start
+            # a scan while shutdown is waiting for this worker to exit.
+            SCAN_CANCEL_EVENT.clear()
+            SCAN_STATE["running"] = True
+            SCAN_STATE["result"] = "running"
+            SCAN_STATE["cancelled"] = False
+            SCAN_STATE["timed_out"] = False
+    if cancelled_before_start:
+        SCAN_LOCK.release()
         return
-    SCAN_STATE["running"] = True
-    SCAN_STATE["cancelled"] = False
-    SCAN_STATE["timed_out"] = False
-    timeout = bounded_int(config, "scan_timeout_seconds", 3600, 60, 86400)
-    deadline = time.monotonic() + timeout
-    SCAN_STATE["deadline"] = int(time.time()) + timeout
-    SCAN_CANCEL_EVENT.clear()
-    SCAN_STATE["last_error"] = ""
-    SCAN_STATE["current"] = ""
-    SCAN_STATE["phase"] = "准备扫描"
-    SCAN_STATE["scanned"] = 0
-    SCAN_STATE["found"] = 0
-    SCAN_STATE["errors"] = []
     try:
+        # SCAN_LOCK is already held at this point, so every statement that can
+        # still fail before the scan begins belongs inside the guarded block:
+        # one escaped exception would leave the lock held and block every later
+        # refresh request for the lifetime of the process.
+        timeout = bounded_int(config, "scan_timeout_seconds", 3600, 60, 86400)
+        deadline = ScanDeadline(timeout, SCAN_STATE)
+        SCAN_STATE["deadline"] = int(time.time()) + timeout
+        SCAN_STATE["last_error"] = ""
+        SCAN_STATE["current"] = ""
+        SCAN_STATE["phase"] = "准备扫描"
+        SCAN_STATE["scanned"] = 0
+        SCAN_STATE["found"] = 0
+        SCAN_STATE["errors"] = []
         monitor = change_monitor if change_monitor is not None else LIBRARY_CHANGE_MONITOR
         monitor_generation = monitor.generation() if monitor is not None and monitor.available else None
         previous_signature = FS_CACHE["signature"]
+        database_exists = os.path.isfile(library_db_path(config))
         if previous_signature and not force:
-            if monitor_generation is not None and not monitor.needs_scan():
+            if database_exists and monitor_generation is not None and not monitor.needs_scan():
                 SCAN_STATE["last_scan"] = time.time()
                 return
             # The startup integrity pass and inotify-triggered refresh only
             # read filesystem metadata. Audio tags are parsed after a change.
             quick_signature = library_signature_for_config(config, deadline)
-            if quick_signature == previous_signature:
+            if quick_signature == previous_signature and database_exists:
                 if monitor_generation is not None:
                     monitor.mark_clean(monitor_generation)
                 SCAN_STATE["last_scan"] = time.time()
@@ -1353,44 +969,123 @@ def refresh_library_if_changed(config, force=False, change_monitor=None):
         SCAN_STATE["phase"] = "扫描音乐目录"
         items, signature = scan_libraries(config, previous_items, deadline)
         check_scan_deadline(deadline)
+        if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
+            SCAN_STATE["phase"] = "保存音乐库索引"
+            if not save_library_cache(config, items, signature):
+                raise OSError("library index persistence failed")
         MUSIC_CACHE["items"] = items
         MUSIC_CACHE["stamp"] = time.time()
-        if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
-            FS_CACHE["signature"] = signature
-            SCAN_STATE["phase"] = "保存音乐库索引"
-            save_library_cache(config)
-        elif not MUSIC_CACHE["stamp"] and previous_signature:
-            MUSIC_CACHE["stamp"] = time.time()
+        FS_CACHE["signature"] = signature
         if monitor_generation is not None:
             monitor.mark_clean(monitor_generation)
         SCAN_STATE["last_scan"] = time.time()
+        SCAN_STATE["result"] = "completed"
     except ScanTimedOut as exc:
         SCAN_STATE["timed_out"] = True
-        SCAN_STATE["last_error"] = str(exc)
+        error_text = scan_error_text(exc.args[0] if exc.args else "扫描超时") or "扫描超时"
+        SCAN_STATE["last_error"] = error_text
+        SCAN_STATE["result"] = "timed_out"
+        print("fnAudio library scan timed out: %s" % error_text, flush=True)
     except ScanCancelled as exc:
         SCAN_STATE["cancelled"] = True
-        SCAN_STATE["last_error"] = str(exc)
+        error_text = scan_error_text(exc.args[0] if exc.args else "扫描已取消") or "扫描已取消"
+        SCAN_STATE["last_error"] = error_text
+        SCAN_STATE["result"] = "cancelled"
+        print("fnAudio library scan cancelled: %s" % error_text, flush=True)
     except Exception as exc:
-        SCAN_STATE["last_error"] = str(exc)
+        error_text = scan_error_text(exc.args[0] if exc.args else "扫描失败") or "扫描失败"
+        SCAN_STATE["last_error"] = error_text
+        SCAN_STATE["result"] = "error"
+        print("fnAudio library scan failed: %s" % error_text, flush=True)
     finally:
+        if SCAN_STATE.get("result") == "running":
+            SCAN_STATE["result"] = "completed"
         SCAN_STATE["running"] = False
         SCAN_STATE["current"] = ""
         SCAN_STATE["phase"] = ""
         SCAN_STATE["deadline"] = 0
         SCAN_LOCK.release()
 
+def _run_library_refresh_queue(config):
+    global SCAN_WORKER_THREAD
+    worker = threading.current_thread()
+    try:
+        while True:
+            with SCAN_REQUEST_LOCK:
+                force, queued, queued_force = take_refresh(
+                    SCAN_STATE.get("queued"), SCAN_STATE.get("queued_force")
+                )
+                if force is None:
+                    if SCAN_WORKER_THREAD is worker:
+                        SCAN_STATE["worker_active"] = False
+                        SCAN_WORKER_THREAD = None
+                    return
+                SCAN_STATE["queued"] = queued
+                SCAN_STATE["queued_force"] = queued_force
+                refresh_generation = SCAN_REFRESH_GENERATION
+            refresh_library_if_changed(config, force, _refresh_generation=refresh_generation)
+    finally:
+        with SCAN_REQUEST_LOCK:
+            # An old worker can finish after cancellation and a replacement
+            # worker has already been published. Never clear the replacement's
+            # active latch or thread handle from the stale worker.
+            if SCAN_WORKER_THREAD is worker:
+                SCAN_STATE["worker_active"] = False
+                SCAN_WORKER_THREAD = None
+
+
 def request_library_refresh(config, force=False):
-    if SCAN_STATE["running"]:
-        return False
-    threading.Thread(target=refresh_library_if_changed, args=(config, force), daemon=True).start()
+    global SCAN_WORKER_THREAD
+    with SCAN_REQUEST_LOCK:
+        accepted, start_worker, queued, queued_force, worker_active = enqueue_refresh(
+            SCAN_STATE.get("queued"),
+            SCAN_STATE.get("queued_force"),
+            SCAN_STATE.get("worker_active"),
+            force,
+        )
+        SCAN_STATE["queued"] = queued
+        SCAN_STATE["queued_force"] = queued_force
+        SCAN_STATE["worker_active"] = worker_active
+        if not start_worker:
+            return accepted
+        thread = threading.Thread(target=_run_library_refresh_queue, args=(config,), daemon=True)
+        try:
+            SCAN_WORKER_THREAD = thread
+            thread.start()
+        except Exception:
+            if SCAN_WORKER_THREAD is thread:
+                SCAN_WORKER_THREAD = None
+            SCAN_STATE["queued"] = False
+            SCAN_STATE["queued_force"] = False
+            SCAN_STATE["worker_active"] = False
+            raise
     return True
 
 
 def cancel_library_refresh():
-    if not SCAN_STATE.get("running"):
-        return False
-    SCAN_CANCEL_EVENT.set()
-    return True
+    global SCAN_REFRESH_GENERATION
+    with SCAN_REQUEST_LOCK:
+        accepted, queued, queued_force, signal_running = cancel_refresh(
+            SCAN_STATE.get("running"),
+            SCAN_STATE.get("queued"),
+            SCAN_STATE.get("worker_active"),
+        )
+        SCAN_STATE["queued"] = queued
+        SCAN_STATE["queued_force"] = queued_force
+        if accepted:
+            SCAN_REFRESH_GENERATION += 1
+        if signal_running:
+            SCAN_CANCEL_EVENT.set()
+        return accepted
+
+
+def shutdown_library_refresh(wait=True, timeout=5.0):
+    """Cancel any scan worker and wait for it before process shutdown."""
+    cancel_library_refresh()
+    with SCAN_REQUEST_LOCK:
+        thread = SCAN_WORKER_THREAD
+    if wait and thread is not None and thread is not threading.current_thread():
+        thread.join(_bounded_wait_timeout(timeout, 5.0))
 
 def library_items(config, refresh=False):
     if refresh:
@@ -1398,415 +1093,1062 @@ def library_items(config, refresh=False):
     return MUSIC_CACHE["items"]
 
 
-def _track_search_condition(search, alias=""):
-    value = str(search or "").strip().lower()
-    if not value:
-        return "", []
-    prefix = (str(alias).strip() + ".") if str(alias).strip() else ""
-    columns = ("title", "artist", "album", "album_artist", "composer", "genre", "folder", "path", "format")
-    condition = "(" + " OR ".join("lower(COALESCE(%s%s, '')) LIKE ?" % (prefix, column) for column in columns) + ")"
-    return condition, ["%" + value + "%"] * len(columns)
+def _track_search_condition(search, alias="", use_fts=False, rowid_column=None):
+    return track_search_condition(search, alias, use_fts, rowid_column)
+
+
+def _search_index_mode(config):
+    database = os.path.abspath(library_db_path(config))
+    with LIBRARY_SEARCH_INDEX_LOCK:
+        return LIBRARY_SEARCH_INDEX_MODE.get(database, "like")
+
+
+def library_search_index_status(config):
+    mode = _search_index_mode(config)
+    return search_index_status(mode)
+
+
+def _search_uses_fts(config, search):
+    return uses_fts(_search_index_mode(config), search)
+
+
+def _search_cache_token(config, search):
+    return cache_token(_search_index_mode(config), search) if search else ""
+
+
+def _search_plan(config, search):
+    """Read the current search mode once for both SQL and cache identity."""
+    if not search:
+        return False, ""
+    mode = _search_index_mode(config)
+    return uses_fts(mode, search), cache_token(mode, search)
+
+
+def group_match_condition(column, value):
+    """Match a visible group label while preserving SQLite's ordinary indexes.
+
+    Group tables expose both literal ``未分类`` tags and blank/null tags under
+    the same label.  The older COALESCE expression was convenient but made
+    every normal artist/album/genre page non-sargable.  Keep the exceptional
+    label explicit and let ordinary values use a direct indexed equality.
+    """
+    return build_group_match_condition(column, value)
+
+
+def _saved_library_meta_count(conn, key):
+    safe_key = key if isinstance(key, str) else ""
+    try:
+        row = conn.execute("SELECT value FROM library_meta WHERE key = ?", (safe_key,)).fetchone()
+    except Exception:
+        return None
+    return project_saved_count(row)
+
+
+def _save_library_meta_count(conn, key, value):
+    """Persist one derived count without trusting the caller or the handle.
+
+    A browse read borrows a pooled handle it did not open, so a repair write is
+    best effort: failing to persist is never a reason to fail a page that is
+    already carrying the authoritative count.
+    """
+    if not isinstance(key, str) or not key:
+        return False
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return False
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
+            (key, str(value)),
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _refresh_group_counts(conn):
+    """Store each group table's row count for the pages that read it whole.
+
+    The value is derived from the table on the write side rather than patched
+    per mutation, so it cannot drift by construction: every site that can add
+    or drop a group label ends up here.  A browse page still re-checks the
+    stored number against its own look-ahead row and overwrites it from the
+    authoritative count, which is what heals an index edited outside a scan.
+    """
+    for table, key in GROUP_COUNT_KEYS:
+        count = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
+        _save_library_meta_count(conn, key, int(count))
+
+
+def _cursor_page_rows(conn, where, args, page_query, cursor, limit):
+    """Read the rows after a cursor with two index seeks instead of a counted OFFSET.
+
+    The first statement walks the tail of the key group the cursor sits in and the
+    second one continues with the groups that follow it, so neither has to visit
+    the rows it would throw away. The shape this replaced counted the group prefix
+    and then let OFFSET walk it again: on a 100000-track library a page inside a
+    20000-row format group at a 19000-row depth cost 3.31ms (1.88ms of it in the
+    count) against 1.27ms here, and 1.28ms against 8.64ms once the offset itself
+    is deep.
+
+    Both statements stay single comparisons on the ordering prefix, which is the
+    only form SQLite seeks; the predicates are widened into an OR nowhere. At most
+    ``limit + 1`` rows come back so the caller keeps its look-ahead row, and both
+    queries are bounded by the same limit, so no unbounded result is materialised.
+    """
+    select = _track_page_select(page_query)
+    budget = limit + 1
+    rows = []
+    for condition, condition_args in (
+        cursor_group_tail_where(page_query, cursor),
+        cursor_next_group_where(page_query, cursor),
+    ):
+        if not condition or budget <= 0:
+            break
+        statement = "%s FROM tracks WHERE %s ORDER BY %s LIMIT ?" % (
+            select,
+            " AND ".join(list(where) + [condition]),
+            page_query.sql_order_by,
+        )
+        # No exception guard: this runs on the same connection, with the same
+        # filter arguments, as the total count beside it, and a swallowed failure
+        # here would answer with a short page instead of failing the request.
+        found = conn.execute(statement, list(args) + list(condition_args) + [budget]).fetchall()
+        rows.extend(found)
+        budget -= len(found)
+    return rows
+
+
+def _browse_cursor_rows(conn, prefix, joiner, order_by, base_args, cursor, kind, sort_dir, name_expression, tie_expression, limit):
+    """Read the browse rows after a cursor with two index seeks instead of an OR.
+
+    The first statement walks the tail of the key group the cursor sits in and
+    the second one continues with the groups that follow it, so neither has to
+    visit a row it would throw away.  The OR predicate this replaces was one
+    condition, but SQLite cannot seek on it: a 100000-album continuation cost
+    1.90/3.31/6.95/11.90ms at depths 0/12000/50000/99000 against 1.8-2.4ms for
+    either statement here.  Both share one ``limit + 1`` budget so the caller
+    keeps its look-ahead row, and neither materialises more than a page.
+    """
+    budget = limit + 1
+    rows = []
+    for condition, condition_args in (
+        browse_cursor_group_tail_where(cursor, kind, sort_dir, name_expression, tie_expression),
+        browse_cursor_next_group_where(cursor, kind, sort_dir, name_expression),
+    ):
+        if not condition or budget <= 0:
+            break
+        # No exception guard: this runs on the same connection, with the same
+        # filter arguments, as the total beside it, and a swallowed failure here
+        # would answer with a short page instead of failing the request.
+        found = conn.execute(
+            prefix + joiner + condition + " ORDER BY " + order_by + " LIMIT ?",
+            list(base_args) + list(condition_args) + [budget],
+        ).fetchall()
+        rows.extend(found)
+        budget -= len(found)
+    return rows
+
 
 def query_library_page(config, params):
     if not os.path.isfile(library_db_path(config)):
         return _query_memory_library_page(config, params)
-    limit = max(1, min(500, _param_int(params, "limit", 100)))
-    offset = max(0, _param_int(params, "offset", 0))
-    view = str(_first_param(params, "view", "all") or "all")
-    group = str(_first_param(params, "group", "") or "")
-    album = str(_first_param(params, "album", "") or "")
-    folder = str(_first_param(params, "folder", "") or "")
-    root = str(_first_param(params, "root", "") or "")
-    search = str(_first_param(params, "search", "") or "").strip().lower()
-    sort_key = str(_first_param(params, "sort", "title") or "title")
-    sort_dir = "DESC" if str(_first_param(params, "dir", "asc")).lower() == "desc" else "ASC"
-    sort_columns = {
-        "title": "title COLLATE NOCASE",
-        "artist": "artist COLLATE NOCASE",
-        "album": "album COLLATE NOCASE",
-        "format": "format COLLATE NOCASE",
-        "added": "added_ns",
-        "track_no": "CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END",
-    }
-    order = sort_columns.get(sort_key, sort_columns["title"])
-    with library_db_connect(config) as conn:
-        total_tracks = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
-    if total_tracks == 0 and MUSIC_CACHE["items"]:
-        return _query_memory_library_page(config, params)
+    page_query = parse_library_page_query(params)
+    limit, offset = page_query.limit, page_query.offset
+    cursor = cursor_page(decode_track_cursor(page_query.cursor), page_query)
+    if cursor:
+        # A cursor is already a keyset position. Applying a caller-supplied
+        # offset after it would silently skip additional rows.
+        offset = 0
+    view, group, album = page_query.view, page_query.group, page_query.album
+    folder, root, search = page_query.folder, page_query.root, page_query.search
+    sort_dir, order, order_by = page_query.sql_sort_dir, page_query.sql_order, page_query.sql_order_by
+    use_fts, search_cache_token = _search_plan(config, search)
+    cache_values = (
+        page_query.view, page_query.group, page_query.album, page_query.folder,
+        page_query.root, page_query.search, page_query.sort_key,
+        page_query.sql_sort_dir, page_query.limit, offset, page_query.cursor,
+    ) + ((search_cache_token,) if search_cache_token else ())
+    # A random page's explicit refresh means "draw another sample".  The
+    # browser response cache and the scan refresh queue remain independent,
+    # but the server-side page cache must not turn that request into the same
+    # sample again.
+    random_refresh = view == "random100" and first_param(params, "refresh", "") == "1"
+    cache_epoch = _library_cache_epoch(config)
+    cached = None if random_refresh else cache_epoch.get("tracks", cache_values)
+    if cached is not None:
+        return cached
     where = []
     args = []
     if view == "dsd":
         where.append("is_dsd = 1")
     elif view == "recent":
         if search:
-            condition, condition_args = _track_search_condition(search)
+            condition, condition_args = _track_search_condition(search, use_fts=use_fts)
             where.append(condition)
             args.extend(condition_args)
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         with library_db_connect(config) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
-            rows = conn.execute(
-                "SELECT item_json FROM tracks%s ORDER BY %s %s, title COLLATE NOCASE ASC, id ASC LIMIT ? OFFSET ?" % (where_sql, order, sort_dir),
-                args + [limit, offset],
-            )
-            items = []
-            for row in rows:
-                try:
-                    items.append(json.loads(row["item_json"]))
-                except ValueError:
-                    pass
-        return {"items": items, "count": count, "limit": limit, "offset": offset, "paged": True}
+            count = _saved_library_meta_count(conn, "track_count") if not where_sql else None
+            page_sql = "%s FROM tracks%s ORDER BY %s LIMIT ? OFFSET ?" % (_track_page_select(page_query), where_sql, order_by)
+            if count is None:
+                window_sql = "%s FROM tracks%s ORDER BY %s LIMIT ? OFFSET ?" % (_track_page_select(page_query, True), where_sql, order_by)
+                if cursor:
+                    count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
+                    rows = _cursor_page_rows(conn, where, args, page_query, cursor, limit)
+                else:
+                    rows, count = paged_rows_with_total(conn, window_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args, page_sql, args + [limit + 1, offset])
+            else:
+                rows = (
+                    _cursor_page_rows(conn, where, args, page_query, cursor, limit)
+                    if cursor
+                    else conn.execute(page_sql, args + [limit + 1, offset])
+                )
+            if count == 0 and MUSIC_CACHE["items"] and not cursor:
+                return _query_memory_library_page(config, params)
+            if cursor:
+                items, anchor, has_more = _decode_track_cursor_page_rows(rows, limit)
+            else:
+                # One row past the limit is read here as well: a page whose last served
+                # row carries a key no predicate can express continues from the row after
+                # it instead. has_more still comes from the total count, as it always did
+                # on this path, so the page keeps the same completeness answer.
+                items, anchor, _look_ahead_more = _decode_track_cursor_page_rows(rows, limit)
+                has_more = None
+        return cache_epoch.put(
+            "tracks",
+            cache_values,
+            _track_page_result(items, count, limit, offset, page_query, anchor, has_more),
+        )
     elif view == "random100":
         sample_limit = min(100, limit)
         if search:
-            condition, condition_args = _track_search_condition(search)
+            condition, condition_args = _track_search_condition(search, use_fts=use_fts)
             where.append(condition)
             args.extend(condition_args)
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         with library_db_connect(config) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
-            rows = conn.execute(
-                "SELECT item_json FROM (SELECT item_json,title,artist,album,format,added_ns,track_no,id FROM tracks%s ORDER BY RANDOM() LIMIT ?) ORDER BY %s %s, title COLLATE NOCASE ASC, id ASC" % (where_sql, order, sort_dir),
-                args + [sample_limit],
-            )
-            items = []
-            for row in rows:
-                try:
-                    items.append(json.loads(row["item_json"]))
-                except ValueError:
-                    pass
-        return {"items": items, "count": min(count, sample_limit), "limit": sample_limit, "offset": 0, "paged": True}
-    elif view in ("albums", "artists", "composers", "genres") and group:
-        column = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}[view]
-        where.append("COALESCE(NULLIF(%s, ''), ?) = ?" % column)
-        args.extend([UNCLASSIFIED, group])
-    elif view == "folders" and folder:
-        if root:
-            where.append("root = ?")
-            args.append(root)
-        where.append("folder = ?")
-        args.append(folder)
-    elif view == "folders" and root:
-        where.append("root = ?")
-        args.append(root)
-        where.append("folder = ?")
-        args.append("")
-    if view in ("artists", "composers") and group and album:
-        where.append("COALESCE(NULLIF(album, ''), ?) = ?")
-        args.extend([UNCLASSIFIED, album])
-    if search:
-        condition, condition_args = _track_search_condition(search)
-        where.append(condition)
-        args.extend(condition_args)
+            count = _saved_library_meta_count(conn, "track_count") if not where_sql else None
+            if count is None:
+                count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
+            if count == 0 and MUSIC_CACHE["items"]:
+                return _query_memory_library_page(config, params)
+            # `ORDER BY RANDOM()` scans and sorts every row, which is
+            # disproportionately expensive for the unfiltered 100-track view
+            # on a large collection. SQLite rowids are dense after normal
+            # index writes; probe a bounded set of random rowids, retry around
+            # occasional deletion gaps, then keep the existing display sort.
+            # Filtered random pages retain SQLite's exact random query because
+            # rowid guesses would distort sparse search result sets.
+            if not where_sql:
+                maximum_rowid = conn.execute("SELECT COALESCE(MAX(rowid),0) FROM tracks").fetchone()[0]
+                selected_rowids = set()
+                attempts = 0
+                while len(selected_rowids) < sample_limit and attempts < 4:
+                    needed = sample_limit - len(selected_rowids)
+                    candidates = random_rowid_candidates(
+                        maximum_rowid,
+                        min(MAX_RANDOM_ROWID_CANDIDATES, max(needed * 2, 64)),
+                        random.randrange,
+                    )
+                    candidates = [value for value in candidates if value not in selected_rowids]
+                    if not candidates:
+                        break
+                    placeholders = ",".join("?" for _ in candidates)
+                    selected_rowids.update(
+                        row["rowid"] for row in conn.execute(
+                            "SELECT rowid FROM tracks WHERE rowid IN (%s)" % placeholders,
+                            candidates,
+                        )
+                    )
+                    attempts += 1
+                if len(selected_rowids) >= sample_limit:
+                    # The probe set is deliberately larger than the visible
+                    # sample to tolerate sparse rowid gaps.  Sorting before
+                    # truncating would make every response favor older,
+                    # lower rowids, defeating the random view's contract.
+                    selected = random.sample(tuple(selected_rowids), sample_limit)
+                    placeholders = ",".join("?" for _ in selected)
+                    rows = conn.execute(
+                        "SELECT item_json FROM tracks WHERE rowid IN (%s) ORDER BY %s" % (placeholders, order_by),
+                        selected,
+                    )
+                else:
+                    rows = conn.execute(
+                        "SELECT item_json FROM (SELECT item_json,title,artist,album,format,added_ns,track_no,id FROM tracks ORDER BY RANDOM() LIMIT ?) ORDER BY %s" % order_by,
+                        [sample_limit],
+                    )
+            else:
+                rows = conn.execute(
+                        "SELECT item_json FROM (SELECT item_json,title,artist,album,format,added_ns,track_no,id FROM tracks%s ORDER BY RANDOM() LIMIT ?) ORDER BY %s" % (where_sql, order_by),
+                    args + [sample_limit],
+                )
+            items = decode_item_rows(rows)
+        return cache_epoch.put("tracks", cache_values, {"items": items, "count": min(count, sample_limit), "limit": sample_limit, "offset": 0, "paged": True})
+    where, args = build_track_filters(
+        page_query,
+        search_condition=_track_search_condition,
+        group_condition=group_match_condition,
+        use_fts=use_fts,
+    )
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     with library_db_connect(config) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
-        rows = conn.execute(
-            "SELECT item_json FROM tracks%s ORDER BY %s %s, title COLLATE NOCASE ASC, id ASC LIMIT ? OFFSET ?" % (where_sql, order, sort_dir),
-            args + [limit, offset],
-        )
-        items = []
-        for row in rows:
-            try:
-                items.append(json.loads(row["item_json"]))
-            except ValueError:
-                pass
-    return {"items": items, "count": count, "limit": limit, "offset": offset, "paged": True}
+        # The unfiltered library view is the hottest pagination path.  Scans
+        # already commit an exact track count alongside the index metadata,
+        # so avoid rescanning a large ``tracks`` table for every page.  Older
+        # indexes (or manually edited caches) simply fall back to the
+        # authoritative COUNT query and are repaired on the next scan.
+        count = None
+        count_key = saved_count_key(view, search, where_sql)
+        if count_key:
+            count = _saved_library_meta_count(conn, count_key)
+        page_sql = "%s FROM tracks%s ORDER BY %s LIMIT ? OFFSET ?" % (_track_page_select(page_query), where_sql, order_by)
+        if count is None:
+            window_sql = "%s FROM tracks%s ORDER BY %s LIMIT ? OFFSET ?" % (_track_page_select(page_query, True), where_sql, order_by)
+            if cursor:
+                count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
+                rows = _cursor_page_rows(conn, where, args, page_query, cursor, limit)
+            else:
+                rows, count = paged_rows_with_total(conn, window_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args, page_sql, args + [limit + 1, offset])
+        else:
+            rows = (
+                _cursor_page_rows(conn, where, args, page_query, cursor, limit)
+                if cursor
+                else conn.execute(page_sql, args + [limit + 1, offset])
+            )
+        if count == 0 and MUSIC_CACHE["items"] and not cursor:
+            return _query_memory_library_page(config, params)
+        if cursor:
+            items, anchor, has_more = _decode_track_cursor_page_rows(rows, limit)
+        else:
+            # One row past the limit is read here as well: a page whose last served
+            # row carries a key no predicate can express continues from the row after
+            # it instead. has_more still comes from the total count, as it always did
+            # on this path, so the page keeps the same completeness answer.
+            items, anchor, _look_ahead_more = _decode_track_cursor_page_rows(rows, limit)
+            has_more = None
+    return cache_epoch.put("tracks", cache_values, _track_page_result(items, count, limit, offset, page_query, anchor, has_more))
+
 
 def _query_memory_library_page(config, params):
-    items = list(library_items(config))
-    limit = max(1, min(500, _param_int(params, "limit", 100)))
-    offset = max(0, _param_int(params, "offset", 0))
-    view = str(_first_param(params, "view", "all") or "all")
-    group = str(_first_param(params, "group", "") or "")
-    album = str(_first_param(params, "album", "") or "")
-    folder = str(_first_param(params, "folder", "") or "")
-    root = str(_first_param(params, "root", "") or "")
-    search = str(_first_param(params, "search", "") or "").strip().lower()
-    sort_key = str(_first_param(params, "sort", "title") or "title")
-    sort_dir = "desc" if str(_first_param(params, "dir", "asc")).lower() == "desc" else "asc"
+    items = library_items(config)
+    page_query = parse_library_page_query(params)
+    roots = normalize_library_paths(config)
+    return build_memory_library_page(
+        items, page_query, roots, UNCLASSIFIED, _path_under, safe_int,
+        shuffle=random.shuffle, randrange=random.randrange,
+    )
 
-    def text(value):
-        return str(value or "")
-
-    def item_root(item):
-        path = text(item.get("cue_path") or item.get("path"))
-        for candidate in normalize_library_paths(config):
-            if path and _path_under(path, candidate):
-                return candidate
-        return ""
-
-    def matches_search(item):
-        if not search:
-            return True
-        haystack = " ".join(text(item.get(k)).lower() for k in ("title", "artist", "album", "album_artist", "composer", "genre", "folder", "path", "format"))
-        return search in haystack
-
-    if view == "dsd":
-        items = [item for item in items if item.get("is_dsd")]
-    elif view == "recent":
-        pass
-    elif view == "random100":
-        sample = list(items)
-        random.shuffle(sample)
-        items = sample[:100]
-    elif view in ("albums", "artists", "composers", "genres") and group:
-        key = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}[view]
-        items = [item for item in items if (text(item.get(key)) or UNCLASSIFIED) == group]
-    elif view == "folders":
-        if root:
-            items = [item for item in items if item_root(item) == root]
-        if folder:
-            items = [item for item in items if text(item.get("folder")) == folder]
-
-    if view in ("artists", "composers") and group and album:
-        items = [item for item in items if (text(item.get("album")) or UNCLASSIFIED) == album]
-    items = [item for item in items if matches_search(item)]
-    reverse = sort_dir == "desc"
-    key_map = {
-        "title": lambda item: text(item.get("title")).lower(),
-        "artist": lambda item: text(item.get("artist")).lower(),
-        "album": lambda item: text(item.get("album")).lower(),
-        "format": lambda item: text(item.get("format")).lower(),
-        "added": lambda item: safe_int(item.get("added_ns")) or safe_int(item.get("added")),
-        "track_no": lambda item: safe_int(item.get("track_no")) or 2147483647,
-    }
-    items.sort(key=key_map.get(sort_key, key_map["title"]), reverse=reverse)
-    count = len(items)
-    return {"items": items[offset:offset + limit], "count": count, "limit": limit, "offset": offset, "paged": True, "fallback": "memory"}
-
-def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer=""):
+def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer="", cursor=""):
+    browse_query = parse_library_group_query(view, search, limit, offset, sort_dir, artist, composer, cursor)
+    view, search, page = browse_query.view, browse_query.search, browse_query.page
+    direction, artist, composer, cursor = browse_query.sql_sort_dir, browse_query.artist, browse_query.composer, decode_browse_cursor(browse_query.cursor)
+    if browse_cursor_page(cursor, "group", browse_query.sql_sort_dir.lower()):
+        offset = 0
+        page = type(page)(page.limit, 0) if page is not None else None
     table_map = {"albums": "albums", "artists": "artists", "composers": "composers", "genres": "genres"}
-    table = table_map.get(str(view or ""))
+    table = table_map.get(view)
     if not table or not os.path.isfile(library_db_path(config)):
         return {"groups": [], "count": 0, "limit": 0, "offset": 0, "paged": True} if limit is not None else []
-    direction = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
-    artist = str(artist or "")
-    composer = str(composer or "")
+    use_fts, search_cache_token = _search_plan(config, search)
+    cache_values = (view, search, page.limit, page.offset, direction, artist, composer, browse_query.cursor) if page else ()
+    if page and search_cache_token:
+        cache_values += (search_cache_token,)
+    cache_epoch = _library_cache_epoch(config) if page else None
+    if page:
+        cached = cache_epoch.get("groups", cache_values)
+        if cached is not None:
+            return cached
     if view == "albums" and (artist or composer):
         owner_column = "composer" if composer else "artist"
         owner = composer or artist
-        search_condition, search_args = _track_search_condition(search)
+        owner_condition, owner_args = group_match_condition("t." + owner_column, owner)
+        search_condition, search_args = _track_search_condition(
+            search, use_fts=use_fts, rowid_column="track_rowid"
+        )
         matched_where = (" WHERE " + search_condition) if search_condition else ""
         cte = (
             "WITH scoped AS ("
-            "SELECT t.*, COALESCE(NULLIF(t.album, ''), ?) AS group_name FROM tracks t "
-            "WHERE COALESCE(NULLIF(t.%s, ''), ?) = ?"
+            "SELECT t.rowid AS track_rowid, t.*, COALESCE(NULLIF(t.album, ''), ?) AS group_name FROM tracks t "
+            "WHERE %s"
             "), matched AS (SELECT DISTINCT group_name FROM scoped%s) "
-            % (owner_column, matched_where)
+            % (owner_condition, matched_where)
         )
-        cte_args = [UNCLASSIFIED, UNCLASSIFIED, owner] + search_args
+        cte_args = [UNCLASSIFIED] + owner_args + search_args
         artist_expr = "COALESCE(NULLIF(MIN(NULLIF(s.album_artist, '')), ''), NULLIF(MIN(NULLIF(s.artist, '')), ''), ?)"
-        select_sql = (
+        grouped_sql = (
             "SELECT s.group_name AS name, %s AS artist, COUNT(*) AS track_count, MIN(s.id) AS cover_track_id "
-            "FROM scoped s JOIN matched m ON m.group_name = s.group_name "
-            "GROUP BY s.group_name ORDER BY s.group_name COLLATE NOCASE %s"
-            % (artist_expr, direction)
+            "FROM scoped s JOIN matched m ON m.group_name = s.group_name GROUP BY s.group_name"
+            % artist_expr
         )
         with library_db_connect(config) as conn:
-            if limit is None:
-                rows = conn.execute(cte + select_sql, cte_args + [UNCLASSIFIED])
-                return [dict(row) for row in rows]
-            try:
-                page_limit = max(1, min(500, int(float(limit))))
-            except (TypeError, ValueError):
-                page_limit = 100
-            try:
-                page_offset = max(0, int(float(offset or 0)))
-            except (TypeError, ValueError):
-                page_offset = 0
-            count = conn.execute(cte + "SELECT COUNT(*) FROM matched", cte_args).fetchone()[0]
-            rows = conn.execute(cte + select_sql + " LIMIT ? OFFSET ?", cte_args + [UNCLASSIFIED, page_limit, page_offset])
-            return {"groups": [dict(row) for row in rows], "count": count, "limit": page_limit, "offset": page_offset, "paged": True}
-    search_condition, search_args = _track_search_condition(search, "t")
+            if page is None:
+                rows = conn.execute(
+                    cte + grouped_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC",
+                    cte_args + [UNCLASSIFIED],
+                )
+                return materialize_browse_rows(rows)
+            # The normal paged path used to run the same scoped/matched CTE
+            # twice: once to count and once to render a page.  Let SQLite
+            # attach the grouped total to each returned row instead.  An
+            # out-of-range page has no row from which to read the window
+            # value, so only that exceptional path retains the count query.
+            window_sql = (
+                cte + "SELECT name,artist,track_count,cover_track_id,COUNT(*) OVER() AS total_count "
+                "FROM (" + grouped_sql + ") grouped ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+            )
+            count_sql = cte + "SELECT COUNT(*) FROM matched"
+            page_sql = cte + grouped_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+            cursor_condition, _cursor_args = browse_cursor_next_group_where(cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE")
+            if cursor_condition:
+                rows = _browse_cursor_rows(
+                    conn,
+                    cte + "SELECT * FROM (" + grouped_sql + ") grouped",
+                    " WHERE ",
+                    "name COLLATE NOCASE " + direction + ", name ASC",
+                    cte_args + [UNCLASSIFIED],
+                    cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE", "name", page.limit,
+                )
+                count = conn.execute(count_sql, cte_args).fetchone()[0]
+            else:
+                rows, count = paged_rows_with_total(
+                    conn,
+                    window_sql,
+                    cte_args + [UNCLASSIFIED, page.limit, page.offset],
+                    count_sql,
+                    cte_args,
+                    page_sql,
+                    cte_args + [UNCLASSIFIED, page.limit, page.offset],
+                )
+            groups = project_group_rows(rows, page.limit + 1 if cursor_condition else page.limit)
+            has_more = bool(cursor_condition and len(groups) > page.limit)
+            if has_more:
+                groups = groups[:page.limit]
+            result = {"groups": groups, "count": count, "limit": page.limit, "offset": page.offset, "paged": True}
+            if groups:
+                token = encode_browse_cursor("group", browse_query.sql_sort_dir.lower(), groups[-1].get("name", ""))
+                if token:
+                    result["next_cursor"] = token
+                    result["has_more"] = has_more if cursor_condition else len(groups) == page.limit and page.offset + len(groups) < count
+            return cache_epoch.put("groups", cache_values, result)
+    search_condition, search_args = _track_search_condition(search, "t", use_fts=use_fts)
     group_column = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}[view]
     if search_condition:
         matched_sql = (
             "WITH matched AS (SELECT DISTINCT COALESCE(NULLIF(t.%s, ''), ?) AS name FROM tracks t WHERE %s) "
             % (group_column, search_condition)
         )
-        select_sql = "SELECT g.* FROM %s g JOIN matched m ON m.name = g.name ORDER BY g.name COLLATE NOCASE %s" % (table, direction)
+        select_sql = "SELECT g.* FROM %s g JOIN matched m ON m.name = g.name" % table
         args = [UNCLASSIFIED] + search_args
     else:
         matched_sql = ""
-        select_sql = "SELECT * FROM %s ORDER BY name COLLATE NOCASE %s" % (table, direction)
+        select_sql = "SELECT * FROM %s" % table
         args = []
     with library_db_connect(config) as conn:
-        if limit is None:
-            return [dict(row) for row in conn.execute(matched_sql + select_sql, args)]
-        try:
-            page_limit = max(1, min(500, int(float(limit))))
-        except (TypeError, ValueError):
-            page_limit = 100
-        try:
-            page_offset = max(0, int(float(offset or 0)))
-        except (TypeError, ValueError):
-            page_offset = 0
+        if page is None:
+            return materialize_browse_rows(conn.execute(
+                matched_sql + select_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC",
+                args,
+            ))
         count_sql = matched_sql + ("SELECT COUNT(*) FROM matched" if search_condition else "SELECT COUNT(*) FROM %s" % table)
-        count = conn.execute(count_sql, args).fetchone()[0]
-        rows = conn.execute(matched_sql + select_sql + " LIMIT ? OFFSET ?", args + [page_limit, page_offset])
-        return {"groups": [dict(row) for row in rows], "count": count, "limit": page_limit, "offset": page_offset, "paged": True}
+        cursor_condition, _cursor_args = browse_cursor_next_group_where(cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE")
+        page_sql = matched_sql + "SELECT * FROM (" + select_sql + ") grouped ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+        window_sql = (
+            matched_sql
+            + "SELECT grouped.*, COUNT(*) OVER() AS total_count FROM (" + select_sql + ") grouped"
+            + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+        )
+        if cursor_condition:
+            rows = _browse_cursor_rows(
+                conn,
+                matched_sql + "SELECT * FROM (" + select_sql + ") grouped",
+                " WHERE ",
+                "name COLLATE NOCASE " + direction + ", name ASC",
+                args,
+                cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE", "name", page.limit,
+            )
+            count = conn.execute(count_sql, args).fetchone()[0]
+        elif search_condition:
+            rows, count = paged_rows_with_total(
+                conn, window_sql, args + [page.limit, page.offset], count_sql, args,
+                page_sql, args + [page.limit, page.offset],
+            )
+        else:
+            # An unfiltered browse page reads a whole group table, so its total is
+            # a plain count over the primary key.  A window total stays correct
+            # here, but COUNT(*) OVER() has to sort every group before it can
+            # emit the first row, which turns a page the ordering indexes serve
+            # in bounded time back into a scan of the entire collection.  Scans
+            # persist that plain count, and reading one row past the limit keeps
+            # it honest.  An index written before the key existed pays the
+            # two-statement shape below once and then stores what it learned, so
+            # the scan stops being the only way the key can appear.
+            count_key = group_count_key(table, search)
+            saved = _saved_library_meta_count(conn, count_key)
+            if saved is None:
+                rows, count = counted_page_rows(
+                    conn, page_sql, args + [page.limit, page.offset], count_sql, args,
+                )
+                _save_library_meta_count(conn, count_key, count)
+            else:
+                rows = conn.execute(
+                    page_sql, args + [page.limit + 1, page.offset]
+                ).fetchall()
+                count, refuted = browse_page_total(
+                    saved, page.offset, len(rows), page.limit
+                )
+                if refuted:
+                    count = conn.execute(count_sql, args).fetchone()[0]
+                if count != saved:
+                    _save_library_meta_count(conn, count_key, count)
+        groups = project_group_rows(rows, page.limit + 1 if cursor_condition else page.limit)
+        has_more = bool(cursor_condition and len(groups) > page.limit)
+        if has_more:
+            groups = groups[:page.limit]
+        result = {"groups": groups, "count": count, "limit": page.limit, "offset": page.offset, "paged": True}
+        if groups:
+            token = encode_browse_cursor("group", browse_query.sql_sort_dir.lower(), groups[-1].get("name", ""))
+            if token:
+                result["next_cursor"] = token
+                result["has_more"] = has_more if cursor_condition else len(groups) == page.limit and page.offset + len(groups) < count
+        return cache_epoch.put("groups", cache_values, result)
 
-def query_library_folders(config, parent="", root="", sort_dir="asc", limit=None, offset=0, search=""):
+def query_library_folders(config, parent="", root="", sort_dir="asc", limit=None, offset=0, search="", cursor=""):
+    browse_query = parse_library_folder_query(parent, root, sort_dir, limit, offset, search, cursor)
+    parent, root, search, page, direction, cursor = browse_query.parent, browse_query.root, browse_query.search, browse_query.page, browse_query.sql_sort_dir, decode_browse_cursor(browse_query.cursor)
+    if browse_cursor_page(cursor, "folder", browse_query.sql_sort_dir.lower()):
+        page = type(page)(page.limit, 0) if page is not None else None
     if not os.path.isfile(library_db_path(config)):
         return {"folders": [], "count": 0, "limit": 0, "offset": 0, "paged": True} if limit is not None else []
-    parent = str(parent or "")
-    root = str(root or "")
-    direction = "DESC" if str(sort_dir or "").lower() == "desc" else "ASC"
+    use_fts, search_cache_token = _search_plan(config, search)
+    cache_values = (parent, root, direction, page.limit, page.offset, search, browse_query.cursor) if page else ()
+    if page and search_cache_token:
+        cache_values += (search_cache_token,)
+    cache_epoch = _library_cache_epoch(config) if page else None
+    if page:
+        cached = cache_epoch.get("folders", cache_values)
+        if cached is not None:
+            return cached
     if root:
         conditions = ["f.root = ?", "f.parent = ?"]
         args = [root, parent]
     else:
         conditions = ["f.parent = ?"]
         args = [parent]
-    search_condition, search_args = _track_search_condition(search, "t")
+    search_condition, search_args = _track_search_condition(search, "t", use_fts=use_fts)
+    matched_cte = ""
     if search_condition:
+        # A folder matches a search when one of its own tracks, or one of a
+        # descendant folder, matches.  Asking that per folder row against
+        # `tracks` costs a pass over every track in the library root for each
+        # sibling, because SQLite binds only `root` when it seeks the folder
+        # index: one page measured 2.2 s at 4000 top-level folders and 64.6 s at
+        # 16000.  Folding the matching tracks into a folder set once and walking
+        # that set up the parent chain answers the same listing in 16 ms and
+        # 70 ms, and it drops the path LIKE test, which also treated `_` and `%`
+        # inside a folder name as wildcards and pulled in unrelated siblings.
+        # Walking the parent chain only reaches an ancestor while that
+        # ancestor has a folders row, so this rests on an invariant: every
+        # folder that still holds a track has its row. Incremental writes
+        # keep it by rebuilding the whole top-level tree of every added,
+        # removed, or moved track. The closure test named
+        # test_incremental_folder_refresh_keeps_the_track_folder_closure_complete
+        # asserts that shape after moves, removals, and brand new chains.
+        matched_cte = (
+            "WITH RECURSIVE matched_folder_paths(root, path) AS ("
+            "SELECT DISTINCT t.root, t.folder FROM tracks t"
+            " WHERE COALESCE(t.folder, '') <> '' AND %s"
+            " UNION"
+            " SELECT f2.root, f2.parent FROM folders f2 JOIN matched_folder_paths m"
+            " ON f2.root = m.root AND f2.path = m.path"
+            " WHERE COALESCE(f2.parent, '') <> '') " % search_condition
+        )
         conditions.append(
-            "EXISTS (SELECT 1 FROM tracks t WHERE t.root = f.root "
-            "AND (t.folder = f.path OR t.folder LIKE f.path || '/%%') AND %s)" % search_condition
+            "EXISTS (SELECT 1 FROM matched_folder_paths m"
+            " WHERE m.root = f.root AND m.path = f.path)"
         )
-        args.extend(search_args)
     where = " WHERE " + " AND ".join(conditions)
+    if matched_cte:
+        # The search term binds inside the CTE, which precedes every statement
+        # below, so its arguments have to go in front of the folder filters.
+        args = list(search_args) + list(args)
     with library_db_connect(config) as conn:
-        if limit is None:
-            return [dict(row) for row in conn.execute("SELECT f.* FROM folders f%s ORDER BY f.name COLLATE NOCASE %s" % (where, direction), args)]
-        try:
-            page_limit = max(1, min(500, int(float(limit))))
-        except (TypeError, ValueError):
-            page_limit = 100
-        try:
-            page_offset = max(0, int(float(offset or 0)))
-        except (TypeError, ValueError):
-            page_offset = 0
-        count = conn.execute("SELECT COUNT(*) FROM folders f%s" % where, args).fetchone()[0]
-        rows = conn.execute(
-            "SELECT f.* FROM folders f%s ORDER BY f.name COLLATE NOCASE %s LIMIT ? OFFSET ?" % (where, direction),
-            args + [page_limit, page_offset],
-        )
-        return {"folders": [dict(row) for row in rows], "count": count, "limit": page_limit, "offset": page_offset, "paged": True}
+        if page is None:
+            return materialize_browse_rows(conn.execute(
+                matched_cte + "SELECT f.* FROM folders f%s ORDER BY f.name COLLATE NOCASE %s" % (where, direction), args,
+            ))
+        count_sql = matched_cte + "SELECT COUNT(*) FROM folders f%s" % where
+        cursor_condition, _cursor_args = browse_cursor_next_group_where(cursor, "folder", browse_query.sql_sort_dir.lower(), "f.name COLLATE NOCASE")
+        order = "f.name COLLATE NOCASE %s, f.path ASC" % direction
+        page_sql = matched_cte + "SELECT f.* FROM folders f%s ORDER BY %s LIMIT ? OFFSET ?" % (where, order)
+        window_sql = matched_cte + "SELECT f.*, COUNT(*) OVER() AS total_count FROM folders f%s ORDER BY %s LIMIT ? OFFSET ?" % (where, order)
+        if cursor_condition:
+            rows = _browse_cursor_rows(
+                conn,
+                matched_cte + "SELECT f.* FROM folders f" + where,
+                " AND ",
+                order,
+                args,
+                cursor, "folder", browse_query.sql_sort_dir.lower(), "f.name COLLATE NOCASE", "f.path", page.limit,
+            )
+            count = conn.execute(count_sql, args).fetchone()[0]
+        elif search_condition:
+            # A search page has to test every sibling anyway, so carrying the
+            # total inside the page stays cheaper than a second statement.
+            rows, count = paged_rows_with_total(
+                conn, window_sql, args + [page.limit, page.offset], count_sql, args,
+                page_sql, args + [page.limit, page.offset],
+            )
+        else:
+            # An unfiltered directory page is bounded by one parent and the
+            # NOCASE ordering indexes can seek straight to its first row.  A
+            # window total would walk back through every sibling that the index
+            # just skipped, so the count rides its own covering-index statement.
+            rows, count = counted_page_rows(
+                conn, page_sql, args + [page.limit, page.offset], count_sql, args,
+            )
+        folders = project_folder_rows(rows, page.limit + 1 if cursor_condition else page.limit)
+        has_more = bool(cursor_condition and len(folders) > page.limit)
+        if has_more:
+            folders = folders[:page.limit]
+        result = {"folders": folders, "count": count, "limit": page.limit, "offset": page.offset, "paged": True}
+        if folders:
+            token = encode_browse_cursor("folder", browse_query.sql_sort_dir.lower(), folders[-1].get("name", ""), folders[-1].get("path", ""))
+            if token:
+                result["next_cursor"] = token
+                result["has_more"] = has_more if cursor_condition else len(folders) == page.limit and page.offset + len(folders) < count
+        return cache_epoch.put("folders", cache_values, result)
 
 def query_library_root_folders(config, search=""):
     roots = normalize_library_paths(config)
+    search = parse_library_root_search(search)
+    use_fts, search_cache_token = _search_plan(config, search)
+    # The same SQLite database can be viewed through different configured
+    # roots. Keep that configuration identity in the bounded cache key so a
+    # root switch cannot reuse a response projected for the previous roots.
+    roots_cache_token = hashlib.sha256(
+        json.dumps(roots, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    cache_values = (search, roots_cache_token)
+    if search_cache_token:
+        cache_values += (search_cache_token,)
+    cache_epoch = _library_cache_epoch(config)
+    cached = cache_epoch.get("roots", cache_values) if os.path.isfile(library_db_path(config)) else None
+    if cached is not None:
+        return cached
     if not os.path.isfile(library_db_path(config)):
         return [{"path": root, "root": root, "parent": "", "name": os.path.basename(root.rstrip("/\\")) or root, "track_count": 0, "cover_track_id": ""} for root in roots]
     with library_db_connect(config) as conn:
-        rows = {row["root"] or "": row for row in conn.execute("SELECT root, COUNT(*) AS track_count, MIN(id) AS cover_track_id FROM tracks GROUP BY root")}
-        search_condition, search_args = _track_search_condition(search)
+        search_condition, search_args = _track_search_condition(search, use_fts=use_fts)
         matched_roots = None
         if search_condition:
-            matched_roots = {row["root"] or "" for row in conn.execute("SELECT DISTINCT root FROM tracks WHERE " + search_condition, search_args)}
-    result = []
-    for root in roots:
-        if matched_roots is not None and root not in matched_roots:
-            continue
-        row = rows.get(root, None)
-        result.append({
-            "path": root,
-            "root": root,
-            "parent": "",
-            "name": os.path.basename(root.rstrip("/\\")) or root,
-            "track_count": int(row["track_count"]) if row and row["track_count"] is not None else 0,
-            "cover_track_id": row["cover_track_id"] if row else "",
-        })
-    return result
+            if not roots:
+                matched_roots = set()
+            else:
+                root_filter, root_args = configured_root_filter(roots)
+                matched_roots = {
+                    row["root"] or ""
+                    for row in conn.execute(
+                        "SELECT DISTINCT root FROM tracks WHERE " + root_filter + " AND " + search_condition,
+                        root_args + search_args,
+                    )
+                }
+            # A no-match search cannot produce root rows, so avoid decoding
+            # the persisted summary (or falling back to aggregation) first.
+            if not matched_roots:
+                return cache_epoch.put("roots", cache_values, [])
+        meta_row = conn.execute("SELECT value FROM library_meta WHERE key = 'root_summary'").fetchone()
+        rows = decode_root_summary(meta_row["value"] if meta_row else None, roots)
+        if rows is None:
+            # Restrict the fallback aggregation to configured roots.  A stale
+            # database may retain rows for removed libraries; grouping those
+            # rows adds an avoidable full-table pass on every root view.
+            root_filter, root_args = configured_root_filter(roots)
+            if root_args:
+                rows = {
+                    row["root"] or "": row
+                    for row in conn.execute(
+                        "SELECT root, COUNT(*) AS track_count, MIN(id) AS cover_track_id "
+                        "FROM tracks WHERE " + root_filter + " GROUP BY root",
+                        root_args,
+                    )
+                }
+            else:
+                rows = {}
+    result = project_root_rows(roots, rows, matched_roots)
+    return cache_epoch.put("roots", cache_values, result)
+
 
 def query_library_items_by_ids(config, ids):
-    values = [str(item_id).strip() for item_id in ids if str(item_id).strip()]
+    values = normalize_library_item_sequence(ids)
     if not values or not os.path.isfile(library_db_path(config)):
         return []
-    placeholders = ",".join("?" for _ in values)
+    # Favorites, playlists and playback restoration all use this ordered
+    # hydration path.  It is read-only and already bounded by the transport
+    # normalizer, so let the same short-lived SQLite page cache coalesce
+    # repeated requests during a render/recovery burst.  The cache returns a
+    # defensive copy and every index write invalidates this database namespace.
+    # Cache keys intentionally retain only a small fixed number of values.
+    # Playback restoration may legally hydrate far more IDs, so caching such
+    # a request would alias queues that share an initial prefix. Bypass this
+    # short-lived page cache for long ordered sequences rather than returning
+    # a different queue's rows from a truncated key.
+    cacheable = len(values) <= MAX_CACHE_KEY_VALUES
+    cache_values = tuple(values) if cacheable else ()
+    cache_epoch = _library_cache_epoch(config) if cacheable else None
+    if cacheable:
+        cached = cache_epoch.get("items_by_id", cache_values)
+        if cached is not None:
+            return cached
     with library_db_connect(config) as conn:
-        rows = conn.execute("SELECT item_json FROM tracks WHERE id IN (%s)" % placeholders, values)
-        items = []
-        for row in rows:
-            try:
-                items.append(json.loads(row["item_json"]))
-            except ValueError:
-                pass
-        return items
+        result = hydrate_items_by_ids(conn, values, decode_item_rows, LIBRARY_ITEM_ID_LIMIT)
+    return cache_epoch.put("items_by_id", cache_values, result) if cacheable else result
 
 def query_library_item_by_id(config, item_id):
-    value = str(item_id or "").strip()
+    value = normalize_library_item_id(item_id)
     if not value:
         return None
     if os.path.isfile(library_db_path(config)):
         with library_db_connect(config) as conn:
-            row = conn.execute("SELECT item_json FROM tracks WHERE id = ? LIMIT 1", (value,)).fetchone()
-            if row:
-                try:
-                    return json.loads(row["item_json"])
-                except ValueError:
-                    return None
-    return next((item for item in MUSIC_CACHE["items"] if str(item.get("id") or "") == value), None)
+            item = lookup_sqlite_item(conn, value, decode_item_row)
+            if item is not None:
+                return item
+    return lookup_memory_item(MUSIC_CACHE["items"], value)
 
 def query_library_item_location(config, item_id):
     item = query_library_item_by_id(config, item_id)
-    raw_path = str((item or {}).get("path") or "").strip()
-    if not raw_path:
-        return None
-    path = os.path.abspath(os.path.expanduser(raw_path))
-    # Resolve both the file and configured roots before comparing them. This
-    # prevents an indexed symlink inside a music folder from deleting a target
-    # outside the configured library through fnOS's file.rm API.
-    real_path = os.path.realpath(path)
-    roots = [os.path.realpath(root) for root in normalize_library_paths(config)]
-    if not os.path.isfile(real_path) or not any(_path_under(real_path, root) for root in roots):
-        return None
-    return {
-        "id": str((item or {}).get("id") or item_id or ""),
-        "path": real_path,
-        "folder": os.path.dirname(real_path),
-    }
-
-def _first_param(params, key, default=""):
-    if hasattr(params, "get"):
-        value = params.get(key)
-        if isinstance(value, list):
-            return value[0] if value else default
-        return value if value is not None else default
-    return default
-
-def _param_int(params, key, default=0):
-    try:
-        return int(float(_first_param(params, key, default)))
-    except (TypeError, ValueError):
-        return int(default or 0)
+    return resolve_item_location(item, item_id, normalize_library_paths(config), _path_under, MAX_LIBRARY_PATH_TEXT)
 
 def library_cache_path(config):
-    return os.path.join(config["cache_dir"], "library.json")
+    cache_dir = config.get("cache_dir", ".") if isinstance(config, dict) else "."
+    return os.path.join(cache_dir if isinstance(cache_dir, str) and cache_dir else ".", "library.json")
 
 def library_db_path(config):
-    return os.path.join(config["cache_dir"], "library.sqlite3")
+    cache_dir = config.get("cache_dir", ".") if isinstance(config, dict) else "."
+    return os.path.join(cache_dir if isinstance(cache_dir, str) and cache_dir else ".", "library.sqlite3")
+
+
+def library_storage_status(config):
+    """Return bounded SQLite storage pressure without exposing cache paths."""
+    db_path = library_db_path(config)
+    if not isinstance(db_path, str) or not db_path or len(db_path) > MAX_LIBRARY_PATH_TEXT:
+        return {"database_bytes": 0, "wal_bytes": 0, "shm_bytes": 0, "total_bytes": 0}
+    sizes = {}
+    for name, path in (("database_bytes", db_path), ("wal_bytes", db_path + "-wal"), ("shm_bytes", db_path + "-shm")):
+        try:
+            sizes[name] = safe_counter(os.stat(path).st_size)
+        except OSError:
+            sizes[name] = 0
+    sizes["total_bytes"] = safe_counter(sum(sizes.values()))
+    return sizes
+
+
+class LibraryCacheEpoch:
+    """Pin one database fingerprint and one read instant for a whole query.
+
+    The page adapters used to fingerprint the database file separately for the
+    read and the write, so an index commit that landed between them moved the
+    cache key forward: a page built from pre-commit rows became addressable by
+    post-commit readers and stayed wrong for the full TTL.  Capturing the
+    fingerprint and the read instant once, before the query runs, keeps the key
+    stable and lets LibraryQueryCache.put fence the page against the moment the
+    database was actually read.
+    """
+
+    __slots__ = ("database", "identity", "read_at")
+
+    def __init__(self, config):
+        # Keep normalization in LibraryQueryCache.  Materializing an arbitrary
+        # iterable here would defeat its bounded key reader and could turn a
+        # malformed/future caller into an unbounded allocation.
+        self.database = os.path.abspath(library_db_path(config))
+        self.identity = _library_database_cache_identity(self.database)
+        self.read_at = time.monotonic()
+
+    def get(self, namespace, values):
+        return LIBRARY_QUERY_CACHE.get(self.database, namespace, values, self.identity)
+
+    def put(self, namespace, values, result):
+        return LIBRARY_QUERY_CACHE.put(
+            self.database,
+            namespace,
+            values,
+            result,
+            database_identity=self.identity,
+            read_at=self.read_at,
+        )
+
+
+def _library_cache_epoch(config):
+    return LibraryCacheEpoch(config)
+
+
+def invalidate_library_query_cache(config):
+    LIBRARY_QUERY_CACHE.invalidate_database(library_db_path(config))
+    database = os.path.abspath(library_db_path(config))
+    with LIBRARY_SUMMARY_CACHE_LOCK:
+        LIBRARY_SUMMARY_CACHE.pop(database, None)
+
+
+def library_query_cache_status():
+    return LIBRARY_QUERY_CACHE.snapshot()
+
+
+LIBRARY_CONNECTION_POOL = LibraryConnectionPool()
+LIBRARY_CONNECTION_POOL_CONFIG_KEY = "library_connection_pool"
+
+
+def _library_connection_pool_enabled(config):
+    """Pool read handles only when the runtime opted in; tests keep one per query."""
+    return bool(config.get(LIBRARY_CONNECTION_POOL_CONFIG_KEY)) if isinstance(config, dict) else False
+
+
+def library_connection_pool_status():
+    return LIBRARY_CONNECTION_POOL.snapshot()
+
+
+def close_library_connections(config=None):
+    """Drain idle library handles so the cache directory can be removed."""
+    database = None
+    if config is not None:
+        database = os.path.abspath(library_db_path(config))
+    return LIBRARY_CONNECTION_POOL.drop(database)
+
+
+def apply_library_connection_pool_config(config):
+    """Make the running configuration's pool setting true for idle handles.
+
+    The reader path decides per query whether to borrow, so switching the pool off
+    only stops *new* pooling: handles already parked in it would keep the index file
+    open while the configuration claims pooling is disabled, which is the exact
+    inconsistency that made the switch unsafe to expose. The drain is the re-poolable
+    `close_library_connections()`, never the one-way `stop_library_connections()`:
+    switching back on has to work without a restart. A config this function cannot
+    read a database path from must not leave any handle behind either.
+    """
+    if _library_connection_pool_enabled(config):
+        return 0
+    return close_library_connections(config if isinstance(config, dict) else None)
+
+
+def stop_library_connections(config=None):
+    """Drain idle handles *and* stop pooling them: the shutdown-only drain.
+
+    Called once, from `server.shutdown_runtime()`. A reader that is still in flight when
+    the runtime winds down (an HTTP handler is the only one left that can reach the index)
+    then closes its own handle instead of parking it in the pool, so the drain cannot be
+    undone from behind. `close_library_connections()` stays the re-poolable variant for
+    the between-scan uses.
+    """
+    database = None
+    if config is not None:
+        database = os.path.abspath(library_db_path(config))
+    return LIBRARY_CONNECTION_POOL.stop_accepting(database)
+
+
+def _forget_library_schema(config):
+    database = os.path.abspath(library_db_path(config))
+    # Any handle opened against a database whose schema state was just dropped
+    # may sit in the pool with a stale read snapshot, so forget those handles
+    # before the next writer recreates the tables.
+    LIBRARY_CONNECTION_POOL.drop(database)
+    with LIBRARY_SCHEMA_READY_LOCK:
+        LIBRARY_SCHEMA_READY.pop(database, None)
+    with LIBRARY_SEARCH_INDEX_LOCK:
+        LIBRARY_SEARCH_INDEX_MODE.pop(database, None)
+
+
+def _library_database_identity(path):
+    try:
+        stat = os.stat(path)
+        return (int(stat.st_dev), int(stat.st_ino))
+    except OSError:
+        return None
+
+
+def _library_database_cache_identity(path):
+    """Return a main-db/WAL fingerprint so cached pages track committed data."""
+    try:
+        database_stat = os.stat(path)
+    except OSError:
+        return None
+    try:
+        wal_stat = os.stat(path + "-wal")
+    except OSError:
+        wal_stat = None
+
+    def stat_values(stat):
+        if stat is None:
+            return (0, 0, 0, 0)
+        return (int(stat.st_dev), int(stat.st_ino), int(stat.st_mtime_ns), int(stat.st_size))
+
+    # SQLite WAL commits may not update the main database's mtime or size
+    # until checkpointing.  Keep the optional WAL file in the identity so an
+    # external writer cannot leave cached pages stale until their TTL expires.
+    return stat_values(database_stat) + stat_values(wal_stat)
+
+
+def _ensure_library_schema_once(config, conn):
+    """Run migrations once per live database, not once per HTTP request."""
+    database = os.path.abspath(library_db_path(config))
+    with LIBRARY_SCHEMA_READY_LOCK:
+        identity = _library_database_identity(database)
+        if identity is not None and LIBRARY_SCHEMA_READY.get(database) == identity:
+            return
+        ensure_library_schema(conn)
+        _configure_library_search_index(conn, database)
+        # sqlite3.connect creates the main file before this code runs.  Keep
+        # a conservative fallback for unusual filesystems which cannot expose
+        # inode information, rather than allowing migrations to be skipped.
+        identity = _library_database_identity(database)
+        if identity is not None:
+            _bounded_database_state_put(
+                LIBRARY_SCHEMA_READY, database, identity, LIBRARY_SCHEMA_READY_LIMIT
+            )
+        else:
+            LIBRARY_SCHEMA_READY.pop(database, None)
+
+
+def _configure_library_search_index(conn, database):
+    """Create an optional FTS5 trigram index without requiring it at runtime."""
+    try:
+        version = conn.execute("SELECT value FROM library_meta WHERE key = 'search_index_version'").fetchone()
+        if not version or str(version["value"] or "") != SEARCH_INDEX_VERSION:
+            conn.execute("DROP TABLE IF EXISTS tracks_search")
+            conn.execute(
+                "CREATE VIRTUAL TABLE tracks_search USING fts5("
+                "title,artist,album,album_artist,composer,genre,folder,path,format,"
+                "content='tracks', content_rowid='rowid', tokenize='trigram'"
+                ")"
+            )
+            conn.execute("INSERT INTO tracks_search(tracks_search) VALUES ('rebuild')")
+            conn.execute(
+                "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
+                ("search_index_version", SEARCH_INDEX_VERSION),
+            )
+        mode = "fts5-trigram"
+    except sqlite3.OperationalError:
+        # Older fnOS builds may ship SQLite without FTS5/trigram. Queries
+        # deliberately continue using the original case-insensitive LIKE path.
+        mode = "like"
+    with LIBRARY_SEARCH_INDEX_LOCK:
+        _bounded_database_state_put(
+            LIBRARY_SEARCH_INDEX_MODE, database, mode, LIBRARY_SEARCH_INDEX_MODE_LIMIT
+        )
+
+
+def _rebuild_library_search_index(conn, config):
+    if _search_index_mode(config) != "fts5-trigram":
+        return
+    try:
+        conn.execute("INSERT INTO tracks_search(tracks_search) VALUES ('rebuild')")
+    except sqlite3.OperationalError:
+        with LIBRARY_SEARCH_INDEX_LOCK:
+            _bounded_database_state_put(
+                LIBRARY_SEARCH_INDEX_MODE,
+                os.path.abspath(library_db_path(config)),
+                "like",
+                LIBRARY_SEARCH_INDEX_MODE_LIMIT,
+            )
+
+def _prepare_library_connection(config, conn, db_path):
+    """Apply the per-connection setup that a borrowed handle already carries."""
+    secure_sqlite_files(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    secure_sqlite_files(db_path)
+    conn.execute("PRAGMA synchronous=NORMAL")
+    _ensure_library_schema_once(config, conn)
+
 
 @contextmanager
 def library_db_connect(config):
+    """Yield a library index handle, reusing an idle one when pooling is on.
+
+    Opening the WAL index costs more than the first-screen page query itself, so
+    a borrowed handle skips the pragma and schema prologue: those are properties
+    of the connection, not of the request. A reused handle only ever returns
+    after its own transaction committed, so it cannot carry a stale WAL snapshot
+    into the next reader.
+    """
     secure_directory(config["cache_dir"])
     db_path = library_db_path(config)
-    conn = sqlite3.connect(db_path, timeout=15)
+    pooled = _library_connection_pool_enabled(config)
+    database = os.path.abspath(db_path)
+    identity = _library_database_identity(db_path) if pooled else None
+    conn = LIBRARY_CONNECTION_POOL.borrow(database, identity) if pooled else None
+    if conn is None:
+        # A driver failure here propagates without the epilogue below, exactly as
+        # it did before pooling existed: there is no handle to roll back or close.
+        if pooled:
+            conn = sqlite3.connect(db_path, timeout=15, check_same_thread=False)
+            # Counted after the driver actually returned a handle, so the hit
+            # rate in diagnostics cannot be inflated by a failed open.
+            LIBRARY_CONNECTION_POOL.note_created()
+        else:
+            conn = sqlite3.connect(db_path, timeout=15)
+        fresh = True
+    else:
+        fresh = False
+    failed = False
     try:
-        secure_sqlite_files(db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=15000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        secure_sqlite_files(db_path)
-        conn.execute("PRAGMA synchronous=NORMAL")
-        ensure_library_schema(conn)
+        if fresh:
+            _prepare_library_connection(config, conn, db_path)
+        else:
+            # Permission refresh stays on every path: a borrowed handle proves the
+            # pragmas, not that another process left the index files private.
+            secure_sqlite_files(db_path)
         yield conn
         conn.commit()
+    except BaseException:
+        failed = True
+        try:
+            conn.rollback()
+        except Exception:
+            # Preserve the original transaction failure. Rollback is
+            # best-effort because a broken or already-closed connection may
+            # reject cleanup as well.
+            pass
+        raise
     finally:
-        conn.close()
-        secure_sqlite_files(db_path)
+        keep = (
+            pooled
+            and not failed
+            # A patched-out test double must never reach another test through
+            # the pool, so only real driver connections are eligible.
+            and isinstance(conn, sqlite3.Connection)
+        )
+        if keep:
+            stored = identity
+            if stored is None:
+                stored = _library_database_identity(db_path)
+            keep = LIBRARY_CONNECTION_POOL.release(database, stored, conn)
+        close_error = None
+        if not keep:
+            try:
+                conn.close()
+            except Exception as exc:
+                # On the failure path the rolled-back write is the real error, so
+                # a cleanup fault must not hide it. Otherwise close() still
+                # matters and is re-raised after the permission refresh below.
+                close_error = None if failed else exc
+        try:
+            secure_sqlite_files(db_path)
+        except Exception:
+            pass
+        if close_error is not None:
+            raise close_error
 
 def ensure_library_schema(conn):
-    # Older builds could leave a stale folders index behind after replacing
-    # the folders table. Remove that orphan before SQLite parses CREATE INDEX.
+    # Older builds could leave stale folders indexes behind after replacing the
+    # folders table. Remove those orphans before SQLite parses CREATE INDEX.
     folder_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'folders'"
     ).fetchone()
     if folder_table is None:
         orphan_indexes = conn.execute(
             "SELECT name FROM sqlite_master "
-            "WHERE type = 'index' AND name = 'idx_folders_root_parent'"
+            "WHERE type = 'index' AND name LIKE 'idx_folders%'"
         ).fetchall()
         if orphan_indexes:
             # DROP INDEX asks SQLite to resolve the missing table first and
@@ -1815,7 +2157,7 @@ def ensure_library_schema(conn):
             conn.execute("PRAGMA writable_schema = ON")
             conn.execute(
                 "DELETE FROM sqlite_master "
-                "WHERE type = 'index' AND name = 'idx_folders_root_parent'"
+                "WHERE type = 'index' AND name LIKE 'idx_folders%'"
             )
             conn.execute("PRAGMA writable_schema = OFF")
             conn.execute("PRAGMA integrity_check")
@@ -1863,15 +2205,25 @@ def ensure_library_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
         CREATE INDEX IF NOT EXISTS idx_tracks_composer ON tracks(composer);
         CREATE INDEX IF NOT EXISTS idx_tracks_genre ON tracks(genre);
-        CREATE INDEX IF NOT EXISTS idx_tracks_added ON tracks(added_ns);
+        CREATE INDEX IF NOT EXISTS idx_tracks_added_title_id_asc ON tracks(added_ns ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_added_title_id_desc ON tracks(added_ns DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_root ON tracks(root);
         CREATE INDEX IF NOT EXISTS idx_tracks_root_folder ON tracks(root, folder);
         CREATE INDEX IF NOT EXISTS idx_tracks_root_folder_track_no ON tracks(root, folder, track_no);
         CREATE INDEX IF NOT EXISTS idx_tracks_is_dsd ON tracks(is_dsd);
         CREATE INDEX IF NOT EXISTS idx_tracks_title_nocase ON tracks(title COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_tracks_title_nocase_id_asc ON tracks(title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_title_nocase_id_desc ON tracks(title COLLATE NOCASE DESC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_artist_nocase ON tracks(artist COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_tracks_artist_nocase_title_id_asc ON tracks(artist COLLATE NOCASE ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_artist_nocase_title_id_desc ON tracks(artist COLLATE NOCASE DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_album_nocase ON tracks(album COLLATE NOCASE);
-        CREATE INDEX IF NOT EXISTS idx_tracks_format_nocase ON tracks(format COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_tracks_album_nocase_title_id_asc ON tracks(album COLLATE NOCASE ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_album_nocase_title_id_desc ON tracks(album COLLATE NOCASE DESC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_format_nocase_title_id_asc ON tracks(format COLLATE NOCASE ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_format_nocase_title_id_desc ON tracks(format COLLATE NOCASE DESC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_track_no_title_id_asc ON tracks((CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END) ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_track_no_title_id_desc ON tracks((CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END) DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_folder_nocase ON tracks(folder COLLATE NOCASE);
         CREATE TABLE IF NOT EXISTS albums (
             name TEXT PRIMARY KEY,
@@ -1902,6 +2254,17 @@ def ensure_library_schema(conn):
             track_count INTEGER NOT NULL DEFAULT 0,
             cover_track_id TEXT
         );
+        -- Browse pages order the group tables by `name COLLATE NOCASE <dir>, name ASC`.
+        -- The TEXT primary key only gives a binary-collate order, so without these
+        -- per-direction indexes SQLite sorts every group for each page.
+        CREATE INDEX IF NOT EXISTS idx_albums_name_nocase_asc ON albums(name COLLATE NOCASE ASC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_albums_name_nocase_desc ON albums(name COLLATE NOCASE DESC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_artists_name_nocase_asc ON artists(name COLLATE NOCASE ASC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_artists_name_nocase_desc ON artists(name COLLATE NOCASE DESC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_composers_name_nocase_asc ON composers(name COLLATE NOCASE ASC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_composers_name_nocase_desc ON composers(name COLLATE NOCASE DESC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_genres_name_nocase_asc ON genres(name COLLATE NOCASE ASC, name ASC);
+        CREATE INDEX IF NOT EXISTS idx_genres_name_nocase_desc ON genres(name COLLATE NOCASE DESC, name ASC);
         CREATE TABLE IF NOT EXISTS covers (
             track_id TEXT PRIMARY KEY,
             source TEXT,
@@ -1922,6 +2285,13 @@ def ensure_library_schema(conn):
     # because this migration was defined but never invoked. The composite key
     # is required when distinct music roots contain the same folder names.
     _migrate_tracks_columns(conn)
+    # The original one-column index cannot satisfy the visible-page title/ID
+    # tie-breaker and leaves SQLite to build a temporary sort. The composite
+    # indexes created above cover its ordered-read use while keeping recent
+    # pages bounded, so remove the redundant legacy index from upgraded DBs.
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_added")
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_format_nocase")
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_track_no")
 
 
 def _migrate_legacy_tracks_columns(conn):
@@ -1979,7 +2349,6 @@ def _migrate_tracks_columns(conn):
     track_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tracks)")}
     if "track_no" not in track_columns:
         conn.execute("ALTER TABLE tracks ADD COLUMN track_no INTEGER NOT NULL DEFAULT 0")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tracks_track_no ON tracks(track_no)")
     folder_columns = [dict(row) for row in conn.execute("PRAGMA table_info(folders)")]
     pk_columns = [row["name"] for row in folder_columns if row.get("pk")]
     if pk_columns == ["path"]:
@@ -1998,7 +2367,39 @@ def _migrate_tracks_columns(conn):
             """
         )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_root_parent ON folders(root, parent)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_root_parent_name ON folders(root, parent, name)")
+    # Browsing one directory lists it as `name COLLATE NOCASE <dir>, path`.  The
+    # plain sibling indexes can seek the directory but still leave SQLite to sort
+    # every child for a page that shows a hundred of them, so a flat collection
+    # with thousands of top-level folders pays tens of milliseconds per folder
+    # page.  These per-direction expression indexes let the page stop at its own
+    # limit; the binary-collate three-column index never matched the query order
+    # once they exist, so it goes.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folders_root_parent_name_nocase_asc "
+        "ON folders(root, parent, name COLLATE NOCASE ASC, path ASC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folders_root_parent_name_nocase_desc "
+        "ON folders(root, parent, name COLLATE NOCASE DESC, path ASC)"
+    )
+    # `/api/library/folders` can arrive with no `root` filter: the UI only sets the parameter when
+    # a root has actually been chosen (app.js:5745), and the player adapter passes whatever it
+    # holds straight through (server.py:3154).  A `parent`-only predicate cannot use
+    # `idx_folders_root_parent` at all, because that index leads with `root`, so the listing
+    # scanned every folder row and sorted the whole thing in a temporary B-tree.  Measured here at
+    # 20000 folders: 1.00 ms per page scanned versus 0.05 ms for the root-scoped page, and the
+    # item's own numbers were 5.52/14.40 ms at 20000/50000 rows.  One index per browse direction
+    # lets the page seek its own parent and stop at its own limit, mirroring the pair the
+    # root-scoped path already has.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folders_parent_name_nocase_asc "
+        "ON folders(parent, name COLLATE NOCASE ASC, path ASC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folders_parent_name_nocase_desc "
+        "ON folders(parent, name COLLATE NOCASE DESC, path ASC)"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_folders_root_parent_name")
     group_version = conn.execute(
         "SELECT value FROM library_meta WHERE key = 'group_label_version'"
     ).fetchone()
@@ -2012,28 +2413,70 @@ def _migrate_tracks_columns(conn):
             _rebuild_simple_group(conn, "artists", "artist")
             _rebuild_simple_group(conn, "composers", "composer")
             _rebuild_simple_group(conn, "genres", "genre")
+        _refresh_group_counts(conn)
         conn.execute(
             "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
             ("group_label_version", GROUP_LABEL_VERSION),
         )
 
+@contextmanager
+def library_db_writer(config):
+    """Open an exclusive write handle. Never pooled: a scan must start clean.
+
+    A scan recreates tables and holds a long transaction. Sharing such a handle
+    would expose half-written index rows to the reader that borrows it next, so
+    every write path keeps the original open-and-close-per-request sequence.
+    """
+    secure_directory(config["cache_dir"])
+    db_path = library_db_path(config)
+    conn = sqlite3.connect(db_path, timeout=15)
+    failed = False
+    try:
+        _prepare_library_connection(config, conn, db_path)
+        yield conn
+        conn.commit()
+    except BaseException:
+        failed = True
+        try:
+            conn.rollback()
+        except Exception:
+            # Preserve the original transaction failure. Rollback is
+            # best-effort because a broken or already-closed connection may
+            # reject cleanup as well.
+            pass
+        raise
+    finally:
+        close_error = None
+        try:
+            conn.close()
+        except Exception as exc:
+            close_error = None if failed else exc
+        try:
+            secure_sqlite_files(db_path)
+        except Exception:
+            pass
+        if close_error is not None:
+            raise close_error
+
+
 def save_items_to_sqlite(config, items, signature):
-    with library_db_connect(config) as conn:
+    # A scan is also the recovery path after a user clears a broken index.
+    # Force migrations here so a recreated database is never mistaken for the
+    # old one merely because it has the same cache path.
+    _forget_library_schema(config)
+    with library_db_writer(config) as conn:
         roots = normalize_library_paths(config)
-        normalized_items = []
-        for item in items:
-            path = str(item.get("path") or "")
-            root = next((r for r in roots if path and _path_under(path, r)), "")
-            canonical_item = dict(item)
-            canonical_folder = relative_folder_for_path(canonical_item.get("cue_path") or path, root) if root else str(canonical_item.get("folder") or "")
-            canonical_item["folder"] = canonical_folder
-            canonical_item["library_root"] = library_root_label(root, config) if root else ""
-            canonical_item["_index_root"] = root
-            normalized_items.append(canonical_item)
+        normalized_items = normalize_scan_items(
+            items,
+            roots,
+            is_under=_path_under,
+            relative_folder=relative_folder_for_path,
+            root_label=lambda root: library_root_label(root, config),
+        )
 
         conn.execute("CREATE TEMP TABLE IF NOT EXISTS current_track_ids (id TEXT PRIMARY KEY)")
         conn.execute("DELETE FROM current_track_ids")
-        conn.executemany("INSERT OR IGNORE INTO current_track_ids(id) VALUES (?)", [(str(item.get("id") or ""),) for item in normalized_items if item.get("id")])
+        conn.executemany("INSERT OR IGNORE INTO current_track_ids(id) VALUES (?)", [(scan_text(item.get("id")),) for item in normalized_items if isinstance(item.get("id"), str) and item.get("id")])
 
         # Keep the old and new folder locations in a small temporary table.  A
         # changed track only invalidates its top-level folder subtree; the
@@ -2054,10 +2497,10 @@ def save_items_to_sqlite(config, items, signature):
             """INSERT OR REPLACE INTO current_track_meta(
                 id,root,folder,album,album_artist,artist,composer,genre
             ) VALUES (?,?,?,?,?,?,?,?)""",
-            [(str(item.get("id") or ""), str(item.get("_index_root") or ""), str(item.get("folder") or ""),
-              str(item.get("album") or ""), str(item.get("album_artist") or ""),
-              str(item.get("artist") or ""), str(item.get("composer") or ""), str(item.get("genre") or ""))
-             for item in normalized_items if item.get("id")],
+            [(scan_text(item.get("id")), scan_text(item.get("_index_root")), scan_text(item.get("folder")),
+              scan_text(item.get("album")), scan_text(item.get("album_artist")),
+              scan_text(item.get("artist")), scan_text(item.get("composer")), scan_text(item.get("genre")))
+             for item in normalized_items if isinstance(item.get("id"), str) and item.get("id")],
         )
         conn.execute("CREATE TEMP TABLE IF NOT EXISTS affected_folder_roots (root TEXT NOT NULL, folder TEXT NOT NULL, PRIMARY KEY(root, folder))")
         conn.execute("DELETE FROM affected_folder_roots")
@@ -2092,79 +2535,76 @@ def save_items_to_sqlite(config, items, signature):
         conn.execute("DELETE FROM tracks WHERE id NOT IN (SELECT id FROM current_track_ids)")
         conn.execute("DELETE FROM covers WHERE track_id NOT IN (SELECT id FROM current_track_ids)")
         conn.execute("DELETE FROM cue_tracks WHERE track_id NOT IN (SELECT id FROM current_track_ids)")
-        for item in normalized_items:
-            path = str(item.get("path") or "")
-            root = str(item.get("_index_root") or "")
-            canonical_item = dict(item)
-            canonical_item.pop("_index_root", None)
-            canonical_folder = str(canonical_item.get("folder") or "")
-            row = (
-                canonical_item.get("id", ""),
-                path,
-                root,
-                canonical_folder,
-                canonical_item.get("title", ""),
-                canonical_item.get("artist", ""),
-                canonical_item.get("album", ""),
-                safe_int(canonical_item.get("track_no")),
-                canonical_item.get("album_artist", ""),
-                canonical_item.get("composer", ""),
-                canonical_item.get("genre", ""),
-                canonical_item.get("format", ""),
-                canonical_item.get("mime", ""),
-                1 if canonical_item.get("is_dsd") else 0,
-                safe_float(canonical_item.get("duration")),
-                safe_int(canonical_item.get("size")),
-                safe_int(canonical_item.get("sample_rate")),
-                safe_int(canonical_item.get("bit_depth")),
-                safe_int(canonical_item.get("bitrate")),
-                safe_int(canonical_item.get("added")),
-                safe_int(canonical_item.get("added_ns")),
-                safe_int(canonical_item.get("modified")),
-                safe_int(canonical_item.get("modified_ns")),
-                canonical_item.get("cue_path", ""),
-                1 if canonical_item.get("cue_track") else 0,
-                safe_float(canonical_item.get("cue_start")),
-                safe_float(canonical_item.get("cue_end")),
-                safe_int(canonical_item.get("metadata_version")),
-                json.dumps(canonical_item, ensure_ascii=False),
-            )
-            conn.execute(
-                """
-                INSERT INTO tracks (
-                    id,path,root,folder,title,artist,album,track_no,album_artist,composer,genre,format,mime,is_dsd,
-                    duration,size,sample_rate,bit_depth,bitrate,added,added_ns,modified,modified_ns,
-                    cue_path,cue_track,cue_start,cue_end,metadata_version,item_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                    path=excluded.path, root=excluded.root, folder=excluded.folder, title=excluded.title,
-                    artist=excluded.artist, album=excluded.album, track_no=excluded.track_no,
-                    album_artist=excluded.album_artist, composer=excluded.composer, genre=excluded.genre,
-                    format=excluded.format, mime=excluded.mime, is_dsd=excluded.is_dsd, duration=excluded.duration,
-                    size=excluded.size, sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
-                    bitrate=excluded.bitrate, added=excluded.added, added_ns=excluded.added_ns,
-                    modified=excluded.modified, modified_ns=excluded.modified_ns, cue_path=excluded.cue_path,
-                    cue_track=excluded.cue_track, cue_start=excluded.cue_start, cue_end=excluded.cue_end,
-                    metadata_version=excluded.metadata_version, item_json=excluded.item_json
-                WHERE tracks.item_json <> excluded.item_json
-                """,
-                row,
-            )
-            if canonical_item.get("cue_track"):
-                conn.execute(
+        track_upsert_sql = """
+            INSERT INTO tracks (
+                id,path,root,folder,title,artist,album,track_no,album_artist,composer,genre,format,mime,is_dsd,
+                duration,size,sample_rate,bit_depth,bitrate,added,added_ns,modified,modified_ns,
+                cue_path,cue_track,cue_start,cue_end,metadata_version,item_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                path=excluded.path, root=excluded.root, folder=excluded.folder, title=excluded.title,
+                artist=excluded.artist, album=excluded.album, track_no=excluded.track_no,
+                album_artist=excluded.album_artist, composer=excluded.composer, genre=excluded.genre,
+                format=excluded.format, mime=excluded.mime, is_dsd=excluded.is_dsd, duration=excluded.duration,
+                size=excluded.size, sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
+                bitrate=excluded.bitrate, added=excluded.added, added_ns=excluded.added_ns,
+                modified=excluded.modified, modified_ns=excluded.modified_ns, cue_path=excluded.cue_path,
+                cue_track=excluded.cue_track, cue_start=excluded.cue_start, cue_end=excluded.cue_end,
+                metadata_version=excluded.metadata_version, item_json=excluded.item_json
+            WHERE tracks.item_json <> excluded.item_json
+        """
+        prepared_batches = iter_track_persistence_batches(
+            normalized_items,
+            LIBRARY_WRITE_BATCH_SIZE,
+            prepare=lambda item: prepare_track_persistence(
+                item, safe_int=safe_int, safe_float=safe_float,
+                dumps=lambda value: json.dumps(value, ensure_ascii=False),
+            ),
+        )
+        updated_at = int(time.time())
+        for batch in prepared_batches:
+            conn.executemany(track_upsert_sql, [row for row, _cue, _path, _item in batch])
+            cue_rows = [cue_row for _row, cue_row, _path, _item in batch if cue_row]
+            if cue_rows:
+                conn.executemany(
                     "INSERT OR REPLACE INTO cue_tracks (track_id,cue_path,audio_path,track_no,start,end) VALUES (?,?,?,?,?,?)",
-                    (canonical_item.get("id", ""), canonical_item.get("cue_path", ""), path, safe_int(canonical_item.get("track_no")), safe_float(canonical_item.get("cue_start")), safe_float(canonical_item.get("cue_end"))),
+                    cue_rows,
                 )
-            conn.execute(
+            conn.executemany(
                 "INSERT OR REPLACE INTO covers (track_id,source,folder_path,updated_at) VALUES (?,?,?,?)",
-                (canonical_item.get("id", ""), "indexed", os.path.dirname(path), int(time.time())),
+                [(scan_text(canonical_item.get("id")), "indexed", os.path.dirname(path), updated_at)
+                 for _row, _cue_row, path, canonical_item in batch],
             )
+        # A stable track ID can change from a CUE segment back into an ordinary
+        # file.  The old per-row write only added CUE rows, which left the
+        # obsolete segment index live until the entire track vanished.
+        conn.execute("""
+            DELETE FROM cue_tracks
+            WHERE track_id IN (SELECT id FROM current_track_ids)
+              AND NOT EXISTS (
+                  SELECT 1 FROM tracks
+                  WHERE tracks.id = cue_tracks.track_id
+                    AND COALESCE(tracks.cue_path, '') <> ''
+              )
+        """)
         _refresh_group_tables_for_changes(conn, collect=False)
         _rebuild_folders_for_changes(conn)
         conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("library_path", display_library_path(config)))
         conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("signature", signature))
         conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("metadata_version", str(METADATA_VERSION)))
+        conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("track_count", str(len(normalized_items))))
+        conn.execute(
+            "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
+            ("dsd_count", str(sum(1 for item in normalized_items if item.get("is_dsd"))),),
+        )
+        _refresh_group_counts(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)",
+            ("root_summary", json.dumps(root_index_summary(normalized_items, roots), ensure_ascii=False, separators=(",", ":"))),
+        )
         conn.execute("INSERT OR REPLACE INTO library_meta (key,value) VALUES (?,?)", ("saved_at", str(int(time.time()))))
+        _rebuild_library_search_index(conn, config)
+    invalidate_library_query_cache(config)
 
 def load_items_from_sqlite(config):
     if not os.path.isfile(library_db_path(config)):
@@ -2175,17 +2615,54 @@ def load_items_from_sqlite(config):
             return None
         if str(meta.get("metadata_version") or "") != str(METADATA_VERSION):
             return None
-        items = []
-        for row in conn.execute("SELECT item_json FROM tracks ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, title COLLATE NOCASE"):
-            try:
-                items.append(json.loads(row["item_json"]))
-            except ValueError:
-                pass
+        items = decode_item_rows(conn.execute("SELECT item_json FROM tracks ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, title COLLATE NOCASE"))
         return {"items": items, "signature": meta.get("signature", "")}
 
 def library_summary_from_sqlite(config):
-    if not os.path.isfile(library_db_path(config)):
+    db_path = library_db_path(config)
+    if not os.path.isfile(db_path):
         return {}
+    database = os.path.abspath(db_path)
+    fingerprint = _library_database_cache_identity(db_path)
+    if fingerprint is None:
+        return {}
+    def cached_summary():
+        now = time.monotonic()
+        with LIBRARY_SUMMARY_CACHE_LOCK:
+            cached = LIBRARY_SUMMARY_CACHE.get(database)
+            if (cached and len(cached) >= 3 and cached[2] == fingerprint
+                    and now - cached[0] < LIBRARY_SUMMARY_CACHE_TTL_SECONDS):
+                return dict(cached[1])
+        return None
+
+    cached = cached_summary()
+    if cached is not None:
+        return cached
+
+    leader = False
+    completion = None
+    with LIBRARY_SUMMARY_CACHE_LOCK:
+        # Recheck after acquiring the coordination lock: another request may
+        # have completed between the optimistic cache lookup and this point.
+        cached = LIBRARY_SUMMARY_CACHE.get(database)
+        now = time.monotonic()
+        if (cached and len(cached) >= 3 and cached[2] == fingerprint
+                and now - cached[0] < LIBRARY_SUMMARY_CACHE_TTL_SECONDS):
+            return dict(cached[1])
+        completion = LIBRARY_SUMMARY_INFLIGHT.get(database)
+        if completion is None and len(LIBRARY_SUMMARY_INFLIGHT) < LIBRARY_SUMMARY_INFLIGHT_LIMIT:
+            completion = threading.Event()
+            LIBRARY_SUMMARY_INFLIGHT[database] = completion
+            leader = True
+
+    if not leader and completion is not None:
+        # Do not let a stuck filesystem/SQLite operation hold status callers
+        # forever. A timed-out follower safely falls back to its own bounded
+        # read, while normal bursts reuse the leader's cache entry below.
+        completion.wait(2.0)
+        cached = cached_summary()
+        if cached is not None:
+            return cached
     try:
         with library_db_connect(config) as conn:
             meta = {row["key"]: row["value"] for row in conn.execute("SELECT key,value FROM library_meta")}
@@ -2193,14 +2670,42 @@ def library_summary_from_sqlite(config):
                 return {}
             if str(meta.get("metadata_version") or "") != str(METADATA_VERSION):
                 return {}
-            row = conn.execute("SELECT COUNT(*) AS count, SUM(CASE WHEN is_dsd = 1 THEN 1 ELSE 0 END) AS dsd_count FROM tracks").fetchone()
-            return {
-                "count": int(row["count"] or 0) if row else 0,
-                "dsd_count": int(row["dsd_count"] or 0) if row else 0,
+            count = None
+            dsd_count = None
+            count = safe_int(meta.get("track_count"), -1)
+            dsd_count = safe_int(meta.get("dsd_count"), -1)
+            if count < 0 or dsd_count < 0:
+                count = None
+                dsd_count = None
+            else:
+                count = safe_counter(count)
+                dsd_count = safe_counter(dsd_count)
+            if count is None or dsd_count is None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count, SUM(CASE WHEN is_dsd = 1 THEN 1 ELSE 0 END) AS dsd_count FROM tracks"
+                ).fetchone()
+                count = safe_counter(row["count"] if row else 0)
+                dsd_count = safe_counter(row["dsd_count"] if row else 0)
+            summary = {
+                "count": count,
+                "dsd_count": dsd_count,
                 "signature": meta.get("signature", ""),
             }
+            with LIBRARY_SUMMARY_CACHE_LOCK:
+                while len(LIBRARY_SUMMARY_CACHE) >= LIBRARY_SUMMARY_CACHE_LIMIT and database not in LIBRARY_SUMMARY_CACHE:
+                    LIBRARY_SUMMARY_CACHE.pop(next(iter(LIBRARY_SUMMARY_CACHE)), None)
+                while len(LIBRARY_SUMMARY_CACHE) > LIBRARY_SUMMARY_CACHE_LIMIT:
+                    LIBRARY_SUMMARY_CACHE.pop(next(iter(LIBRARY_SUMMARY_CACHE)), None)
+                LIBRARY_SUMMARY_CACHE[database] = (time.monotonic(), dict(summary), fingerprint)
+            return summary
     except Exception:
         return {}
+    finally:
+        if leader and completion is not None:
+            with LIBRARY_SUMMARY_CACHE_LOCK:
+                if LIBRARY_SUMMARY_INFLIGHT.get(database) is completion:
+                    LIBRARY_SUMMARY_INFLIGHT.pop(database, None)
+                    completion.set()
 
 def _rebuild_group_table(conn, table, column, artist_column):
     conn.execute(
@@ -2322,7 +2827,15 @@ def _rebuild_folders(conn):
 
 
 def _rebuild_folders_for_changes(conn):
-    """Refresh only folder trees touched by added, removed, or moved tracks."""
+    """Refresh only folder trees touched by added, removed, or moved tracks.
+
+    Rebuilding the whole top-level tree of every change is what keeps the
+    invariant the recursive folder-search closure relies on: a folder that
+    still holds a track can never be missing a row, or a parent row, while
+    the tracks table already has it. That shape is asserted by
+    test_incremental_folder_refresh_keeps_the_track_folder_closure_complete
+    in src/tests/test_library_sqlite.py.
+    """
     affected = set()
     for row in conn.execute("SELECT root, folder FROM affected_folder_roots"):
         folder = str(row["folder"] or "").strip("/")
@@ -2374,7 +2887,9 @@ def _path_under(path, root):
 
 
 def is_library_item_path(config, path):
-    value = str(path or "").strip()
+    if not isinstance(path, str) or len(path) > MAX_LIBRARY_PATH_TEXT:
+        return False
+    value = path.strip()
     return bool(value) and any(_path_under(value, root) for root in normalize_library_paths(config))
 
 def load_library_cache(config):
@@ -2385,27 +2900,42 @@ def load_library_cache(config):
         FS_CACHE["signature"] = summary.get("signature", "")
         return
     try:
-        with open(library_cache_path(config), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        if data.get("library_path") == display_library_path(config):
-            MUSIC_CACHE["items"] = data.get("items", [])
-            MUSIC_CACHE["stamp"] = time.time()
-            FS_CACHE["signature"] = data.get("signature", "")
-            save_items_to_sqlite(config, MUSIC_CACHE["items"], FS_CACHE["signature"])
-    except (OSError, ValueError):
-        pass
+        cache_path = library_cache_path(config)
+        if os.path.getsize(cache_path) > LIBRARY_JSON_CACHE_MAX_BYTES:
+            return
+        with open(cache_path, "rb") as fh:
+            raw = fh.read(LIBRARY_JSON_CACHE_MAX_BYTES + 1)
+        if len(raw) > LIBRARY_JSON_CACHE_MAX_BYTES:
+            return
+        data = json.loads(raw.decode("utf-8"))
+        projected = project_legacy_cache(data, display_library_path(config))
+        if projected is None:
+            return
+        MUSIC_CACHE["items"] = projected["items"]
+        MUSIC_CACHE["stamp"] = time.time()
+        FS_CACHE["signature"] = projected["signature"]
+        save_items_to_sqlite(config, MUSIC_CACHE["items"], FS_CACHE["signature"])
+    except (OSError, TypeError, ValueError, UnicodeError):
+        _record_library_cache_failure("load")
 
-def save_library_cache(config):
+def save_library_cache(config, items=None, signature=None):
+    """Persist a scan snapshot before publishing it to in-memory readers."""
+    snapshot_items = MUSIC_CACHE["items"] if items is None else items
+    snapshot_signature = FS_CACHE["signature"] if signature is None else signature
     try:
         secure_directory(config["cache_dir"])
-        save_items_to_sqlite(config, MUSIC_CACHE["items"], FS_CACHE["signature"])
+        save_items_to_sqlite(config, snapshot_items, snapshot_signature)
+    except (OSError, sqlite3.Error):
+        _record_library_cache_failure("save")
+        return False
+    try:
         # SQLite is the authoritative index. Keep the legacy JSON fallback
         # useful for smaller libraries without serializing a large library a
         # second time after every scan.
-        cached_items = MUSIC_CACHE["items"] if len(MUSIC_CACHE["items"]) <= LIBRARY_JSON_CACHE_LIMIT else []
+        cached_items = snapshot_items if len(snapshot_items) <= LIBRARY_JSON_CACHE_LIMIT else []
         payload = {
             "library_path": display_library_path(config),
-            "signature": FS_CACHE["signature"],
+            "signature": snapshot_signature,
             "items": cached_items,
             "sqlite": True,
         }
@@ -2414,15 +2944,58 @@ def save_library_cache(config):
         # durable. It runs outside the scan path and therefore never delays
         # library availability after an update.
         from cover_cache import prewarm_library_thumbnails
-        prewarm_library_thumbnails(MUSIC_CACHE["items"], config, read_cover_for_item)
+        prewarm_library_thumbnails(snapshot_items, config, read_cover_for_item)
     except OSError:
-        pass
+        _record_library_cache_failure("save")
+    return True
 
-def watch_library(config):
-    global LIBRARY_CHANGE_MONITOR
+def stop_library_watcher(wait=True, timeout=2.0):
+    """Stop the background library watcher and release its inotify handle."""
+    global LIBRARY_WATCH_CURRENT_STOP_EVENT
+    with LIBRARY_WATCH_LOCK:
+        LIBRARY_WATCH_STOP_EVENT.set()
+        if LIBRARY_WATCH_CURRENT_STOP_EVENT is not None:
+            LIBRARY_WATCH_CURRENT_STOP_EVENT.set()
+        thread = LIBRARY_WATCH_THREAD
+    if wait and thread is not None and thread is not threading.current_thread():
+        thread.join(_bounded_wait_timeout(timeout, 2.0))
+
+
+def start_library_watcher(config):
+    """Start the watcher without publishing a thread that failed to start."""
+    global LIBRARY_WATCH_THREAD, LIBRARY_WATCH_CURRENT_STOP_EVENT
+    with LIBRARY_WATCH_LOCK:
+        existing = LIBRARY_WATCH_THREAD
+        if existing is not None and existing.is_alive():
+            return existing
+        LIBRARY_WATCH_STOP_EVENT.clear()
+        stop_event = threading.Event()
+        LIBRARY_WATCH_CURRENT_STOP_EVENT = stop_event
+        thread = threading.Thread(target=watch_library, args=(config, stop_event), daemon=True)
+        # Publish before starting so concurrent configuration reloads see the
+        # reservation even while Thread.start() is still in progress.
+        LIBRARY_WATCH_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            if LIBRARY_WATCH_THREAD is thread:
+                LIBRARY_WATCH_THREAD = None
+            if LIBRARY_WATCH_CURRENT_STOP_EVENT is stop_event:
+                LIBRARY_WATCH_CURRENT_STOP_EVENT = None
+            LIBRARY_WATCH_STOP_EVENT.set()
+            stop_event.set()
+            raise
+        return thread
+
+
+def watch_library(config, _stop_event=None):
+    global LIBRARY_CHANGE_MONITOR, LIBRARY_WATCH_THREAD, LIBRARY_WATCH_CURRENT_STOP_EVENT
+    stop_event = _stop_event if _stop_event is not None else LIBRARY_WATCH_STOP_EVENT
+    with LIBRARY_WATCH_LOCK:
+        LIBRARY_WATCH_THREAD = threading.current_thread()
     monitor = None
     try:
-        while True:
+        while not stop_event.is_set():
             roots = tuple(normalize_library_paths(config))
             if monitor is None or monitor.roots != roots:
                 if monitor is not None:
@@ -2435,12 +3008,17 @@ def watch_library(config):
                 cleanup_transcode_cache_if_due(config)
             except Exception:
                 pass
-            time.sleep(180)
+            stop_event.wait(180)
     finally:
         if monitor is not None:
             monitor.stop()
         if LIBRARY_CHANGE_MONITOR is monitor:
             LIBRARY_CHANGE_MONITOR = None
+        with LIBRARY_WATCH_LOCK:
+            if LIBRARY_WATCH_THREAD is threading.current_thread():
+                LIBRARY_WATCH_THREAD = None
+            if LIBRARY_WATCH_CURRENT_STOP_EVENT is stop_event:
+                LIBRARY_WATCH_CURRENT_STOP_EVENT = None
 
 def find_ffprobe(config):
     configured = config.get("ffprobe_path")
@@ -2462,36 +3040,9 @@ def find_ffprobe(config):
     return ""
 
 def read_audio_info(path, config=None):
-    ffprobe = find_ffprobe(config or {})
-    if not ffprobe:
-        return read_native_audio_info(path)
-    command = [
-        ffprobe,
-        "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=sample_rate,bits_per_raw_sample,bits_per_sample,bit_rate",
-        "-of", "json",
+    return _read_audio_info(
         path,
-    ]
-    env = os.environ.copy()
-    if "/usr/trim/lib/mediasrv/bin" in ffprobe:
-        env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
-    try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, env=env)
-        data = json.loads(result.stdout.decode("utf-8", "ignore") or "{}")
-        stream = (data.get("streams") or [{}])[0]
-    except Exception:
-        return {}
-    sample_rate = int(stream.get("sample_rate") or 0)
-    bit_depth = int(stream.get("bits_per_raw_sample") or stream.get("bits_per_sample") or 0)
-    bit_rate = int(stream.get("bit_rate") or 0)
-    result = {
-        "sample_rate": sample_rate,
-        "bit_depth": bit_depth,
-        "bit_rate": bit_rate,
-    }
-    native_info = read_native_audio_info(path)
-    for key, value in native_info.items():
-        if not result.get(key):
-            result[key] = value
-    return result
+        config,
+        ffprobe_resolver=find_ffprobe,
+        native_reader=read_native_audio_info,
+    )

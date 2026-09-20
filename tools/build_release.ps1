@@ -2,11 +2,28 @@
 param(
     [string]$OutputRoot,
     [string]$FnpackPath,
-    [switch]$KeepStage
+    [switch]$KeepStage,
+    [switch]$AllowExistingArtifact
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $getFileHash = Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue
+    if ($getFileHash) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    }
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace("-", "").ToUpperInvariant()
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sourceRoot = Join-Path $repoRoot "src"
@@ -22,6 +39,7 @@ if (-not $FnpackPath) {
     $FnpackPath = Join-Path $repoRoot "tools\fnpack.exe"
 }
 $FnpackPath = (Resolve-Path -LiteralPath $FnpackPath).Path
+$fnpackSha256 = Get-Sha256Hex -Path $FnpackPath
 
 function Get-ManifestValue([string]$Text, [string]$Name) {
     $match = [regex]::Match($Text, "(?m)^\s*$([regex]::Escape($Name))\s*=\s*(.+?)\s*$")
@@ -56,6 +74,77 @@ function Read-JsonFile([string]$Path, [string]$Label) {
     }
 }
 
+function Get-SourceManifestLines([string]$Root) {
+    $baseLength = $Root.TrimEnd([char]'\', [char]'/' ).Length + 1
+    return @(
+        Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+            Where-Object { $_.Name -ne "fnaudio.fpk" } |
+            Sort-Object FullName |
+            ForEach-Object {
+                $relative = $_.FullName.Substring($baseLength).Replace("\", "/")
+                $hash = Get-Sha256Hex -Path $_.FullName
+                "$hash  $relative"
+            }
+    )
+}
+
+function Get-StampedUiAssetPaths([string]$IndexText, [string]$UiRoot) {
+    # The HTML template is the source of truth for hashed local CSS/JS.
+    # Keeping this discovery dynamic prevents a newly split presentation
+    # module from silently escaping a same-version cache-busting build.
+    $root = (Resolve-Path -LiteralPath $UiRoot).Path
+    $assets = [System.Collections.Generic.List[string]]::new()
+    foreach ($match in [regex]::Matches($IndexText, '(?i)(?:src|href)="([^"]+)\?v=__FNAUDIO_ASSET_BUILD__"')) {
+        $relative = $match.Groups[1].Value.Replace("\", "/")
+        if ($relative -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:css|js)$' -or $relative.Split("/") -contains "..") {
+            throw "Invalid stamped UI asset path in index.html: $relative"
+        }
+        $path = Join-Path $root ($relative.Replace("/", "\"))
+        Assert-NonEmptyFile $path "Stamped UI asset '$relative'"
+        $assets.Add($relative)
+    }
+    $result = @($assets | Sort-Object -Unique)
+    if ($result.Count -eq 0) {
+        throw "src/app/ui/index.html has no stamped local CSS/JS assets."
+    }
+    # A local stylesheet or script referenced without the asset-build stamp keeps
+    # a stable URL across releases, so an in-place upgrade can serve cached, stale
+    # JS/CSS. Staging copies the whole UI tree, so packaging alone cannot notice
+    # the omission; fail the build here instead.
+    foreach ($reference in [regex]::Matches($IndexText, '(?i)(?:src|href)="([^"?#]+\.(?:css|js))"')) {
+        $relative = $reference.Groups[1].Value.Replace("\", "/")
+        if ($relative -match '^(?:[A-Za-z][A-Za-z0-9+.-]*:)?//') { continue }
+        throw "index.html references local UI asset without the build stamp: $relative"
+    }
+
+    return $result
+}
+
+function Get-GitProvenance([string]$Root) {
+    # Keep the release recovery record explicit when an exported source tree
+    # is built outside a Git checkout.  An empty commit plus a null boolean
+    # was technically sufficient, but indistinguishable from an interrupted
+    # Git probe once the original build session had been deleted.
+    $result = [ordered]@{ commit = ""; worktree_dirty = $null; status = "unavailable" }
+    try {
+        $commit = (& git -C $Root rev-parse HEAD 2>$null).Trim()
+        if ($LASTEXITCODE -eq 0 -and $commit) {
+            $result.commit = $commit
+            $result.status = "commit_only"
+        }
+        $status = @(& git -C $Root status --porcelain=v1 --untracked-files=normal 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            $result.worktree_dirty = $status.Count -gt 0
+            $result.status = if ($result.worktree_dirty) { "dirty" } else { "clean" }
+        }
+    }
+    catch {
+        # A source export can be packaged outside Git. The staged manifest
+        # remains authoritative even when commit metadata is unavailable.
+    }
+    return $result
+}
+
 $manifestPath = Join-Path $sourceRoot "manifest"
 $serverPath = Join-Path $sourceRoot "app\server\server.py"
 $versionModulePath = Join-Path $sourceRoot "app\server\version.py"
@@ -79,10 +168,7 @@ Assert-Contains $serverSource "from version import APP_USER_AGENT" "src/app/serv
 Assert-Contains $serverSource "server_version = APP_USER_AGENT" "src/app/server/server.py"
 Assert-Contains (Get-Content -LiteralPath $versionModulePath -Raw -Encoding UTF8) 'APP_USER_AGENT = "fnAudio/%s" % APP_VERSION' "src/app/server/version.py"
 $index = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
-Assert-Contains $index "app.css?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
-Assert-Contains $index "view_presentation.js?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
-Assert-Contains $index "track_presentation.js?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
-Assert-Contains $index "app.js?v=__FNAUDIO_ASSET_BUILD__" "src/app/ui/index.html"
+$sourceStampedAssets = Get-StampedUiAssetPaths $index (Join-Path $sourceRoot "app\ui")
 
 $gradle = Get-Content -LiteralPath $gradlePath -Raw -Encoding UTF8
 if ($gradle -notmatch '(?m)^\s*versionCode\s+(\d+)\s*$') {
@@ -98,9 +184,29 @@ $destination = Join-Path $OutputRoot $version
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 $artifactName = "fnaudio-$version-fnpack.fpk"
 $artifactPath = Join-Path $destination $artifactName
+$publicationNames = @(
+    $artifactName,
+    "SHA256SUMS",
+    "SOURCE_MANIFEST.sha256",
+    "SOURCE_PROVENANCE.json"
+)
+if (-not $AllowExistingArtifact) {
+    foreach ($publicationName in $publicationNames) {
+        $publicationPath = Join-Path $destination $publicationName
+        # A sidecar without its artifact is still a release collision. Allowing
+        # the build to proceed would publish a misleading half-old/half-new
+        # evidence set if a later Move-Item happened to succeed.
+        if (Test-Path -LiteralPath $publicationPath) {
+            throw "Release output already exists: $publicationPath. Refusing to overwrite; pass -AllowExistingArtifact only for an intentional rebuild."
+        }
+    }
+}
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("fnaudio-release-" + [guid]::NewGuid().ToString("N"))
 $stageRoot = Join-Path $temporaryRoot "src"
 $inspectionRoot = Join-Path $temporaryRoot "inspect"
+$publishRoot = Join-Path $temporaryRoot "publish"
+$publishedPaths = [System.Collections.Generic.List[string]]::new()
+$publicationBackups = [System.Collections.Generic.List[object]]::new()
 
 try {
     New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
@@ -112,19 +218,51 @@ try {
 
     # Stamp the staged UI with a content-derived cache key. The authoritative
     # source retains a marker so a same-version rebuild cannot ship stale JS.
-    $stageCssPath = Join-Path $stageRoot "app\ui\app.css"
-    $stageJsPath = Join-Path $stageRoot "app\ui\app.js"
-    $stagePresentationPath = Join-Path $stageRoot "app\ui\view_presentation.js"
-    $stageTrackPresentationPath = Join-Path $stageRoot "app\ui\track_presentation.js"
+    $stageUiRoot = Join-Path $stageRoot "app\ui"
     $stageIndexPath = Join-Path $stageRoot "app\ui\index.html"
-    $assetHash = ((Get-FileHash -LiteralPath $stageCssPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stagePresentationPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stageTrackPresentationPath -Algorithm SHA256).Hash + (Get-FileHash -LiteralPath $stageJsPath -Algorithm SHA256).Hash).Substring(0, 12).ToLowerInvariant()
-    $assetBuild = "$version-$assetHash"
     $stageIndex = Get-Content -LiteralPath $stageIndexPath -Raw -Encoding UTF8
+    $stagedStampedAssets = Get-StampedUiAssetPaths $stageIndex $stageUiRoot
+    if ((@($sourceStampedAssets) -join "`n") -ne (@($stagedStampedAssets) -join "`n")) {
+        throw "Staged UI asset set differs from the authoritative index.html."
+    }
+    $assetHashInput = @($stagedStampedAssets | ForEach-Object {
+        Get-Sha256Hex -Path (Join-Path $stageUiRoot ($_.Replace("/", "\")))
+    }) -join ""
+    $assetHash = $assetHashInput.Substring(0, 12).ToLowerInvariant()
+    $assetBuild = "$version-$assetHash"
     $stageIndex = $stageIndex.Replace("__FNAUDIO_ASSET_BUILD__", $assetBuild)
     if ($stageIndex.Contains("__FNAUDIO_ASSET_BUILD__")) {
         throw "Unable to stamp the staged UI asset build identifier."
     }
     Set-Content -LiteralPath $stageIndexPath -Value $stageIndex -Encoding UTF8 -NoNewline
+    # The FPK is built from this temporary staged tree, not directly from the
+    # developer worktree. Record exact staged inputs beside the release so a
+    # deleted session or an old NAS artifact can be reproduced without
+    # guessing which uncommitted source files participated in the build.
+    $sourceManifestLines = Get-SourceManifestLines $stageRoot
+    $sourceManifestText = (($sourceManifestLines -join "`n") + "`n")
+    # Keep all evidence and the package outside the final version directory
+    # until every inspection below has succeeded. A failed build must not
+    # leave an unvalidated artifact that blocks or misleads a later retry.
+    New-Item -ItemType Directory -Force -Path $publishRoot | Out-Null
+    $sourceManifestPath = Join-Path $publishRoot "SOURCE_MANIFEST.sha256"
+    Set-Content -LiteralPath $sourceManifestPath -Value $sourceManifestText -Encoding ASCII -NoNewline
+    $sourceManifestSha256 = Get-Sha256Hex -Path $sourceManifestPath
+    $gitProvenance = Get-GitProvenance $repoRoot
+    $provenancePath = Join-Path $publishRoot "SOURCE_PROVENANCE.json"
+    [ordered]@{
+        schema = 1
+        version = $version
+        generated_utc = [DateTime]::UtcNow.ToString("o")
+        asset_build = $assetBuild
+        staged_file_count = $sourceManifestLines.Count
+        source_manifest_sha256 = $sourceManifestSha256
+        fnpack_sha256 = $fnpackSha256
+        artifact_sha256 = ""
+        git_commit = $gitProvenance.commit
+        git_worktree_dirty = $gitProvenance.worktree_dirty
+        git_provenance_status = $gitProvenance.status
+    } | ConvertTo-Json | Set-Content -LiteralPath $provenancePath -Encoding UTF8
 
     Push-Location -LiteralPath $stageRoot
     try {
@@ -140,12 +278,21 @@ try {
     if (-not (Test-Path -LiteralPath $builtPackage)) {
         throw "fnpack completed without producing $builtPackage."
     }
+    # Keep generated packages within the App Center remote-package limit
+    # before copying, unpacking, or hashing the artifact for provenance.
+    if ((Get-Item -LiteralPath $builtPackage).Length -gt 10GB) {
+        throw "Built FPK exceeds the 10 GiB artifact limit."
+    }
     # Keep fnpack as the sole FPK producer. fnOS validates details of its
     # gzip container that must not be changed by a secondary archiver.
-    Copy-Item -LiteralPath $builtPackage -Destination $artifactPath -Force
+    $temporaryArtifactPath = Join-Path $publishRoot $artifactName
+    Copy-Item -LiteralPath $builtPackage -Destination $temporaryArtifactPath
 
     New-Item -ItemType Directory -Force -Path $inspectionRoot | Out-Null
-    tar -xf $artifactPath -C $inspectionRoot
+    tar -xf $temporaryArtifactPath -C $inspectionRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the built FPK with tar; exit code $LASTEXITCODE."
+    }
     $requiredCommands = @(
         "config_callback",
         "config_init",
@@ -165,8 +312,15 @@ try {
             throw "Packaged lifecycle command '$commandName' does not start with #!/bin/bash."
         }
     }
-    $packageHeader = [System.IO.File]::ReadAllBytes($artifactPath)
-    if ($packageHeader.Length -lt 2 -or $packageHeader[0] -ne 0x1f -or $packageHeader[1] -ne 0x8b) {
+    $packageHeader = New-Object byte[] 2
+    $packageStream = [System.IO.File]::OpenRead($temporaryArtifactPath)
+    try {
+        $packageHeaderRead = $packageStream.Read($packageHeader, 0, $packageHeader.Length)
+    }
+    finally {
+        $packageStream.Dispose()
+    }
+    if ($packageHeaderRead -lt 2 -or $packageHeader[0] -ne 0x1f -or $packageHeader[1] -ne 0x8b) {
         throw "Packaged FPK must retain the gzip container required by fnOS."
     }
 
@@ -214,6 +368,9 @@ try {
     $payloadRoot = Join-Path $inspectionRoot "app"
     New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
     tar -xf $payload -C $payloadRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect the packaged app payload with tar; exit code $LASTEXITCODE."
+    }
     foreach ($payloadRelativePath in @(
         "server\server.py",
         "server\version.py",
@@ -230,10 +387,10 @@ try {
     Assert-Contains $packagedServer "server_version = APP_USER_AGENT" "packaged server/server.py"
     Assert-Contains (Get-Content -LiteralPath (Join-Path $payloadRoot "server\version.py") -Raw -Encoding UTF8) 'APP_USER_AGENT = "fnAudio/%s" % APP_VERSION' "packaged server/version.py"
     $packagedIndex = Get-Content -LiteralPath (Join-Path $payloadRoot "ui\index.html") -Raw -Encoding UTF8
-    Assert-Contains $packagedIndex "app.css?v=$assetBuild" "packaged ui/index.html"
-    Assert-Contains $packagedIndex "view_presentation.js?v=$assetBuild" "packaged ui/index.html"
-    Assert-Contains $packagedIndex "track_presentation.js?v=$assetBuild" "packaged ui/index.html"
-    Assert-Contains $packagedIndex "app.js?v=$assetBuild" "packaged ui/index.html"
+    foreach ($assetRelativePath in $stagedStampedAssets) {
+        Assert-NonEmptyFile (Join-Path $payloadRoot ("ui\" + $assetRelativePath.Replace("/", "\"))) "Packaged stamped UI asset '$assetRelativePath'"
+        Assert-Contains $packagedIndex "${assetRelativePath}?v=$assetBuild" "packaged ui/index.html"
+    }
     if (Test-Path -LiteralPath (Join-Path $payloadRoot "tests")) {
         throw "FPK payload unexpectedly contains test sources."
     }
@@ -241,15 +398,84 @@ try {
         throw "FPK payload unexpectedly contains Python bytecode."
     }
 
-    $sha256 = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToUpperInvariant()
-    $shaPath = Join-Path $destination "SHA256SUMS"
+    $sha256 = Get-Sha256Hex -Path $temporaryArtifactPath
+    $shaPath = Join-Path $publishRoot "SHA256SUMS"
     "$sha256  $artifactName" | Set-Content -LiteralPath $shaPath -Encoding ASCII
+    if ((Get-Content -LiteralPath $shaPath -Raw -Encoding ASCII).Trim() -ne "$sha256  $artifactName") {
+        throw "Release SHA256SUMS does not match the final FPK."
+    }
+    $provenance = Read-JsonFile $provenancePath "Release source provenance"
+    $provenance.artifact_sha256 = $sha256
+    $provenance | ConvertTo-Json | Set-Content -LiteralPath $provenancePath -Encoding UTF8
+    Assert-NonEmptyFile $sourceManifestPath "Release source manifest"
+    $provenance = Read-JsonFile $provenancePath "Release source provenance"
+    if ([int]$provenance.schema -ne 1 -or $provenance.version -ne $version -or [int]$provenance.staged_file_count -lt 1) {
+        throw "Release source provenance is incomplete or has the wrong version."
+    }
+    if ($provenance.source_manifest_sha256 -ne $sourceManifestSha256) {
+        throw "Release source provenance does not match the staged source manifest."
+    }
+    if ([string]$provenance.fnpack_sha256 -notmatch '^[A-F0-9]{64}$') {
+        throw "Release source provenance is missing a valid fnpack SHA-256."
+    }
+    if ([string]$provenance.artifact_sha256 -notmatch '^[A-F0-9]{64}$' -or $provenance.artifact_sha256 -ne $sha256) {
+        throw "Release source provenance does not match the final FPK SHA-256."
+    }
+    if ([string]$provenance.git_provenance_status -notin @("clean", "dirty", "commit_only", "unavailable")) {
+        throw "Release source provenance has an invalid Git provenance status."
+    }
+    # Publish only after package structure, payload, checksum, and provenance
+    # have all been verified in the isolated temporary directory.
+    if ($AllowExistingArtifact) {
+        $backupRoot = Join-Path $temporaryRoot "previous-publication"
+        New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+        foreach ($publicationName in $publicationNames) {
+            $existingPath = Join-Path $destination $publicationName
+            if (Test-Path -LiteralPath $existingPath) {
+                $backupPath = Join-Path $backupRoot $publicationName
+                Copy-Item -LiteralPath $existingPath -Destination $backupPath -Force
+                $publicationBackups.Add([pscustomobject]@{
+                    Original = $existingPath
+                    Backup = $backupPath
+                })
+            }
+        }
+    }
+    Move-Item -LiteralPath $temporaryArtifactPath -Destination $artifactPath -Force
+    $publishedPaths.Add($artifactPath)
+    $publishedManifestPath = Join-Path $destination "SOURCE_MANIFEST.sha256"
+    $publishedShaPath = Join-Path $destination "SHA256SUMS"
+    $publishedProvenancePath = Join-Path $destination "SOURCE_PROVENANCE.json"
+    Move-Item -LiteralPath $sourceManifestPath -Destination $publishedManifestPath -Force
+    $publishedPaths.Add($publishedManifestPath)
+    Move-Item -LiteralPath $shaPath -Destination $publishedShaPath -Force
+    $publishedPaths.Add($publishedShaPath)
+    Move-Item -LiteralPath $provenancePath -Destination $publishedProvenancePath -Force
+    $publishedPaths.Add($publishedProvenancePath)
     [pscustomobject]@{
         Version = $version
         Artifact = $artifactPath
         SHA256 = $sha256
+        SourceManifest = $publishedManifestPath
+        Provenance = $publishedProvenancePath
         Validated = $true
     } | Format-List
+}
+catch {
+    # With the normal collision policy these paths did not exist before this
+    # build. Remove only files moved by this invocation so a failed publish
+    # cannot leave an artifact that blocks a clean retry or misleads recovery.
+    if ($publishedPaths) {
+        foreach ($publishedPath in $publishedPaths) {
+            Remove-Item -LiteralPath $publishedPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($publicationBackups) {
+        foreach ($publicationBackup in $publicationBackups) {
+            Copy-Item -LiteralPath $publicationBackup.Backup -Destination $publicationBackup.Original -Force -ErrorAction SilentlyContinue
+        }
+    }
+    throw
 }
 finally {
     if ($KeepStage) {

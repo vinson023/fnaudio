@@ -40,6 +40,30 @@ class PlaybackQueueTests(unittest.TestCase):
             self.assertEqual(response["core"]["queue"], ["legacy"])
             self.assertEqual(response["core"]["duration"], 12.5)
 
+    def test_queue_selection_prioritizes_current_metadata_without_affecting_save(self):
+        class Metadata:
+            def __init__(self):
+                self.track_ids = []
+
+            def prioritize_track(self, track_id):
+                self.track_ids.append(track_id)
+
+        with tempfile.TemporaryDirectory() as root:
+            metadata = Metadata()
+            previous = server.METADATA_SERVICE
+            server.METADATA_SERVICE = metadata
+            try:
+                response, status = server.playback_queue(
+                    {"cache_dir": root},
+                    {"queue": ["current"], "current_id": "current"},
+                )
+            finally:
+                server.METADATA_SERVICE = previous
+
+            self.assertEqual(status, 200)
+            self.assertTrue(response["ok"])
+            self.assertEqual(metadata.track_ids, ["current"])
+
 
 if __name__ == "__main__":
     unittest.main()

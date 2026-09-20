@@ -7,7 +7,7 @@
 1. 固定工作目录为 `C:\path\to\fnAudio`，不要从 `E:\Codex`、旧 FPK 解包目录或 `artifacts/` 覆盖源码。
 2. 阅读 `PROJECT_CONTEXT.md` 顶部、`TODO.md`、`DECISIONS.md` 最新决策和 `CHANGELOG_AI.md` 末尾。
 3. 运行 `git status --short`。工作树可能包含用户或前一会话的未提交修改，禁止 reset、checkout 或清理未知文件。
-4. 核对 `VERSION`、`src/manifest`、Web 静态资源版本和 Android `versionName/versionCode`。当前配套版本为 `0.2.5`。
+4. 核对 `VERSION`、`src/manifest`、Web 静态资源版本和 Android `versionName/versionCode`。当前源码基线为 `0.2.34`；若版本继续演进，以 `VERSION` 和 `src/manifest` 的一致值为准。
 5. 运行统一离线验证；涉及 Android 时再运行 JVM 测试、Lint 和 Debug 构建。
 6. 查看 `TODO.md`。本地 1-9 连续目标已完成，剩余项目都依赖 fnOS、外部数据、模拟器/设备或负责人决策。
 
@@ -28,6 +28,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_android_emulator.
 Set-Location C:\path\to\fnAudio
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_offline.ps1 -Package -Browser
 ```
+
+恢复脚本的参数都有可用默认值，通常不带参数直接运行；下面是模拟器脚本 `tools\test_android_emulator.ps1`
+的完整参数面：`-AvdName` 指定复用的 AVD（默认 `fnaudio-api35-atd`），`-SdkRoot` 指定 Android SDK
+根目录（默认取环境变量 `ANDROID_SDK_ROOT`，再退回 `C:\path\to\fnAudio\tools\android-sdk`），`-InstallSdk`
+允许脚本先安装缺失的 SDK 组件，`-KeepRunning` 在回归结束后保留模拟器以便继续排查。
+
+## 发布证据快速盘点
+
+会话丢失或需要接手历史版本时，可用只读索引工具扫描 `artifacts` 下的语义版本目录：
+
+```powershell
+Set-Location C:\path\to\fnAudio
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\index_release_evidence.ps1 -ArtifactRoot .\artifacts -MaxEntries 256
+```
+
+如需把盘点结果固化为会话恢复附件，可使用显式 `-OutputPath`（脚本默认仍只读）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\index_release_evidence.ps1 `
+  -ArtifactRoot .\artifacts -MaxEntries 256 `
+  -OutputPath .\artifacts\release-evidence-index-latest.json
+```
+
+该工具不会修改源码或发布产物，只读取每个版本目录并复用
+`tools\verify_release_evidence.ps1 -Json` 生成机器可读结果。输出中的
+`EvidenceComplete=false` 表示该版本缺少可验证的 provenance、源码清单或其他证据，
+不等同于 FPK 损坏；尤其是早期版本可能只有 FPK 和 SHA256。单个目录失败会被记录并继续扫描，
+因此可直接把输出保存为恢复盘点附件，而不会因一个历史目录损坏而中断。
+
+校验器对产物尺寸有上界：`SHA256SUMS` 记录的每个产物默认不超过 10 GiB，Android 侧车默认不超过
+1 GiB，两者都在计算 SHA-256 之前拒绝，避免为一篇损坏的证据去哈希任意大的文件。
+这两个上界是显式参数 `-MaxArtifactBytes` 与 `-MaxAndroidArtifactBytes`，默认值就是发布策略，
+恢复流程不需要传；传 0 或负数会被直接拒绝。回归测试用注入的小上界以字节规模验证这两条守卫，
+因此门禁不再需要构造十吉字节的样例文件。
 
 ## 权威来源
 

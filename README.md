@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.2.5`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.2.34`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,7 +8,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.2.5` |
+| 版本 | `0.2.34` |
 | 平台 | fnOS x86；Android 6.0（API 23）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
@@ -19,7 +19,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.2.5` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.2.34` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 ## 接手顺序
 
@@ -84,12 +84,14 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前开发版本为 `0.2.5`。FPK 必须通过 `tools/build_release.ps1` 从唯一的 `src/` 源目录构建；产物位于 `artifacts/0.2.5/`。播放栈对比和限制见 `docs/PLAYBACK_STACK_COMPARISON.md`。
+当前发布基线为 `0.2.34`；下方旧版本记录仅用于历史追溯。
+
+当前开发版本为 `0.2.34`。Android 的 FN Connect 可在公网与 P2P 中继间显式选择，并按短 token、longToken、加密保存密码的顺序重建会话。后台元数据抓取与歌曲 Tag 写回是两个独立设置；写回默认关闭。FPK 必须通过 `tools/build_release.ps1` 从唯一的 `src/` 源目录构建；产物位于 `artifacts/0.2.34/`。播放栈对比和限制见 `docs/PLAYBACK_STACK_COMPARISON.md`。
 
 当前离线工程状态包括 DLNA 出站网络边界、API scope 授权、结构化可观测性、用户状态并发合并、10 万曲分页基准、ContentDirectory 浏览语义和 WAV/DFF 边缘格式夹具。恢复会话后先运行 `tools/test_offline.ps1`，再依据 `TODO.md` 选择仍未完成的部署或硬件项目。
 
 2026-08-12 的九项连续离线目标还包括资源预算、播放错误分类、兼容 API 拆分、浏览器 E2E、inotify 曲库检测、Renderer/Mixer 策略、Android HTTPS 证书固定，以及文件权限/路径边界。专项说明见 `docs/INDEX.md`。
 
-两份产物已完成本地构建、Lint、单元/回归测试、包结构、哈希和 APK 签名检查，但尚未安装到真实 fnOS 与 Android 设备。当前 APK 使用 Android Debug 证书；真机 token 交接、后台/息屏跨曲、自签名 HTTPS、多连接切换和厂商省电限制未验证，不能标记为正式发布。
+`0.2.22` FPK 已安装到内网 fnOS并通过健康、音乐库和鉴权烟雾测试。`0.2.23` Android Debug APK 增加公网/P2P 中继显式选择，当前仍使用 Debug 证书；正式分发必须使用负责人持有的 Release keystore。
 
 项目许可证尚未明确，不应自行假设开源授权。

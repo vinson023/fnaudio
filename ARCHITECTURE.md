@@ -1,6 +1,6 @@
 # fnAudio 架构
 
-> 当前源码版本：`0.2.5`  
+> 当前源码版本：`0.2.34`  
 > fnOS 源码：`C:\path\to\fnAudio\src`  
 > Android 源码：`C:\path\to\fnAudio\android-client`
 
@@ -32,7 +32,7 @@ flowchart TD
 
     FNOS["fnOS 应用中心"] --> CGI["index.cgi / cgi_proxy.py"]
     CGI --> HTTP["ThreadingHTTPServer :configured port"]
-    DIRECT["局域网直连端口（受保护 API 拒绝）"] --> HTTP
+    DIRECT["私有局域网直连端口"] --> HTTP
 
     HTTP --> UI["原生 Web UI"]
     HTTP --> LIB["音乐库服务"]
@@ -54,7 +54,7 @@ flowchart TD
     DLNA --> EXTERNAL
 ```
 
-CGI/Android 原生桥是受保护 API 的正常入口。Python 服务仍监听 `0.0.0.0`，但非 DLNA API 只接受带 fnOS token 与明确 scope 的回环代理请求；局域网直连不能绕过该边界。DLNA 设备描述、SOAP、GENA 和媒体资源按协议需要保留局域网入口，并使用独立网络限制。
+CGI/Android 原生桥是公网和 fnOS 会话的认证入口。Python 服务仍监听 `0.0.0.0`；明确的 RFC1918、IPv4 链路本地、IPv6 ULA 和 IPv6 链路本地地址可直接使用 Web UI，公网地址仍要求带 fnOS token 与明确 scope 的回环代理。DLNA 设备描述、SOAP、GENA 和媒体资源按协议保留局域网入口，并使用独立网络限制。
 
 ## 3. 分层与模块
 
@@ -72,8 +72,38 @@ CGI/Android 原生桥是受保护 API 的正常入口。Python 服务仍监听 `
 | DLNA | `app/server/dlna/` | 发现、推送、MediaServer、Renderer、SOAP、事件和诊断 |
 | 本机服务 | `app/server/services/` | MPD 配置、启动、监督、状态监听和输出测试 |
 | 状态 | `app/server/state_store.py` | 收藏、歌单、播放会话、UI 偏好和 revision |
-| 元数据 | `app/server/metadata_service.py` | 在线元数据、歌词、封面、任务和缓存回收 |
+| 元数据 | `app/server/metadata_service.py` | 在线元数据、歌词、封面、任务、缓存回收及受独立开关保护的 Tag 写回 |
 | 媒体交付 | `app/server/transcode.py` | MP3、DSD WAV、CUE FLAC、流式转码和缓存清理 |
+
+### 可测试边界（持续拆分）
+
+- `server/playback_status_response.py`：播放状态成功/错误响应的纯组合与安全投影；不执行设备探测或播放副作用。
+- `server/library_query_cache_presentation.py`：查询缓存指标和快照安全投影；无状态、无 I/O，可单独验证。
+- `ui/library_item_request_loader.js`：收藏/歌单引用曲目批请求的 Promise 去重与 in-flight 上限；不负责渲染或缓存写入，可独立回归。
+- `ui/library_track_filter_policy.js`：分页/分组/DSD/队列/收藏/歌单曲目来源、搜索和排序的纯决策；状态和补水仍由 `app.js` 负责。
+- `ui/library_root_label_policy.js`：多根目录标签提取与同名消歧；无 DOM/网络副作用。
+- `server/library_scan_file_policy.py`：扫描文件扩展名分类；无文件系统副作用，供扫描与签名编排复用。
+- `library_signature()`：文件签名收集受片段数和总文本预算限制，避免超大目录检查无界累积。
+- `library_signature()` 复用 `library_scan_results.digest_signature_parts()`，确保单根目录和多根目录签名遵循同一哈希策略。
+- `server/api_route_policy.py`：API 路径规范化、媒体资源认证判定与读写 scope 映射；无网络副作用，可独立回归。
+- `server/cover_item_cache.py`：封面提取的有界 LRU、同键 in-flight 协调及压力摘要；实际文件读取由 `server.py` 注入。
+- `ui/creator_view_policy.js`：歌手/作曲者状态和专辑集合/详情视图判定；无 DOM/网络副作用。
+- `ui/user_media_state_policy.js`：收藏/歌单归一化、增量变更计算与合并；本地存储和服务器同步仍由 `app.js` 负责。
+- `ui/lyrics_parse_policy.js`：LRC 时间戳和歌词行排序解析；歌词请求、轮询和渲染仍由 `app.js` 负责。
+- `ui/playback_target_policy.js`：本机、远程、DAC、MPD 播放目标的安全识别与归一化。
+- `ui/repeat_mode_policy.js`：循环关闭、列表循环、单曲循环的归一化、轮换和中文文案；循环按钮与后端控制接线仍由 `app.js` 负责。
+- `ui/track_sort_policy.js`：曲目标题、序号、加入时间及中文数值排序纯规则。
+- `ui/library_sort_options_policy.js`：按视图选择排序选项和默认排序键；`app.js` 负责状态接线。
+- `ui/folder_label_policy.js`：跨平台文件夹名称与当前路径标签生成。
+- `ui/host_privacy_policy.js`：LAN/公网主机判定与保留地址规则。
+
+以下模块承载纯策略或响应投影，主编排层只负责 I/O、状态和生命周期接线：
+
+- 服务端：`health_snapshot.py`、`diagnostics.py`、`http_worker_presentation.py`、`playback_targets_response.py`、`upnp_device_selection.py`。
+- 曲库查询：`library_query_spec.py`、`library_track_filter_policy.py`、`library_pagination.py`、`library_*_presentation.py`。
+- 前端大曲库：`library_query_params.js`、`library_load_key.js`、`library_response_loader.js`、`library_page_plan.js`、`library_page_merge.js`、`library_render_policy.js`。
+
+这些模块应保持无网络/无文件副作用（除明确的适配器边界），每次拆分必须配套独立回归；真实 Renderer、DAC、AirPlay 和 Android 验收不由离线测试替代。
 
 ## 4. 主要数据流
 
@@ -174,6 +204,8 @@ localStorage 兼容数据
 - `PlaybackCore` 管状态和队列，输出插件负责实际传输。
 - DLNA 的 Control Point、MediaServer 和 Renderer 是独立角色，不在前端混写协议逻辑。
 - 音乐库查询应通过 SQLite 分页接口，不把整个大库序列化到浏览器。
+- 前端可短期缓存已访问的分类和分页响应；扫描结束或显式刷新必须使缓存失效，状态轮询不得重建完整歌曲列表。
+- DMS 只宣告已实现的 UPnP 能力；公开媒体和缩略图路由不依赖 fnOS Web token，但仍必须按有效曲目 ID 和音乐库边界取数。
 - 外部元数据只能后台获取，列表和歌词请求不能因第三方服务阻塞主请求。
 - fnOS 特权操作必须通过明确的授权边界，不能把 token 当作普通前端状态公开。
 - Android 原生服务是 Android 模式下唯一音频输出所有者；网页 `<audio>` 必须保持空闲，避免双重播放。
@@ -200,3 +232,32 @@ localStorage 兼容数据
 - UI 的纯展示规则按模块拆分：`ui/view_presentation.js` 管理视图标题，`ui/track_presentation.js` 管理曲目字段、占位符与行标识；`app.js` 保留状态、DOM 和 API 编排。所有 UI 模块都必须在 `build_release.ps1` 的内容哈希中登记。
 
 详细风险和技术债见 `PROJECT_CONTEXT.md`，未完成工作见 `TODO.md`。
+# 2026-08-30 前端边界补充：全量播放分页策略
+
+- `src/app/ui/library_full_list_policy.js`：全量播放列表的安全总数归一化与合并停止策略。
+- `src/app/ui/app.js`：保留分页请求、批量并发、缓存写入、结果合并和取消生命周期。
+
+# 2026-08-30 前端边界补充：访问模式加载器
+
+- `src/app/ui/access_profile_loader.js`：访问模式 API 的短 TTL 缓存、并发请求去重与显式清理。
+- `src/app/ui/app.js`：仅消费 profile 并刷新模式按钮，不再在每次曲库分页请求中直接发起重复访问模式请求。
+
+# 2026-08-30 可观测性补充：播放命令缓存压力
+
+- `playback_command_cache.py` 生成仅含 entries、limit、saturated 的缓存压力摘要。
+- `server.py` 在锁内读取快照并注入 `/api/health`、`/api/diagnostics`；健康与支持数据不携带命令 ID、响应、曲目或队列。
+
+# 2026-08-30 可观测性补充：曲库查询缓存压力
+
+- `library_query_cache.py` 以 `saturated` 表达条目容量或结果权重预算是否耗尽。
+- `library_snapshot.py` 仅投影该布尔压力状态，不公开查询键、路径或缓存内容。
+
+# 2026-08-30 边界补充：播放命令幂等缓存
+
+- `src/app/server/playback_command_cache.py`：有界命令结果缓存的过期回收、损坏条目隔离、防御性读取和 FIFO 淘汰。
+- `src/app/server/server.py`：保留命令 ID 提取、锁保护、TTL/容量配置以及实际播放命令执行；缓存模块不直接触碰输出设备。
+
+# 2026-08-30 边界补充：曲库刷新队列
+
+- `src/app/server/library_refresh_policy.py`：无状态的刷新队列状态转移策略，统一处理重复请求、force 升级、worker 启动判定、请求取出和取消信号判定。
+- `src/app/server/library.py`：保留 `SCAN_REQUEST_LOCK`、后台线程生命周期、取消事件和实际扫描执行；策略模块不接触线程或文件系统。

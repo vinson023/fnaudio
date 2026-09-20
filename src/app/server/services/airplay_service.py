@@ -6,6 +6,10 @@ import shlex
 import threading
 from typing import Any, Dict, Iterable
 
+MAX_PROC_CMDLINE_BYTES = 4096
+MAX_AIRPLAY_COMMAND_BYTES = 4096
+MAX_AIRPLAY_PATH_BYTES = 512
+
 from .audio_output_lease import AUDIO_OUTPUT_LEASE
 from .process_supervisor import ProcessSupervisor
 
@@ -18,6 +22,11 @@ def _first_binary(candidates: Iterable[str]) -> str:
         if path:
             return os.path.abspath(path)
     return ""
+
+
+def _config_text(config: Dict[str, Any], key: str, maximum: int) -> str:
+    value = config.get(key)
+    return value.strip()[:maximum] if isinstance(value, str) else ""
 
 
 def _process_running(name: str) -> bool:
@@ -34,7 +43,9 @@ def _process_running(name: str) -> bool:
             continue
         try:
             with open(os.path.join(proc_root, entry, "cmdline"), "rb") as handle:
-                command = handle.read().replace(b"\x00", b" ").decode("utf-8", "ignore").lower()
+                command = handle.read(MAX_PROC_CMDLINE_BYTES + 1)
+                command = command[:MAX_PROC_CMDLINE_BYTES]
+                command = command.replace(b"\x00", b" ").decode("utf-8", "ignore").lower()
         except OSError:
             continue
         if wanted and wanted in command:
@@ -53,7 +64,7 @@ def airplay_probe(config: Dict[str, Any] | None = None, app_root: str = "") -> D
     roots = [app_root, os.environ.get("TRIM_APPDEST", "")]
     shairport = _first_binary(
         [
-            str(config.get("shairport_sync_path") or ""),
+            _config_text(config, "shairport_sync_path", MAX_AIRPLAY_PATH_BYTES),
             *[os.path.join(root, "bin", "shairport-sync") for root in roots if root],
             "/usr/local/bin/shairport-sync",
             "/usr/bin/shairport-sync",
@@ -62,7 +73,7 @@ def airplay_probe(config: Dict[str, Any] | None = None, app_root: str = "") -> D
     )
     nqptp = _first_binary(
         [
-            str(config.get("nqptp_path") or ""),
+            _config_text(config, "nqptp_path", MAX_AIRPLAY_PATH_BYTES),
             *[os.path.join(root, "bin", "nqptp") for root in roots if root],
             "/usr/local/bin/nqptp",
             "/usr/bin/nqptp",
@@ -70,9 +81,11 @@ def airplay_probe(config: Dict[str, Any] | None = None, app_root: str = "") -> D
         ]
     )
     receiver_available = bool(shairport)
+    raw_enabled = config.get("airplay_enabled", False) if isinstance(config, dict) else False
+    enabled = raw_enabled if isinstance(raw_enabled, bool) else False
     return {
         "available": receiver_available,
-        "configured": bool(config.get("airplay_enabled")) and receiver_available,
+        "configured": enabled and receiver_available,
         "running": _process_running("shairport-sync"),
         "airplay1": receiver_available,
         "airplay2": bool(shairport and nqptp),
@@ -103,45 +116,72 @@ class AirplayService:
         return airplay_probe(self.config, self.app_root)
 
     def _command(self, binary: str):
-        configured = self.config.get("airplay_command")
+        configured = _config_text(self.config, "airplay_command", MAX_AIRPLAY_COMMAND_BYTES)
         if configured:
-            parts = shlex.split(str(configured))
+            try:
+                parts = shlex.split(configured)
+            except ValueError:
+                return []
             if parts:
                 return parts
         # Explicit ALSA device keeps ownership deterministic.  shairport-sync
         # can still use its own defaults when no device is configured.
         command = [binary]
-        device = str(self.config.get("airplay_alsa_device") or "").strip()
+        device = _config_text(self.config, "airplay_alsa_device", MAX_AIRPLAY_PATH_BYTES)
         if device:
             command += ["-a", device]
         return command
+
+    def _release_audio_output(self, _name: str = "", _status: Dict[str, Any] | None = None) -> None:
+        """Return the ALSA lease when the supervised receiver gives up."""
+        AUDIO_OUTPUT_LEASE.release("airplay")
 
     def start(self) -> Dict[str, Any]:
         with self._lock:
             probe = self._probe()
             if not probe.get("available"):
                 return {"ok": False, "running": False, "message": probe.get("message") or "AirPlay receiver unavailable", "probe": probe}
-            lease = AUDIO_OUTPUT_LEASE.acquire("airplay", str(self.config.get("airplay_alsa_device") or ""))
+            command = self._command(probe["binaries"]["shairport_sync"])
+            if not command:
+                return {"ok": False, "running": False, "message": "invalid AirPlay command", "probe": probe}
+            lease = AUDIO_OUTPUT_LEASE.acquire("airplay", _config_text(self.config, "airplay_alsa_device", MAX_AIRPLAY_PATH_BYTES))
             if not lease.get("ok"):
                 return {"ok": False, "running": False, "message": lease.get("message") or "audio output is busy", "probe": probe, "lease": lease}
             if not self._registered:
-                self.supervisor.register("airplay", self._command(probe["binaries"]["shairport_sync"]), log_path=str(self.config.get("airplay_log") or "") or None, max_restarts=8, restart_window=120.0, restart_backoff=1.5)
+                self.supervisor.register(
+                    "airplay",
+                    command,
+                    log_path=_config_text(self.config, "airplay_log", MAX_AIRPLAY_PATH_BYTES) or None,
+                    max_restarts=8,
+                    restart_window=120.0,
+                    restart_backoff=1.5,
+                    on_exhaust=self._release_audio_output,
+                )
                 self._registered = True
             result = self.supervisor.start("airplay")
-            if not result.get("running"):
+            running = isinstance(result, dict) and result.get("running") is True
+            if not running:
                 AUDIO_OUTPUT_LEASE.release("airplay")
-            return {"ok": bool(result.get("running")), **result, "probe": probe, "lease": AUDIO_OUTPUT_LEASE.snapshot()}
+            projected = dict(result) if isinstance(result, dict) else {}
+            projected["running"] = running
+            projected["ok"] = running
+            return {**projected, "probe": probe, "lease": AUDIO_OUTPUT_LEASE.snapshot()}
 
     def stop(self) -> Dict[str, Any]:
         with self._lock:
             result = self.supervisor.stop("airplay") if self._registered else {"ok": True, "running": False}
             AUDIO_OUTPUT_LEASE.release("airplay")
-            return {**result, "lease": AUDIO_OUTPUT_LEASE.snapshot()}
+            projected = dict(result) if isinstance(result, dict) else {}
+            projected["ok"] = isinstance(result, dict) and result.get("ok") is True
+            projected["running"] = isinstance(result, dict) and result.get("running") is True
+            return {**projected, "lease": AUDIO_OUTPUT_LEASE.snapshot()}
 
     def status(self) -> Dict[str, Any]:
         probe = self._probe()
         process = self.supervisor.status("airplay") if self._registered else {"available": False, "running": False}
-        return {"probe": probe, "process": process, "lease": AUDIO_OUTPUT_LEASE.snapshot(), "configured": bool(self.config.get("airplay_enabled"))}
+        raw_enabled = self.config.get("airplay_enabled", False) if isinstance(self.config, dict) else False
+        enabled = raw_enabled if isinstance(raw_enabled, bool) else False
+        return {"probe": probe, "process": process, "lease": AUDIO_OUTPUT_LEASE.snapshot(), "configured": enabled}
 
     def shutdown(self):
         self.stop()

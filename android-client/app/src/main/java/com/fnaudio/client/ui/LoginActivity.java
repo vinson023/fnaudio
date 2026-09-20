@@ -21,11 +21,13 @@ import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.FnOsAuthClient;
 import com.fnaudio.client.network.FnConnectResolver;
+import com.fnaudio.client.network.FnConnectSettings;
 
 public final class LoginActivity extends AppCompatActivity {
     public static final String EXTRA_SKIP_AUTO_RESUME = "skip_auto_resume";
     public static final String EXTRA_PREFILL_ACTIVE_PROFILE = "prefill_active_profile";
     private static final int REQUEST_HISTORY = 701;
+    private static final int REQUEST_FN_CONNECT_SETTINGS = 702;
 
     private EditText profileName;
     private EditText host;
@@ -39,6 +41,8 @@ public final class LoginActivity extends AppCompatActivity {
     private ImageButton historyButton;
     private EditText fnId;
     private ImageButton fnConnectButton;
+    private ImageButton fnConnectSettingsButton;
+    private TextView fnConnectSettingsSummary;
     private View progressRow;
     private TextView loginStatus;
 
@@ -48,20 +52,22 @@ public final class LoginActivity extends AppCompatActivity {
     private String editingProfileId = "";
     private boolean editingExistingProfile;
     private boolean busy;
+    private boolean destroyed;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        destroyed = false;
         configureSystemBars();
         setContentView(R.layout.activity_login);
         WindowInsetsHelper.applySafePadding(findViewById(R.id.loginRoot));
         store = new SecureProfileStore(this);
-        fnConnectResolver = new FnConnectResolver();
+        fnConnectResolver = new FnConnectResolver(this);
         bindViews();
         renderHistoryButton();
 
-        boolean skipAutoResume = getIntent().getBooleanExtra(EXTRA_SKIP_AUTO_RESUME, false);
-        boolean prefillActive = getIntent().getBooleanExtra(EXTRA_PREFILL_ACTIVE_PROFILE, false);
+        boolean skipAutoResume = safeBooleanExtra(getIntent(), EXTRA_SKIP_AUTO_RESUME, false);
+        boolean prefillActive = safeBooleanExtra(getIntent(), EXTRA_PREFILL_ACTIVE_PROFILE, false);
         ConnectionProfile active = store.active();
         // Do not flash or prefill the active FN Connect ID while an existing
         // session is being resumed. A deliberate return to Login uses a blank
@@ -69,7 +75,28 @@ public final class LoginActivity extends AppCompatActivity {
         if (prefillActive && active != null) fillForm(active, false);
         else if (skipAutoResume || active == null) clearFormForNewProfile();
         if (!skipAutoResume && savedInstanceState == null && active != null && (!active.token.isEmpty() || !active.longToken.isEmpty())) {
-            loginStatus.postDelayed(() -> resumeProfile(active), 220);
+            loginStatus.postDelayed(() -> {
+                if (!destroyed) resumeProfile(active);
+            }, 220);
+        }
+    }
+
+    private static boolean safeBooleanExtra(@Nullable Intent intent, String key, boolean fallback) {
+        if (intent == null || key == null) return fallback;
+        try {
+            return intent.getBooleanExtra(key, fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static String safeStringExtra(@Nullable Intent intent, String key) {
+        if (intent == null || key == null) return "";
+        try {
+            String value = intent.getStringExtra(key);
+            return value == null ? "" : value;
+        } catch (RuntimeException ignored) {
+            return "";
         }
     }
 
@@ -77,6 +104,15 @@ public final class LoginActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         renderHistoryButton();
+        renderFnConnectSettingsSummary();
+    }
+
+    @Override
+    protected void onDestroy() {
+        destroyed = true;
+        authClient.cancel();
+        if (fnConnectResolver != null) fnConnectResolver.close();
+        super.onDestroy();
     }
 
     private void bindViews() {
@@ -92,6 +128,8 @@ public final class LoginActivity extends AppCompatActivity {
         historyButton = findViewById(R.id.historyButton);
         fnId = findViewById(R.id.fnId);
         fnConnectButton = findViewById(R.id.fnConnectButton);
+        fnConnectSettingsButton = findViewById(R.id.fnConnectSettingsButton);
+        fnConnectSettingsSummary = findViewById(R.id.fnConnectSettingsSummary);
         progressRow = findViewById(R.id.loginProgressRow);
         loginStatus = findViewById(R.id.loginStatus);
 
@@ -100,6 +138,8 @@ public final class LoginActivity extends AppCompatActivity {
         historyButton.setOnClickListener(view -> startActivityForResult(
                 new Intent(this, ConnectionHistoryActivity.class), REQUEST_HISTORY));
         fnConnectButton.setOnClickListener(view -> openFnConnect());
+        fnConnectSettingsButton.setOnClickListener(view -> startActivityForResult(
+                new Intent(this, FnConnectSettingsActivity.class), REQUEST_FN_CONNECT_SETTINGS));
         useHttps.setOnCheckedChangeListener((button, checked) -> {
             trustSelfSigned.setEnabled(checked);
             String currentPort = port.getText().toString().trim();
@@ -108,6 +148,7 @@ public final class LoginActivity extends AppCompatActivity {
             }
         });
         trustSelfSigned.setEnabled(useHttps.isChecked());
+        renderFnConnectSettingsSummary();
     }
 
     private void openFnConnect() {
@@ -118,8 +159,12 @@ public final class LoginActivity extends AppCompatActivity {
         setBusy(true, "正在通过 FN Connect 查找设备...");
         final String fnIdValue = value;
         final String passwordValue = password.getText().toString();
-        fnConnectResolver.resolve(value, new FnConnectResolver.Callback() {
+        FnConnectSettings settings = new FnConnectSettings(this);
+        String effectiveMode = settings.effectiveMode();
+        FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(effectiveMode);
+        fnConnectResolver.resolve(value, connectMode, new FnConnectResolver.Callback() {
             @Override public void onResolved(ConnectionProfile resolved) {
+                if (destroyed) return;
                 setBusy(false, "");
                 fnId.setText(fnIdValue);
                 host.setText(resolved.host);
@@ -134,10 +179,12 @@ public final class LoginActivity extends AppCompatActivity {
                 ConnectionProfile profile = ConnectionProfile.create(
                         "fnconnect:" + fnIdValue + ":" + user.toLowerCase(java.util.Locale.ROOT),
                         "FN Connect - " + fnIdValue, resolved.host, resolved.port, resolved.https,
-                        false, user, savePassword.isChecked() ? passwordValue : "");
+                        false, user, savePassword.isChecked() ? passwordValue : "")
+                        .withFnConnectMode(effectiveMode);
                 authenticate(profile, passwordValue, "正在登录 FN Connect 设备...", false);
             }
             @Override public void onError(String message) {
+                if (destroyed) return;
                 setBusy(false, "");
                 Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
             }
@@ -166,6 +213,38 @@ public final class LoginActivity extends AppCompatActivity {
     private void resumeProfile(ConnectionProfile profile) {
         if (busy) return;
         fillForm(profile, false);
+        String connectId = fnConnectId(profile);
+        if ((profile.id.startsWith("fnconnect:") || profile.name.startsWith("FN Connect - "))
+                && !connectId.isEmpty()) {
+            setBusy(true, fnConnectStatus(profile.fnConnectMode));
+            FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(profile.fnConnectMode);
+            fnConnectResolver.resolve(connectId, connectMode, new FnConnectResolver.Callback() {
+                @Override public void onResolved(ConnectionProfile route) {
+                    if (destroyed) return;
+                    ConnectionProfile refreshed = profile.withEndpoint(route.host, route.port, route.https);
+                    store.upsert(refreshed, true);
+                    resumeResolvedProfile(refreshed);
+                }
+
+                @Override public void onError(String message) {
+                    if (destroyed) return;
+                    if (FnConnectSettings.MODE_RELAY.equals(profile.fnConnectMode)) {
+                        setBusy(false, "");
+                        fillForm(profile, false);
+                        Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    // Endpoint discovery is advisory during resume. The last
+                    // official endpoint may still work when fnos.net is briefly unavailable.
+                    resumeResolvedProfile(profile);
+                }
+            });
+            return;
+        }
+        resumeResolvedProfile(profile);
+    }
+
+    private void resumeResolvedProfile(ConnectionProfile profile) {
         if (profile.token.isEmpty() && profile.longToken.isEmpty() && !profile.password.isEmpty()) {
             authenticate(profile, profile.password, "正在登录 “" + profile.name + "”…", false);
             return;
@@ -174,12 +253,18 @@ public final class LoginActivity extends AppCompatActivity {
     }
 
     private void authenticate(ConnectionProfile profile, @Nullable String clearPassword, String status, boolean resume) {
+        authenticate(profile, clearPassword, status, resume, resume);
+    }
+
+    private void authenticate(ConnectionProfile profile, @Nullable String clearPassword, String status,
+                              boolean allowPasswordFallback, boolean storedRecovery) {
         boolean preserveExplicitEdit = editingExistingProfile && store.find(profile.id) != null;
         setBusy(true, status);
         hideKeyboard();
         authClient.authenticate(this, profile, clearPassword, new FnOsAuthClient.Callback() {
             @Override
             public void onSuccess(ConnectionProfile authenticatedProfile) {
+                if (destroyed) return;
                 setBusy(false, "");
                 store.upsert(authenticatedProfile, true);
                 renderHistoryButton();
@@ -191,14 +276,30 @@ public final class LoginActivity extends AppCompatActivity {
 
             @Override
             public void onError(String message) {
-                if (resume && !profile.password.isEmpty()) {
-                    authenticate(profile, profile.password, "令牌已失效，正在使用已保存密码重新登录…", false);
+                if (destroyed) return;
+                setBusy(false, "");
+                fillForm(profile, preserveExplicitEdit);
+                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+
+            @Override
+            public void onCredentialRejected(String message) {
+                if (destroyed) return;
+                if (allowPasswordFallback && !profile.password.isEmpty()) {
+                    authenticate(profile, profile.password, "令牌已失效，正在使用已保存密码重新登录…", false, true);
                     return;
                 }
                 setBusy(false, "");
-                fillForm(profile, preserveExplicitEdit);
+                ConnectionProfile editableProfile = profile;
+                if (storedRecovery) {
+                    editableProfile = profile.withTokens("", "");
+                    store.upsert(editableProfile, true);
+                }
+                fillForm(editableProfile, preserveExplicitEdit);
                 password.requestFocus();
-                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                Toast.makeText(LoginActivity.this,
+                        storedRecovery ? "登录令牌已失效，请重新输入密码。" : message,
+                        Toast.LENGTH_LONG).show();
                 showKeyboard(password);
             }
         });
@@ -223,9 +324,14 @@ public final class LoginActivity extends AppCompatActivity {
             username.requestFocus();
             return null;
         }
+        boolean httpsValue = address.https != null ? address.https : useHttps.isChecked();
+        if (address.https != null && useHttps.isChecked() != httpsValue) {
+            useHttps.setChecked(httpsValue);
+        }
         int portValue = address.port;
         try {
-            if (portValue <= 0) portValue = useHttps.isChecked() ? 5667 : 5666;
+            if (portValue < 0) throw new NumberFormatException();
+            if (portValue <= 0) portValue = httpsValue ? 5667 : 5666;
             if (portValue < 1 || portValue > 65535) throw new NumberFormatException();
         } catch (NumberFormatException exception) {
             port.setError("端口号必须在 1–65535 之间");
@@ -234,15 +340,15 @@ public final class LoginActivity extends AppCompatActivity {
         }
         ConnectionProfile selected = store.find(editingProfileId);
         boolean sameAsSelected = selected != null && selected.matchesConnection(
-                address.host, portValue, useHttps.isChecked(), usernameValue);
+                address.host, portValue, httpsValue, usernameValue);
         String requestedName = profileName.getText().toString().trim();
         if (!sameAsSelected || requestedName.startsWith("FN Connect - ")) requestedName = address.host;
         ConnectionProfile result = ConnectionProfile.create(
-                profileIdForForm(address.host, portValue, useHttps.isChecked(), usernameValue),
+                profileIdForForm(address.host, portValue, httpsValue, usernameValue),
                 requestedName.isEmpty() ? address.host : requestedName,
                 address.host,
                 portValue,
-                useHttps.isChecked(),
+                httpsValue,
                 trustSelfSigned.isChecked(),
                 usernameValue,
                 passwordToSave
@@ -256,26 +362,56 @@ public final class LoginActivity extends AppCompatActivity {
     }
 
     private AddressParts parseAddress(String raw) {
-        String value = raw == null ? "" : raw.trim().replaceFirst("(?i)^https?://", "");
-        int slash = value.indexOf('/');
-        if (slash >= 0) value = value.substring(0, slash);
+        String value = raw == null ? "" : raw.trim();
+        Boolean explicitHttps = null;
+        if (value.regionMatches(true, 0, "https://", 0, 8)) {
+            explicitHttps = true;
+            value = value.substring(8);
+        } else if (value.regionMatches(true, 0, "http://", 0, 7)) {
+            explicitHttps = false;
+            value = value.substring(7);
+        }
+        int end = value.length();
+        for (char delimiter : new char[]{'/', '?', '#'}) {
+            int index = value.indexOf(delimiter);
+            if (index >= 0 && index < end) end = index;
+        }
+        value = value.substring(0, end);
+        // Userinfo is not a supported login field and must never become part
+        // of the host used for authentication or origin checks.
+        if (value.indexOf('@') >= 0) return new AddressParts("", -1, explicitHttps);
         if (value.startsWith("[") && value.contains("]")) {
             int close = value.indexOf(']');
             String hostValue = value.substring(1, close);
             String tail = value.substring(close + 1);
-            return new AddressParts(hostValue, tail.startsWith(":") && tail.substring(1).matches("\\d+") ? Integer.parseInt(tail.substring(1)) : 0);
+            return new AddressParts(hostValue, tail.startsWith(":") ? parsePort(tail.substring(1)) : 0, explicitHttps);
         }
         int colon = value.lastIndexOf(':');
-        if (colon > 0 && value.indexOf(':') == colon && value.substring(colon + 1).matches("\\d+")) {
-            return new AddressParts(value.substring(0, colon), Integer.parseInt(value.substring(colon + 1)));
+        if (colon > 0 && value.indexOf(':') == colon) {
+            return new AddressParts(value.substring(0, colon), parsePort(value.substring(colon + 1)), explicitHttps);
         }
-        return new AddressParts(value, 0);
+        return new AddressParts(value, 0, explicitHttps);
+    }
+
+    private static int parsePort(String raw) {
+        if (raw == null || !raw.matches("\\d+")) return -1;
+        try {
+            int parsed = Integer.parseInt(raw);
+            return parsed >= 1 && parsed <= 65535 ? parsed : -1;
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
     }
 
     private static final class AddressParts {
         final String host;
         final int port;
-        AddressParts(String host, int port) { this.host = host == null ? "" : host.trim(); this.port = port; }
+        final Boolean https;
+        AddressParts(String host, int port, Boolean https) {
+            this.host = host == null ? "" : host.trim();
+            this.port = port;
+            this.https = https;
+        }
     }
 
     private String profileIdForForm(String hostValue, int portValue, boolean httpsValue, String usernameValue) {
@@ -305,6 +441,7 @@ public final class LoginActivity extends AppCompatActivity {
         username.setText(profile.username);
         password.setText(profile.password);
         savePassword.setChecked(true);
+        renderFnConnectSettingsSummary();
     }
 
     private void clearFormForNewProfile() {
@@ -320,6 +457,7 @@ public final class LoginActivity extends AppCompatActivity {
         username.setText("");
         password.setText("");
         savePassword.setChecked(true);
+        renderFnConnectSettingsSummary();
         loginStatus.setText("");
         host.requestFocus();
         showKeyboard(host);
@@ -350,6 +488,20 @@ public final class LoginActivity extends AppCompatActivity {
         historyButton.setContentDescription(count == 0 ? "历史连接" : "历史连接，" + count + " 个记录");
     }
 
+    private void renderFnConnectSettingsSummary() {
+        if (fnConnectSettingsSummary == null) return;
+        FnConnectSettings settings = new FnConnectSettings(this);
+        String mode = settings.mode();
+        String p2p = settings.isP2pEnabled() ? "P2P 已开启" : "P2P 已关闭";
+        fnConnectSettingsSummary.setText("FN Connect：" + FnConnectSettings.label(mode) + " · " + p2p);
+    }
+
+    private static String fnConnectStatus(String mode) {
+        if (FnConnectSettings.MODE_RELAY.equals(mode)) return "正在建立 FN Connect P2P 中继...";
+        if (FnConnectSettings.MODE_SPEED.equals(mode)) return "正在选择最快的 FN Connect 链路...";
+        return "正在刷新 FN Connect 公网地址...";
+    }
+
     private void configureSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         getWindow().setStatusBarColor(0xff071326);
@@ -378,6 +530,7 @@ public final class LoginActivity extends AppCompatActivity {
         savePassword.setEnabled(!value);
         fnId.setEnabled(!value);
         fnConnectButton.setEnabled(!value);
+        fnConnectSettingsButton.setEnabled(!value);
     }
 
     private void hideKeyboard() {
@@ -389,6 +542,7 @@ public final class LoginActivity extends AppCompatActivity {
 
     private void showKeyboard(View view) {
         view.postDelayed(() -> {
+            if (destroyed || isFinishing()) return;
             InputMethodManager manager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             manager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
         }, 180);
@@ -397,13 +551,17 @@ public final class LoginActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_FN_CONNECT_SETTINGS) {
+            renderFnConnectSettingsSummary();
+            return;
+        }
         if (requestCode != REQUEST_HISTORY) return;
         if (resultCode == ConnectionHistoryActivity.RESULT_NEW_PROFILE) {
             clearFormForNewProfile();
             return;
         }
         if (data == null) return;
-        String profileId = data.getStringExtra(ConnectionHistoryActivity.EXTRA_PROFILE_ID);
+        String profileId = safeStringExtra(data, ConnectionHistoryActivity.EXTRA_PROFILE_ID);
         ConnectionProfile selected = store.find(profileId);
         if (selected == null) return;
         if (resultCode == RESULT_OK) {

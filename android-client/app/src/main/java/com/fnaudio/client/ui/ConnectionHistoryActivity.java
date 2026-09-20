@@ -19,6 +19,7 @@ import androidx.core.view.WindowCompat;
 import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
+import com.fnaudio.client.network.FnConnectSettings;
 
 import java.util.List;
 import java.text.SimpleDateFormat;
@@ -109,6 +110,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         TextView endpoint = new TextView(this);
         boolean fnConnect = profile.name.startsWith("FN Connect - ");
         endpoint.setText(fnConnect ? profile.name.substring("FN Connect - ".length())
+                        + " · " + FnConnectSettings.label(profile.fnConnectMode)
                 : (profile.https ? "https://" : "http://") + profile.host + ":" + profile.port);
         endpoint.setTextColor(0xff64748b);
         endpoint.setTextSize(13);

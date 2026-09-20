@@ -1,0 +1,23 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const source = fs.readFileSync("app/ui/metadata_row_patch_policy.js", "utf8");
+const context = { globalThis: {}, Set, Array, String };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioMetadataRowPatchPolicy;
+assert.equal(typeof policy.canPatchRow, "function");
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, changedFields: ["cover_url"] }), true);
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, changedFields: ["lyrics"] }), true);
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, sortKey: "title", changedFields: ["title"] }), false);
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, sortKey: "added", changedFields: ["title"] }), true);
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, search: "周杰伦", changedFields: ["cover_url"] }), false);
+assert.equal(policy.canPatchRow({ pagedTrackListing: true, groupRoot: true }), false);
+assert.deepEqual(policy.safeFields([" title ", null, "", "artist"]), ["title", "artist"]);
+const pageItems = [];
+const identity = { requestSeq: 4, view: "all", page: 1, pageItems };
+assert.equal(policy.sameListIdentity(identity, { requestSeq: 4, view: "all", page: 1, pageItems }), true);
+assert.equal(policy.sameListIdentity(identity, { requestSeq: 5, view: "all", page: 1, pageItems }), false);
+assert.equal(policy.sameListIdentity(identity, { requestSeq: 4, view: "all", page: 1, pageItems: [] }), false);
+assert.equal(policy.sameListIdentity(identity, null), false);
+console.log("Metadata row patch policy regression checks passed.");

@@ -16,8 +16,8 @@ android {
         applicationId "com.fnaudio.client"
         minSdk 23
         targetSdk 36
-        versionCode 279
-        versionName "0.2.11"
+        versionCode 302
+        versionName "0.2.34"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -36,6 +36,9 @@ android {
 
     packaging {
         resources.excludes += ["META-INF/DEPENDENCIES", "META-INF/NOTICE*", "META-INF/LICENSE*"]
+        // The official Tpps gomobile runtime is distributed as an extracted
+        // native library. Preserve that loading model for ARM64/16 KB devices.
+        jniLibs.useLegacyPackaging = true
     }
 
     signingConfigs {
@@ -55,6 +58,15 @@ android {
                 signingConfig signingConfigs.release
             }
             minifyEnabled false
+        }
+        // Isolated build for validating the public fnOS MediaBrowser/MediaSession.
+        // It has a different application id and can be installed beside normal fnAudio.
+        mediaSession {
+            initWith debug
+            applicationIdSuffix ".mediasession"
+            versionNameSuffix "-mediasession"
+            debuggable true
+            buildConfigField "boolean", "FNOS_MEDIA_SESSION_TEST", "true"
         }
     }
 }

@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 
-SERVER_ROOT = Path(__file__).resolve().parents[1] / "app" / "server"
+APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 MOJIBAKE_FRAGMENTS = (
     "閺堫",
     "鏈",
@@ -20,7 +20,7 @@ MOJIBAKE_FRAGMENTS = (
 
 
 def source_trees():
-    for path in SERVER_ROOT.rglob("*.py"):
+    for path in APP_ROOT.rglob("*.py"):
         yield path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
@@ -38,6 +38,32 @@ def nested_blocks(node):
 
 
 class SourceHygieneTests(unittest.TestCase):
+    def test_metadata_service_keeps_provider_limits_single_sourced(self):
+        path = APP_ROOT / "server" / "metadata_service.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assignments = defaultdict(list)
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in {
+                        "MAX_PROVIDER_RESPONSE_BYTES",
+                        "MAX_PROVIDER_LYRICS_BYTES",
+                    }:
+                        assignments[target.id].append(node.lineno)
+        self.assertEqual(assignments, {})
+
+    def test_todo_checklist_entries_are_unique(self):
+        todo_path = Path(__file__).resolve().parents[2] / "TODO.md"
+        lines = [line.strip() for line in todo_path.read_text(encoding="utf-8").splitlines()]
+        entries = [line for line in lines if line.startswith("- [")]
+        duplicates = [line for line, count in __import__("collections").Counter(entries).items() if count > 1]
+        self.assertEqual(duplicates, [])
+
+    def test_hygiene_scope_covers_all_packaged_python(self):
+        paths = {path.relative_to(APP_ROOT).as_posix() for path, _tree in source_trees()}
+        self.assertIn("server/server.py", paths)
+        self.assertIn("ui/cgi_proxy.py", paths)
+
     def test_python_strings_do_not_contain_known_mojibake(self):
         failures = []
         for path, tree in source_trees():

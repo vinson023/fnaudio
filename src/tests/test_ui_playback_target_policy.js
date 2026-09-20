@@ -1,0 +1,16 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const source = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "playback_target_policy.js"), "utf8");
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioPlaybackTargetPolicy;
+assert.equal(policy.normalize(""), "local");
+assert.equal(policy.normalize("dac:usb"), "dac:usb");
+assert.equal(policy.isRemote("mpd:nas"), true);
+assert.equal(policy.isRemote("local"), false);
+assert.equal(policy.isDac("dac:usb"), true);
+assert.equal(policy.isMpd("mpd:nas"), true);
+assert.equal(policy.isRemote({ toString() { throw new Error("must not coerce"); } }), false);
+console.log("Playback target policy regression checks passed.");

@@ -1,0 +1,10 @@
+const fs = require('fs'); const path = require('path'); const vm = require('vm'); const assert = require('assert');
+const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'ui', 'folder_label_policy.js'), 'utf8');
+const context = { globalThis: {} }; vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioFolderLabelPolicy;
+assert.strictEqual(policy.display('C:\\Music\\Artist\\'), 'Artist');
+assert.strictEqual(policy.display('/music/artist/'), 'artist');
+assert.strictEqual(policy.display(''), '根目录');
+assert.strictEqual(policy.label('/music', 'artist/album'), 'music / artist / album');
+assert.strictEqual(policy.label('', 'artist'), '根目录');
+console.log('Folder label policy regression checks passed.');

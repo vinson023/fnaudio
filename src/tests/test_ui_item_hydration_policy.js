@@ -1,0 +1,17 @@
+const assert = require("assert");
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync(require("path").join(__dirname, "../app/ui/item_hydration_policy.js"), "utf8");
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioItemHydrationPolicy;
+assert.strictEqual(JSON.stringify(policy.normalizeItemIds(["a", "a", "", 1, {}, " b "])), JSON.stringify(["a", "b"]));
+assert.strictEqual(policy.normalizeItemIds(Array.from({ length: 3000 }, (_, index) => `id-${index}`)).length, 2048);
+assert.strictEqual(JSON.stringify(policy.batchesForItemIds(["a", "b", "c"])), JSON.stringify([["a", "b", "c"]]));
+assert.strictEqual(policy.batchesForItemIds(Array.from({ length: 201 }, (_, index) => `id-${index}`)).length, 3);
+const longIds = Array.from({ length: 20 }, (_, index) => `${index}-` + "x".repeat(500));
+assert(policy.batchesForItemIds(longIds).length > 1);
+assert(policy.batchesForItemIds(longIds).every(batch => batch.join(",").length <= policy.MAX_BATCH_CHARS));
+const unicodeIds = Array.from({ length: 40 }, (_, index) => `${index}-` + "歌".repeat(300));
+assert(policy.batchesForItemIds(unicodeIds).length > 1);
+console.log("Item hydration policy regression checks passed.");

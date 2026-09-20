@@ -1,0 +1,28 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+const source = fs.readFileSync("app/ui/metadata_candidate_presentation_policy.js", "utf8");
+const context = { globalThis: {} };
+vm.runInNewContext(source, context);
+const policy = context.globalThis.fnAudioMetadataCandidatePresentationPolicy;
+assert.equal(typeof policy.selectDisplayCandidate, "function");
+assert.equal(typeof policy.selectDisplayArtwork, "function");
+assert.equal(typeof policy.confidencePercent, "function");
+const sparseBest = { title: "Song", artist: "Artist", confidence: 0.99 };
+const complete = { title: "Song", artist: "Artist", album: "Album", image_url: "https://example.test/a.jpg", confidence: 0.72 };
+assert.equal(policy.selectDisplayCandidate(sparseBest, [complete]), complete, "display should prefer a complete cover/album candidate over sparse best");
+assert.equal(policy.selectDisplayCandidate({}, []), null, "empty projections should remain distinguishable from a candidate");
+assert.equal(policy.selectDisplayCandidate(null, [{ title: "Song", confidence: "bad" }]).title, "Song");
+const hostile = new Proxy({ title: "Hostile" }, { get() { throw new Error("unexpected coercion"); } });
+assert.doesNotThrow(() => policy.selectDisplayCandidate(hostile, [complete]), "hostile provider fields must not break display selection");
+assert.equal(policy.selectDisplayCandidate({ title: "Low", confidence: "0.7" }, [{ title: "High", confidence: "0.8" }]).title, "High");
+const hostileKeys = new Proxy({ title: "Hostile keys" }, { ownKeys() { throw new Error("unexpected ownKeys"); } });
+assert.doesNotThrow(() => policy.selectDisplayCandidate(hostileKeys, [complete]));
+assert.equal(policy.selectDisplayCandidate({}, [{ confidence: 0 }]), null, "Candidates without display data must remain absent");
+assert.equal(policy.selectDisplayArtwork({ title: "Local", image_url: "" }, [{ title: "Remote", image_url: "https://example.test/remote.jpg" }]), "https://example.test/remote.jpg", "Artwork should be projected independently from the selected metadata candidate");
+assert.equal(policy.selectDisplayArtwork({}, [], "https://example.test/fallback.jpg"), "https://example.test/fallback.jpg");
+assert.equal(policy.confidencePercent(Infinity), "0%", "non-finite confidence must not leak into the UI");
+assert.equal(policy.confidencePercent(2), "100%", "confidence display must be capped at 100%");
+assert.equal(policy.confidencePercent("0.375"), "38%");
+console.log("Metadata candidate presentation policy checks passed.");

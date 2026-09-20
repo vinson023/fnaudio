@@ -51,6 +51,122 @@ class FilePermissionTests(unittest.TestCase):
              mock.patch.object(file_permissions.os, "chmod", side_effect=FileNotFoundError):
             file_permissions._chmod("library.sqlite3-shm", file_permissions.PRIVATE_FILE_MODE)
 
+    def test_secure_directory_rejects_symlink_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            real = os.path.join(root, "real")
+            link = os.path.join(root, "link")
+            os.mkdir(real)
+            os.symlink(real, link, target_is_directory=True)
+            with self.assertRaises(OSError):
+                file_permissions.secure_directory(link)
+
+    def test_path_helpers_do_not_stringify_arbitrary_objects(self):
+        class Explosive:
+            def __str__(self):
+                raise AssertionError("path must not stringify arbitrary objects")
+
+        self.assertFalse(file_permissions.secure_file(Explosive()))
+        with self.assertRaises(TypeError):
+            file_permissions.atomic_write_text(Explosive(), "text")
+
+    def test_directory_hardening_chmods_only_when_the_mode_drifts(self):
+        # `secure_directory_on_drift` replaces a six-syscall pass that `Observability.write`
+        # used to pay per log line, so the decision has to stay identical: already private means
+        # nothing to do, anything else means harden. `_chmod` is a no-op on Windows
+        # (file_permissions.py:85), so the assertion is about the call and its arguments rather
+        # than about a mode this machine cannot change - it would pass vacuously otherwise.
+        wanted = file_permissions.PRIVATE_DIRECTORY_MODE
+        with tempfile.TemporaryDirectory() as root:
+            for label, mode, expect_chmod in (
+                ("private", stat.S_IFDIR | wanted, False),
+                ("world readable", stat.S_IFDIR | 0o755, True),
+                ("extra setgid", stat.S_IFDIR | (wanted | stat.S_ISGID), True),
+            ):
+                with self.subTest(case=label):
+                    target = os.path.join(root, label.replace(" ", "-"))
+                    os.makedirs(target)
+                    fake = SimpleNamespace(st_mode=mode)
+                    with mock.patch.object(file_permissions, "_chmod") as chmod, \
+                            mock.patch.object(file_permissions.os, "lstat", return_value=fake):
+                        returned = file_permissions.secure_directory_on_drift(target)
+                    self.assertEqual(returned, os.path.abspath(target))
+                    self.assertEqual(chmod.called, expect_chmod, "chmod decision wrong for " + label)
+                    if expect_chmod:
+                        self.assertEqual(chmod.call_args.args[1], wanted)
+
+    def test_directory_hardening_defers_symlinks_and_missing_paths(self):
+        # A symlinked log directory and a directory removed between two writes are both
+        # `secure_directory`'s business: it refuses the first and creates the second. The drift
+        # path must not start answering either of them by itself.
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "defer")
+            for label, failure in (("missing", FileNotFoundError(2, "gone")),
+                                   ("symlink", SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)),
+                                   ("plain file", SimpleNamespace(st_mode=stat.S_IFREG | 0o600))):
+                with self.subTest(case=label):
+                    calls = []
+
+                    def full(path=None, mode=None, *args, **kwargs):
+                        calls.append((path, mode))
+                        return "secured"
+
+                    with mock.patch.object(file_permissions, "secure_directory", side_effect=full), \
+                            mock.patch.object(file_permissions.os, "lstat",
+                                              side_effect=failure if isinstance(failure, OSError) else None,
+                                              return_value=None if isinstance(failure, OSError) else failure):
+                        self.assertEqual(file_permissions.secure_directory_on_drift(target), "secured")
+                    self.assertEqual(len(calls), 1, "the full hardening did not run exactly once")
+                    self.assertEqual(calls[0][0], os.path.abspath(target))
+                    self.assertEqual(calls[0][1], file_permissions.PRIVATE_DIRECTORY_MODE)
+
+    def test_file_hardening_chmods_only_when_the_mode_drifts(self):
+        # `secure_file_on_drift` replaces the per-log-line chmod, so it has to keep `secure_file`
+        # 's exact answers: a missing path and a symlink are False, a directory is not a file, and
+        # only a mode that differs produces a chmod. On Windows `_chmod` returns before touching
+        # the OS (file_permissions.py:85), so the assertions are about calls, not resulting modes.
+        wanted = file_permissions.PRIVATE_FILE_MODE
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "app.log")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("line\n")
+            for label, mode, expect in (
+                ("private", stat.S_IFREG | wanted, (True, False)),
+                ("umask default", stat.S_IFREG | 0o666, (True, True)),
+                ("directory", stat.S_IFDIR | wanted, (False, False)),
+                ("symlink", stat.S_IFLNK | 0o777, (False, False)),
+            ):
+                with self.subTest(case=label):
+                    served = []
+                    fake = SimpleNamespace(st_mode=mode)
+
+                    def probe(target_path):
+                        served.append(target_path)
+                        return fake
+
+                    with mock.patch.object(file_permissions, "_chmod") as chmod, \
+                            mock.patch.object(file_permissions.os, "lstat", side_effect=probe):
+                        returned = file_permissions.secure_file_on_drift(target)
+                    self.assertEqual(returned, expect[0], "wrong answer for " + label)
+                    self.assertEqual(chmod.called, expect[1], "chmod decision wrong for " + label)
+                    if expect[0]:
+                        # A hostile or accidental absolute path must not be opened twice.
+                        self.assertEqual(served, [os.path.abspath(target)])
+            with mock.patch.object(file_permissions.os, "lstat", side_effect=FileNotFoundError(2, "gone")):
+                self.assertFalse(file_permissions.secure_file_on_drift(target))
+            self.assertFalse(file_permissions.secure_file_on_drift(""), "an empty path must be refused")
+
+    def test_directory_hardening_creates_a_missing_directory_for_real(self):
+        # The observability caller only reaches this helper, so creation has to survive the fast
+        # path without a fabricated lstat: a log directory removed while the service runs must
+        # come back on the next write, exactly as it did before.
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "created", "logs")
+            self.assertFalse(os.path.isdir(target))
+            returned = file_permissions.secure_directory_on_drift(target)
+            self.assertEqual(returned, os.path.abspath(target))
+            self.assertTrue(os.path.isdir(target))
+            self.assertEqual(file_permissions.secure_directory_on_drift(target), returned)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,12 @@ jobs:
           npm ci
           npx playwright install chromium
 
+      - name: Verify source manifest is current
+        shell: pwsh
+        run: |
+          .\\tools\\update_source_manifest.ps1
+          git diff --exit-code -- SOURCE_MANIFEST.sha256
+
       - name: Run server and browser regressions
         shell: pwsh
         run: .\tools\test_offline.ps1 -Browser

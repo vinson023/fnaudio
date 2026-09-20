@@ -5,11 +5,14 @@
 - `PLAYBACK_ERROR_TAXONOMY.md`：MPD/FLAC/seek/decoder/ALSA 错误类别、兼容字段与恢复策略。
 - `PLAYBACK_API_COMPATIBILITY.md`：权威播放接口、旧 player/UPnP/DAC 入口的弃用策略与大模块拆分顺序。
 - `LARGE_LIBRARY_BENCHMARK.md`：10 万曲 SQLite 分页与内存基准方法。
+- `LIBRARY_CONNECTION_POOL.md`：曲库索引空闲连接复用开关的默认值、严格布尔取值口径、关闭即排空空闲句柄的保证与观测面。
 - `LIBRARY_CHANGE_DETECTION.md`：inotify、generation、溢出回退与符号链接边界。
 - `PLAYBACK_OUTPUT_POLICY.md`：输出适配器、upmpdcli 角色、硬件 Mixer 与 DSD 策略。
 - `ANDROID_HTTPS_PINNING.md`：Android 自签名 HTTPS 的按连接 TOFU 指纹固定。
 - `ANDROID_EMULATOR_TESTING.md`：Android API 35 模拟器的连接记录、TLS 固定与 Media3 自动化入口及验收边界。
+- `FNOS_MUSIC_MEDIASESSION_RESEARCH_20260831.md`：trim.music 与飞牛 APP 的跨平台播放会话、MediaSession、后台保活和宿主桥接研究。
 - `ANDROID_RELEASE.md`：正式 Android 签名构建、产物校验和密钥保管边界。
+- `RELEASE_EVIDENCE_0.2.33.md`：0.2.33 历史 FPK 的校验和状态、源码 provenance 缺口和恢复规则。
 - `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`：私有/公开 mode、原子写、删除白名单与降权边界。
 - `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
 - `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。
@@ -48,3 +51,5 @@
 - 当前状态以根目录文档为准。
 - 历史文件不做内容修订，避免丢失当时语境。
 - 新的发布说明应写入根 `CHANGELOG_AI.md` 或未来正式 `CHANGELOG.md`，不要继续创建大量零散 `UPDATE_*.md`。
+- 每一轮改动（包括只改测试、脚本或文档）都必须在根 `CHANGELOG_AI.md` 与 `TODO.md` 标题后的扁平区顶部各留一条同日条目；只记一处视为未记录，`test_change_record.py` 会拒绝格式漂移和两份记录最新日期不一致。
+- 记录条目保持单行、按日期倒序插入；不要重写 `## ` 之后的历史语境，也不要为补记录而改动既有结论。

@@ -1,14 +1,39 @@
 (() => {
+  function read(item, key, fallback = "") {
+    try {
+      return item && typeof item === "object" ? item[key] : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function finiteNumber(value) {
+    if (typeof value === "boolean" || (typeof value !== "number" && typeof value !== "string")) return 0;
+    try {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function text(value, fallback = "") {
+    if (typeof value !== "string" && typeof value !== "number") return fallback;
+    try { return String(value); } catch (_) { return fallback; }
+  }
+
   function quality(item = {}) {
-    const rate = Number(item.sample_rate || 0);
-    const depth = Number(item.bit_depth || 0);
-    const bitrate = Number(item.bitrate || 0);
+    const rate = finiteNumber(read(item, "sample_rate"));
+    const depth = finiteNumber(read(item, "bit_depth"));
+    const bitrate = finiteNumber(read(item, "bitrate"));
     const pcm = rate ? `${Math.round(rate / 1000)}kHz${depth ? `/${depth}bit` : ""}` : "";
     return pcm || (bitrate ? `${Math.round(bitrate / 1000)}kbps` : "—");
   }
 
   function addedDate(item = {}, itemAddedTime) {
-    const seconds = Number(itemAddedTime(item) || 0);
+    let value = 0;
+    try { value = typeof itemAddedTime === "function" ? itemAddedTime(item) : 0; } catch (_) {}
+    const seconds = finiteNumber(value);
     if (!seconds) return "—";
     try {
       return new Date(seconds > 99999999999 ? seconds / 1000000000 : seconds * 1000).toLocaleDateString("zh-CN");
@@ -17,30 +42,41 @@
     }
   }
 
-  function columnValue(item = {}, key, helpers = {}) {
-    const displayText = helpers.displayText || (value => String(value || ""));
-    const clock = helpers.clock || (value => String(value || ""));
-    const formatSize = helpers.formatSize || (value => String(value || ""));
-    const escapeHtml = helpers.escapeHtml || (value => String(value || ""));
-    const trackNo = Number(item.track_no || 0) > 0 ? String(Number(item.track_no)).padStart(2, "0") : "—";
+  function columnValues(item = {}, keys = [], helpers = {}) {
+    const displayText = typeof helpers.displayText === "function" ? helpers.displayText : value => text(value);
+    const clock = typeof helpers.clock === "function" ? helpers.clock : value => text(value);
+    const formatSize = typeof helpers.formatSize === "function" ? helpers.formatSize : value => text(value);
+    const escapeHtml = typeof helpers.escapeHtml === "function" ? helpers.escapeHtml : value => text(value);
+    const trackNumber = finiteNumber(read(item, "track_no"));
+    const trackNo = trackNumber > 0 ? String(Math.floor(trackNumber)).padStart(2, "0") : "—";
+    const duration = finiteNumber(read(item, "duration"));
     const values = {
       track_no: trackNo,
-      artist: displayText(item.artist),
-      album: displayText(item.album),
-      format: item.format || "—",
-      duration: Number(item.duration || 0) > 0 ? clock(item.duration) : "—",
-      size: formatSize(item.size) || "—",
+      artist: displayText(read(item, "artist")),
+      album: displayText(read(item, "album")),
+      format: text(read(item, "format")) || "—",
+      duration: duration > 0 ? clock(duration) : "—",
+      size: formatSize(read(item, "size")) || "—",
       quality: quality(item),
       added: addedDate(item, helpers.itemAddedTime || (() => 0)),
-      composer: displayText(item.composer),
-      genre: displayText(item.genre),
+      composer: displayText(read(item, "composer")),
+      genre: displayText(read(item, "genre")),
     };
-    return escapeHtml(values[key] || "—");
+    const requested = Array.isArray(keys) ? keys : [keys];
+    const result = {};
+    requested.forEach(key => {
+      if (typeof key === "string") result[key] = escapeHtml(values[key] || "—");
+    });
+    return result;
+  }
+
+  function columnValue(item = {}, key, helpers = {}) {
+    return columnValues(item, [key], helpers)[key] || "—";
   }
 
   function rowSelectionKey(item = {}, index = 0) {
-    return `${String(item?.id || "")}::${Math.max(0, Number(index) || 0)}`;
+    return `${text(read(item, "id"))}::${Math.max(0, finiteNumber(index) || 0)}`;
   }
 
-  window.fnAudioTrackPresentation = { quality, addedDate, columnValue, rowSelectionKey };
+  window.fnAudioTrackPresentation = { quality, addedDate, columnValues, columnValue, rowSelectionKey };
 })();

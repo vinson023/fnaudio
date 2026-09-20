@@ -7,6 +7,7 @@ import argparse
 import json
 import mimetypes
 import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import urllib.parse
@@ -44,8 +45,8 @@ TRACKS = [
     {
         "id": "fixture-3",
         "title": "No Artwork",
-        "artist": "Unknown",
-        "album": "Fixture",
+        "artist": "",
+        "album": "",
         "track_no": 3,
         "duration": 98,
         "format": "mp3",
@@ -55,7 +56,72 @@ TRACKS = [
         "cover_url": "",
         "url": "media/fixture-3",
     },
+    {
+        "id": "fixture-4",
+        "title": "Already Covered",
+        "artist": "Lab Artist",
+        "album": "Native DSD",
+        "track_no": 4,
+        "duration": 201,
+        "format": "flac",
+        "mime": "audio/flac",
+        "is_dsd": False,
+        "modified": 4,
+        "cover_url": "fixture-cover.svg",
+        "url": "media/fixture-4",
+    },
 ]
+
+
+# The real metadata service generally makes an initial request enqueue work,
+# then returns a completed projection on a later poll.  Keep that lifecycle in
+# the browser fixture so the E2E suite exercises the UI's recovery and keyed
+# row patching paths rather than only the generic {ok:true} fallback.
+METADATA_FIXTURES = {
+    "fixture-1": {
+        "best": {"title": "晨光", "artist": "测试歌手", "album": "离线专辑"},
+        "image_url": "metadata/artwork/fixture-artwork-1",
+    },
+    "fixture-2": {
+        "best": {"title": "DSD Reference", "artist": "Lab Artist", "album": "Native DSD"},
+        "image_url": "metadata/artwork/fixture-artwork-2",
+    },
+    "fixture-3": {
+        "best": {"title": "No Artwork", "artist": "Provider Artist", "album": "Provider Album"},
+        "image_url": "metadata/artwork/fixture-artwork-3",
+    },
+}
+
+ARTWORK_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="8" fill="#2869d8"/>'
+    '<path d="M39 12v28.5a9 9 0 1 1-4-7.5V19l17-4v23.5a9 9 0 1 1-4-7.5V12z" fill="white"/>'
+    '</svg>'
+).encode("utf-8")
+MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+MAX_QUEUE_ITEMS = 4096
+
+
+def bounded_query_int(value, default, minimum, maximum):
+    """Parse a query integer without allowing invalid fixture requests to 500."""
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        return default
+    try:
+        return max(minimum, min(maximum, int(value, 10)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def request_body_length(value, maximum=MAX_REQUEST_BODY_BYTES):
+    if value is None or value == "":
+        return 0
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        return None
+    try:
+        length = int(value, 10)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return length if length <= maximum else None
 
 
 def playback_core():
@@ -90,6 +156,15 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(body)
 
+    def send_artwork(self, head_only=False):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.send_header("Content-Length", str(len(ARTWORK_SVG)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(ARTWORK_SVG)
+
     def do_HEAD(self):
         self.handle_get(True)
 
@@ -112,8 +187,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
             if group and view in ("albums", "artists", "composers", "genres"):
                 key = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}[view]
                 rows = [item for item in rows if str(item.get(key) or "未分类") == group]
-            offset = max(0, int((query.get("offset") or [0])[0]))
-            limit = max(1, min(500, int((query.get("limit") or [120])[0])))
+            offset = bounded_query_int((query.get("offset") or [""])[0], 0, 0, 100000)
+            limit = bounded_query_int((query.get("limit") or [""])[0], 120, 1, 500)
             return self.send_json({"items": rows[offset:offset + limit], "count": len(rows), "limit": limit, "offset": offset}, head_only=head_only)
         if path == "/api/library/items":
             wanted = {value for value in str((query.get("ids") or [""])[0]).split(",") if value}
@@ -138,10 +213,36 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"available": False, "state": {}}, head_only=head_only)
         if path == "/api/metadata/status":
             return self.send_json({"ok": True, "running": True, "pending": 0}, head_only=head_only)
+        if path == "/api/metadata/track":
+            track_id = str((query.get("track_id") or [""])[0])
+            fixture = METADATA_FIXTURES.get(track_id)
+            if not fixture:
+                return self.send_json({"track_id": track_id, "status": "no_match", "best": {}, "candidates": []}, head_only=head_only)
+            with self.server.metadata_lock:
+                count = self.server.metadata_track_requests.get(track_id, 0) + 1
+                self.server.metadata_track_requests[track_id] = count
+            if count == 1:
+                return self.send_json({
+                    "track_id": track_id,
+                    "status": "pending",
+                    "pending": True,
+                    "best": {},
+                    "candidates": [],
+                }, head_only=head_only)
+            result = {
+                "track_id": track_id,
+                "status": "review",
+                "pending": False,
+                "candidates": [fixture["best"]],
+                **fixture,
+            }
+            return self.send_json(result, head_only=head_only)
+        if path.startswith("/metadata/artwork/fixture-artwork-"):
+            return self.send_artwork(head_only=head_only)
+        if path == "/fixture-cover.svg":
+            return self.send_artwork(head_only=head_only)
         if path == "/api/config/library":
-            return self.send_json({"library_paths": ["/fixture/music"], "server_port": 18080}, head_only=head_only)
-        if path == "/api/fnos/shared-folders":
-            return self.send_json({"ok": True, "paths": ["/fixture/music"]}, head_only=head_only)
+            return self.send_json({"library_paths": ["/fixture/music"], "server_port": 53199}, head_only=head_only)
         if path == "/api/dlna/diagnostics":
             return self.send_json({"available": True, "events": []}, head_only=head_only)
         if path == "/api/lyrics":
@@ -153,15 +254,25 @@ class FixtureHandler(BaseHTTPRequestHandler):
         return self.serve_static(path, head_only)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        if str(self.headers.get("Transfer-Encoding") or "").strip():
+            self.close_connection = True
+            return self.send_json({"ok": False, "error": "transfer encoding is unsupported"}, status=400)
+        length = request_body_length(self.headers.get("Content-Length"))
+        if length is None:
+            return self.send_json({"ok": False, "error": "invalid or oversized content length"}, status=400)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
-            payload = {}
+            return self.send_json({"ok": False, "error": "invalid json"}, status=400)
+        if not isinstance(payload, dict):
+            return self.send_json({"ok": False, "error": "invalid payload"}, status=400)
         core = playback_core()
         if self.path.startswith("/api/playback/queue"):
-            core["queue"] = [str(item.get("id") if isinstance(item, dict) else item) for item in payload.get("queue", [])]
+            queue = payload.get("queue")
+            if not isinstance(queue, list):
+                queue = []
+            core["queue"] = [str(item.get("id") if isinstance(item, dict) else item) for item in queue[:MAX_QUEUE_ITEMS]]
             core["current"] = str(payload.get("current_id") or payload.get("current") or "")
         return self.send_json({"ok": True, "core": core, "state": {"initialized": True, "revision": 1}})
 
@@ -194,6 +305,8 @@ def main():
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), FixtureHandler)
     server.ui_root = Path(args.ui_root).resolve()
+    server.metadata_track_requests = {}
+    server.metadata_lock = threading.Lock()
     print("http://%s:%s/" % (args.host, server.server_port), flush=True)
     try:
         server.serve_forever()
