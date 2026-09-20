@@ -6,6 +6,7 @@
 - `PLAYBACK_API_COMPATIBILITY.md`：权威播放接口、旧 player/UPnP/DAC 入口的弃用策略与大模块拆分顺序。
 - `LARGE_LIBRARY_BENCHMARK.md`：10 万曲 SQLite 分页与内存基准方法。
 - `LIBRARY_CONNECTION_POOL.md`：曲库索引空闲连接复用开关的默认值、严格布尔取值口径、关闭即排空空闲句柄的保证与观测面。
+- `LIBRARY_CURSOR_NULL_GROUPS.md`：浏览器游标续页面对 SQL NULL 标签组的可寻址边界、前瞻行锚点、降序末块残差与写路径归一/一次性迁移的分工。
 - `LIBRARY_CHANGE_DETECTION.md`：inotify、generation、溢出回退与符号链接边界。
 - `PLAYBACK_OUTPUT_POLICY.md`：输出适配器、upmpdcli 角色、硬件 Mixer 与 DSD 策略。
 - `ANDROID_HTTPS_PINNING.md`：Android 自签名 HTTPS 的按连接 TOFU 指纹固定。
