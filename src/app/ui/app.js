@@ -6423,6 +6423,40 @@ function setSettingsTab(name = "library") {
     pane.classList.toggle("active", active);
   });
   if (name === "metadata") loadMetadataStatus();
+  if (name === "runtime") loadRuntimeSettings();
+}
+const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
+function runtimeConnectionPoolInput() {
+  return $("libraryConnectionPoolInput");
+}
+async function loadRuntimeSettings() {
+  const input = runtimeConnectionPoolInput();
+  if (!input) return null;
+  try {
+    const response = await apiFetch("api/config/runtime", { cache: "no-store" });
+    const data = await readResponseJsonBounded(response);
+    if (!response.ok || data.ok !== true) throw new Error(data.message || "");
+    // Echo the server value rather than assuming the click stuck: a config the
+    // loader had to coerce is not the config the pool is honouring.
+    input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
+    return data;
+  } catch (error) {
+    $("folderSaveStatus").textContent = "无法读取运行设置，当前显示的是上一次已知状态";
+    return null;
+  }
+}
+async function saveRuntimeSettings() {
+  const input = runtimeConnectionPoolInput();
+  if (!input) throw new Error("运行设置控件不可用");
+  const response = await apiFetch("api/config/runtime", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [LIBRARY_CONNECTION_POOL_SETTING_KEY]: input.checked === true }),
+  });
+  const data = await readResponseJsonBounded(response);
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存运行设置失败");
+  input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
+  return data;
 }
 function metadataStatusSummary(data = {}) {
   const jobs = data.jobs || {};
@@ -6697,7 +6731,10 @@ async function chooseCurrentFolder() {
   button.textContent = "正在保存...";
   $("folderSaveStatus").textContent = "";
   try {
-    if (state.settingsTab === "metadata") {
+    if (state.settingsTab === "runtime") {
+      await saveRuntimeSettings();
+      $("folderDialog").close();
+    } else if (state.settingsTab === "metadata") {
       await saveMetadataSettings();
       $("folderDialog").close();
     } else if (await saveLibraryPathsFromDialog()) {

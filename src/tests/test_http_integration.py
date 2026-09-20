@@ -1037,6 +1037,88 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("宽限天数", json.loads(body)["message"])
 
+    # --- R124 / D9: the library connection pool switch on the settings pane -------
+    # These are the discriminative checks for exposing a switch that used to be
+    # config-file-only.  Each one fails in exactly one direction: a route that lies
+    # about the running value, a route that coerces text into a boolean, a route that
+    # claims success without draining the handles, or a route that clobbers the key it
+    # was not given.
+    def runtime_post(self, payload, scope="settings.write"):
+        return self.request(
+            "/api/config/runtime",
+            method="POST",
+            headers={**self.auth_headers(scope), "Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8"),
+        )
+
+    def test_runtime_config_reports_the_value_the_pool_actually_honours(self):
+        # Absent key: the reader path treats that as disabled, so the pane must not
+        # show the config-module default of "on" while nothing is being pooled.
+        self.httpd.config.pop("library_connection_pool", None)
+        status, _headers, body = self.request(
+            "/api/config/runtime", headers=self.auth_headers("settings.read")
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertIs(payload["config"]["library_connection_pool"], False)
+        for key, expected in ((True, True), (False, False)):
+            self.httpd.config["library_connection_pool"] = key
+            status, _headers, body = self.request(
+                "/api/config/runtime", headers=self.auth_headers("settings.read")
+            )
+            self.assertEqual(status, 200)
+            self.assertIs(json.loads(body)["config"]["library_connection_pool"], expected)
+
+    def test_runtime_config_requires_the_settings_scopes(self):
+        status, _headers, _body = self.request("/api/config/runtime")
+        self.assertEqual(status, 401)
+        status, _headers, _body = self.runtime_post({"library_connection_pool": False}, scope="settings.read")
+        self.assertEqual(status, 403)
+
+    def test_runtime_config_rejects_text_boolean_without_changing_the_switch(self):
+        self.httpd.config["library_connection_pool"] = True
+        for value in ("false", 0, "0", None, 1):
+            status, _headers, body = self.runtime_post({"library_connection_pool": value})
+            self.assertEqual(status, 400, value)
+            self.assertIn("布尔值", json.loads(body)["message"])
+            self.assertIs(self.httpd.config["library_connection_pool"], True)
+
+    def test_runtime_config_omitting_the_key_keeps_the_current_switch(self):
+        self.httpd.config["library_connection_pool"] = False
+        status, _headers, body = self.runtime_post({})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertIs(self.httpd.config["library_connection_pool"], False)
+
+    def test_runtime_config_turning_the_pool_off_drains_handles_after_the_commit(self):
+        self.httpd.config["library_connection_pool"] = True
+        seen = []
+
+        def record_applied(config):
+            # Read the live dictionary, not the candidate: this is what proves the
+            # drain runs after the in-place commit rather than against stale state.
+            seen.append(self.httpd.config.get("library_connection_pool"))
+
+        with mock.patch.object(server, "apply_library_connection_pool_config", side_effect=record_applied) as applied:
+            status, _headers, body = self.runtime_post({"library_connection_pool": False})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertIs(payload["restart_required"], False)
+        self.assertIs(payload["config"]["library_connection_pool"], False)
+        applied.assert_called_once()
+        self.assertEqual(seen, [False])
+        self.assertIs(self.httpd.config["library_connection_pool"], False)
+
+    def test_runtime_config_persistence_failure_leaves_the_running_switch_alone(self):
+        self.httpd.config["library_connection_pool"] = True
+        with mock.patch.object(server, "save_config", return_value=False):
+            status, _headers, body = self.runtime_post({"library_connection_pool": False})
+        self.assertEqual(status, 500)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertIs(self.httpd.config["library_connection_pool"], True)
+
     def test_private_media_requires_auth_and_supports_byte_ranges(self):
         self.assertEqual(self.request("/media/fixture")[0], 401)
         headers = {**self.auth_headers(), "Range": "bytes=2-5"}

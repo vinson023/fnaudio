@@ -29,12 +29,18 @@ from library import (
     SCAN_STATE,
     cancel_library_refresh,
     apply_library_connection_pool_config,
+    # Not a private-access shortcut: this is the *same* predicate the reader path
+    # uses to decide whether to borrow a pooled handle, so the settings pane cannot
+    # report an enabled state the running pool would not honour.  A second
+    # defaulting rule here is exactly the drift that kept the switch hidden.
+    _library_connection_pool_enabled as library_connection_pool_enabled,
     stop_library_connections,
     library_items,
     library_query_cache_status,
     invalidate_library_query_cache,
     library_search_index_status,
     library_connection_pool_status,
+    library_connection_pool_config_key,
     library_storage_status,
     library_status,
     library_cache_failure_status,
@@ -864,6 +870,18 @@ class Handler(BaseHTTPRequestHandler):
                 http_workers=http_worker_status(self.server),
                 playback_command_cache=playback_command_cache_status(),
             ))
+        if path == "/api/config/runtime":
+            # The pane has to show what the process actually does right now, so the
+            # value is read through the pool's own predicate instead of a default the
+            # handler invents; `status` rides along because the drain on the way off
+            # is the observable proof the toggle was not a no-op.
+            return self.send_json({
+                "ok": True,
+                "config": {
+                    library_connection_pool_config_key(): library_connection_pool_enabled(self.server.config),
+                },
+                "status": library_connection_pool_status(),
+            })
         if path == "/api/access":
             return self.send_json(public_access(self))
         if path == "/api/state/user":
@@ -1491,6 +1509,37 @@ class Handler(BaseHTTPRequestHandler):
             if not METADATA_SERVICE.apply_track_match(track_id, candidate_index):
                 return self.send_json({"ok": False, "message": "No matching candidate is available for this track"}, 404)
             return self.send_json({"ok": True, "status": METADATA_SERVICE.track_match(track_id)})
+        if parsed.path == "/api/config/runtime":
+            pool_key = library_connection_pool_config_key()
+            try:
+                pool_enabled = payload_bool(
+                    payload,
+                    pool_key,
+                    library_connection_pool_enabled(self.server.config),
+                )
+            except (TypeError, ValueError):
+                # Reject, never coerce: `"false"` and `0` must not flip a switch that
+                # decides whether the library index stays open on disk.
+                return self.send_json(
+                    {"ok": False, "message": "运行设置包含无效值：曲库连接池必须是布尔值"}, 400
+                )
+            if not commit_config_update(
+                self.server,
+                lambda candidate: candidate.update({pool_key: pool_enabled}),
+            ):
+                return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
+            # commit_config_update already re-applied the pool switch against the
+            # committed dictionary, so a turn-off has drained its idle handles before
+            # this response claims success.  No restart is needed for this key; the
+            # port in the same pane still is, and that wording stays where it is.
+            return self.send_json({
+                "ok": True,
+                "restart_required": False,
+                "config": {
+                    pool_key: library_connection_pool_enabled(self.server.config),
+                },
+                "status": library_connection_pool_status(),
+            })
         if parsed.path == "/api/config/library":
             raw_library_path = payload.get("library_path", "")
             if not isinstance(raw_library_path, str):

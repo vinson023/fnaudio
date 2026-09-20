@@ -1902,6 +1902,18 @@ def _library_connection_pool_enabled(config):
     return bool(config.get(LIBRARY_CONNECTION_POOL_CONFIG_KEY)) if isinstance(config, dict) else False
 
 
+def library_connection_pool_config_key():
+    """The one public spelling of the switch's configuration key.
+
+    The runtime settings pane has to name this key inside a request payload, but the
+    key and its default stay owned by this module.  The startup path once seeded its
+    own copy of the value, which `save_config` then dropped from disk; the guard test
+    for that bug keeps the name out of the server module, and this accessor is how the
+    pane reaches the switch without reviving the bug or loosening the guard.
+    """
+    return LIBRARY_CONNECTION_POOL_CONFIG_KEY
+
+
 def library_connection_pool_status():
     return LIBRARY_CONNECTION_POOL.snapshot()
 
