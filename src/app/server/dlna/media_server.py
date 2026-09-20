@@ -7,7 +7,7 @@ import urllib.parse
 from typing import Any, Callable, Dict
 
 from .control_point import soap_request
-from .profiles import protocol_info
+from .profiles import DSD_CAPABILITY_UNSUPPORTED, dsd_capability_state, protocol_info
 from .text_policy import MAX_DLNA_ID_CHARS, dlna_text
 
 
@@ -175,14 +175,13 @@ def soap_push(
     # Do not silently hand a DSD source to a renderer that explicitly
     # advertises no DSD sink profile.  Volumio treats this as a capability
     # negotiation failure instead of falling back to PCM; fnAudio follows the
-    # same bit-perfect rule.  An empty/unknown capability probe remains
-    # permissive so older renderers can still be tried and diagnosed by the
-    # transport layer.
+    # same bit-perfect rule.  An unknown probe stays permissive so older
+    # renderers can still be tried and diagnosed by the transport layer, which
+    # is why the gate reads the three-state predicate instead of testing the
+    # probe record for truthiness: a failed ConnectionManager request carries no
+    # DSD claim at all, and silence must not be reported as a refusal.
     if item.get("is_dsd"):
-        capabilities = device.get("capabilities") or {}
-        protocol = capabilities.get("protocol_info") or {}
-        supports_dsd = protocol.get("supports_dsd") if isinstance(protocol.get("supports_dsd"), bool) else False
-        if protocol and not supports_dsd:
+        if dsd_capability_state(device) == DSD_CAPABILITY_UNSUPPORTED:
             return False, "设备不支持源码 DSD，已阻止 PCM 转码"
 
     uri = upnp_media_url(handler, item, safe_filename, upnp_base_url)

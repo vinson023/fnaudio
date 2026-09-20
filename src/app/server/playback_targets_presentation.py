@@ -6,6 +6,8 @@ import urllib.parse
 import math
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
+from dlna.profiles import device_supports_native_dsd
+
 
 MAX_TARGETS = 256
 MAX_TEXT = 512
@@ -136,7 +138,9 @@ def build_targets(
         selected = device_id == current_target
         target_caps = _safe_capabilities(dlna_capabilities)
         target_caps.update(_safe_capabilities(device.get("capabilities")))
-        target_caps["native_dsd"] = device.get("supports_dsd") is True
+        # One predicate for one fact: the transport list lights native DSD only on
+        # the same probe record the push gate refuses on.
+        target_caps["native_dsd"] = device_supports_native_dsd(device)
         name = _text(device.get("name")) or "DLNA 设备"
         targets.append({
             "id": device_id,
