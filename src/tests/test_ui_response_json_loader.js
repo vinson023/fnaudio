@@ -323,9 +323,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     "a body that fails while it is still wanted must reach the caller as an error",
   );
 
-  // Measuring a buffered string costs a second full copy of the document, so it
-  // only runs when three bytes per code unit could still overflow the budget. Both
-  // sides of that boundary are checked here with the encoder call counted.
+  // Measuring a buffered string must not cost a second full copy of the document,
+  // so the byte budget is counted in place and the measurement only runs when three
+  // bytes per code unit could still overflow the budget. Both sides of that boundary
+  // are checked here, with a counting TextEncoder proving the loader never builds one.
   let encoderCalls = 0;
   class CountingTextEncoder extends TextEncoder {
     constructor() {
@@ -363,7 +364,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     fallback: { rejected: true },
   });
   assert.equal(oneByteTight.data?.title?.length, 400);
-  assert.equal(encoderCalls, beforeMeasured + 1, "inside the band the exact byte count must still be taken");
+  assert.equal(
+    encoderCalls,
+    beforeMeasured,
+    "entering the band must measure in place, without allocating a re-encoded copy",
+  );
   const cjkFits = await readMeasured({
     request: Promise.resolve({ text: async () => cjkPayload }),
     maxBytes: cjkBytes,
@@ -376,7 +381,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     fallback: { rejected: true },
   });
   assert.deepEqual(cjkOver.data, { rejected: true }, "one byte over the exact budget must still be refused");
-  assert.equal(encoderCalls, beforeMeasured + 3, "each banded payload is measured once");
+  assert.equal(
+    encoderCalls,
+    beforeMeasured,
+    "every banded payload is counted in place; none may be re-encoded to be measured",
+  );
   // The code unit count is also the cheap way out: once a string is already longer
   // than the entire budget the byte count cannot be smaller, and measuring it would
   // mean encoding megabytes that are going to be thrown away.
@@ -590,6 +599,95 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   assert.equal((source.match(/status\.value/g) || []).length, 0, "no out-parameter box may survive");
   assert.equal((source.match(/const status = \{ value:/g) || []).length, 0, "read() may not pre-seed a status box again");
   assert.equal((source.match(/parseBoundedJson\(/g) || []).length, 2, "the declaration plus the one call site in read()");
+
+  // ==================== :162 : text()-branch byte budget ====================
+  // On the native-bridge host a response has neither a byte stream nor arrayBuffer(), so the
+  // text() branch measures EVERY API reply. Two properties are invisible to the pre-existing
+  // suite: the byte budget must be enforced identically whether or not the host ships a
+  // TextEncoder, and it must be enforced without re-encoding the whole document. The oracle
+  // below is a real TextEncoder living in the test realm; the loader no longer uses one, so
+  // agreement proves the in-place counter is byte-for-byte correct for BMP, astral pairs,
+  // lone surrogates and NUL alike.
+  const realBytes = value => new TextEncoder().encode(value).byteLength;
+  const textOnly = value => ({ text: async () => value });
+  function makeLoaderContext(withEncoder) {
+    const ctx = {
+      globalThis: {}, Promise, Number, Math, Uint8Array, ArrayBuffer,
+      TextDecoder, setTimeout, clearTimeout,
+    };
+    if (withEncoder) ctx.TextEncoder = TextEncoder;
+    vm.runInNewContext(source, ctx);
+    return ctx.globalThis.fnAudioResponseJsonLoader.read;
+  }
+  function makeCountingLoader() {
+    let calls = 0;
+    const ctx = {
+      globalThis: {}, Promise, Number, Math, Uint8Array, ArrayBuffer,
+      TextDecoder, setTimeout, clearTimeout,
+      TextEncoder: function () {
+        return { encode: value => { calls += 1; return new Uint8Array(realBytes(value)); } };
+      },
+    };
+    vm.runInNewContext(source, ctx);
+    return { read: ctx.globalThis.fnAudioResponseJsonLoader.read, calls: () => calls };
+  }
+  const readWithEncoder = makeLoaderContext(true);
+  const readWithoutEncoder = makeLoaderContext(false);
+  const surrogateAlphabet = ['a', '\u00a9', '\u20ac', '\ud83d\ude00', '\ud83d', '\ude00', '\u0000', '\u4f60'];
+  for (let maxBytes = 1; maxBytes <= 20; maxBytes += 1) {
+    for (const first of surrogateAlphabet) {
+      for (const second of surrogateAlphabet) {
+        const body = first + second;
+        const expectedOversize = realBytes(body) > maxBytes;
+        for (const loader of [readWithEncoder, readWithoutEncoder]) {
+          const measured = await loader({
+            request: Promise.resolve(textOnly(body)),
+            fallback: 'FALLBACK',
+            maxBytes,
+          });
+          assert.equal(
+            measured.bodyStatus === "oversize",
+            expectedOversize,
+            "budget " + maxBytes + " body " + JSON.stringify(body) + " utf8 " + realBytes(body) +
+              " -> " + measured.bodyStatus + ", expected oversize=" + expectedOversize,
+          );
+        }
+      }
+    }
+  }
+  // A document that is under budget yet long enough in UTF-16 units to require measurement
+  // (length * 3 > budget) used to trigger a full re-encode; it must now parse with the host
+  // TextEncoder never called, and it must stay parseable (not falsely refused as oversize).
+  const counted = makeCountingLoader();
+  const measuredAllocation = await counted.read({
+    request: Promise.resolve(textOnly("[\"\u00a9\u00a9\"]")),
+    fallback: "FALLBACK",
+    maxBytes: 8,
+  });
+  assert.equal(counted.calls(), 0, "measuring the budget may not allocate a re-encoded copy of the document");
+  assert.equal(measuredAllocation.bodyStatus, "parsed", "an under-budget document must still be accepted while measuring");
+  // The boundary the cheap short-circuit hands to the counter is still byte-exact: a lone
+  // high surrogate and an astral pair differ by one budgeted byte each, which only a real
+  // UTF-8 count (not a UTF-16 length) can see.
+  for (const probe of [["\ud83d", 3], ["\ud83d\ude00", 4]]) {
+    const tooBig = await readWithEncoder({
+      request: Promise.resolve(textOnly(probe[0])), fallback: "FALLBACK", maxBytes: probe[1] - 1,
+    });
+    const fits = await readWithEncoder({
+      request: Promise.resolve(textOnly(probe[0])), fallback: "FALLBACK", maxBytes: probe[1],
+    });
+    assert.equal(tooBig.bodyStatus, "oversize", "one byte over the budget must be refused");
+    assert.notEqual(fits.bodyStatus, "oversize", "exactly at the budget must not be refused");
+  }
+  assert.equal(
+    /new TextEncoder\(\)\.encode\(text\)/.test(source),
+    false,
+    "the text() branch may not re-encode the whole document just to measure it",
+  );
+  assert.ok(
+    /utf8ByteLengthBounded\(text, maximum\)/.test(source),
+    "the text() branch must measure with the non-allocating, host-independent counter",
+  );
 
   if (rejectionEvents.length) process.off("unhandledRejection", observeRejection);
   if (rejectionEvents.length) throw rejectionEvents[0];

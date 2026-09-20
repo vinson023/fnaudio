@@ -15,6 +15,41 @@
     return Math.min(MAX_RESPONSE_BYTES, Math.max(1, Math.floor(value)));
   }
 
+  // On the native-bridge host the response object exposes neither a byte stream nor
+  // arrayBuffer(), so text() is where every API reply is measured. Re-encoding the
+  // whole string just to read its length would allocate a second full copy of the
+  // document - up to the entire byte budget - on the hot path, and gating the
+  // measurement behind a TextEncoder check would silently skip it on a host that
+  // lacks one. Counting UTF-8 bytes in place allocates nothing, stops the moment the
+  // running total passes the budget, and matches TextEncoder non-fatal output: an
+  // unpaired surrogate becomes U+FFFD (three bytes) and a well-formed pair becomes four.
+  function utf8ByteLengthBounded(text, limit) {
+    let total = 0;
+    const length = text.length;
+    for (let i = 0; i < length; i += 1) {
+      const code = text.charCodeAt(i);
+      let size;
+      if (code < 0x80) {
+        size = 1;
+      } else if (code < 0x800) {
+        size = 2;
+      } else if (code >= 0xd800 && code < 0xdc00) {
+        const next = i + 1 < length ? text.charCodeAt(i + 1) : 0;
+        if (next >= 0xdc00 && next < 0xe000) {
+          size = 4;
+          i += 1;
+        } else {
+          size = 3;
+        }
+      } else {
+        size = 3;
+      }
+      total += size;
+      if (total > limit) return limit + 1;
+    }
+    return total;
+  }
+
   function declaredLength(response) {
     const value = response?.headers?.get?.("Content-Length");
     if (typeof value !== "string" || !value.trim() || !/^\d+$/.test(value.trim())) return null;
@@ -166,11 +201,9 @@
           status = "oversize";
           return outcome(fallback);
         }
-        if (text.length * 3 > maximum && typeof TextEncoder === "function") {
-          if (new TextEncoder().encode(text).byteLength > maximum) {
-            status = "oversize";
-            return outcome(fallback);
-          }
+        if (text.length * 3 > maximum && utf8ByteLengthBounded(text, maximum) > maximum) {
+          status = "oversize";
+          return outcome(fallback);
         }
         if (text.length === 0) {
           status = "empty";
