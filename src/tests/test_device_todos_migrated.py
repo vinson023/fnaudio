@@ -47,6 +47,23 @@ LEDGER_LINK = "docs/external-acceptance.md"
 # The five sections whose device items were moved out, in ledger order.
 LEDGER_SECTIONS = 5
 
+# Content anchor of the bucket-declaration line inside TODO.md.  It is looked up by
+# its text and never by a line number: every recorded round prepends entries above
+# it, so a numeric anchor would expire the first time anyone relied on it.
+OBSERVATION_DECLARATION = "R138 X2=B 桶归属"
+BUCKET_NAMES = ("代码", "设备·外部", "需决策", "长期观察")
+DISCIPLINE_DOC = REPO_ROOT / "docs" / "REVIEW_ROUND_DISCIPLINE.md"
+DOCS_INDEX = REPO_ROOT / "docs" / "INDEX.md"
+# The discipline doc restates the same count in machine-readable form.  Neither side
+# is trusted on its own: the guard compares what TODO.md measures with what the doc
+# claims, so editing only one of the two goes red.
+OBSERVATION_COUNT_ANCHOR = re.compile(r"observation-open-count = (\d+)")
+
+# 「凭据一律不入库」必须是可判别的，但判别器自己不能带上真凭据：所以这里钉的是凭据的
+# *形状*（口令/密码后紧跟赋值号再跟一个可读值），不是任何具体字符串。矩阵格 H6 用一
+# 个合成值验证它确实会亮，仓库里自始至终不存在真实口令。
+CREDENTIAL_SHAPE = re.compile(r"(?:口令|密码|passphrase|passwd)[^\n]{0,3}[:=＝：]\s*[A-Za-z0-9][A-Za-z0-9._\-!@#%^&*]{3,}")
+
 BLOCK_START = re.compile(r"^<!-- BEGIN L(\d+) -->$")
 BLOCK_END = re.compile(r"^<!-- END L(\d+) -->$")
 ENTRY_ID = re.compile(r"^### 固定编号 L(\d+)$")
@@ -266,6 +283,90 @@ class DeviceTodosMigratedTests(unittest.TestCase):
             offenders, [],
             "the device segment starts at TODO.md line %d and its items moved out, so a citation "
             "at or after it now points at a different entry: %s" % (heading_line, offenders),
+        )
+
+    def _observation_declaration(self):
+        """Return the 1-based line number of the sole bucket-declaration line."""
+        hits = [
+            number for number, line in enumerate(self.todo_lines, start=1)
+            if OBSERVATION_DECLARATION in line
+        ]
+        self.assertEqual(
+            len(hits), 1,
+            "TODO.md must carry exactly one 「%s」 bucket declaration, found %d"
+            % (OBSERVATION_DECLARATION, len(hits)),
+        )
+        return hits[0]
+
+    def _stated_observation_count(self):
+        self.assertTrue(
+            DISCIPLINE_DOC.is_file(),
+            "%s is missing: the round-accounting rulings live only in chat history" % DISCIPLINE_DOC,
+        )
+        match = OBSERVATION_COUNT_ANCHOR.search(DISCIPLINE_DOC.read_text(encoding="utf-8"))
+        self.assertIsNotNone(
+            match,
+            "the discipline doc lost its 「observation-open-count = <n>」 anchor",
+        )
+        return int(match.group(1))
+
+    def test_the_observation_bucket_is_declared_once_and_measured(self):
+        """Discriminating case for the fifth bucket (ruling X2=B, re-confirmed as C3).
+
+        Without this the termination condition "the offline-verifiable code backlog is
+        empty" can never be evaluated: register-only entries would keep being counted
+        as unclosed work.  Both directions are pinned -- the declaration wording and
+        the measured count -- and the count is compared against the discipline doc
+        instead of being hardcoded here.
+        """
+        declaration_at = self._observation_declaration()
+        declaration = self.todo_lines[declaration_at - 1]
+        for bucket in BUCKET_NAMES:
+            self.assertIn(bucket, declaration, "the declaration stopped naming one of the four buckets: %s" % bucket)
+        self.assertIn("不计入终止分母", declaration, "the declaration stopped exempting the bucket from the termination denominator")
+        register_only = [
+            line for line in self.todo_lines[declaration_at:]
+            if CHECKLIST.match(line) and line.startswith("- [ ] ")
+        ]
+        stated = self._stated_observation_count()
+        self.assertEqual(
+            len(register_only), stated,
+            "TODO.md holds %d register-only items below the declaration while the discipline doc "
+            "claims %d; move an item between buckets by changing both, never one"
+            % (len(register_only), stated),
+        )
+
+    def test_the_round_discipline_doc_carries_the_rulings(self):
+        """Each ruling must survive on disk with its own wording, not only as a table row."""
+        doc = DISCIPLINE_DOC.read_text(encoding="utf-8")
+        self.assertIn("不计入终止分母", doc, "the bucket exemption (C3) left the discipline doc")
+        self.assertIn("净关闭 0 条", doc, "the zero-close accounting rule (C8) left the discipline doc")
+        self.assertIn("终止条件 (2)", doc, "a zero-close round must still name where its gain is booked (C8)")
+        self.assertIn("证伪关闭", doc, "the read-first rule for deep-read rounds (C4) left the discipline doc")
+        self.assertIn("不打 tag", doc, "the closing form of the final round (C7) left the discipline doc")
+        self.assertIn("先向负责人请示", doc, "the device whitelist (C5) stopped requiring approval to stop a service")
+        leaked = [line.strip() for line in doc.split("\n") if CREDENTIAL_SHAPE.search(line)]
+        self.assertEqual(
+            leaked, [],
+            "the discipline doc now carries something shaped like a device credential; the ruling is "
+            "that the operator keeps those outside the repository entirely",
+        )
+
+    def test_the_discipline_doc_is_indexed_and_pins_no_moving_line_number(self):
+        self.assertTrue(DOCS_INDEX.is_file(), "docs/INDEX.md disappeared, so the doc tree has no entry point")
+        self.assertIn(
+            DISCIPLINE_DOC.name, DOCS_INDEX.read_text(encoding="utf-8"),
+            "the discipline doc is not reachable from docs/INDEX.md",
+        )
+        start, _stop, _segment = device_segment(self.todo_lines)
+        offenders = [
+            match.group(0) for match in TODO_LINE_REF.finditer(DISCIPLINE_DOC.read_text(encoding="utf-8"))
+            if int(match.group(1)) > start
+        ]
+        self.assertEqual(
+            offenders, [],
+            "the device segment renumbers with every recorded round, so the discipline doc has to "
+            "point at entries by their fixed ids instead: %s" % offenders,
         )
 
 
