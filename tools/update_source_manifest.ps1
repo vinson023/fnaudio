@@ -22,7 +22,7 @@ function Get-Sha256Hex {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $output = Join-Path $repoRoot "SOURCE_MANIFEST.sha256"
-$excludedSegments = @(".gradle", ".media3-inspect", ".idea", "build", "__pycache__")
+$excludedSegments = @(".gradle", ".media3-inspect", ".idea", "build", "Python", "__pycache__")
 $excludedNames = @("local.properties")
 $excludedExtensions = @(".apk", ".aab", ".aar", ".class", ".fpk", ".pyc")
 
