@@ -1976,6 +1976,51 @@ class MetadataService:
             max_bytes=bytes_limit_from_config(self.config),
         )
 
+    def _lyrics_cache_lanes(self):
+        """Return every live lyric cache owned by this service.
+
+        The provider lane and the interactive lane are constructed separately,
+        so a budget change has to reach both. The lookups stay defensive because
+        diagnostics builds and unit tests replace parts of a service.
+        """
+        lanes = []
+        own = getattr(self, "_local_lyrics_cache", None)
+        if own is not None:
+            lanes.append(own)
+        provider_cache = getattr(getattr(self, "providers", None), "_local_lyrics_cache", None)
+        if provider_cache is not None and provider_cache not in lanes:
+            lanes.append(provider_cache)
+        return lanes
+
+    def apply_lyrics_cache_config(self, config=None):
+        """Re-train the lyric caches from a settings dictionary, live.
+
+        Returns the budget actually enforced. The server calls this on every
+        configuration commit so the settings page can change the budget without
+        a restart, which is the same contract the library connection pool gives.
+        """
+        source = self.config if config is None else config
+        limit = bytes_limit_from_config(source)
+        for lane in self._lyrics_cache_lanes():
+            lane.apply_bytes_limit(limit)
+        return limit
+
+    def lyrics_cache_bytes_limit(self):
+        """Report the tightest budget any live lyric lane actually enforces.
+
+        ``status()`` sums both lanes because the process really does hold that
+        much; a settings page has to show what one lyric can overflow, and an
+        aggregate of two caches can never be read back as a single limit.
+        """
+        limits = []
+        for lane in self._lyrics_cache_lanes():
+            value = lane.snapshot().get("bytes_limit")
+            if isinstance(value, int) and not isinstance(value, bool):
+                limits.append(value)
+        if limits:
+            return min(limits)
+        return bytes_limit_from_config(self.config)
+
     def _read_local_lyrics_cached(self, path, version_hint=None):
         return self._local_lyrics_cache.read(path, version_hint)
 

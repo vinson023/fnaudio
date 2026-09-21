@@ -6490,12 +6490,35 @@ function setSettingsTab(name = "library") {
   if (name === "runtime") loadRuntimeSettings();
 }
 const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
+// Spelled exactly as `CONFIG_BYTES_KEY` in app/server/metadata_local_lyrics_cache.py;
+// test_ui_runtime_settings.js compares the two so a rename cannot pass on one side.
+const LYRICS_CACHE_BUDGET_SETTING_KEY = "metadata_lyrics_cache_max_bytes";
 function runtimeConnectionPoolInput() {
   return $("libraryConnectionPoolInput");
+}
+function runtimeLyricsBudgetInput() {
+  return $("lyricsCacheBudgetInput");
+}
+function applyRuntimeLyricsBudget(budget, limit) {
+  // Show the budget the process really enforces. An unusable answer leaves the
+  // control untouched - the markup default is not evidence - and a value that
+  // is not one of the presets (a hand-edited config, a future default) becomes
+  // selectable instead of silently snapping back to 8 MiB.
+  if (!budget || !Number.isInteger(limit) || limit <= 0) return false;
+  const wanted = String(limit);
+  budget.value = wanted;
+  if (budget.value === wanted) return true;
+  const option = document.createElement("option");
+  option.value = wanted;
+  option.textContent = `自定义 · ${formatSize(limit)}`;
+  budget.appendChild(option);
+  budget.value = wanted;
+  return budget.value === wanted;
 }
 async function loadRuntimeSettings() {
   const input = runtimeConnectionPoolInput();
   if (!input) return null;
+  const budget = runtimeLyricsBudgetInput();
   try {
     const response = await apiFetch("api/config/runtime", { cache: "no-store" });
     const data = await readResponseJsonBounded(response);
@@ -6503,6 +6526,7 @@ async function loadRuntimeSettings() {
     // Echo the server value rather than assuming the click stuck: a config the
     // loader had to coerce is not the config the pool is honouring.
     input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
+    applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
     return data;
   } catch (error) {
     $("folderSaveStatus").textContent = "无法读取运行设置，当前显示的是上一次已知状态";
@@ -6511,15 +6535,24 @@ async function loadRuntimeSettings() {
 }
 async function saveRuntimeSettings() {
   const input = runtimeConnectionPoolInput();
-  if (!input) throw new Error("运行设置控件不可用");
+  const budget = runtimeLyricsBudgetInput();
+  if (!input || !budget) throw new Error("运行设置控件不可用");
+  const lyricsBudget = Number(budget.value);
+  if (!Number.isInteger(lyricsBudget) || lyricsBudget <= 0) throw new Error("运行设置控件不可用");
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [LIBRARY_CONNECTION_POOL_SETTING_KEY]: input.checked === true }),
+    // Both live settings travel together: the endpoint commits the whole
+    // runtime dictionary, so omitting a key would let this save drop it.
+    body: JSON.stringify({
+      [LIBRARY_CONNECTION_POOL_SETTING_KEY]: input.checked === true,
+      [LYRICS_CACHE_BUDGET_SETTING_KEY]: lyricsBudget,
+    }),
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存运行设置失败");
   input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
+  applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
   return data;
 }
 function metadataStatusSummary(data = {}) {
