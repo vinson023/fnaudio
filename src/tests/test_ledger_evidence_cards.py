@@ -172,6 +172,130 @@ class LedgerEvidenceCardTests(unittest.TestCase):
             "TODO.md lines %s grew a device item back; it belongs to the ledger" % open_rows,
         )
 
+    # ---- R3 merge bookkeeping: device items that share one evidence run ----
+    # Same-cause entries are audited together, but each keeps its own checkbox.
+    # The ledger states the grouping twice: once as a family declaration at the
+    # foot of the file, once as a merge note inside every involved evidence card.
+    # If those two readings ever disagree, the grouping is fiction, so it is red.
+    FAMILY_DECL = re.compile(r"^> 族 (\S+) · (.+?)：主条 L(\d+)；并条 ([^。]+)。$")
+    NOT_MERGED_DECL = re.compile(r"^> 不并入：(.+)$")
+    MERGE_HEAD = re.compile(r"^> 并案：")
+    MASTER_LINE = re.compile(r"^> 并案：本条为「(.+?)」族的主条，.*?覆盖 ((?:L\d+、?)+)；")
+    MEMBER_LINE = re.compile(r"^> 并案：并入主条 L(\d+)")
+    ANY_ID = re.compile(r"L(\d+)")
+
+    def _card_index(self, nid):
+        want = "> **取证单 L%d**" % nid
+        hits = [i for i, line in enumerate(self.lines) if line == want]
+        self.assertEqual(len(hits), 1, "ledger must hold exactly one card for L%d" % nid)
+        return hits[0]
+
+    def _families(self):
+        out = []
+        for line in self.lines:
+            match = self.FAMILY_DECL.match(line)
+            if match:
+                out.append((match.group(2), int(match.group(3)),
+                            [int(x) for x in self.ANY_ID.findall(match.group(4))]))
+        return out
+
+    def _not_merged(self):
+        ids = []
+        for line in self.lines:
+            match = self.NOT_MERGED_DECL.match(line)
+            if match:
+                ids += [int(x) for x in re.findall(r"L(\d+)（", match.group(1))]
+        return ids
+
+    def _merge_notes(self):
+        """Map every entry id to the merge notes written under its card."""
+        notes = {}
+        for index, line in enumerate(self.lines):
+            head = CARD_HEAD.match(line)
+            if not head:
+                continue
+            tail = []
+            for row in self.lines[index + 1 + len(FIELD_LABELS):]:
+                if row.strip() == "":
+                    break
+                if self.MERGE_HEAD.match(row):
+                    tail.append(row)
+            notes[int(head.group(1))] = tail
+        return notes
+
+    def test_r3_declares_exactly_two_merge_families(self):
+        families = self._families()
+        self.assertEqual(len(families), 2, "R3 registers exactly two same-cause families")
+        masters = [master for _, master, _ in families]
+        members = [mid for _, _, merged in families for mid in merged]
+        self.assertEqual(len(members), 7, "R3 merges seven entries behind two masters")
+        self.assertEqual(sorted(masters + members), sorted(set(masters + members)),
+                         "an entry is declared in more than one family")
+        self.assertFalse(set(masters) & set(members), "a master may not also be a member")
+        for entry in masters + members:
+            self.assertIn(entry, FROZEN_ENTRY_DIGESTS,
+                          "the merge bookkeeping names an unknown entry L%d" % entry)
+
+    def test_family_declaration_and_card_merge_notes_agree_both_ways(self):
+        families = self._families()
+        self.assertEqual(len(families), 2, "R3 registers exactly two same-cause families")
+        notes = self._merge_notes()
+        self.assertEqual(len(notes), 45, "the ledger must still hold 45 cards")
+        declared = {}
+        for _name, master, merged in families:
+            for member in merged:
+                declared[member] = master
+        from_cards = {}
+        for nid, rows in notes.items():
+            targets = [self.MEMBER_LINE.match(row) for row in rows]
+            targets = [t for t in targets if t]
+            self.assertLessEqual(len(targets), 1,
+                                 "card L%d points at more than one master" % nid)
+            if targets:
+                from_cards[nid] = int(targets[0].group(1))
+                self.assertEqual(self.lines[self._card_index(nid) + 1 + len(FIELD_LABELS)], rows[0],
+                                 "merge note in card L%d is not placed after the four fields" % nid)
+        self.assertEqual(declared, from_cards,
+                         "family declaration and per-card merge notes disagree")
+        covered = set(declared) | set(declared.values())
+        for nid, rows in notes.items():
+            if rows:
+                self.assertIn(nid, covered | set(self._not_merged()),
+                              "card L%d carries a merge note that no family declares" % nid)
+        for member, master in declared.items():
+            self.assertNotEqual(master, member, "entry L%d merges into itself" % member)
+
+    def test_master_cards_name_their_family_and_coverage_list(self):
+        families = self._families()
+        self.assertEqual(len(families), 2, "R3 registers exactly two same-cause families")
+        notes = self._merge_notes()
+        for name, master, merged in families:
+            rows = [self.MASTER_LINE.match(row) for row in notes[master]]
+            rows = [r for r in rows if r]
+            self.assertEqual(len(rows), 1,
+                             "master card L%d must carry exactly one family line" % master)
+            self.assertEqual(rows[0].group(1), name,
+                             "master card L%d names another family" % master)
+            self.assertEqual([int(x) for x in self.ANY_ID.findall(rows[0].group(2))], merged,
+                             "master card L%d lists another coverage set" % master)
+
+    def test_merge_notes_never_close_or_tick_an_item(self):
+        notes = self._merge_notes()
+        rows = [(nid, line) for nid, card_rows in notes.items() for line in card_rows]
+        self.assertEqual(len(rows), 10,
+                         "R3 writes ten merge notes: two masters, seven members, one refusal")
+        for nid, row in rows:
+            for word in CLOSING_WORDS:
+                self.assertNotIn(word, row,
+                                 "merge note in card L%d closes its item via %r" % (nid, word))
+            self.assertNotIn("- [", row,
+                             "merge note in card L%d edits a checkbox" % nid)
+            self.assertTrue(row.startswith("> 并案："),
+                            "unexpected merge note shape in card L%d" % nid)
+        for nid in self._not_merged():
+            self.assertFalse([row for row in notes[nid] if self.MEMBER_LINE.match(row)],
+                             "L%d is declared as not merged yet carries a merge note" % nid)
+
 
 if __name__ == "__main__":
     unittest.main()
