@@ -18,6 +18,7 @@
 - `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
 - `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。
 - `external-acceptance.md`：设备与外部材料侧待办的唯一台账，含 45 条原文冻结块、固定编号与逐条处置计划。
+- `REVIEW_ROUND_DISCIPLINE.md`：逐轮记账口径的唯一成文处——第五桶不计入终止分母、0-close 轮的记法、真机取证分档白名单、终局收口形式与 c1～c8 裁定落点；由 `src/tests/test_device_todos_migrated.py` 与 `TODO.md` 双向核对。
 
 ## 当前权威文档
 
