@@ -69,6 +69,32 @@ class MetadataServiceTests(unittest.TestCase):
         self.assertIn("self.last_reconcile = time.time()", source)
         self.assertIn("self._last_reconcile_monotonic = time.monotonic()", source)
 
+    def test_lyrics_cache_budget_is_read_from_config_on_both_lanes(self):
+        # R138 (ruling X7=A): LocalLyricsCache accepted `max_bytes` all along and
+        # nothing ever passed it. There are two independent construction sites,
+        # so a test that checks only one would let the other stay pinned at the
+        # built-in default while the deployment believes it configured both.
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            config["metadata_lyrics_cache_max_bytes"] = 256 * 1024
+            providers = MetadataProviders(config)
+            service = MetadataService(config)
+            for label, cache in (
+                ("providers", providers._local_lyrics_cache),
+                ("service", service._local_lyrics_cache),
+                ("service.providers", service.providers._local_lyrics_cache),
+            ):
+                with self.subTest(lane=label):
+                    self.assertEqual(cache.snapshot()["bytes_limit"], 256 * 1024)
+
+    def test_lyrics_cache_budget_keeps_the_default_without_the_setting(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            self.assertEqual(service._local_lyrics_cache.snapshot()["bytes_limit"], DEFAULT_MAX_BYTES)
+            self.assertEqual(
+                service.providers._local_lyrics_cache.snapshot()["bytes_limit"], DEFAULT_MAX_BYTES
+            )
+
     def test_connect_preserves_body_failure_when_rollback_fails(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))

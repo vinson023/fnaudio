@@ -11,6 +11,7 @@ from metadata_local_lyrics_cache import (
     MAX_MAX_BYTES,
     MIN_MAX_BYTES,
     LocalLyricsCache,
+    bytes_limit_from_config,
     combined_snapshot,
 )
 
@@ -186,6 +187,31 @@ class LocalLyricsCacheTests(unittest.TestCase):
             with self.subTest(max_bytes=value):
                 cache = LocalLyricsCache(Mock(return_value="x"), max_bytes=value)
                 self.assertEqual(cache.snapshot()["bytes_limit"], expected)
+
+    def test_the_configured_budget_reaches_the_cache_limit(self):
+        # R138 (ruling X7=A): the byte budget became a setting, so a value a
+        # deployment configures has to arrive in `bytes_limit` unchanged.
+        for value in (1024 * 1024, MIN_MAX_BYTES, MAX_MAX_BYTES):
+            with self.subTest(configured=value):
+                budget = bytes_limit_from_config({"metadata_lyrics_cache_max_bytes": value})
+                cache = LocalLyricsCache(Mock(return_value="x"), max_bytes=budget)
+                self.assertEqual(cache.snapshot()["bytes_limit"], value)
+
+    def test_a_missing_or_broken_setting_falls_back_to_the_default_budget(self):
+        # Pairs, not a dict: True hashes as 1, so a dict literal would silently
+        # drop one of the two cases.
+        cases = (
+            ({}, DEFAULT_MAX_BYTES),
+            (None, DEFAULT_MAX_BYTES),
+            ({"metadata_lyrics_cache_max_bytes": "8 MiB"}, DEFAULT_MAX_BYTES),
+            ({"metadata_lyrics_cache_max_bytes": True}, DEFAULT_MAX_BYTES),
+            ({"metadata_lyrics_cache_max_bytes": None}, DEFAULT_MAX_BYTES),
+            ({"metadata_lyrics_cache_max_bytes": 1}, MIN_MAX_BYTES),
+            ({"metadata_lyrics_cache_max_bytes": 10 ** 12}, MAX_MAX_BYTES),
+        )
+        for config, expected in cases:
+            with self.subTest(config=config):
+                self.assertEqual(bytes_limit_from_config(config), expected)
 
     def test_snapshot_reports_only_bounded_counters(self):
         cache = LocalLyricsCache(Mock(return_value="secret lyrics"), max_bytes=MIN_MAX_BYTES)

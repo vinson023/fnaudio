@@ -95,6 +95,13 @@ def parse_cue_structure(lines, fallback_album="", observe_end_stage=None):
     current_file = ""
     current = None
     tracks = []
+    # Ruling 2026-09-21 (X10=A): where a sheet repeats `INDEX 01` for the same
+    # track - recording engineers do leave duplicate indexes behind - the first
+    # one wins and later ones are rejected. A plain overwrite let the last
+    # repeat decide the track start. It is a loop-local flag rather than a key
+    # on `current`, because library.py reads those dicts by key and an extra
+    # field would travel out of the parser.
+    index01_seen = False
     try:
         source_lines = iter(lines or ())
     except TypeError:
@@ -125,6 +132,7 @@ def parse_cue_structure(lines, fallback_album="", observe_end_stage=None):
                 "artist": "",
                 "start": 0.0,
             }
+            index01_seen = False
         elif current and upper.startswith("TITLE "):
             current["title"] = cue_value(line)
         elif current and upper.startswith("PERFORMER "):
@@ -132,9 +140,11 @@ def parse_cue_structure(lines, fallback_album="", observe_end_stage=None):
         elif current and upper.startswith("INDEX"):
             index_line = _INDEX_LINE_RE.match(line)
             # INDEX 01 is where the track starts. INDEX 00 is a pregap marker and
-            # any larger index is a cue point, so neither may move the start.
-            if index_line and int(index_line.group(1)) == 1:
+            # any larger index is a cue point, so neither may move the start, and
+            # once an INDEX 01 has set it a repeat of that index may not either.
+            if index_line and int(index_line.group(1)) == 1 and not index01_seen:
                 current["start"] = cue_time_seconds(index_line.group(2))
+                index01_seen = True
     if current:
         tracks.append(current)
     _attach_track_ends(tracks, observe_end_stage)

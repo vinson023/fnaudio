@@ -22,6 +22,10 @@ MAX_MAX_BYTES = 64 * 1024 * 1024
 # Byte totals need a ceiling of their own. Reusing MAX_COUNTER (one million)
 # would report an 8 MiB cache as a clamped 1 MB one.
 MAX_BYTES_COUNTER = 1024 * 1024 * 1024
+# The settings key that exposes this budget. ``config.py`` registers it with the
+# same default and range, and the metadata lanes read it through the helper
+# below, so no caller has to repeat the three numbers and risk drifting.
+CONFIG_BYTES_KEY = "metadata_lyrics_cache_max_bytes"
 
 
 def _bounded_limit(value):
@@ -34,6 +38,23 @@ def _bounded_bytes(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return DEFAULT_MAX_BYTES
     return max(MIN_MAX_BYTES, min(MAX_MAX_BYTES, value))
+
+
+def bytes_limit_from_config(config):
+    """Resolve the configured byte budget from a settings dictionary.
+
+    Ruling 2026-09-21 (X7=A) accepted 8 MiB as the shipped default but asked
+    for the budget to be configurable offline, so this is the single place the
+    setting is read. Anything unusable - a missing key, a non-integer, a bool,
+    or a whole missing config - degrades to the default rather than raising,
+    and an in-range but extreme value is clamped here exactly as ``_bounded_bytes``
+    would clamp it later, so ``snapshot()["bytes_limit"]`` always reports what
+    the cache actually enforces.
+    """
+    value = DEFAULT_MAX_BYTES
+    if isinstance(config, dict):
+        value = config.get(CONFIG_BYTES_KEY, DEFAULT_MAX_BYTES)
+    return _bounded_bytes(value)
 
 
 def _retained_bytes(value):

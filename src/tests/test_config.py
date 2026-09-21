@@ -352,6 +352,41 @@ class ConfigTests(unittest.TestCase):
             loaded = load_config(path)
             self.assertEqual(loaded["mpd_device_presence_samples"], 5)
 
+    def test_lyrics_cache_budget_is_clamped_on_load_alone(self):
+        # The settings table is applied by load_config, not only by save_config.
+        # Going through save_config first would clamp the value and let a missing
+        # or wider load-side bound survive every check, which is exactly how a
+        # hand-edited or externally written config.json reaches the service.
+        from metadata_local_lyrics_cache import MAX_MAX_BYTES, MIN_MAX_BYTES
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            for value, expected in ((10 ** 12, MAX_MAX_BYTES), (1, MIN_MAX_BYTES), ("8 MiB", 8 * 1024 * 1024)):
+                with self.subTest(value=value):
+                    with open(path, "w", encoding="utf-8") as handle:
+                        json.dump({"metadata_lyrics_cache_max_bytes": value}, handle)
+                    self.assertEqual(load_config(path)["metadata_lyrics_cache_max_bytes"], expected)
+
+    def test_lyrics_cache_setting_agrees_with_the_cache_owns_clamps(self):
+        # The settings table and LocalLyricsCache clamp the same number in two
+        # files. Nothing stops them from drifting except this check, and a
+        # narrower setting range than the cache's own would silently discard a
+        # value the cache would have accepted.
+        from metadata_local_lyrics_cache import (
+            DEFAULT_MAX_BYTES,
+            MAX_MAX_BYTES,
+            MIN_MAX_BYTES,
+        )
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            loaded = load_config(path)
+            self.assertEqual(loaded["metadata_lyrics_cache_max_bytes"], DEFAULT_MAX_BYTES)
+            for value, expected in ((1, MIN_MAX_BYTES), (10**12, MAX_MAX_BYTES)):
+                with self.subTest(value=value):
+                    config = load_config(path)
+                    config["metadata_lyrics_cache_max_bytes"] = value
+                    self.assertTrue(save_config(path, config))
+                    self.assertEqual(load_config(path)["metadata_lyrics_cache_max_bytes"], expected)
+
     def test_resource_limits_are_bounded_and_round_trip(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "config.json")
@@ -360,6 +395,7 @@ class ConfigTests(unittest.TestCase):
                 {
                     "metadata_max_pending_jobs": 1,
                     "metadata_cache_max_bytes": 10**15,
+                    "metadata_lyrics_cache_max_bytes": 10**12,
                     "transcode_queue_max_jobs": 9999,
                     "transcode_cache_max_bytes": 1,
                     "cache_min_free_bytes": 1,
@@ -374,6 +410,7 @@ class ConfigTests(unittest.TestCase):
             loaded = load_config(path)
             self.assertEqual(loaded["metadata_max_pending_jobs"], 100)
             self.assertEqual(loaded["metadata_cache_max_bytes"], 8 * 1024 * 1024 * 1024)
+            self.assertEqual(loaded["metadata_lyrics_cache_max_bytes"], 64 * 1024 * 1024)
             self.assertEqual(loaded["transcode_queue_max_jobs"], 1000)
             self.assertEqual(loaded["transcode_cache_max_bytes"], 64 * 1024 * 1024)
             self.assertEqual(loaded["cache_min_free_bytes"], 64 * 1024 * 1024)
