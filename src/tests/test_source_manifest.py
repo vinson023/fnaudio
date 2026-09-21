@@ -15,7 +15,7 @@ from pathlib import Path
 # checks below share one walk -- the first keeps the manifest current, the second
 # keeps it reproducible.
 MANIFEST_SCOPE_ROOTS = ("src", "android-client")
-EXCLUDED_SEGMENTS = {".gradle", ".media3-inspect", ".idea", "build", "__pycache__"}
+EXCLUDED_SEGMENTS = {".gradle", ".media3-inspect", ".idea", "build", "Python", "__pycache__"}
 EXCLUDED_NAMES = {"local.properties"}
 EXCLUDED_EXTENSIONS = {".apk", ".aab", ".aar", ".class", ".fpk", ".pyc"}
 
