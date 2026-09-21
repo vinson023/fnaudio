@@ -57,6 +57,24 @@ def bytes_limit_from_config(config):
     return _bounded_bytes(value)
 
 
+def strict_bytes_limit_from_payload(value):
+    """Validate a byte budget arriving from an external payload.
+
+    Deliberately rejects instead of clamping. ``_bounded_bytes`` exists so a
+    stored config can never take the process down, but a settings request that
+    names 4 MiB must not be answered by quietly enforcing 64 KiB, and a value
+    below the floor would leave the cache too small to hold a single document.
+    Compared with ``metadata_numeric_policy.strict_nonnegative_int`` this adds
+    the lower bound and refuses ASCII digit strings, because a budget typed as
+    text is not the budget that was asked for.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < MIN_MAX_BYTES or value > MAX_MAX_BYTES:
+        return None
+    return value
+
+
 def _retained_bytes(value):
     """Return the process memory one cached document occupies.
 
@@ -112,6 +130,23 @@ class LocalLyricsCache:
                 len(self._entries) > self._limit or self._bytes > self._bytes_limit):
             _, (_, size) = self._entries.popitem(last=False)
             self._bytes -= size
+
+    def apply_bytes_limit(self, value):
+        """Re-impose the byte budget while the process keeps running.
+
+        Returns the limit actually enforced. Every configuration commit re-pushes
+        the whole settings dictionary, so an unchanged budget evicts nothing;
+        without that guard saving any other setting would drain the lyric cache.
+        A smaller budget drains from the oldest entry through the same path the
+        read side uses, so the eviction order the operator already sees is kept.
+        """
+        limit = _bounded_bytes(value)
+        with self._lock:
+            if limit == self._bytes_limit:
+                return self._bytes_limit
+            self._bytes_limit = limit
+            self._enforce_budget()
+            return self._bytes_limit
 
     def read(self, path, version_hint=None):
         if not isinstance(path, str) or not path:
@@ -197,7 +232,8 @@ def combined_snapshot(*snapshots):
 
 
 __all__ = [
-    "DEFAULT_LIMIT", "DEFAULT_MAX_BYTES", "MAX_LIMIT", "MAX_BYTES_COUNTER",
-    "MAX_COUNTER", "MAX_MAX_BYTES", "MIN_MAX_BYTES", "LocalLyricsCache",
-    "combined_snapshot",
+    "CONFIG_BYTES_KEY", "DEFAULT_LIMIT", "DEFAULT_MAX_BYTES", "MAX_LIMIT",
+    "MAX_BYTES_COUNTER", "MAX_COUNTER", "MAX_MAX_BYTES", "MIN_MAX_BYTES",
+    "LocalLyricsCache", "bytes_limit_from_config", "combined_snapshot",
+    "strict_bytes_limit_from_payload",
 ]

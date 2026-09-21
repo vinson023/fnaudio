@@ -6,6 +6,7 @@ from unittest.mock import Mock
 sys.path.insert(0, "app/server")
 
 from metadata_local_lyrics_cache import (
+    CONFIG_BYTES_KEY,
     DEFAULT_MAX_BYTES,
     MAX_BYTES_COUNTER,
     MAX_MAX_BYTES,
@@ -13,6 +14,7 @@ from metadata_local_lyrics_cache import (
     LocalLyricsCache,
     bytes_limit_from_config,
     combined_snapshot,
+    strict_bytes_limit_from_payload,
 )
 
 
@@ -256,6 +258,66 @@ class LocalLyricsCacheTests(unittest.TestCase):
             combined_snapshot({"bytes": 10 ** 15, "bytes_limit": 10 ** 15})["bytes"],
             MAX_BYTES_COUNTER,
         )
+
+    def test_apply_bytes_limit_clamps_and_reports_the_enforced_budget(self):
+        # The settings page is allowed to push any value the process has ever
+        # seen; the cache must clamp at its own floor/ceiling and tell the
+        # caller what it actually enforces instead of what was asked for.
+        cache = LocalLyricsCache(lambda path: "lyric")
+        self.assertEqual(cache.apply_bytes_limit(10), MIN_MAX_BYTES)
+        self.assertEqual(cache.snapshot()["bytes_limit"], MIN_MAX_BYTES)
+        self.assertEqual(cache.apply_bytes_limit(10 ** 12), MAX_MAX_BYTES)
+        self.assertEqual(cache.apply_bytes_limit(4 * 1024 * 1024), 4 * 1024 * 1024)
+        for unusable in (True, None, "4 MiB", 4.0, [], object()):
+            self.assertEqual(cache.apply_bytes_limit(unusable), DEFAULT_MAX_BYTES)
+            self.assertEqual(cache.snapshot()["bytes_limit"], DEFAULT_MAX_BYTES)
+
+    def test_narrowing_the_budget_evicts_oldest_and_keeps_counters(self):
+        reader = Mock(return_value="z" * 60000)
+        cache = LocalLyricsCache(reader, max_bytes=4 * 1024 * 1024)
+        cache.read("a.lrc", (1, 1))
+        cache.read("b.lrc", (2, 2))
+        before = cache.snapshot()
+        self.assertEqual(before["entries"], 2)
+        self.assertGreater(before["bytes"], MIN_MAX_BYTES)
+        self.assertEqual(cache.apply_bytes_limit(MIN_MAX_BYTES), MIN_MAX_BYTES)
+        after = cache.snapshot()
+        self.assertLess(after["entries"], before["entries"])
+        self.assertLessEqual(after["bytes"], after["bytes_limit"])
+        # Retraining the budget is not a cache reset: the hit/miss history is
+        # what tells an operator whether a shrinking budget is costing re-reads.
+        self.assertEqual(after["hits"], before["hits"])
+        self.assertEqual(after["misses"], before["misses"])
+
+    def test_reapplying_the_current_budget_evicts_nothing(self):
+        # Every config commit re-pushes the whole settings dictionary, so an
+        # unchanged budget must be a no-op or saving any other setting would
+        # throw away the lyric cache each time.
+        reader = Mock(return_value="stay")
+        cache = LocalLyricsCache(reader)
+        cache.read("a.lrc", (1, 1))
+        cache.read("b.lrc", (2, 2))
+        reader.reset_mock()
+        self.assertEqual(cache.apply_bytes_limit(DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES)
+        self.assertEqual(cache.snapshot()["entries"], 2)
+        self.assertEqual(cache.read("a.lrc", (1, 1)), "stay")
+        reader.assert_not_called()
+
+    def test_strict_payload_bytes_limit_refuses_anything_but_an_int_in_range(self):
+        # HTTP validation must reject rather than clamp: silently turning
+        # "8 MiB" or 0 into a legal budget would save something the user never
+        # asked for.
+        for accepted in (MIN_MAX_BYTES, 1024 * 1024, MAX_MAX_BYTES):
+            self.assertEqual(strict_bytes_limit_from_payload(accepted), accepted)
+        for rejected in (True, False, 0, -1, MIN_MAX_BYTES - 1, MAX_MAX_BYTES + 1,
+                         10 ** 12, "8388608", str(MIN_MAX_BYTES), 8.5, 8.0, None, [], {}):
+            self.assertIsNone(strict_bytes_limit_from_payload(rejected), rejected)
+
+    def test_config_byte_key_is_the_shared_name_for_the_lanes(self):
+        # server.py, app.js and the settings page all address this budget by
+        # name; the name lives here and nowhere else.
+        self.assertEqual(CONFIG_BYTES_KEY, "metadata_lyrics_cache_max_bytes")
+        self.assertEqual(bytes_limit_from_config({CONFIG_BYTES_KEY: 1024 * 1024}), 1024 * 1024)
 
 
 if __name__ == "__main__":

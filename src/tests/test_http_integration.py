@@ -16,6 +16,40 @@ sys.path.insert(0, "app/server")
 import cover_cache
 import server
 from http_request_policy import MAX_REQUEST_TARGET
+from metadata_local_lyrics_cache import (
+    CONFIG_BYTES_KEY,
+    DEFAULT_MAX_BYTES,
+    MAX_MAX_BYTES,
+    MIN_MAX_BYTES,
+    LocalLyricsCache,
+    bytes_limit_from_config,
+)
+
+
+class RuntimeLyricsService:
+    """Stand in for the metadata service with two real lyric cache lanes.
+
+    The runtime pane promises the budget the process enforces, so the stub has
+    to enforce it too: an object that only remembered the number it was handed
+    would let a handler that reads the config file back look correct.
+    """
+
+    def __init__(self, lanes=None):
+        self.applied = []
+        self.lanes = lanes if lanes is not None else [
+            LocalLyricsCache(lambda path: "l" * 600),
+            LocalLyricsCache(lambda path: "l" * 600),
+        ]
+
+    def apply_lyrics_cache_config(self, config):
+        self.applied.append(dict(config))
+        limit = bytes_limit_from_config(config)
+        for lane in self.lanes:
+            lane.apply_bytes_limit(limit)
+        return limit
+
+    def lyrics_cache_bytes_limit(self):
+        return min(lane.snapshot()["bytes_limit"] for lane in self.lanes)
 
 
 class HttpIntegrationTests(unittest.TestCase):
@@ -1118,6 +1152,135 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertFalse(json.loads(body)["ok"])
         self.assertIs(self.httpd.config["library_connection_pool"], True)
+
+    # --- R139 / ruling Q6=A: the lyric cache budget joins the same runtime pane ----
+    def runtime_get(self):
+        return self.request("/api/config/runtime", headers=self.auth_headers("settings.read"))
+
+    def test_runtime_config_reports_the_budget_the_lanes_actually_enforce(self):
+        # The pane promises the running value. A handler that echoed the config
+        # file would show 1 MiB while both lanes still held four, which is the
+        # exact lie the connection-pool check above exists to prevent.
+        self.httpd.config[CONFIG_BYTES_KEY] = 1024 * 1024
+        lanes = [
+            LocalLyricsCache(lambda path: "l", max_bytes=4 * 1024 * 1024),
+            LocalLyricsCache(lambda path: "l", max_bytes=MAX_MAX_BYTES),
+        ]
+        stub = RuntimeLyricsService(lanes=lanes)
+        with mock.patch.object(server, "METADATA_SERVICE", stub):
+            status, _headers, body = self.runtime_get()
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["config"][CONFIG_BYTES_KEY], 4 * 1024 * 1024)
+        self.assertNotEqual(payload["config"][CONFIG_BYTES_KEY], 1024 * 1024)
+
+    def test_runtime_config_without_a_metadata_service_shows_the_bounded_config(self):
+        # Before the service exists (startup, or a unit harness that never built
+        # one) the only honest answer is the config clamped the way the cache
+        # would clamp it, never the raw stored junk.
+        with mock.patch.object(server, "METADATA_SERVICE", None):
+            self.httpd.config.pop(CONFIG_BYTES_KEY, None)
+            status, _headers, body = self.runtime_get()
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["config"][CONFIG_BYTES_KEY], DEFAULT_MAX_BYTES)
+            self.httpd.config[CONFIG_BYTES_KEY] = 10
+            status, _headers, body = self.runtime_get()
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["config"][CONFIG_BYTES_KEY], MIN_MAX_BYTES)
+
+    def test_runtime_config_ignores_an_unusable_report_from_the_service(self):
+        # Other suites replace METADATA_SERVICE with a MagicMock whose answers
+        # are not JSON-serialisable integers. Falling back to the bounded config
+        # keeps a settings read honest instead of answering 500.
+        stub = mock.MagicMock()
+        stub.lyrics_cache_bytes_limit.return_value = "8 MiB"
+        self.httpd.config[CONFIG_BYTES_KEY] = 2 * 1024 * 1024
+        with mock.patch.object(server, "METADATA_SERVICE", stub):
+            status, _headers, body = self.runtime_get()
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["config"][CONFIG_BYTES_KEY], 2 * 1024 * 1024)
+
+    def test_runtime_config_rejects_an_unusable_budget_without_moving_the_cache(self):
+        self.httpd.config[CONFIG_BYTES_KEY] = 2 * 1024 * 1024
+        lanes = [LocalLyricsCache(lambda path: "l", max_bytes=2 * 1024 * 1024)]
+        stub = RuntimeLyricsService(lanes=lanes)
+        for value in (True, False, 0, -1, MIN_MAX_BYTES - 1, MAX_MAX_BYTES + 1,
+                      10 ** 12, "8388608", 8.5, None, []):
+            with mock.patch.object(server, "METADATA_SERVICE", stub):
+                status, _headers, body = self.runtime_post({CONFIG_BYTES_KEY: value})
+            self.assertEqual(status, 400, value)
+            self.assertIn("歌词缓存预算", json.loads(body)["message"])
+            self.assertEqual(self.httpd.config[CONFIG_BYTES_KEY], 2 * 1024 * 1024)
+            self.assertEqual(lanes[0].snapshot()["bytes_limit"], 2 * 1024 * 1024)
+        self.assertEqual(stub.applied, [])
+
+    def test_runtime_config_applies_a_budget_after_the_commit_and_drains_the_lanes(self):
+        lanes = [
+            LocalLyricsCache(lambda path: "l" * 60000, max_bytes=4 * 1024 * 1024),
+            LocalLyricsCache(lambda path: "l" * 60000, max_bytes=4 * 1024 * 1024),
+        ]
+        for lane in lanes:
+            lane.read("a.lrc", (1, 1))
+            lane.read("b.lrc", (2, 2))
+        self.assertTrue(all(lane.snapshot()["entries"] == 2 for lane in lanes))
+        stub = RuntimeLyricsService(lanes=lanes)
+        with mock.patch.object(server, "METADATA_SERVICE", stub):
+            status, _headers, body = self.runtime_post({CONFIG_BYTES_KEY: 64 * 1024})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertIs(payload["restart_required"], False)
+        self.assertEqual(payload["config"][CONFIG_BYTES_KEY], 64 * 1024)
+        self.assertEqual(self.httpd.config[CONFIG_BYTES_KEY], 64 * 1024)
+        # One applier call, and it saw the committed dictionary: retraining
+        # against the candidate would leave a phantom change after a failed save.
+        self.assertEqual([call[CONFIG_BYTES_KEY] for call in stub.applied], [64 * 1024])
+        # Two 60 kB documents do not fit a 64 KiB budget, so the oldest has to
+        # be gone by the time this response claims success.
+        for lane in lanes:
+            snapshot = lane.snapshot()
+            self.assertEqual(snapshot["bytes_limit"], 64 * 1024)
+            self.assertEqual(snapshot["entries"], 1)
+            self.assertLessEqual(snapshot["bytes"], snapshot["bytes_limit"])
+
+    def test_runtime_config_budget_and_pool_do_not_clobber_each_other(self):
+        stub = RuntimeLyricsService()
+        self.httpd.config["library_connection_pool"] = True
+        self.httpd.config[CONFIG_BYTES_KEY] = 2 * 1024 * 1024
+        with mock.patch.object(server, "METADATA_SERVICE", stub):
+            status, _headers, body = self.runtime_post({"library_connection_pool": False})
+            self.assertEqual(status, 200, body)
+            self.assertIs(self.httpd.config["library_connection_pool"], False)
+            self.assertEqual(self.httpd.config[CONFIG_BYTES_KEY], 2 * 1024 * 1024)
+            status, _headers, body = self.runtime_post({CONFIG_BYTES_KEY: 64 * 1024})
+            self.assertEqual(status, 200, body)
+            self.assertIs(self.httpd.config["library_connection_pool"], False)
+            self.assertEqual(self.httpd.config[CONFIG_BYTES_KEY], 64 * 1024)
+
+    def test_runtime_config_budget_untouched_when_the_save_fails(self):
+        lanes = [LocalLyricsCache(lambda path: "l", max_bytes=2 * 1024 * 1024)]
+        stub = RuntimeLyricsService(lanes=lanes)
+        self.httpd.config[CONFIG_BYTES_KEY] = 2 * 1024 * 1024
+        with mock.patch.object(server, "METADATA_SERVICE", stub), \
+                mock.patch.object(server, "save_config", return_value=False):
+            status, _headers, body = self.runtime_post({CONFIG_BYTES_KEY: 64 * 1024})
+        self.assertEqual(status, 500)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertEqual(self.httpd.config[CONFIG_BYTES_KEY], 2 * 1024 * 1024)
+        self.assertEqual(lanes[0].snapshot()["bytes_limit"], 2 * 1024 * 1024)
+        self.assertEqual(stub.applied, [])
+
+    def test_server_source_names_the_cache_budget_only_through_the_shared_constant(self):
+        # The key lives in the cache module so the config default, the reader,
+        # the HTTP route and the UI cannot drift apart; a second spelling here is
+        # how a rename silently breaks one of them.
+        with open(os.path.join("app", "server", "server.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        # Boolean checks on purpose: assertIn/NotIn dump the whole 3.4k-line
+        # module into the log when they fail, which buries the real failure.
+        self.assertFalse((chr(34) + CONFIG_BYTES_KEY + chr(34)) in source)
+        self.assertTrue("LYRICS_CACHE_BYTES_CONFIG_KEY" in source)
+        self.assertTrue("apply_lyrics_cache_config" in source)
 
     def test_private_media_requires_auth_and_supports_byte_ranges(self):
         self.assertEqual(self.request("/media/fixture")[0], 401)

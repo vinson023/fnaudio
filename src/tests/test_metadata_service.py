@@ -95,6 +95,74 @@ class MetadataServiceTests(unittest.TestCase):
                 service.providers._local_lyrics_cache.snapshot()["bytes_limit"], DEFAULT_MAX_BYTES
             )
 
+    def test_apply_lyrics_cache_config_reaches_both_lanes(self):
+        # There are two independent LocalLyricsCache instances per service. A
+        # settings change that only re-trains one of them would report a budget
+        # the process does not actually honour.
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            service = MetadataService(config)
+            self.assertEqual(service.apply_lyrics_cache_config(
+                {"metadata_lyrics_cache_max_bytes": 256 * 1024}), 256 * 1024)
+            self.assertEqual(len(service._lyrics_cache_lanes()), 2)
+            for lane in service._lyrics_cache_lanes():
+                self.assertEqual(lane.snapshot()["bytes_limit"], 256 * 1024)
+
+    def test_apply_lyrics_cache_config_drains_entries_when_it_shrinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            body = "l" * 60000
+            with patch.object(metadata_service, "read_local_lyrics", return_value=body):
+                service._read_local_lyrics_cached("a.lrc", (1, 1))
+                service._read_local_lyrics_cached("b.lrc", (2, 2))
+            before = service._local_lyrics_cache.snapshot()
+            self.assertEqual(before["entries"], 2)
+            service.apply_lyrics_cache_config({"metadata_lyrics_cache_max_bytes": 64 * 1024})
+            after = service._local_lyrics_cache.snapshot()
+            self.assertLess(after["entries"], before["entries"])
+            self.assertLessEqual(after["bytes"], after["bytes_limit"])
+
+    def test_apply_lyrics_cache_config_survives_a_missing_providers_lane(self):
+        # Diagnostics and some tests build a MetadataService without providers;
+        # the retraining hook must degrade to the lane that exists.
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            del service.providers
+            self.assertEqual(service.apply_lyrics_cache_config(
+                {"metadata_lyrics_cache_max_bytes": 65536}), 65536)
+            self.assertEqual(service._local_lyrics_cache.snapshot()["bytes_limit"], 65536)
+
+    def test_apply_lyrics_cache_config_without_an_argument_reads_the_stored_config(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            service = MetadataService(config)
+            config["metadata_lyrics_cache_max_bytes"] = 2 * 1024 * 1024
+            self.assertEqual(service.apply_lyrics_cache_config(), 2 * 1024 * 1024)
+            self.assertEqual(service.lyrics_cache_bytes_limit(), 2 * 1024 * 1024)
+
+    def test_lyrics_cache_bytes_limit_reports_the_tightest_lane(self):
+        # The aggregate status deliberately adds both lanes; a settings page has
+        # to show what is really enforced, and the tightest lane is the one a
+        # lyric can overflow.
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            service._local_lyrics_cache.apply_bytes_limit(64 * 1024)
+            service.providers._local_lyrics_cache.apply_bytes_limit(64 * 1024 * 1024)
+            self.assertEqual(service.lyrics_cache_bytes_limit(), 64 * 1024)
+            # Widening the tight lane moves the answer; reading one fixed lane or
+            # adding the two together would not.
+            service._local_lyrics_cache.apply_bytes_limit(2 * 1024 * 1024)
+            self.assertEqual(service.lyrics_cache_bytes_limit(), 2 * 1024 * 1024)
+
+    def test_lyrics_cache_bytes_limit_falls_back_when_no_lane_exists(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            config["metadata_lyrics_cache_max_bytes"] = 3 * 1024 * 1024
+            service = MetadataService(config)
+            del service.providers
+            del service._local_lyrics_cache
+            self.assertEqual(service.lyrics_cache_bytes_limit(), 3 * 1024 * 1024)
+
     def test_connect_preserves_body_failure_when_rollback_fails(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))

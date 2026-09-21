@@ -125,6 +125,14 @@ from state_projection import playback_queue_ids
 from playback_session_projection import project_playback_session
 from metadata_service import MAX_ARTWORK_BYTES, MetadataService
 from metadata_numeric_policy import strict_nonnegative_int
+# The lyric cache budget is named and bounded in one place. `metadata_service`
+# already reads it through `bytes_limit_from_config`, so the HTTP layer imports
+# the same helpers instead of inventing a second default or a second range.
+from metadata_local_lyrics_cache import (
+    CONFIG_BYTES_KEY as LYRICS_CACHE_BYTES_CONFIG_KEY,
+    bytes_limit_from_config,
+    strict_bytes_limit_from_payload,
+)
 from metadata_track_id_policy import normalize_track_id
 from metadata_artwork_file import open_bounded_artwork
 from metadata_lane_policy import lane_workers_alive, service_was_started
@@ -610,7 +618,57 @@ def commit_config_update(server, update):
         # the handles it leaves behind. Runs after the in-place commit: the applier
         # reads the new value and the path it has to drain.
         apply_library_connection_pool_config(server.config)
+        # The lyric cache budget follows the same discipline as the pool switch:
+        # the committed dictionary is the only state a running service retrains
+        # against, so a save that fails on the way to disk cannot drain entries.
+        apply_lyrics_cache_config(server.config)
         return True
+
+
+def payload_bytes_limit(payload, key, default=None):
+    """Read an optional byte budget from a JSON payload without coercing it.
+
+    Absent key means "leave the running value alone", which is what lets the
+    pool switch and the cache budget share one endpoint without either wiping
+    the other. A present-but-unusable value raises: clamping "4 MiB" or 0 to a
+    legal number would save a setting the user never asked for.
+    """
+    if key not in payload:
+        return default
+    value = strict_bytes_limit_from_payload(payload.get(key))
+    if value is None:
+        raise ValueError("%s must be an integer byte count inside the supported range" % key)
+    return value
+
+
+def apply_lyrics_cache_config(config):
+    """Retrain the running lyric caches against committed settings.
+
+    A no-op when the metadata service has not been built yet; the budget still
+    reaches the caches at construction time through `bytes_limit_from_config`.
+    """
+    applier = getattr(METADATA_SERVICE, "apply_lyrics_cache_config", None)
+    if callable(applier):
+        return applier(config)
+    return bytes_limit_from_config(config)
+
+
+def runtime_lyrics_cache_bytes_limit(config):
+    """Report the budget the running caches enforce, else what they would start with.
+
+    The service answer is only trusted when it is a plain integer: other suites
+    substitute mocks, and a mock answer must not be echoed into JSON or stored
+    as the apparent running value.
+    """
+    reader = getattr(METADATA_SERVICE, "lyrics_cache_bytes_limit", None)
+    if callable(reader):
+        try:
+            value = reader()
+        except (TypeError, ValueError):
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return bytes_limit_from_config(config)
 
 
 def payload_bool(payload, key, default=False):
@@ -879,6 +937,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "config": {
                     library_connection_pool_config_key(): library_connection_pool_enabled(self.server.config),
+                    LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                 },
                 "status": library_connection_pool_status(),
             })
@@ -1523,9 +1582,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(
                     {"ok": False, "message": "运行设置包含无效值：曲库连接池必须是布尔值"}, 400
                 )
+            try:
+                lyrics_budget = payload_bytes_limit(
+                    payload,
+                    LYRICS_CACHE_BYTES_CONFIG_KEY,
+                    bytes_limit_from_config(self.server.config),
+                )
+            except (TypeError, ValueError):
+                # Reject, never clamp: the budget is bounded by what a single
+                # lyric document can need as well as by memory.
+                return self.send_json(
+                    {"ok": False, "message": "运行设置包含无效值：歌词缓存预算必须是范围内的整数字节数"}, 400
+                )
             if not commit_config_update(
                 self.server,
-                lambda candidate: candidate.update({pool_key: pool_enabled}),
+                lambda candidate: candidate.update({
+                    pool_key: pool_enabled,
+                    LYRICS_CACHE_BYTES_CONFIG_KEY: lyrics_budget,
+                }),
             ):
                 return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
             # commit_config_update already re-applied the pool switch against the
@@ -1537,6 +1611,7 @@ class Handler(BaseHTTPRequestHandler):
                 "restart_required": False,
                 "config": {
                     pool_key: library_connection_pool_enabled(self.server.config),
+                    LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                 },
                 "status": library_connection_pool_status(),
             })
