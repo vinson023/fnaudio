@@ -151,9 +151,9 @@ class AlsaOutputTests(unittest.TestCase):
             {"sample_rate": 176400, "bit_depth": 24}, unmeasured)["rate"])
         # The shape real hardware actually produces: many drivers print
         # `Rates  : 0x33 (44100 48000 ...)`, which neither rate regex matches, while their
-        # `Formats:` line is read and yields a real width (see TODO.md:1831). Conserving the
-        # rate must not throw that one measured fact away, or a 24-bit DAC gets 16-bit audio
-        # for no reason.
+        # `Formats:` line is read and yields a real width (see
+        # docs/external-acceptance.md entry L1872). Conserving the rate must not throw that
+        # one measured fact away, or a 24-bit DAC gets 16-bit audio for no reason.
         formats_only = {
             "name": "Formats but no rates",
             "caps": {"source": "/proc/asound/card2/stream*", "pcm_rates": [],

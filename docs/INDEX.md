@@ -17,6 +17,7 @@
 - `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`：私有/公开 mode、原子写、删除白名单与降权边界。
 - `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
 - `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。
+- `external-acceptance.md`：设备与外部材料侧待办的唯一台账，含 45 条原文冻结块、固定编号与逐条处置计划。
 
 ## 当前权威文档
 
@@ -26,7 +27,7 @@
 | `../PROJECT_CONTEXT.md` | 当前实现、功能、风险、测试和建议 |
 | `../ARCHITECTURE.md` | 架构层次、模块、数据流和边界 |
 | `../DECISIONS.md` | 已确认技术决策及其影响 |
-| `../TODO.md` | 当前唯一有效待办列表 |
+| `../TODO.md` | 可离线推进的待办列表（设备／外部项已另册于 `external-acceptance.md`） |
 | `../CHANGELOG_AI.md` | AI 修改和验证记录 |
 | `../RECOVERY.md` | 会话丢失后的恢复流程 |
 | `../SOURCE_MANIFEST.sha256` | 当前源码文件哈希清单 |
