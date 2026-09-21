@@ -47,6 +47,48 @@ class SourceManifestTests(unittest.TestCase):
         self.assertEqual(len(actual), len(set(actual)), "SOURCE_MANIFEST.sha256 contains duplicate records")
         self.assertEqual(sorted(actual), sorted(expected), "SOURCE_MANIFEST.sha256 is stale; run tools/update_source_manifest.ps1")
 
+    def test_the_manifest_rows_are_written_in_ordinal_path_order(self):
+        """A culture-dependent row order makes the release manifest shell-dependent."""
+        # Sort-Object compares strings with the current culture, and the culture decides
+        # where a dot and an underscore fall.  R148 ran the pre-fix tool over one
+        # unchanged tree under Windows PowerShell 5.1 and under pwsh 7 - the shell CI
+        # uses - and got two orderings of the same 710 records with 117 line positions
+        # moved between them.  The guard above compared the rows only as a set, so
+        # nothing noticed, while the CI job closes with
+        #     git diff --exit-code -- SOURCE_MANIFEST.sha256
+        # A refresh from the wrong shell therefore rewrites 117 rows and fails a build
+        # whose content is byte-for-byte correct.  Ordinal comparison of the
+        # repo-relative path matches git path order and reproduces from any shell, so
+        # row order is now part of what this file guarantees.
+        repo_root = Path(__file__).resolve().parents[2]
+        rows = (repo_root / "SOURCE_MANIFEST.sha256").read_text(encoding="ascii").splitlines()
+        self.assertTrue(rows, "SOURCE_MANIFEST.sha256 is empty")
+        paths = []
+        for row in rows:
+            self.assertRegex(row, r"^[0-9A-F]{64}  [^ ]", "manifest row is not HASH  PATH: " + row)
+            paths.append(row.split("  ", 1)[1])
+        self.assertEqual(
+            paths,
+            sorted(paths),
+            "SOURCE_MANIFEST.sha256 rows are not in ordinal path order; regenerate it with "
+            "tools/update_source_manifest.ps1 - a row order that depends on the shell is the "
+            "drift that made the manifest non-reproducible",
+        )
+        script = (repo_root / "tools" / "update_source_manifest.ps1").read_text(encoding="utf-8")
+        # The tool explains the defect in a comment that names Sort-Object, so the ban
+        # is on the code, not on the prose.
+        code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+        self.assertNotIn(
+            "Sort-Object",
+            code,
+            "the manifest tool sorts row order by culture again, which is what made "
+            "SOURCE_MANIFEST.sha256 shell-dependent (see the note above)",
+        )
+        self.assertIn(
+            "[StringComparer]::Ordinal",
+            script,
+            "the manifest tool no longer sorts row order by code point",
+        )
     def test_the_guard_walks_the_same_scope_as_the_manifest_tool(self):
         """The scope lists are a copy, so the copy has to be checked against its source."""
         repo_root = Path(__file__).resolve().parents[2]
