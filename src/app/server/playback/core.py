@@ -85,7 +85,7 @@ def _plugin_result_error(result):
     if not isinstance(result, dict):
         return "output returned an invalid response"
     message = result.get("message") or result.get("error") or ""
-    return message if isinstance(message, str) else "output rejected the command"
+    return _bounded_text(message, MAX_EXTERNAL_ERROR) if isinstance(message, str) else "output rejected the command"
 
 
 class PlaybackCore:
@@ -151,11 +151,14 @@ class PlaybackCore:
         HTTP command that started them. Updates from a stale/non-selected
         backend are ignored so a late event cannot overwrite the active
         playback target.
+
+        transport and error are untrusted network text, so they are bounded
+        here exactly as sync_external_session bounds the same fields.
         """
         with self._lock:
             if target_kind and self.state.target_kind != target_kind:
                 return self.state
-            normalized = str(transport or "UNKNOWN").upper()
+            normalized = _bounded_text(transport, MAX_EXTERNAL_TRANSPORT).upper() or "UNKNOWN"
             playing = self.state.playing
             if normalized == "PLAYING":
                 playing = True
@@ -167,7 +170,7 @@ class PlaybackCore:
             next_duration = self.state.duration
             if duration is not None:
                 next_duration = _safe_position(duration)
-            next_error = str(error or "")
+            next_error = _bounded_text(error, MAX_EXTERNAL_ERROR)
             if (
                 self.state.transport == normalized
                 and self.state.playing == playing
