@@ -1121,8 +1121,14 @@ function coverUrl(item, size = 160) {
   const thumbnail = Number(size) === 160 ? item?.cover_thumbnail_url : "";
   const source = thumbnail || item?.cover_url;
   if (typeof source !== "string" || !source.trim() || source.length > 4096) return "";
+  // ``mediaUrl`` answers a rejected scheme with "", and ``new URL("", base)`` does
+  // not throw: it resolves to the base document. Re-parsing that empty answer
+  // would hand the caller the application's own URL as if it were usable
+  // artwork, so an empty answer has to stop here instead of being resolved.
+  const absolute = mediaUrl(source);
+  if (!absolute) return "";
   try {
-    const url = new URL(mediaUrl(source), window.location.href);
+    const url = new URL(absolute, window.location.href);
     if (!["http:", "https:"].includes(url.protocol)) return "";
     if (Number(size) > 0) url.searchParams.set("size", String(Number(size)));
     return url.href;
@@ -1135,8 +1141,12 @@ function coverUrl(item, size = 160) {
 }
 function usableCoverSource(value) {
   if (typeof value !== "string" || !value.trim() || value.length > 4096) return "";
+  // Same empty-answer stop as ``coverUrl``: an empty ``mediaUrl`` result is a
+  // rejection, not a relative address to resolve against the document.
+  const absolute = mediaUrl(value.trim());
+  if (!absolute) return "";
   try {
-    const url = new URL(mediaUrl(value.trim()), window.location.href);
+    const url = new URL(absolute, window.location.href);
     return ["http:", "https:"].includes(url.protocol) ? url.href : "";
   } catch (_) {
     return "";
