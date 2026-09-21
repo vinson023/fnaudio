@@ -171,7 +171,7 @@
 
 ## 第二节 · Android 等价 MediaSession 持续目标
 
-> 源节：迁移前 `TODO.md:892`；本节 6 条，固定编号 L984–L1184。后续处置：R2 统一真机取证格式；R3 并账「Gradle loopback」一族（827/830/984/988/990/992）；R6 定性 L1184。
+> 源节：迁移前 `TODO.md:892`；本节 6 条，固定编号 L984–L1184。后续处置：R2 统一真机取证格式；R3 并账「Gradle loopback」一族（827/830/984/988/990/992）；R6 结案 L1184（盘上自证其 staged provenance 永久不可恢复）。
 
 ### 固定编号 L984
 
@@ -245,16 +245,20 @@
 ### 固定编号 L1184
 
 <!-- BEGIN L1184 -->
-- [ ] 0.2.33 历史产物完整 provenance：复核脚本确认缺少 staged `SOURCE_PROVENANCE.json`，需保留为不可恢复历史证据，不得伪造补齐。
+- [x] 0.2.33 历史产物完整 provenance：复核脚本确认缺少 staged `SOURCE_PROVENANCE.json`，需保留为不可恢复历史证据，不得伪造补齐。
 <!-- END L1184 -->
 
 > **取证单 L1184**
 > - 设备／材料：0.2.33 构建期留档中的 staged SOURCE_PROVENANCE.json 原件
 > - 抓取：若有人能提供当时的构建目录，则逐字段比对并留档
 > - 判定线：能证明 provenance 完整，或明确证明缺失不可恢复
-> - 不可取证时结案口径：结案为「历史 provenance 永久不可恢复，保持不可伪造」，最终定性待 R6
+> - 不可取证时结案口径：结案为「历史 provenance 永久不可恢复，保持不可伪造」，本条按不可取证口径收口
+> **结案（R6·2026-09-21）**：本机不可取证，按本条取证单口径收口为「历史 provenance 永久不可恢复，保持不可伪造」。
+> - 实测：2026-09-21 实算 `artifacts/0.2.33/fnaudio-0.2.33-fnpack.fpk` 得 6,041,540 字节、SHA-256 8D7846F0567A2EF544623700105724FC8C73D1250D861E76F817C19A738DBB0A，与同目录 `SHA256SUMS` 的声明逐字符相符；该目录只有 `fnaudio-0.2.33-fnpack.fpk`、`LEGACY_EVIDENCE.md`、`SHA256SUMS` 三件，不存在 `SOURCE_PROVENANCE.json`；`artifacts/_scratch/` 下 5 个 0.2.33 留档目录中 `release-provenance-check-20260825/0.2.33/` 是空目录，另外 4 份的 `staged_file_count` 分别为 134、140、142、175，`source_manifest_sha256` 为 760CB31D…、D3BEBAE1…、AFC47917…、F6D40198… 四值互异，`git_worktree_dirty` 四份全为 true，它们 `SHA256SUMS` 指向的 FPK 实算为 4A5FF55A…、D0D556D0…、ACA892F1…、4D0B366A…，没有一份等于 canonical 的 8D7846F0…
+> - 缺料：0.2.33 构建当时留在发布目录里的 staged `SOURCE_MANIFEST.sha256` 与 `SOURCE_PROVENANCE.json` 原件；同目录 `LEGACY_EVIDENCE.md` 已自证这两份只存在于历史 `artifacts/_scratch/` 留档且指向另一个 FPK 哈希，并明文规定不得复制到本目录、不得当作该产物的 provenance；`release-governance-20260827-144009` 那份虽然两份俱在，其 `fnpack_sha256` 声明 D7AF4BD7… 与摆在同一目录里的 FPK 实算 4D0B366A… 也不相符
+> - 重开条件：取得与该 canonical 8D7846F0… 逐字符相符、且能被 `tools/verify_release_evidence.ps1` 严格完整证据模式接受的 manifest 与 provenance 原件后，回到本卡判定线重判；在此之前不得拿 `artifacts/_scratch/` 的副本冒充原件，本条勾上也不表示 0.2.33 的功能曾在真机验过
 
-> 性质标注：本条要求的是 0.2.33 历史产物的 staged provenance，条目正文自己写明「不得伪造补齐」，负责人已认定它不可恢复；最终定性待 R6。
+> 性质标注：本条要求的是 0.2.33 历史产物的 staged provenance，条目正文自己写明「不得伪造补齐」；R6 依盘上自证 `artifacts/0.2.33/LEGACY_EVIDENCE.md` 定案——canonical 产物可校验它的校验和、其源码树不可证明，本条按「历史 provenance 永久不可恢复，保持不可伪造」收口，不表示 0.2.33 的功能判据已通过。
 
 ## 第三节 · P2：部署与外部系统验收
 
@@ -700,3 +704,9 @@ R4 收口的对象是取证材料的不可能性，不是功能结论。下列 9
 R5 收口的对象仍是取证材料的不可能性，不是功能结论。L1836 要求「推送 remote 并完成首次云端 CI 运行」，而负责人 D1 已裁定开源但暂不托管，本条前置在这台机器与这个仓库上永不成立，因此按卡面口径勾选收口并留四行注记。收口只表示取证材料不可能产出，不表示判据已通过，也不表示云端 CI 曾经跑过；一旦改为托管并配置 remote，本条必须重开并按判定线重判。
 
 - L1836
+
+## R6 结案记录（2026-09-21）
+
+R6 收口的对象仍然是取证材料的不可能性，不是功能结论。L1184 要的是 0.2.33 canonical 产物发布目录里的 staged `SOURCE_MANIFEST.sha256` 与 `SOURCE_PROVENANCE.json` 原件；那份 FPK 本身可校验（实算 SHA-256 与它的 `SHA256SUMS` 声明逐字符相符），但它的源码树无法证明——同目录 `LEGACY_EVIDENCE.md` 已经自证那两份文件只存在于历史 `artifacts/_scratch/` 留档，而那些留档指向另外四个 FPK 哈希。因此按卡面口径勾选收口并留四行注记。收口只表示取证原件永久不可恢复、保持不可伪造，不表示判据已通过，也不表示 0.2.33 的功能曾在真机验过；日后若取得能被严格完整证据模式接受的原件，本条必须重开并按判定线重判。
+
+- L1184
