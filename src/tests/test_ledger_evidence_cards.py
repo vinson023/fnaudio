@@ -10,10 +10,11 @@ what has to be captured, the line that decides pass or fail, and what to record
 when the material can never be produced.
 
 These tests keep that contract.  They stay shape-only: nothing in this file
-decides an item, a card only states how to decide it.  R4 later closed nine
-entries whose material can never be produced on this host, and each of those
-ticks is bound to a note repeating the cannot-be-evidenced verdict written on
-its own card, so a tick here can never be read as "the judgement line passed".
+decides an item, a card only states how to decide it.  R4 closed nine entries
+and R5 closed one more whose material can never be produced on this host, and
+every one of those ticks is bound to a four-line note repeating the
+cannot-be-evidenced verdict written on its own card, so a tick here can never
+be read as "the judgement line passed".
 """
 
 from pathlib import Path
@@ -42,25 +43,41 @@ FIELD_LABELS = (
 # Wording that would let a card quietly declare its own item finished.
 CLOSING_WORDS = ("已结案", "视为完成", "视同完成", "不必验证", "无需验证", "已闭环")
 
-# ---- R4 closure bookkeeping: entries whose material can never be produced ----
-# R4 closes nine ledger entries as "not evidenceable on this host".  A bare tick
-# would read as "someone verified this", so every R4 tick is bound to a four-line
-# note placed directly under its own card: the note must quote the verdict phrase
-# that very card prescribes, must carry a real measurement, the missing material
-# and a reopening condition, and must never claim the judgement line passed.  The
-# record section at the foot of the file states the same set a third time; any
-# disagreement between the three readings -- ticks, notes, record -- is red.
+# ---- closure bookkeeping: entries whose material can never be produced ----
+# R4 closes nine ledger entries and R5 closes one more as "not evidenceable on
+# this host".  A bare tick would read as "someone verified this", so every tick
+# is bound to a four-line note placed directly under its own card: the note must
+# quote the verdict phrase that very card prescribes, must carry a real
+# measurement, the missing material and a reopening condition, must be labelled
+# with the round that made the decision, and must never claim the judgement line
+# passed.  The record section at the foot of the file states the same set once
+# more per round; any disagreement between the three readings -- ticks, notes,
+# record -- is red.
 R4_CLOSED_IDS = frozenset({1838, 1852, 1853, 1854, 1855, 1856, 1857, 1872, 1873})
-R4_CLOSURE_DATE = "2026-09-21"
-CLOSURE_HEAD = re.compile(r"^> \*\*结案（R4·(\d{4}-\d{2}-\d{2})）\*\*：(.*)$")
+R5_CLOSED_IDS = frozenset({1836})
+CLOSURES_BY_ROUND = {"R4": R4_CLOSED_IDS, "R5": R5_CLOSED_IDS}
+CLOSED_IDS = R4_CLOSED_IDS | R5_CLOSED_IDS
+CLOSURE_ROUND_OF = {nid: label for label, ids in CLOSURES_BY_ROUND.items() for nid in ids}
+CLOSURE_DATE = "2026-09-21"
+CLOSURE_HEAD = re.compile(
+    r"^> \*\*结案（(?P<round>R\d+)·(?P<date>\d{4}-\d{2}-\d{2})）\*\*：(?P<body>.*)$"
+)
 CLOSURE_FIELDS = ("实测：", "缺料：", "重开条件：")
 CLOSURE_SUB = "> - "
-R4_RECORD_HEAD = "## R4 结案记录"
-R4_RECORD_HEAD_END = "## "
-R4_RECORD_ID = re.compile(r"^- L(\d+)$")
+RECORD_HEAD = re.compile(r"^## (R\d+) 结案记录")
+RECORD_SECTION_STOP = "## "
+RECORD_ID = re.compile(r"^- L(\d+)$")
 TICKED_STATE = re.compile(r"^- \[[xX]\] ")
 VERDICT_PHRASE = re.compile(r"「([^」]+)」")
 VERDICT_FIELD = "不可取证时结案口径"
+# Wording that leaves a verdict undecided and hands it to some later round.
+DEFERRAL = re.compile(r"待 R\d+|待定|重新给方向")
+ENTRY_TOTAL = 45
+# The section note that hands L1836 to a round is found by the entry id it
+# covers: naming the TODO.md line it migrates from would put a citation into
+# the moved-out device segment, which test_device_todos_migrated forbids.
+SECTION_NOTE = "> 源节："
+R5_SECTION_ENTRY = "L1836"
 # A closure note has to cite something an actual run could have printed.
 EVIDENCE_ANCHOR = re.compile(
     r"\d{4}-\d{2}-\d{2}|192\.168\.100\.24|/proc/|/sys/|/vol1/|/var/log/|uname|lsusb"
@@ -77,7 +94,6 @@ DEVICE_TOKENS = (
 )
 
 NOT_APPLICABLE_ID = 1847  # the standing-maintenance entry: no device involved
-DEFERRED_ID = 1836        # its closing line is re-ruled by R5, card stays shape-valid
 
 
 class LedgerEvidenceCardTests(unittest.TestCase):
@@ -364,23 +380,27 @@ class LedgerEvidenceCardTests(unittest.TestCase):
         )
         return phrases[0]
 
-    def test_r4_ticks_and_their_notes_are_the_same_set(self):
+    def test_ticks_and_their_notes_are_the_same_set(self):
         notes = self._closure_notes()
         ticked = self._ticked_ids()
         noted = [nid for nid, rows in notes.items() if rows]
-        self.assertEqual(sorted(ticked), sorted(R4_CLOSED_IDS),
-                         "R4 must tick exactly its nine entries, no more and no less")
-        self.assertEqual(sorted(noted), sorted(R4_CLOSED_IDS),
+        self.assertEqual(sorted(ticked), sorted(CLOSED_IDS),
+                         "the ledger must tick R4's nine entries plus R5's one, no more and no less")
+        self.assertEqual(sorted(noted), sorted(CLOSED_IDS),
                          "a tick without its note, or a note without its tick")
+        self.assertEqual(sorted(CLOSURE_ROUND_OF), sorted(CLOSED_IDS),
+                         "a closed entry is not attributed to exactly one round")
         open_rows = [l for l in self.lines if l.startswith("- [ ] ")]
         done_rows = [l for l in self.lines if TICKED_STATE.match(l)]
-        self.assertEqual(len(done_rows), 9, "R4 closes nine device items")
-        self.assertEqual(len(open_rows), 45 - 9, "the other 36 entries stay open")
+        self.assertEqual(len(CLOSED_IDS), 10, "R4 closes nine device items and R5 closes one")
+        self.assertEqual(len(done_rows), len(CLOSED_IDS), "a box outside the closure set was ticked")
+        self.assertEqual(len(open_rows), ENTRY_TOTAL - len(CLOSED_IDS),
+                         "the remaining device entries must stay open")
 
     def test_closure_note_quotes_the_verdict_of_its_own_card(self):
         notes = self._closure_notes()
         phrases = {}
-        for nid in sorted(R4_CLOSED_IDS):
+        for nid in sorted(CLOSED_IDS):
             self.assertTrue(notes.get(nid), "closed entry L%d carries no closure note" % nid)
             phrases[nid] = self._verdict_phrase(nid)
             self.assertIn("「%s」" % phrases[nid], notes[nid][0],
@@ -397,14 +417,16 @@ class LedgerEvidenceCardTests(unittest.TestCase):
 
     def test_closure_notes_carry_measurement_gap_and_reopening(self):
         notes = self._closure_notes()
-        for nid in sorted(R4_CLOSED_IDS):
+        for nid in sorted(CLOSED_IDS):
             rows = notes[nid]
             self.assertEqual(len(rows), 4,
                              "note for L%d must be one head plus three sub-fields: %s" % (nid, rows))
             head = CLOSURE_HEAD.match(rows[0])
-            self.assertTrue(head, "note head for L%d does not match the R4 shape" % nid)
-            self.assertEqual(head.group(1), R4_CLOSURE_DATE,
+            self.assertTrue(head, "note head for L%d does not match the closure shape" % nid)
+            self.assertEqual(head.group("date"), CLOSURE_DATE,
                              "note for L%d carries a date other than the closing round" % nid)
+            self.assertEqual(head.group("round"), CLOSURE_ROUND_OF[nid],
+                             "note for L%d is signed by a round that never closed it" % nid)
             for label, row in zip(CLOSURE_FIELDS, rows[1:]):
                 self.assertTrue(row.startswith(CLOSURE_SUB + label),
                                 "note for L%d lacks or misplaces the field %s" % (nid, label))
@@ -422,26 +444,80 @@ class LedgerEvidenceCardTests(unittest.TestCase):
                                      "the closure note of L%d declares the item settled via %r" % (nid, word))
                 self.assertNotIn("- [", row, "the closure note of L%d edits a checkbox" % nid)
 
-    def test_r4_record_section_matches_the_ticked_set(self):
-        heads = [i for i, l in enumerate(self.lines) if l.startswith(R4_RECORD_HEAD)]
-        self.assertEqual(len(heads), 1, "the ledger needs exactly one R4 record section")
-        start = heads[0]
-        body, ids = [], []
-        for row in self.lines[start + 1:]:
-            if row.startswith(R4_RECORD_HEAD_END):
-                break
-            body.append(row)
-            match = R4_RECORD_ID.match(row)
-            if match:
-                ids.append(int(match.group(1)))
-        self.assertEqual(sorted(ids), sorted(R4_CLOSED_IDS),
-                         "the R4 record section lists another set than the ledger ticks")
-        self.assertEqual(len(ids), len(set(ids)), "the R4 record repeats an entry")
-        text = "\n".join(body)
-        self.assertIn(NOT_PASSED_PROMISE, text,
-                      "the R4 record must state that closing an entry is not passing its judgement line")
-        for nid in sorted(R4_CLOSED_IDS):
-            self.assertIn("- L%d" % nid, text, "the R4 record omits L%d" % nid)
+    def test_closure_record_sections_match_the_ticked_sets(self):
+        heads = [(i, RECORD_HEAD.match(l).group(1))
+                 for i, l in enumerate(self.lines) if RECORD_HEAD.match(l)]
+        self.assertEqual(sorted(label for _, label in heads), sorted(CLOSURES_BY_ROUND),
+                         "the ledger needs exactly one record section per closure round")
+        ticked = self._ticked_ids()
+        listed = []
+        for index, label in heads:
+            body, ids = [], []
+            for row in self.lines[index + 1:]:
+                if row.startswith(RECORD_SECTION_STOP):
+                    break
+                body.append(row)
+                match = RECORD_ID.match(row)
+                if match:
+                    ids.append(int(match.group(1)))
+            self.assertEqual(sorted(ids), sorted(CLOSURES_BY_ROUND[label]),
+                             "the %s record lists another set than %s ticked" % (label, label))
+            self.assertEqual(len(ids), len(set(ids)), "the %s record repeats an entry" % label)
+            text = "\n".join(body)
+            self.assertIn(
+                NOT_PASSED_PROMISE, text,
+                "the %s record must state that closing an entry is not passing its "
+                "judgement line" % label,
+            )
+            for nid in ids:
+                self.assertIn(nid, ticked,
+                              "the %s record lists an entry that is not ticked" % label)
+            listed += ids
+        self.assertEqual(sorted(listed), sorted(CLOSED_IDS),
+                         "a ticked entry appears in no record section")
+
+    # ---- R5: the one entry whose blocker is a decision, not a device ----
+
+    def _entry_block(self, nid):
+        """Every ledger line from an entry heading up to the next one."""
+        want = "### 固定编号 L%d" % nid
+        hits = [i for i, line in enumerate(self.lines) if line == want]
+        self.assertEqual(len(hits), 1, "the ledger must hold exactly one heading for L%d" % nid)
+        stop = hits[0] + 1
+        while stop < len(self.lines) and not re.match(r"^(?:### 固定编号|## )", self.lines[stop]):
+            stop += 1
+        return self.lines[hits[0]:stop]
+
+    def test_r5_closes_L1836_on_the_no_hosting_ruling(self):
+        fields = dict(self._cards())[1836]
+        verdict = fields[VERDICT_FIELD]
+        self.assertIn("远程仓库", verdict,
+                      "the L1836 verdict must name what can never be produced")
+        self.assertIn("不可取证", verdict,
+                      "L1836 must close as not evidenceable, never as passing")
+        phrase = self._verdict_phrase(1836)
+        self.assertIn("「%s」" % phrase, self._closure_notes()[1836][0],
+                      "the R5 note must repeat the verdict written on its own card")
+        ruling = [l for l in self._entry_block(1836) if l.startswith("> 性质标注：")]
+        self.assertEqual(len(ruling), 1, "L1836 must carry exactly one nature note")
+        self.assertIn("R5", ruling[0], "the nature note must name the round that ruled")
+        self.assertIn("暂不托管", ruling[0],
+                      "the nature note must keep the ruling this entry rests on")
+        self.assertIn("不表示", ruling[0],
+                      "the nature note must say what the closure does not mean")
+        section = [l for l in self.lines
+                   if l.startswith(SECTION_NOTE) and R5_SECTION_ENTRY in l]
+        self.assertEqual(len(section), 1, "the section note covering L1836 must stay findable")
+        self.assertIn("R5 结案 L1836", section[0],
+                      "the section note still forwards L1836 to a later round")
+
+    def test_no_closed_entry_still_defers_its_verdict(self):
+        for nid in sorted(CLOSED_IDS):
+            for line in self._entry_block(nid):
+                self.assertIsNone(
+                    DEFERRAL.search(line),
+                    "closed entry L%d leaves a verdict to a later round: %r" % (nid, line),
+                )
 
 
 if __name__ == "__main__":
