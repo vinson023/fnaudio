@@ -6,7 +6,7 @@ from unittest import mock
 
 sys.path.insert(0, "app/server")
 
-from playback.core import MAX_QUEUE_TRACKS, PlaybackCore
+from playback.core import MAX_EXTERNAL_ERROR, MAX_EXTERNAL_TRANSPORT, MAX_QUEUE_TRACKS, PlaybackCore
 from playback.models import PlaybackCommand, TrackRef
 from playback.plugins import BrowserOutput, OutputPlugin, OutputRegistry
 
@@ -129,6 +129,63 @@ class PlaybackCoreStateTests(unittest.TestCase):
         self.assertEqual(core.state.current_track_id, "external:input")
         self.assertEqual(core.state.queue[0].title, "")
         self.assertEqual(core.state.error, "")
+
+    def test_async_output_status_bounds_untrusted_transport_like_the_external_session(self):
+        # The DLNA control point hands the raw CurrentTransportState text to the
+        # core, and one SOAP body may be up to MAX_DLNA_XML_BYTES long. The
+        # authoritative SSE payload republishes that field with only a case
+        # change, so the core must apply the bound sync_external_session
+        # already applies to the same field.
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        core.sync_output_status("browser", "x" * 5000, 1, 1)
+
+        self.assertEqual(core.state.transport, ("x" * 5000)[:MAX_EXTERNAL_TRANSPORT].upper())
+        self.assertEqual(len(core.state.transport), MAX_EXTERNAL_TRANSPORT)
+        self.assertFalse(core.state.playing)
+
+    def test_async_output_status_bounds_untrusted_error_like_the_external_session(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        core.sync_output_status("browser", "STOPPED", 0, 0, error="e" * 20000)
+
+        self.assertEqual(core.state.error, "e" * MAX_EXTERNAL_ERROR)
+        self.assertEqual(len(core.state.error), MAX_EXTERNAL_ERROR)
+
+    def test_async_output_status_keeps_a_transport_sitting_exactly_on_the_bound(self):
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        exact = "t" * MAX_EXTERNAL_TRANSPORT
+        core.sync_output_status("browser", exact, 0, 0)
+
+        self.assertEqual(core.state.transport, exact.upper())
+        self.assertEqual(len(core.state.transport), MAX_EXTERNAL_TRANSPORT)
+
+    def test_async_output_status_does_not_stringify_untrusted_objects(self):
+        class Explosive:
+            def __str__(self):
+                raise AssertionError("output status must not stringify objects")
+
+        core = PlaybackCore(OutputRegistry([BrowserOutput()]))
+        core.sync_output_status("browser", Explosive(), error=Explosive())
+
+        self.assertEqual(core.state.transport, "UNKNOWN")
+        self.assertEqual(core.state.error, "")
+
+    def test_failed_plugin_command_error_is_bounded(self):
+        class VerboseFailure(FailingOutput):
+            plugin_id = "verbose"
+            target_kind = "verbose"
+
+            def open(self, track, state, context=None):
+                return {"ok": False, "message": "m" * 20000}
+
+        core = PlaybackCore(OutputRegistry([BrowserOutput(), VerboseFailure()]))
+        core.set_target("verbose", "verbose")
+        track = TrackRef.from_mapping({"id": "track-1", "title": "Track 1", "duration": 12})
+
+        result = core.dispatch(PlaybackCommand("load", track=track, context={"item": track.item}))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"]["error"], "m" * MAX_EXTERNAL_ERROR)
+        self.assertEqual(len(result["state"]["error"]), MAX_EXTERNAL_ERROR)
 
     def test_load_adds_track_missing_from_frontend_queue(self):
         core = PlaybackCore(OutputRegistry([BrowserOutput()]))
