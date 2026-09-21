@@ -3235,21 +3235,29 @@ class LibrarySqliteTests(unittest.TestCase):
         # A term shorter than the trigram minimum falls back to the multi-column
         # LIKE condition, which carries one placeholder per searchable column.
         # All of them now bind inside the match CTE, ahead of the folder filters.
+        # The term must also be something the fixture path can never spell, because
+        # `path` is one of the searchable columns: while this test still searched
+        # for "hi", a Windows temp directory whose random name happened to contain
+        # those two letters matched every row, and the gate saw ['Ab', 'Zz'] instead
+        # of ['Ab'] in roughly one run in two hundred.  One non-ASCII character is
+        # immune to the random name and stays below the trigram minimum.
+        search = "唱"
         with tempfile.TemporaryDirectory() as root:
             music_root = os.path.join(root, "music")
+            self.assertNotIn(search.lower(), music_root.lower())
             for folder in ("Ab/Cd", "Ab/Xy", "Zz/Cd"):
                 os.makedirs(os.path.join(music_root, *folder.split("/")))
             config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
             items = [
-                self._item("hit", os.path.join(music_root, "Ab", "Cd", "hit.flac"), "hi there", 1),
+                self._item("hit", os.path.join(music_root, "Ab", "Cd", "hit.flac"), "hi there " + search, 1),
                 self._item("miss", os.path.join(music_root, "Ab", "Xy", "miss.flac"), "no match", 2),
                 self._item("other", os.path.join(music_root, "Zz", "Cd", "other.flac"), "still no", 3),
             ]
             save_items_to_sqlite(config, items, "test")
-            page = query_library_folders(config, "", music_root, "asc", 20, 0, "hi")
+            page = query_library_folders(config, "", music_root, "asc", 20, 0, search)
             self.assertEqual([row["name"] for row in page["folders"]], ["Ab"])
             self.assertEqual(page["count"], 1)
-            deep = query_library_folders(config, "Ab", music_root, "asc", 20, 0, "hi")
+            deep = query_library_folders(config, "Ab", music_root, "asc", 20, 0, search)
             self.assertEqual([row["name"] for row in deep["folders"]], ["Cd"])
 
     def test_folder_search_cursor_continuation_carries_the_match_set(self):
