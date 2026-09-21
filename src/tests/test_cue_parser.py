@@ -329,6 +329,27 @@ class CueParserTests(unittest.TestCase):
                  "    INDEX 01 04:00:00", "    INDEX 01"]
         tracks = parse_cue_structure(lines, "album")["tracks"]
         self.assertEqual(tracks[0]["start"], 240.0)
+
+    def test_a_repeated_index_01_keeps_the_first_start(self):
+        # R138 (ruling X10=A): a sheet carrying two parseable `INDEX 01` lines
+        # for one track keeps the first and rejects the rest. Both values are
+        # deliberately legal, because cue_time_seconds() answers 0.0 for
+        # anything malformed - an unparseable repeat could not tell "keep the
+        # first" apart from "always zero".
+        lines = ['FILE "disc.flac" FLAC', "  TRACK 01 AUDIO",
+                 "    INDEX 01 04:00:00", "    INDEX 01 08:00:00"]
+        tracks = parse_cue_structure(lines, "album")["tracks"]
+        self.assertEqual(tracks[0]["start"], 240.0)
+
+    def test_the_repeated_index_guard_resets_for_the_next_track(self):
+        # A guard that never reset would hold the first track's answer for the
+        # whole sheet, so later tracks would fall back to start 0.0.
+        lines = ['FILE "disc.flac" FLAC',
+                 "  TRACK 01 AUDIO", "    INDEX 01 04:00:00", "    INDEX 01 08:00:00",
+                 "  TRACK 02 AUDIO", "    INDEX 01 10:00:00", "    INDEX 02 12:00:00"]
+        tracks = parse_cue_structure(lines, "album")["tracks"]
+        self.assertEqual([track["start"] for track in tracks], [240.0, 600.0])
+
     def test_non_iterable_lines_fall_back_to_empty_source(self):
         self.assertEqual(parse_cue_structure(object(), "fallback"), {"album": "fallback", "album_artist": "未知艺术家", "tracks": []})
 

@@ -45,6 +45,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "metadata_orphan_grace_days": 7,
         "metadata_max_pending_jobs": 20000,
         "metadata_cache_max_bytes": 512 * 1024 * 1024,
+        "metadata_lyrics_cache_max_bytes": 8 * 1024 * 1024,
         "metadata_fetch_workers": 3,
         "metadata_fingerprint_enabled": False,
         "metadata_fpcalc_path": "",
@@ -123,6 +124,7 @@ def load_config(path: str) -> Dict[str, Any]:
     bounds = {
         "metadata_max_pending_jobs": (20000, 100, 200000),
         "metadata_cache_max_bytes": (512 * 1024 * 1024, 16 * 1024 * 1024, 8 * 1024 * 1024 * 1024),
+        "metadata_lyrics_cache_max_bytes": (8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
         "metadata_fetch_workers": (3, 1, 6),
         "metadata_tag_idle_interval_ms": (250, 50, 5000),
         "metadata_tag_playing_interval_ms": (2000, 250, 10000),
@@ -171,6 +173,7 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         "metadata_orphan_grace_days": _bounded_int(config.get("metadata_orphan_grace_days"), 7, 0, 90),
         "metadata_max_pending_jobs": _bounded_int(config.get("metadata_max_pending_jobs"), 20000, 100, 200000),
         "metadata_cache_max_bytes": _bounded_int(config.get("metadata_cache_max_bytes"), 512 * 1024 * 1024, 16 * 1024 * 1024, 8 * 1024 * 1024 * 1024),
+        "metadata_lyrics_cache_max_bytes": _bounded_int(config.get("metadata_lyrics_cache_max_bytes"), 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
         "metadata_fetch_workers": _bounded_int(config.get("metadata_fetch_workers"), 3, 1, 6),
         "metadata_fingerprint_enabled": _strict_bool(config.get("metadata_fingerprint_enabled"), False),
         "metadata_fpcalc_path": _bounded_text(config.get("metadata_fpcalc_path"), 512),

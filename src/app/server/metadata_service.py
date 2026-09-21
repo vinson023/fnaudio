@@ -45,7 +45,7 @@ from metadata_provider_payload import (
     candidate_mappings, candidate_payload_is_sequence, candidate_text_is_corrupt,
 )
 from metadata_lyrics_cache_policy import cached_lyrics_is_fresh
-from metadata_local_lyrics_cache import LocalLyricsCache, combined_snapshot
+from metadata_local_lyrics_cache import LocalLyricsCache, bytes_limit_from_config, combined_snapshot
 from metadata_match_policy import normalize_text, provider_score
 from metadata_retry_policy import should_auto_retry_failed
 from metadata_request_budget import (
@@ -613,7 +613,10 @@ class MetadataProviders:
         self._candidate_cache_lock = threading.RLock()
         self._candidate_cache_hits = 0
         self._candidate_cache_misses = 0
-        self._local_lyrics_cache = LocalLyricsCache(lambda path: read_local_lyrics(path, self.config))
+        self._local_lyrics_cache = LocalLyricsCache(
+            lambda path: read_local_lyrics(path, self.config),
+            max_bytes=bytes_limit_from_config(self.config),
+        )
 
     def reset_provider_cooldowns(self):
         """Let an explicit user retry probe cooled providers immediately."""
@@ -1968,7 +1971,10 @@ class MetadataService:
         # Lyrics polling can hit this path every ~900ms while a provider job
         # is pending. Cache the bounded local probe by file identity so an
         # embedded-tag extraction/sidecar read is not repeated for every poll.
-        self._local_lyrics_cache = LocalLyricsCache(lambda path: read_local_lyrics(path, self.config))
+        self._local_lyrics_cache = LocalLyricsCache(
+            lambda path: read_local_lyrics(path, self.config),
+            max_bytes=bytes_limit_from_config(self.config),
+        )
 
     def _read_local_lyrics_cached(self, path, version_hint=None):
         return self._local_lyrics_cache.read(path, version_hint)
