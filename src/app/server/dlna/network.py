@@ -9,6 +9,7 @@ import time
 import urllib.request
 from collections import OrderedDict
 from urllib.parse import urlparse
+from resource_limits import ConcurrencyGate
 
 MAX_DLNA_XML_BYTES = 1024 * 1024
 MAX_DLNA_TIMEOUT_SECONDS = 10.0
@@ -26,6 +27,23 @@ _LAN_ADDRESS_CACHE_LOCK = threading.Lock()
 # peer out, because this feeds the DLNA diagnostics payload that already has a contract
 # against exposing device identity.
 _LAN_ADDRESS_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0}
+# ``getaddrinfo`` has no timeout of its own, and on the delivery path it runs *before*
+# the request timeout can apply.  Measured on the NAS against a resolver that accepts
+# queries and never answers (docs/external-acceptance.md, entry L1860): one lookup held
+# ``fetch_lan(..., timeout=3)`` for fifteen to twenty seconds, five times the budget the
+# caller asked for, and the action worker stayed occupied for all of it, unavailable to
+# every other peer.  Caching answers removes the repeat lookups but not the first one
+# after a TTL expires, so the lookups that remain have to be bounded where they run.
+RESOLVER_WAIT_SECONDS = 1.0
+# The lookup itself cannot be interrupted - there is no way to stop a ``getaddrinfo``
+# already in flight - so bounding only the caller would trade one unbounded cost for
+# unbounded threads.  This gate is the count that stops that: a slot is held for as long
+# as a lookup really runs, not for as long as a caller is willing to wait, which keeps
+# four stuck lookups as the ceiling -- the same quarter-of-the-pool figure the GENA
+# accept path settled on for the identical reason.  Once they are all stuck, a fifth
+# action is refused outright instead of queueing behind a name that will not answer.
+RESOLVER_IN_FLIGHT_LIMIT = 4
+_RESOLVER_GATE = ConcurrencyGate("dlna-address-resolution")
 
 
 def _cache_key(hostname, port):
@@ -68,7 +86,7 @@ def lan_address_cache_status():
 def _cached_lan_addresses(hostname, port):
     """Return one recently validated address set for this endpoint, resolving at most once per TTL.
 
-    Only results produced by :func:`_lan_addresses` are ever stored, so every
+    Only answers produced by :func:`_lan_addresses_within_budget` are ever stored, so every
     address here was classified as a LAN private/link-local address by this
     process, and :func:`fetch_lan` pins its socket to one of them: reusing the
     entry cannot send traffic to an address a fresh resolution would not have
@@ -78,7 +96,9 @@ def _cached_lan_addresses(hostname, port):
 
     The lock guards only the two dictionary operations. ``getaddrinfo`` has no
     timeout of its own, so it runs with the lock released: holding it across the
-    resolver would let one broken host stall every other DLNA request.
+    resolver would let one broken host stall every other DLNA request.  Releasing
+    the lock is not the same as bounding the wait, which is what
+    :func:`_lan_addresses_within_budget` adds.
     """
     key = _cache_key(hostname, port)
     with _LAN_ADDRESS_CACHE_LOCK:
@@ -88,7 +108,7 @@ def _cached_lan_addresses(hostname, port):
             _LAN_ADDRESS_CACHE_STATS["hits"] += 1
             return entry[1]
         stale = entry is not None
-    addresses = _lan_addresses(hostname, port)
+    addresses = _lan_addresses_within_budget(hostname, port)
     with _LAN_ADDRESS_CACHE_LOCK:
         # Counting happens inside the lock because the lock already guards the entry these
         # numbers describe; what keeps the sections short is that none of them does I/O.
@@ -160,6 +180,50 @@ def _lan_addresses(hostname: str, port: int):
         if not (ip.is_private or ip.is_link_local) or ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
             raise ValueError("DLNA endpoint must resolve only to LAN addresses")
     return tuple(sorted(addresses))
+
+
+def _lan_addresses_within_budget(hostname: str, port: int):
+    """Resolve and classify one endpoint, giving up if the resolver does not answer.
+
+    A successful call returns exactly what :func:`_lan_addresses` returns, and a
+    lookup that fails for a real reason raises that reason verbatim, so the
+    delivery path keeps one ``ValueError`` shape for every refusal.  Two further
+    ``ValueError``s are this function's own: the lookup did not answer within
+    ``RESOLVER_WAIT_SECONDS``, and all ``RESOLVER_IN_FLIGHT_LIMIT`` lookups are
+    already running.  Those two are what stop a dead name from occupying an
+    action worker for the full resolver timeout.
+
+    A lookup that answers after the caller gave up is dropped rather than
+    remembered.  Storing it would let a thread nobody is waiting for write an
+    entry behind the caller's back, and the common reason for giving up is a peer
+    whose name no longer resolves - exactly the case where the next action should
+    re-resolve instead of trusting a late answer.
+    """
+    if not _RESOLVER_GATE.try_acquire(RESOLVER_IN_FLIGHT_LIMIT):
+        raise ValueError("DLNA endpoint address resolution is busy")
+    answered = threading.Event()
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(_lan_addresses(hostname, port))
+        except BaseException as error:
+            # Relayed unchanged: a lookup that failed is not a lookup that timed out,
+            # and the message the caller compares against comes from the classifier.
+            outcome.append(error)
+        finally:
+            # Set after the outcome is recorded, so a caller returning from
+            # `answered.wait()` always finds the one entry it is about to read.
+            answered.set()
+            _RESOLVER_GATE.release()
+
+    threading.Thread(target=run, daemon=True, name="dlna-address-resolution").start()
+    if not answered.wait(RESOLVER_WAIT_SECONDS):
+        raise ValueError("DLNA endpoint host cannot be resolved in time")
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):

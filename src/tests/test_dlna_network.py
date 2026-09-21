@@ -1043,3 +1043,153 @@ class DlnaLanAddressCacheTests(unittest.TestCase):
     def test_soap_action_rejects_a_non_text_endpoint_as_a_value_error(self):
         with self.assertRaisesRegex(ValueError, "text URL"):
             control_point.soap_request(None, "urn:schemas-upnp-org:service:AVTransport:1", "Play")
+
+class DlnaResolverBudgetTests(unittest.TestCase):
+    """A delivery action waits a bounded time for the resolver, not the whole resolver timeout.
+
+    ``socket.getaddrinfo`` has no timeout of its own, and it runs before the request
+    timeout in ``fetch_lan`` can apply, so an unbounded lookup on a peer whose name
+    hangs means the action worker is gone for the full resolver wait.  Measured on
+    the NAS (docs/external-acceptance.md, entry L1860) that wait is fifteen to twenty
+    seconds against a three second budget.  These tests hold the two things that bound
+    it: the caller stops waiting, and the lookups that keep running are counted.
+    """
+
+    URL = "http://speaker.local:49152/desc.xml"
+
+    class _Resolver:
+        gaierror = OSError
+        SOCK_STREAM = 1
+
+        def __init__(self, addresses):
+            self.addresses = list(addresses)
+            self.seen = []
+
+        def getaddrinfo(self, host, port, type=None):
+            self.seen.append((host, port))
+            return [(2, 1, 6, "", (address, port)) for address in self.addresses]
+
+    def setUp(self):
+        network.clear_lan_address_cache()
+        self.addCleanup(network.clear_lan_address_cache)
+
+    def _gate_is_quiet(self, within=10.0):
+        """Wait for every lookup the tests started to hand its slot back."""
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            if network._RESOLVER_GATE.snapshot()["active"] == 0:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_the_bounds_stay_inside_the_request_budget_and_the_worker_pool(self):
+        # Pinning the two numbers is the point: a bound quietly raised to the resolver
+        # wait would keep this file green while restoring the behaviour it guards.
+        self.assertLessEqual(
+            network.RESOLVER_WAIT_SECONDS, 2.0,
+            "a delivery action must not wait longer on a name than it is allowed to wait on the request")
+        self.assertGreaterEqual(network.RESOLVER_WAIT_SECONDS, 0.1)
+        self.assertLess(
+            network.RESOLVER_IN_FLIGHT_LIMIT, 32 // 2,
+            "the bound must leave most of the worker pool free")
+        self.assertGreaterEqual(network.RESOLVER_IN_FLIGHT_LIMIT, 1)
+
+    def test_a_prompt_lookup_and_a_refusal_both_travel_the_wrapper_unchanged(self):
+        good = self._Resolver(["198.51.100.20"])
+        with mock.patch.object(network, "socket", good):
+            self.assertEqual(
+                network._lan_addresses_within_budget("speaker.local", 49152), ("198.51.100.20",))
+        self.assertEqual(good.seen, [("speaker.local", 49152)])
+        bad = self._Resolver(["8.8.8.8"])
+        with mock.patch.object(network, "socket", bad):
+            with self.assertRaisesRegex(ValueError, "LAN addresses"):
+                network._lan_addresses_within_budget("evil.example", 49152)
+        self.assertEqual(network.lan_address_cache_size(), 0)
+
+    def test_a_stalled_resolver_is_given_up_on_and_its_late_answer_is_dropped(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class StalledResolver(self._Resolver):
+            def getaddrinfo(self, host, port, type=None):
+                self.seen.append((host, port))
+                entered.set()
+                release.wait(30)
+                return [(2, 1, 6, "", ("198.51.100.20", port))]
+
+        resolver = StalledResolver(["198.51.100.20"])
+        opener = mock.Mock()
+        with mock.patch("dlna.network.urllib.request.build_opener", return_value=opener), \
+                mock.patch.object(network, "socket", resolver):
+            began = time.monotonic()
+            with self.assertRaisesRegex(ValueError, "resolved in time"):
+                fetch_lan(self.URL, timeout=3)
+            waited = time.monotonic() - began
+            self.assertTrue(entered.wait(5.0), "the resolver was never reached")
+            self.assertLess(
+                waited, network.RESOLVER_WAIT_SECONDS + 0.6,
+                "the caller stayed with a resolver that never answered")
+            self.assertEqual(opener.open.call_count, 0, "no request may go out behind a stalled lookup")
+            self.assertEqual(network.lan_address_cache_size(), 0, "a timed out lookup is not remembered")
+            self.assertEqual(
+                network._RESOLVER_GATE.snapshot()["active"], 1,
+                "the slot must stay with the lookup that is still stalled, not return to the caller that gave up")
+            release.set()
+            self.assertTrue(self._gate_is_quiet(), "a finished lookup never handed its slot back")
+        # The answer arrived after everyone had stopped asking for it.  Keeping it would
+        # put an address in front of the next action that no caller had waited for.
+        self.assertEqual(network.lan_address_cache_size(), 0, "a late answer is dropped, not cached")
+        self.assertEqual(resolver.seen, [("speaker.local", 49152)])
+
+    def test_a_saturated_resolver_is_refused_without_resolving_or_queueing(self):
+        limit = network.RESOLVER_IN_FLIGHT_LIMIT
+        held = 0
+
+        def give_back():
+            for _ in range(held):
+                network._RESOLVER_GATE.release()
+
+        self.addCleanup(give_back)
+        for _ in range(limit):
+            self.assertTrue(network._RESOLVER_GATE.try_acquire(limit))
+            held += 1
+        resolver = self._Resolver(["198.51.100.20"])
+        opener = mock.Mock()
+        with mock.patch("dlna.network.urllib.request.build_opener", return_value=opener), \
+                mock.patch.object(network, "socket", resolver):
+            began = time.monotonic()
+            with self.assertRaisesRegex(ValueError, "resolution is busy"):
+                fetch_lan(self.URL, timeout=3)
+            waited = time.monotonic() - began
+        self.assertLess(waited, 0.2, "an overflow must be refused at once, not queued behind a dead name")
+        self.assertEqual(resolver.seen, [], "no lookup runs while every slot is taken")
+        opener.open.assert_not_called()
+
+    def test_a_caller_that_gave_up_hands_its_slot_back_only_when_the_lookup_ends(self):
+        # What the gate bounds is lookups still running, not callers still waiting. A caller
+        # that handed its slot back when it gave up would let every later action against a
+        # dead name start another resolver thread, which is the exhaustion the gate exists to
+        # refuse, so the slot travels with the worker until the resolver finally answers.
+        entered = threading.Event()
+        release = threading.Event()
+
+        class StalledResolver(self._Resolver):
+            def getaddrinfo(self, host, port, type=None):
+                self.seen.append((host, port))
+                entered.set()
+                release.wait(30)
+                return [(2, 1, 6, "", ("198.51.100.20", port))]
+
+        resolver = StalledResolver(["198.51.100.20"])
+        self.assertTrue(self._gate_is_quiet(), "a previous test left a slot held")
+        with mock.patch.object(network, "socket", resolver):
+            with self.assertRaisesRegex(ValueError, "resolved in time"):
+                network._lan_addresses_within_budget("speaker.local", 49152)
+            self.assertTrue(entered.wait(5.0), "the resolver was never reached")
+            snapshot = network._RESOLVER_GATE.snapshot()
+            self.assertEqual(
+                snapshot["active"], 1,
+                "the slot belongs to the lookup still running, not to the caller that left")
+            self.assertEqual(snapshot["waiting"], 0, "a given-up lookup must not build a queue")
+            release.set()
+            self.assertTrue(self._gate_is_quiet(), "the slot came back only when the lookup ended")
