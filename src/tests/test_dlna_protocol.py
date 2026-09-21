@@ -1515,14 +1515,27 @@ class DlnaProtocolTests(unittest.TestCase):
                    for index in range(limit * 4)]
         for thread in threads:
             thread.start()
-        deadline = time.monotonic() + 5.0
+        # The release has to wait until every flood thread is accounted for at the bound:
+        # inside the callback, queued behind it, or already refused.  Stopping at "peak
+        # reached the limit" let the main thread unblock the holders while the slowest
+        # arrivals were still between the barrier and subscribe(), and those arrivals then
+        # found a free slot: the admitted total came out above limit + waiters for reasons
+        # that have nothing to do with the bound this test exists to hold.
+        flood = limit * 4
+        deadline = time.monotonic() + 10.0
+        accounted = 0
         while time.monotonic() < deadline:
-            with guard:
-                if peak >= limit:
-                    break
+            gate = events._validation_gate.snapshot()
+            accounted = gate["active"] + gate["waiting"] + len(refusals)
+            if accounted >= flood:
+                break
             time.sleep(0.01)
         with guard:
             observed_peak = peak
+        self.assertEqual(
+            accounted, flood,
+            "only %d of %d flood threads reached the bound, so the verdict below is not a"
+            " measurement of the bound" % (accounted, flood))
         release.set()
         for thread in threads:
             thread.join(30)
