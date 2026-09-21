@@ -818,40 +818,19 @@
 
 ## 宿主 MediaSession（私有 participant 协议逆向与动态验收）
 
-- [ ] 三星 S9+ 已完成 `0.2.34` 最新源码 APK 登录、远程通知、媒体键和进程重启恢复基线验收；
-  仍需补充锁屏界面实际按键交互，以及制造延迟旧响应验证 generation/engine epoch/command ticket
-  在真机日志中的拒绝原因。
+2026-09-21（R141 设备段处置 R1）：本节 10 条设备／外部待办已逐字节迁至 [`docs/external-acceptance.md`](docs/external-acceptance.md) 第一节；条目本体此后只存放在该文件一处，本节不再新增设备项，逐条处置结论记在该文件内，不回写本文件。
+
 - [x] S9+ Android instrumentation 回归（2026-09-01）：13 项中 2 项因 fnOS 私有服务未导出或
   缺少真实 NAS 队列而跳过，0 项失败；不把环境跳过项计作宿主私有能力已实现。
 
-- [ ] 构建环境仍阻断 ARM64 APK：Gradle 9.6.1 在 Windows 无法建立 loopback/Unix-domain pipe；需切换
-  可用构建主机或修复 Java/Gradle 通信后，才能把新增诊断安装到小米 15 Pro。
-
-- [ ] 解决 Windows Gradle loopback 通信失败，生成包含 bridge 诊断的 ARM64 APK 后再做小米 15 Pro 运行态验证；旧 `0.2.33` 不作为新代码证据。
-
 - [x] 按当前产品要求恢复 fnOS `iframe + micro_app` 启动容器；保留 fnAudio CGI 认证代理。
   该入口调整不宣称可接管飞牛 APP 的私有 MediaSession。
-- [ ] 在飞牛 APP WebView 中执行 `fnAudioMediaSessionDiagnostics()`，记录不同版本 WebView 的支持结果。
-- [ ] 在小米 15 Pro 的官方 `trim.music` 实播流程中，捕获 `registerParticipant`、`synchronize` 和
-  `requestActivation` 的真实 StandardMessageCodec 载荷、调用方向与 participant 身份字段；当前已确认
-  channel 名和官方 `audio_service` 运行态，但未获得 payload。
-- [ ] 私有通道接入边界：已确认普通 FPK WebView 无法取得 Flutter `BinaryMessenger`，待继续审计
-  是否存在 WebView 注入的受控播放 handler 或 fnOS 原生 participant 扩展点；在此之前保持 fnAudio
-  自有 Media3/标准 Web MediaSession，不把宿主私有能力标记为已复用。
-- [ ] 在小米 15 Pro 的 fnAudio 页面运行时记录新增 `genericWebViewBridgeDetected` 诊断，确认
-  飞牛不同入口是否注入通用 bridge；仅观察，不调用未知 `callHandler`。
-- [ ] 已解出 1.35.2 participant 模型字段，继续审计 `Lz72/Ljc` 对 participant ID、包签名、内置模块或
-  其他身份的门禁；在证明可被第三方安全接入前，不向 fnAudio 发送或伪造私有 Pigeon 消息。
-- [ ] 验证飞牛 APP 对非官方 appId/URL/participant 的身份门禁：仅做无破坏、可回滚的观察，不向
-  fnAudio 发送猜测的私有 Pigeon 消息。
 - [x] 增加公开宿主会话适配器与能力诊断：宿主显式暴露标准桥接对象时可接入握手、同步和激活；
   当前飞牛 APP 未发现该对象，因此不会改变现有播放行为。
 - [x] 公开桥接激活生命周期：按曲目上下文幂等调用 `requestActivation`，切歌重建上下文，
   无当前曲目时调用 `release`；已通过 Node 适配器回归，未替代飞牛 APP 动态接管验收。
 - [x] 公开桥接异常隔离：宿主对象 getter、缺失方法和异步拒绝均不会阻断页面启动；失败原因纳入
   有界诊断结果。
-- [ ] 在获得真实协议和身份边界后，评估能否为 fnAudio 建立宿主 participant；若无法建立，保留现有
-  等价 MediaSession 架构，不能伪称已经复用飞牛私有通道。
 - [x] 小米 15 Pro 外部入口对照：确认直接 `ACTION_VIEW` 打开 `/music/` 只进入系统浏览器；
   `trim://app.com/openShareUrl` 仅能唤起飞牛 APP 主 Activity，尚未获得播放 participant 能力。
   该结果作为入口边界证据，不替代私有通道 payload 动态抓取；路由静态链路见
@@ -890,6 +869,8 @@
   可直接调用的公共 API。真实小米 15 Pro 验收需在当前真实设备限制解除后执行。
 
 ## Android 等价 MediaSession 持续目标
+
+2026-09-21（R141 设备段处置 R1）：本节 6 条设备／外部待办已逐字节迁至 [`docs/external-acceptance.md`](docs/external-acceptance.md) 第二节；条目本体此后只存放在该文件一处，本节不再新增设备项，逐条处置结论记在该文件内，不回写本文件。
 
 - [x] 会话建立时序：远程模式先建立 MediaSession，再绑定播放状态；S9+ 日志含
   `session_create begin` → `session_ready media_session` → `remote_enable ready`。
@@ -981,16 +962,6 @@
 
 - [x] x86_64 Android 模拟器路线：按用户要求放弃，不作为验收目标；后续仅以 arm64 设备验收。
 - [x] x86_64 AVD system image/APK ABI问题：已记录并关闭该路线，不再投入修复资源。
-- [ ] 在 Gradle loopback 问题解除后生成并安装最新 arm64 APK，再在小米 15 Pro 验收六项会话
-  行为；当前仅完成既有 0.2.33 安装的启动无崩溃检查。
-- [ ] 小米设备播放态动态验收：登录并开始远程播放后检查 dumpsys MediaSession、通知栏、锁屏
-  媒体键和进程回收；登录页空闲无活动会话属于预期状态。
-- [ ] 解除 Gradle loopback 宿主限制：JDK 17 与 JDK 25 均复现，需更换构建宿主或修复本机
-  Windows 本地进程通信后，才能生成最新 arm64 APK。
-- [ ] Android 工程编译门禁：本机 Gradle 9.6.1 启动时无法建立 loopback connection，需在
-  可用 Gradle/JDK 主机重跑 `:app:testDebugUnitTest`；当前仅有源码静态和 Node 契约证据。
-- [ ] iOS/鸿蒙动态验收：迁移到 macOS/Xcode 或 HarmonyOS DevEco 主机后执行；Windows 本机
-  不具备对应模拟器运行条件。
 
 - [x] 飞牛 APP 宿主 MediaSession 静态对齐：对比 1.33.4/1.35.2 `audio_service`，为 fnAudio 补齐 session activity、远程 WakeLock、START_STICKY 与 task-removed 前台保活；待 Android 动态设备验收。
 
@@ -1180,8 +1151,6 @@
 - [x] MPD/AirPlay 进程探测读取边界：`/proc/*/cmdline` 统一采用 4 KiB 有界读取并保留原匹配语义；已通过专项及完整离线回归。
 
 - [x] 本地进程/配置读取边界：AirPlay proc 探测与 MPD 配置读取均有明确字节上限，避免异常输入放大内存；已通过专项及完整离线回归。
-
-- [ ] 0.2.33 历史产物完整 provenance：复核脚本确认缺少 staged `SOURCE_PROVENANCE.json`，需保留为不可恢复历史证据，不得伪造补齐。
 
 - [x] 元数据长期计数边界：dropped/tag/status-cache 计数统一饱和并隔离异常旧值，避免可观测性数据无界增长；已通过专项及完整离线回归。
 
@@ -1830,52 +1799,27 @@
 
 ## P2：部署与外部系统验收
 
+2026-09-21（R141 设备段处置 R1）：本节 3 条设备／外部待办已逐字节迁至 [`docs/external-acceptance.md`](docs/external-acceptance.md) 第三节；条目本体此后只存放在该文件一处，本节不再新增设备项，逐条处置结论记在该文件内，不回写本文件。
+
 - [x] FFmpeg、转码、封面预热和元数据待办均使用有界资源模型；整库封面预热已分页、低速、可取消并让位于交互播放，列表可见封面预热也已改为每缓存目录单 worker、96 项有界去重队列。health/diagnostics 通过共享快照公开 FFmpeg 与封面预热的脱敏队列、活跃/等待、峰值、拒绝及丢弃指标。
 - [x] 版本、服务头、UI 缓存键和 Android `versionCode`/`versionName` 统一；源码卫生、结构化日志、状态并发合并、DLNA Browse/SystemUpdateID 均有自动回归。
 - [x] App Center manifest、安装/设置向导和生命周期回调的端口契约已自动校验；升级时旧音乐路径使用结构化 JSON 迁移，不再依赖空格敏感的 `grep/sed`。
-- [ ] 将 CI 工作流推送到实际远程仓库并完成首次云端运行。目前仓库未配置 Git remote，因此不能伪造云端执行结果。
-- [ ] 核实 fnOS 防火墙/反向代理隔离，并在目标固件抓取 `user.login`、`user.authToken`、`user.tokenLogin` 与 CGI token 交接的真实协议边界。
-- [ ] 在 UAPP、中子和 BubbleUPnP 实体客户端复测 DMS Browse、分页、封面和播放；协议自动化已覆盖空 Search 能力、DLNA DIDL 命名空间和公开 JPEG_TN 封面路由。
 - [x] JRiver Media Center 36 主动投送已复测：标准 `upmpdcli` 兼容 DIDL 和公开 JPEG 封面端点均正常，JRiver 能播放音频但不请求 `albumArtURI`，其 MCWS 远程条目取图返回 HTTP 500。通用 DLNA 控制端已无可继续修正项；若必须让 JRiver 显示，只能另行评估其专用 MCWS/vendor 集成。
 - [x] fnpack 构建会在每个发布目录生成 `SOURCE_MANIFEST.sha256` 与 `SOURCE_PROVENANCE.json`，记录实际暂存源树、asset build、Git 基线及工作树是否有未提交内容；根目录源码清单另由离线回归实时核对，删除会话后可据此核对或复现 FPK 来源。内容派生的静态资源 build 与 FPK 解包校验会从 `index.html` 自动发现所有带构建标记的本地 CSS/JS，避免同版本重打包或新增模块留下旧 Web/WebView 缓存。
 - [x] 发布 provenance 同时记录实际 fnpack 二进制 SHA-256；离线门禁会解析全部 PowerShell 工具脚本，打包前即可阻止脚本语法损坏。
 
 ## P3：可维护性清理
 
+2026-09-21（R141 设备段处置 R1）：本节 1 条设备／外部待办已逐字节迁至 [`docs/external-acceptance.md`](docs/external-acceptance.md) 第四节；条目本体此后只存放在该文件一处，本节不再新增设备项，逐条处置结论记在该文件内，不回写本文件。
+
 - [x] 音乐库路径许可、规范化、合并与配置写入统一归属 `library.py`；设置 API、扫描与 SQLite 使用同一身份规则。
 - [x] 过期 Spotify 配置已移除；已知乱码、重复字典键、重复作用域定义和不可达控制流由源码卫生测试持续拦截。
-- [ ] 继续按可测试边界拆分 `server.py`、`library.py` 与 `app.js`。播放队列请求归一化与 MPD 同步判定已抽至 `server/playback_queue_policy.py`；SQLite 搜索索引模式投影与 FTS 使用阈值已抽至 `server/library_search_index_policy.py`；循环状态、中文文案和图标 SVG 已统一抽至 `ui/repeat_mode_policy.js`，均通过独立回归；曲目展示、队列分页/重绘决策、页面同步调度、封面懒加载与歌曲表头展示已分别抽至 `ui/track_presentation.js`、`ui/queue_presentation.js`、`ui/ui_sync_scheduler.js`、`ui/cover_load_scheduler.js`、`ui/track_table_presentation.js`；服务端曲目 API 表示、分页请求规范（含分组/目录共享可选页窗口）、短期分页缓存、健康响应组装、HTTP worker 指标投影、播放目标响应、UPnP 设备选择、音乐库状态、路径规则、扫描控制、写入前归一化、元数据文本规范、原生音频容器读取和转码资源快照已分别抽至对应纯模块；前端分页请求键与响应缓存/inflight 加载器已抽至 `ui/library_load_key.js`、`ui/library_response_loader.js`；SQLite 初始化与失效边界具备独立回归。后续不得为降低行数做机械移动，每次抽取必须保留独立回归。
 - [x] 历史检查目录和构建残留已归档至 `artifacts/_scratch/`，并纳入 Git 忽略规则；正式发布包和测试缓存保留用于回滚与复现。
 
 ## P0：外部验收（离线不可验证）：必须依赖真实设备或外部材料
 
-- [ ] USB DAC：物理热插拔、设备重连以及实体 Android 后台或息屏长时控制。跨采样率切歌、暂停/恢复/seek 已在 TEAC UD-301 验收通过。
-- [ ] DSD：使用 DoP-only DAC 验证 DSF/DFF 无隐式 PCM fallback。
-- [ ] DLNA Renderer：使用真实原生 DSD Renderer 验证源码直推、采样率保持、自动下一曲和断开恢复。
-- [ ] AirPlay：在具备 `shairport-sync`/`nqptp` 的环境验证 Receiver、元数据、ALSA 租约和后台播放。
-- [ ] Android：至少两台设备验证登录/历史、网络切换、前后台/息屏自动下一首、通知/锁屏封面、耳机拔出、蓝牙媒体键、HTTP/HTTPS/IPv6/反向代理/token 过期和多版本升级。
-- [ ] FN Connect 中继：在 ARM64 真机按 UID 阻断全部公网 NAS 候选，验证 fnAudio 自身 Tpps 回环端口、FN ID 登录、历史恢复、网络切换、后台播放和退出清理。x86_64 模拟器只作为动态配置与安全回退门禁，不能替代 Go JNI 真机验收。
-- [ ] App Center：在真实 fnOS 完成全新安装、端口修改、停止/启动、保留数据卸载、清除数据卸载和安装后权限检查。
-- [ ] 取得 `0.1.213` 之前的 NAS 快照或可信音乐库副本后，再执行 Tag 审计逐文件恢复。没有可信来源时不得写回空 Tag 或猜测数据。
-- [ ] 2026-09-18：R69 真机项：本轮用 2.0 s 打桩代表解析卡住，真实时长取决于设备 resolver 配置（Windows 默认 timeout×attempts，NAS 上还有 search 域拼接），需要在真机上确认一次最坏等待；同时确认投递侧 `fetch_lan(request, timeout=3)` 在同样场景下确实是有限等待，不会把 worker 长期占住。
-- [ ] 2026-09-18：R68 真机项：本轮的相对 seek 只在桩后端上验证（`_status` 返回固定 position）。MPD 侧 `seek <id> <time>` 是绝对语义，`renderer.py` 下发的 `control_position` 也是绝对值，需要真机确认连续两次相对快进不会被后端回读的位置投影拉回原地（`snapshot()` 的 position 来自后端，存在一个自然的读改写窗口）。
-- [ ] 2026-09-18：R67 真机项：只读挂载与 ENOSPC 下的封面降级只能在本机 mock（把 `_atomic_bytes` 打桩抛 OSError），真实 NAS 上 SMB/NFS 的失败形态可能是半写、EACCES 或长时间阻塞，本轮的 try/except 覆盖面需要在设备上复核一次。
-- [ ] 2026-09-18：R66 新开（真机项）：子代理审计里凡是依赖真实设备行为的结论一律未采信也未复现；`Seek`/`Unit`、UTF-16 SOAP 客户端这两条需要一台真实控制器确认线上到底发什么编码与哪种 Unit，再决定兼容面宽严。
-- [ ] 2026-09-18：R64 新开：真机验证 OS 媒体面板在投送期间的归属。MediaSession 的 `playbackState`/`positionState` 现在跟受控端一致（与主控件同口径，本轮判定保留），但媒体键最终会走 `setActionHandler` 的哪条分支没有证据；需要一次设备侧取证确认不会出现「面板显示投送、按键操作本机」的分裂。
-- [ ] 2026-09-18：R63 新开：10 秒窗口需要一次真机取证。两条待验：其一，低端 WebView 上远端 SSE 断流后 `refreshRemoteStatus` 的 5 秒兜底是否真在跑（若被节流或请求本身超 5 秒，健康路径就会被夹住，表现为进度条每 10 秒顿一下）；其二，长时间隐藏后恢复的第一帧少报最多 10 秒是否可接受。取到 trace 之前只报结构收益，不宣称观感改善。
-- [ ] 2026-09-18：R63 遗留（接 R62 那条真机项）：`shutdown_runtime` 只在 `server.main()` 的 `finally` 里执行，进程内没有 SIGTERM 处理器，飞牛以信号停应用时那段清理不会跑；这与本轮「UI 拿不到状态」是同一类问题的两侧：一边是进程停止路径没有入口，一边是状态失败没有可见性。取证一次设备侧停止路径后再决定补信号处理器还是压缩上界。
-- [ ] 2026-09-18：R62 新开：关闭预算变长之后的宿主停止宽限期缺真机证据。修复后 drain 最坏 31 秒（`MAX_JOB_BUDGET_SECONDS + 1`），实测有 10.8 秒这一档；而 `shutdown_runtime` 只在 `server.main()` 的 `finally` 里执行，进程内没有 SIGTERM 处理器，也就是说飞牛以信号停应用时这段清理根本不会跑。需要先取证：设备侧停应用走的是哪条路径、给多少宽限；若确认收不到优雅退出信号，要么给 `server.py` 装一个受控停止入口（信号处理器调用 `server.shutdown()`），要么把 31 秒上限压到宿主宽限之内，别让「正确但永远执行不到」的清理冒充可靠性。
-- [ ] 2026-09-18：R61 遗留：真机确认。离线只能证明「轮询会画传输行、同值不再触 DOM」（写次数断言），观感需要低端 WebView 验三条：投送时进度条是否真的走动、受控端暂停时图标是否立刻变化、以及 500 ms tick 现在对 incoming 也生效后功耗是否可感。拿到前后证据前只报结构收益。
-- [ ] 2026-09-18：R61 新开：`setStyleVarIfChanged` 的同值短路依赖 `style.getPropertyValue()` 的序列化口径。若真机某 WebView 对自定义属性补空白，比较恒不相等，`--seek-fill`/`--marquee-distance` 会退回每轮写入（行为与 R61 之前一致，无正确性风险，只是白做优化）。取到设备 trace 后若确认，改为在节点上记「上次请求值」再比较，口径同 `dataset.playing` 与 `dataset.coverSource`。
-- [ ] 2026-09-18：R60 遗留：闪烁是否被根治缺设备证据。离线侧只能证明「同一地址不再触 DOM」（`vm` 对拍的是写次数），观感需要在低端 WebView 上验两条：DLNA 输入会话激活 30 秒内 `#nowCover` 是否仍闪、后台取歌词的 900 ms 轮询期间 `#lyricsCover` 是否仍闪。拿到前后对比之前只报结构收益。
-- [ ] 2026-09-18：R59 遗留：收益数字还缺两项真机测量。其一，一页 120 行里实际有多少行走 `metadata/artwork/` 这条通道（取决于曲库中无内嵌封面且已拿到 provider 封面的比例）；其二，低端 WebView 解码 500x500 以上原图的真实代价。没有这两项，R59 只能报「按行的最坏下载量从 8 MiB 级降到 160 像素瓦片」这种结构收益，报不出端到端毫秒。取证路径：`/api/health` 的封面计数 + 真机抓取一次首屏的 Network 面板。
-- [ ] 2026-09-18：R56 之后 `parse_dac_stream_caps()` 的两条采样率正则仍可疑，缺真机样本不改。它只认紧接冒号的 `Rates:`/`Sampling Frequency:` 后面直接列数字的写法，以及 `44.1 kHz` 这种带单位的写法；仓库里既没有真机 `card*/stream*` 文本留档，测试用的两种形状都是本轮之前自己造的。如果真机打印的是 `Rates  : 0x33 (44100 48000 ...)` 一类形状，则**永远解析不出速率**，过去全靠那条被删掉的 `[192000]` 编造兜住。要做的只有取证：抓一份真机 `stream*` 原文进仓库当夹具，再决定改正则还是显式标注「驱动未提供速率」。
-- [ ] 2026-09-18：R56 留下两处仍在猜的回退，等真机取证一起处理。`choose_dac_strategy()` 的 `max_rate = safe_int(caps.get("pcm_max_rate")) or (... or 192000)` 与 `max_bits = safe_int(...) or 24`（`playback/alsa_output.py:823-824`）：本轮刻意没动它们，以免在没有真机证据时改变转码决策。取证之后要么保留「未知即按源文件直通」，要么显式降级，别再让一个数字同时充当「实测值」和「保守猜测」。  **R91 部分推进（速率那一半不需要真机就能定，位深那一半仍等取证）**：条目说「取证之后要么保留未知即直通、要么显式降级」，其中速率一半本轮用一条与设备无关的证据定了：`choose_dac_strategy()` 的 rate 最终喂给 `aplay -D`（:929），而设备标识是 `hw:`（:498/:620/:652），`hw:` 不带重采样插件，所以凭猜测抬高上限的后果是设备打不开而不是自动降采样，「未知即按源文件直通」这个选项可以直接排除，无需真机数据。已改为「什么都测不到就与 unknown 同样保守（44100）」，且驱动报过的位深保留。**仍在等的还是本条剩下的那半**：当驱动报了速率却没报格式时，`max_bits = measured_bits or 24` 仍是猜测，24 位是不是该降成 16 只有真机（或至少留档的 `stream*` 原文）能定；TODO.md:1831 那份真机 `stream*` 夹具取证时一并处理。
-- [ ] 2026-09-17：`cover_cache` 交互预热的「静默窗口」`INTERACTIVE_PREWARM_INITIAL_DELAY_SECONDS=0.15` 与库预热 `LIBRARY_PREWARM_DELAY_SECONDS=0.15` 是经验值，缺少在慢速 NAS 上的实测依据（真机项，本机无法验证）。
-  **需要**：一台接了慢速存储（USB HDD 或 SMB/NFS 曲库）的 fnOS 真机，边播边翻首屏，抓两份时间线：交互请求（封面/分页）与预热任务的排队等待毫秒分布，用来判断 0.15 s 是过长（预热几乎跑不动）还是过短（交互被抢通道）。本机测不了的原因写清楚：这里的自变量是外部存储的抖动与机械寻道，仓库内任何夹具造出的等待分布都不代表真机，离线只能验证「窗口存在且可配」这一形状（已有测试覆盖）。
-- [ ] 2026-09-20：曲库连接池在真机上的长期行为仍无证据（本条是 R121 从代码待办桶 L154 拆出的**真机半**；「开关要不要对外暴露」的产品半已拆到本段下方的决策段 D9，两条同源、各自独立判定）。空闲句柄在 Windows 上会阻止索引文件被删除或替换（已实测 `WinError 32`）；fnOS 上仍需确认缓存卷卸载、`-shm`/`-wal` 生命周期与长跑 fd 数不受影响。操作指引照抄原条：**一旦真机出现索引替换失败或卸载卡住，先回退 `library_connection_pool` 再排查，别在设备上加兜底逻辑。**（R62 更新随本条一并搬来：离线侧已抓到一次同类 `WinError 32` 的真机制且它**与池无关**，该配置下 `pool={'idle':0,'creations':0}`；病因是关闭期 `_claim_job` 在 `stop_event` 之后仍领新工作、join 预算不跟随在飞作业、`close_library_connections()` 排在 `METADATA_SERVICE.shutdown()` 之前，三处都已修并各有测试。）
-  **需要**：一台可长跑的 fnOS 真机 + 一次曲库索引替换 + 一次缓存卷卸载。建议取证口径（本轮已备好消息但未执行长跑）：对主服务进程做 24 h 的 `ls /proc/<pid>/fd | wc -l` 时间序列（本轮实测 pid 237556，其 mpd 子进程 237571），采样窗口内各触发一次索引替换与一次缓存卷卸载，比较句柄数是否单调增长、`-shm`/`-wal` 在卸载后是否残留。本机测不了的原因写清楚：这里的自变量是**卸载时序与长周期 fd 走势**，离线套件既没有真卸载也没有 24 h 时钟，不能替代。
-- [ ] 2026-09-21：真实设备、DAC/DSD、DLNA/AirPlay、App Center 与 Android 多机型验收继续保留为外部验收项。〔R138 X1=A 自代码桶原 L803 迁入，条目文本未改。〕
+2026-09-21（R141 设备段处置 R1）：本节 25 条设备／外部待办已逐字节迁至 [`docs/external-acceptance.md`](docs/external-acceptance.md) 第五节；条目本体此后只存放在该文件一处，本节不再新增设备项，逐条处置结论记在该文件内，不回写本文件。
+
 ## 需要项目负责人决策
 
 2026-09-18（R77 记录用户答复）：本段 8 条**不阻塞逐轮工作**，继续保留在决策段等待负责人逐条给方向；审查轮次不得因为这些条目未决而停下，也不得把它们挪回代码待办段。

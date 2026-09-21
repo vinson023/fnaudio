@@ -825,8 +825,9 @@ def choose_dac_strategy(item, device):
         max_rate = 44100
         # A width the driver did state survives the missing rate: `Formats: S16_LE S24_LE` is
         # readable on many devices whose `Rates` line the parser cannot match at all
-        # (TODO.md:1831), so this is the one fact worth keeping about an otherwise
-        # unmeasured DAC. Only a device that stated nothing falls back to CD quality.
+        # (docs/external-acceptance.md entry L1872), so this is the one fact worth keeping
+        # about an otherwise unmeasured DAC. Only a device that stated nothing falls back to
+        # CD quality.
         max_bits = measured_bits or 16
     source_rate = safe_int(item.get("sample_rate")) or 44100
     source_bits = safe_int(item.get("bit_depth")) or 16
