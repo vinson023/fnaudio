@@ -4271,6 +4271,7 @@ async function playById(id) {
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
   const queue = state.queue.some(x => String(x.id) === String(id)) ? [...state.queue] : [...state.queue, item];
+  const previousIndex = state.index;
   try {
     await commitQueue(queue, id);
   } catch (error) {
@@ -4278,6 +4279,11 @@ async function playById(id) {
     return;
   }
   loadCurrent();
+  // ``playById`` is the one queue writer that never rebuilds the list, so it has
+  // to move the current-row marker itself.  The other writers render afterwards,
+  // which is why this stays on this path instead of in ``applyConfirmedQueue``:
+  // a cross-page jump would then render twice.
+  syncCurrentQueuePresentation(previousIndex);
 }
 async function playGroup(name) {
   const key = groupViews[state.view];
