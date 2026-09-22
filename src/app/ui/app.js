@@ -6420,7 +6420,13 @@ async function loadDevices(forceRefresh = false) {
     state.playTargetName = currentTarget === "local" ? "当前设备" : (data.current_target_name || state.playTargetName);
     if (previousTarget !== currentTarget) {
       stopRemoteEventStream();
-      if (isRemoteTarget()) startRemoteEventStream();
+      if (isRemoteTarget()) {
+        // The server or another controller already moved the audible output away from
+        // this browser, so the same D-1 teardown applies: from here on nothing can
+        // reach the local element through its own controls any more.
+        if (localIsPlayingNow()) stopLocalAudio();
+        startRemoteEventStream();
+      }
     }
     state.devices = targets.filter(target => target.id !== "local");
     renderDeviceTargets(targets, currentTarget);
@@ -7874,9 +7880,9 @@ async function selectPlaybackTarget(id, name) {
     if (!response.ok || data.ok !== true) throw new Error(data.message || "播放设备切换失败");
     if (userStateRevision(data.revision, -1) >= 0) state.userStateRevision = userStateRevision(data.revision);
     // The target endpoint performs the authoritative transition and closes the
-    // previous output inside `set_target()`. Do not issue a second stop here:
-    // a follow-up control request can race with the new target and move the
-    // server back to the old renderer.
+    // previous output inside `set_target()`. Do not issue a second *request* here:
+    // a follow-up control call can race with the new target and move the server
+    // back to the old renderer. Local element teardown below sends nothing.
     state.playTarget = nextTarget;
     state.playTargetName = name || "当前设备";
     state.deviceTargetsSignature = "";
@@ -7901,6 +7907,14 @@ async function selectPlaybackTarget(id, name) {
     nativeRemoteExit();
   } else {
     stopRemoteEventStream();
+    // Ruling D-1 stops local playback once the audible output moves elsewhere.  The
+    // transaction above only hands the *server* a new target, so when that target is
+    // a device this browser keeps decoding while every control (play, stop, media
+    // session) has already been routed to the device: the local element is deaf but
+    // still running.  Tear it down here.  This touches the element only and issues
+    // no follow-up control request, so it cannot race the new target the way a second
+    // api/playback/control call would.
+    if (localIsPlayingNow()) stopLocalAudio();
     startRemoteEventStream();
     nativeRemoteEnter(true);
   }
