@@ -1573,7 +1573,23 @@ function playlistIdFromView(view = state.view) { return String(view || "").repla
 function currentPlaylist() { return state.playlists.find(x => x.id === playlistIdFromView()); }
 function makePlaylistId() { return `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`; }
 function shuffleItems(list) {
-  return window.fnAudioShufflePolicy?.shuffle?.(list) || [];
+  const items = Array.isArray(list) ? list.slice() : [];
+  if (!items.length) return items;
+  // The policy module owns the Fisher-Yates loop and the abnormal-RNG guards.
+  // Its 50,000-item budget caps how much of a queue may be *reordered*, not how
+  // much may be played, so anything beyond the budget keeps its original order
+  // at the tail: a shuffle action must never drop tracks from a large library.
+  const budget = window.fnAudioShufflePolicy?.MAX_ITEMS;
+  const limit = Number.isInteger(budget) && budget > 0 ? Math.min(budget, items.length) : items.length;
+  const head = items.slice(0, limit);
+  const tail = items.slice(limit);
+  let shuffled = null;
+  try {
+    shuffled = window.fnAudioShufflePolicy?.shuffle?.(head);
+  } catch (_) {
+    shuffled = null;
+  }
+  return Array.isArray(shuffled) && shuffled.length === head.length ? shuffled.concat(tail) : items;
 }
 function recentTracks() {
   if (state.view === "recent" && state.pageItems.length) return state.pageItems;
@@ -1766,9 +1782,6 @@ function currentQueryParams() {
     groupName: state.groupName,
     playlistView: isPlaylistView(),
   });
-}
-function compareName(a, b) {
-  return displayText(a).localeCompare(displayText(b), "zh-CN", { numeric: true, sensitivity: "base" }) * sortDirectionFactor();
 }
 function folderDisplayName(path) {
   return globalThis.fnAudioFolderLabelPolicy.display(path);
@@ -4327,7 +4340,7 @@ async function playGroup(name) {
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
-  const queue = state.shuffle ? [...group].sort(() => Math.random() - 0.5) : group;
+  const queue = state.shuffle ? shuffleItems(group) : group;
   try {
     await commitQueue(queue, queue[0]?.id || "");
   } catch (error) {
@@ -4369,7 +4382,7 @@ async function playAll() {
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
-  const queue = state.shuffle ? [...tracks].sort(() => Math.random() - 0.5) : tracks;
+  const queue = state.shuffle ? shuffleItems(tracks) : tracks;
   try {
     await commitQueue(queue, queue[0]?.id || "");
   } catch (error) {
