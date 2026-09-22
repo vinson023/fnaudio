@@ -3591,7 +3591,20 @@ function patchTrackRowNode(current, next) {
     const nextInfo = directTrackChild(nextMain, "track-info");
     if (currentInfo && nextInfo && currentInfo.innerHTML !== nextInfo.innerHTML) currentInfo.innerHTML = nextInfo.innerHTML;
   } else if (currentMain || nextMain) {
-    currentMain?.replaceWith?.(nextMain);
+    // Exactly one side carries a title cell, so the column set changed. Neither
+    // direction is expressible with replaceWith(): a null argument is stringified
+    // into a literal "null" text node inside the live row, and the optional chain
+    // on the missing side drops the new cell without a trace. Both leave the row
+    // permanently out of step with the markup it is compared against, because the
+    // commit records renderedTrackListHtml for markup the DOM does not match.
+    if (currentMain) {
+      currentMain.remove();
+    } else {
+      const liveChildren = [...current.children];
+      const mainOrdinal = [...next.children].indexOf(nextMain);
+      if (mainOrdinal >= 0 && mainOrdinal < liveChildren.length) current.insertBefore(nextMain, liveChildren[mainOrdinal]);
+      else current.appendChild(nextMain);
+    }
   }
   const currentCells = [...current.children].filter(child => !child.classList?.contains("track-main"));
   const nextCells = [...next.children].filter(child => !child.classList?.contains("track-main"));
