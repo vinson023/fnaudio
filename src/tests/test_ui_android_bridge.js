@@ -315,7 +315,8 @@ requireText("MAX_NATIVE_HTTP_REQUESTS = 32", "WebView native HTTP promises need 
 requireText("function evictOldestNativeHttpRequest()", "WebView native HTTP requests need bounded eviction");
 requireText("while (nativeHttpRequests.size >= MAX_NATIVE_HTTP_REQUESTS) evictOldestNativeHttpRequest();", "WebView native HTTP requests must evict before adding a new promise");
 requireText("function clearNativeHttpRequest(requestId, pending, error = null)", "Native HTTP request cleanup must release bridge and listener ownership");
-requireText("nativeHttpResponseChunks.size >= 32", "Native HTTP transfer bookkeeping needs a bounded entry count");
+requireText("nativeHttpResponseChunks.size >= MAX_NATIVE_HTTP_REQUESTS",
+  "Native HTTP transfer bookkeeping must stay bounded by the named in-flight request budget");
 requireText("timer: setTimeout(() => clearNativeHttpTransfer(key, transfer), 60000)", "Incomplete native HTTP transfers need timeout cleanup");
 requireText("function nativeAbortError()", "Native HTTP aborts need an older-WebView-compatible error fallback");
 requireText("function clearNativeHttpTransfer(key, transfer)", "Native HTTP transfer cleanup must release timer ownership");
