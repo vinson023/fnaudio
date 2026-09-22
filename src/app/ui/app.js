@@ -1025,11 +1025,15 @@ function saveTrackColumns(columns) {
 }
 function currentTrackColumnWidths() {
   const scope = trackColumnScope();
-  return { ...normalizeTrackColumnWidths(state.autoTrackColumnWidths[scope]), ...normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]) };
+  const merged = { ...normalizeTrackColumnWidths(state.autoTrackColumnWidths[scope]), ...normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]) };
+  // Stored and auto-measured widths can predate a column's current resize
+  // band.  Converge them on read so the template never shows a width that
+  // saveTrackColumnWidth() could not have written, and so the first drag grabs
+  // the width the user actually sees instead of a phantom out-of-band value.
+  return Object.fromEntries(Object.entries(merged).map(([key, width]) => [key, clampTrackColumnWidth(key, width)]));
 }
 function saveTrackColumnWidth(key, width) {
-  const column = TRACK_COLUMN_DEFINITIONS[key];
-  const value = Math.max(64, Math.min(900, Math.round(Number(width) || column?.width || 120)));
+  const value = clampTrackColumnWidth(key, width);
   const scope = trackColumnScope();
   state.trackColumnWidthPreferences[scope] = { ...normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]), [key]: value };
   persistTrackColumnPreferences();
@@ -2940,8 +2944,8 @@ function loadGroupArtwork() {
 function activeTrackColumns() {
   return currentTrackColumns();
 }
-function trackGridTemplate() {
-  const widths = currentTrackColumnWidths();
+function trackGridTemplate(widthOverrides = null) {
+  const widths = widthOverrides ? { ...currentTrackColumnWidths(), ...widthOverrides } : currentTrackColumnWidths();
   if (globalThis.fnAudioTrackTablePresentation?.gridTemplate) {
     return globalThis.fnAudioTrackTablePresentation.gridTemplate(activeTrackColumns(), widths, TRACK_COLUMN_DEFINITIONS);
   }
@@ -2959,6 +2963,13 @@ function trackColumnWidthLimits(key) {
     format: [76, 110], duration: [72, 96], size: [88, 120], quality: [120, 170],
     added: [110, 150], composer: [120, 260], genre: [110, 200],
   }[key] || [80, 260];
+}
+function clampTrackColumnWidth(key, value) {
+  const definition = TRACK_COLUMN_DEFINITIONS[key];
+  const numeric = Math.round(Number(value));
+  const preferred = Number.isFinite(numeric) && numeric > 0 ? numeric : definition?.width || 120;
+  const [minimum, maximum] = trackColumnWidthLimits(key);
+  return Math.min(maximum, Math.max(minimum, preferred));
 }
 function measureAutoTrackColumnWidths() {
   if (window.matchMedia("(max-width: 760px)").matches) return;
@@ -3088,20 +3099,29 @@ function renderTableHead(target = $("tableHead")) {
     const startWidth = currentTrackColumnWidths()[key] || TRACK_COLUMN_DEFINITIONS[key].width;
     handle.setPointerCapture?.(event.pointerId);
     const resize = move => {
-      const width = Math.max(64, Math.min(900, Math.round(startWidth + move.clientX - startX)));
-      const current = { ...currentTrackColumnWidths(), [key]: width };
-      const template = [...activeTrackColumns().map(column => `${current[column] || TRACK_COLUMN_DEFINITIONS[column].width}px`), "minmax(0,1fr)"].join(" ");
+      const width = clampTrackColumnWidth(key, startWidth + move.clientX - startX);
+      const template = trackGridTemplate({ [key]: width });
       head.style.setProperty("--fnaudio-track-columns", template);
       document.body.style.setProperty("--fnaudio-track-columns", template);
     };
-    const finish = move => {
+    // A drag does not always end with pointerup: pointercancel fires when the
+    // pen/scroll gesture takes over or capture is lost.  The old binding left
+    // pointermove attached in that case, so every later mouse move kept
+    // rewriting the shared grid template from the stale start width.  Each exit
+    // path detaches all three listeners, so neither end event can be handled
+    // twice; a cancelled drag rolls the preview back and persists nothing.
+    const finish = (move, shouldSave) => {
       resize(move);
-      saveTrackColumnWidth(key, startWidth + move.clientX - startX);
+      if (shouldSave) saveTrackColumnWidth(key, startWidth + move.clientX - startX);
       window.removeEventListener("pointermove", resize);
-      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
     };
+    const up = move => finish(move, true);
+    const cancel = () => finish({ clientX: startX }, false);
     window.addEventListener("pointermove", resize);
-    window.addEventListener("pointerup", finish, { once: true });
+    window.addEventListener("pointerup", up, { once: true });
+    window.addEventListener("pointercancel", cancel, { once: true });
   });
   head.dataset.fnaudioTableHeadBound = "1";
   return changed;
