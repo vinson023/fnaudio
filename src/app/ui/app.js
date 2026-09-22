@@ -2910,12 +2910,20 @@ function prepareLocalGroupArtwork(node) {
     node.removeAttribute("data-metadata-image");
     if (fallback) applyGroupArtwork(node, fallback);
   };
+  // A group/album cover is emitted without `src` and only receives its URL from
+  // the shared scheduler after this listener setup. Per the HTML spec a src-less
+  // <img> already reports complete === true with naturalWidth === 0, so
+  // `complete` alone cannot mean "finished loading" here. Judging a
+  // not-yet-started cover by `complete` deletes it before the scheduler ever
+  // starts it. Gate on the same "has a source" marker the scheduler uses.
+  const hasArtworkSource = () =>
+    image.hasAttribute?.("src") === true || String(image.dataset?.coverLoadedSrc || "") !== "";
   const verify = () => {
-    if (!image.isConnected || !image.complete) return;
+    if (!image.isConnected || !hasArtworkSource() || !image.complete) return;
     if (image.naturalWidth > 1) loaded();
     else failed();
   };
-  if (image.complete) return verify();
+  if (hasArtworkSource() && image.complete) return verify();
   image.addEventListener("load", loaded, { once: true });
   image.addEventListener("error", failed, { once: true });
   requestAnimationFrame(verify);
