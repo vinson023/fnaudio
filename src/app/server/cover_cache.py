@@ -423,7 +423,14 @@ def thumbnail_asset_id_for_item(item, config, size=160, allow_disk=True):
     size = normalized_cover_size(size)
     if not size:
         return ""
-    _root, target, _missing = _cache_paths(item, config, size)
+    # The alias key has to come from the source version this call is allowed to
+    # know about.  Letting ``_cache_paths`` recompute it silently uses the disk
+    # default, which puts one media ``stat`` behind every visible row of a
+    # latency-sensitive page projection -- the exact cost ``allow_disk=False``
+    # exists to avoid -- and keys the lookup by a version the page never
+    # advertises (``library_presentation`` serialises the bounded one).
+    version = cover_source_version(item, allow_disk=allow_disk)
+    _root, target, _missing = _cache_paths(item, config, size, version)
     return _alias_asset_key(target[:-4] + ".asset", config, size, allow_disk)
 
 
@@ -540,7 +547,11 @@ def cover_is_known_missing(item, config, size=160, allow_disk=True):
     size = normalized_cover_size(size)
     if not size:
         return False
-    _root, _target, missing = _cache_paths(item, config, size)
+    # Same single-version rule as ``thumbnail_asset_id_for_item``: the marker is
+    # addressed by the version the caller may resolve, so the fast page and the
+    # cover URL it serialises cannot drift onto two different cache namespaces.
+    version = cover_source_version(item, allow_disk=allow_disk)
+    _root, _target, missing = _cache_paths(item, config, size, version)
     # Positive-only cache: retain confirmed misses briefly without making a
     # newly-added sidecar cover invisible until the media file itself changes.
     now_monotonic = time.monotonic()
