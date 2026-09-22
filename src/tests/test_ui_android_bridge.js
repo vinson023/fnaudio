@@ -528,8 +528,14 @@ const targetSwitchStart = source.indexOf("async function selectPlaybackTarget(id
 const targetSwitchEnd = source.indexOf("function cancelRemoteLoad()", targetSwitchStart);
 const targetSwitch = source.slice(targetSwitchStart, targetSwitchEnd);
 const targetAccepted = targetSwitch.indexOf("if (!response.ok || data.ok !== true)");
-if (targetAccepted < 0 || targetSwitch.includes('remoteControl("stop"') || targetSwitch.includes("stopLocalAudio();")) {
-  throw new Error("Playback target switching must rely on the server transaction and must not issue a second stop");
+// A target switch must not send a second *request*: the accepted transaction already
+// closes the previous output server-side, and a follow-up control call can race the new
+// target back onto the old renderer.  Tearing down this browser's own media element is a
+// different thing - it issues no request at all - and TODO.md:69 ruling D-1 requires it,
+// so only the request form stays forbidden here.  See test_ui_target_switch_teardown.js.
+if (targetAccepted < 0 || targetSwitch.includes('remoteControl("stop"')
+    || targetSwitch.includes('api/playback/control"')) {
+  throw new Error("Playback target switching must rely on the server transaction and must not issue a second control request");
 }
 if (!source.includes("async function remoteControl(action, position = null, quiet = false) {\n  if (state.deviceSwitchInFlight || !isRemoteTarget()) return false;")
     || !source.includes("async function coreControl(action, position = null, payload = {}) {\n  if (state.deviceSwitchInFlight) return false;")
