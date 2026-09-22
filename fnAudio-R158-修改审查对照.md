@@ -70,6 +70,7 @@
 
 - `SOURCE_MANIFEST.sha256` 715 → **716**；逐条唯一、Ordinal 行序、纯 CRLF、无 BOM、缺盘 0、口径仅 `src/`＋`android-client/`；逐文件抽查 MATCH：app.js `5C2EE6BA…`、android_bridge 测试 `A661A757…`、新测试 `6D78C029…`。
 - 门禁终跑 `artifacts/offline-20260922-round249.log`（437,983 B／2,730 行；跑前 `Test-Path` False）：Python `Ran 2567 tests in 131.382s` → `OK (skipped=2)`；FAILED 0、Traceback 0；清单双守卫 ok；`index.html control names: 79 controls, 0 nameless, 3 labelledby rows, 1 keyboard role kept`；JS 按发现式口径＝盘上 81 个 `test_*.js` 全部退出 0（`tools/test_offline.ps1` :57-:61 任一非零即 throw）；exit 0。
+- `TODO.md` :110 补入 R158 按现盘重测块：欠读总量 18,149 → **18,151**（app.js 8,456 ＋ Android `.java` 43 文件 9,695，本轮复算逐字相符），本轮无文件级面出局，故该块与 `TODO.md` :161 的深读块分处两条待办。
 - 时序说明：门禁日志晚于全部 `src/` 与 `android-client/` 改动；CHANGELOG 取证条在门禁后写入以实补数字，其后 `test_change_record.py`（3 OK）等根文档守卫复跑仍绿，且清单覆盖文件零改动（逐文件 sha 已复核）。
 
 ## 十、口径与进度
