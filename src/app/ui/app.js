@@ -518,6 +518,10 @@ const nativeHttpRequests = new Map();
 const nativeHttpResponseChunks = new Map();
 const MAX_NATIVE_HTTP_REQUESTS = 32;
 const MAX_NATIVE_HTTP_CHUNKS = 256;
+// A chunked transfer only exists while its request is still in flight, so the
+// transfer table is bounded by the same budget the request table uses. The bare
+// literal used here before duplicated that cap without naming it, so it could
+// drift from MAX_NATIVE_HTTP_REQUESTS (and Android MAX_NATIVE_HTTP_CALLS) silently.
 const MAX_NATIVE_HTTP_CHUNK_CHARS = 256 * 1024;
 const MAX_NATIVE_HTTP_RESPONSE_CHARS = 4 * 1024 * 1024;
 let nativeHttpRequestSequence = 0;
@@ -604,7 +608,7 @@ window.fnAudioNativeOnHttpChunk = (transferId, index, total, chunk) => {
   if (fragment.length > MAX_NATIVE_HTTP_CHUNK_CHARS) return;
   let transfer = nativeHttpResponseChunks.get(key);
   if (!transfer || transfer.total !== count) {
-    if (nativeHttpResponseChunks.size >= 32) return;
+    if (nativeHttpResponseChunks.size >= MAX_NATIVE_HTTP_REQUESTS) return;
     transfer = {
       total: count,
       chunks: new Array(count),
@@ -854,7 +858,6 @@ function nativeLoadQueue(autoPlay = true, startSeconds = 0, force = false) {
   const item = currentItem();
   if (!item || !nativePlaybackAvailable()) return false;
   const rows = nativeQueueItems();
-  const signature = nativeQueueSignature(rows);
   const remoteIds = Array.isArray(state.nativePlayback.queueIds) ? state.nativePlayback.queueIds.map(String) : [];
   const localIds = rows.map(row => row.id);
   const sameIds = remoteIds.length === localIds.length && remoteIds.every((id, index) => id === localIds[index]);
@@ -863,7 +866,6 @@ function nativeLoadQueue(autoPlay = true, startSeconds = 0, force = false) {
     if (autoPlay) nativePlaybackCall("play");
     return true;
   }
-  state.nativeQueueSignature = signature;
   nativePlaybackCall("setQueue", JSON.stringify(rows), state.index, Math.max(0, Number(startSeconds || 0)), Boolean(autoPlay), state.repeat, Boolean(state.shuffle));
   return true;
 }
