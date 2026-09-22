@@ -2160,7 +2160,21 @@ async function stopPlayback() {
     return;
   }
   if (isRemoteTarget()) {
+    // The same rule remoteControl and refreshRemoteStatus already
+    // enforce: a command is bound to the target selected when it was sent.
+    // A device switch clears remoteStatus and lets the newly selected device
+    // declare its own snapshot, so a stop reply that lands afterwards must not
+    // invent a stopped snapshot for a speaker the user has already left.
+    const targetId = remoteDeviceId();
     await remoteControl("stop");
+    if (targetId !== remoteDeviceId()) return;
+    // The invented zero below is only a claim about the *snapshot*; the row reads
+    // remoteBaseSeconds first (see currentSeconds), so without this line a stop
+    // flips the icon to paused and leaves the rail frozen at the old position. The
+    // load path pairs the same two writes for exactly that reason. It sits after the
+    // target guard on purpose: a stop abandoned by a device switch must not zero the
+    // position the newly selected device has already declared.
+    state.remoteBaseSeconds = 0;
     state.remoteStatus = { transport: { state: "STOPPED" }, position: { rel_seconds: 0, duration_seconds: playbackSeconds(state.remoteStatus?.position?.duration_seconds) } };
     updateRemoteUi();
     return;
