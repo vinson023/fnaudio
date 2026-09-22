@@ -3764,33 +3764,6 @@ function updateMobilePagerVisibility() {
     requestFrame: (callback) => requestAnimationFrame(callback),
   });
 }
-function syncTrackHeaderScroll() {
-  const viewport = $("libraryScroll");
-  const list = $("trackList");
-  const head = $("tableHead");
-  if (!viewport || !list || !head || window.matchMedia("(max-width: 760px)").matches) {
-    list?.querySelectorAll(".track,.group-row").forEach(row => { row.style.width = ""; });
-    if (head) {
-      head.style.width = "";
-      head.style.transform = "";
-    }
-    return;
-  }
-  viewport.style.setProperty("--fnaudio-library-content-width", "100%");
-  list.querySelectorAll(".track,.group-row").forEach(row => { row.style.width = ""; });
-  head.style.width = "";
-  head.style.transform = "";
-}
-function bindTrackHeaderScroll() {
-  const viewport = $("libraryScroll");
-  if (!viewport || viewport.dataset.headerScrollBound === "1") return;
-  viewport.dataset.headerScrollBound = "1";
-  window.addEventListener("resize", syncTrackHeaderScroll, { passive: true });
-  if (typeof ResizeObserver === "function") {
-    viewport._headerResizeObserver = new ResizeObserver(() => requestAnimationFrame(syncTrackHeaderScroll));
-    viewport._headerResizeObserver.observe(viewport);
-  }
-}
 function render() {
   state.uiMetrics.renders = Math.min(1000000, state.uiMetrics.renders + 1);
   updateLibraryStatusDecorations();
@@ -3861,16 +3834,14 @@ function render() {
   const pagerChanged = pager.innerHTML !== pagerHtml;
   if (pagerChanged) pager.innerHTML = pagerHtml;
   if (pagerChanged) updateMobilePagerVisibility();
-  bindTrackHeaderScroll();
   bindTrackListInteractions();
   // These perform layout reads across visible rows.  Rendering playback state
   // or a favorite must not enqueue another full measurement pass when the list,
-  // its headers and its pager are unchanged; resize observers still handle real
-  // geometry changes independently.
+  // its headers and its pager are unchanged.  The library grid width is a CSS
+  // contract, so no inline per-row geometry is written from this path any more.
   if (listChanged || tableHeadChanged || albumHeadChanged || pagerChanged) {
     requestAnimationFrame(() => {
       measureAutoTrackColumnWidths();
-      syncTrackHeaderScroll();
       updateMobilePagerVisibility();
     });
   }
