@@ -71,3 +71,13 @@ R164 是一轮**记账纠偏 + 守卫固化 + 终版复算**，不改一行生�
 
 盘上 `- [ ]` 现存 4 条 @ `:116`、`:167`、`:2053`、`:2075`：前两条是**可排期的深读账**，后两条属 `## 2026-09-01 持续目标（无需真机）` 段，是**常设口径**（不可勾销）。真机项已全部另册，不计入当前目标。
 
+
+## 六、同轮收尾（提交与提交后端门禁）
+
+| 项 | 结果 |
+|---|---|
+| 提交（逐 pathspec，共四笔） | `b0861a2` test(guard) → `fbd465f` docs(round-R164) → `d69ae80` docs(round-review) → `3d3bc93` chore(manifest)；无 `git add -A`、无 push、无 tag；`.gitignore`／`.gitattributes` 未触碰；`artifacts/`、`_external/`、`music/`、`references/` 未入库 |
+| 提交后工作树 | `git status --porcelain -uno` 空 |
+| 提交后端门禁 | `artifacts/offline-20260923-round259.log`：440,866 B／2,761 内容行／`Ran 2575 tests in 129.484s`／`OK (skipped=2)`／80 枚 `checks passed.`／守卫 8 名逐行命中／无 `Traceback`、无 `FAILED`；退出码由同会话双探针取得 `LASTEXITCODE=0`、`$?=True` |
+| 清理 | TEMP 内 75 个取证脚本与日志（r164／r165／w164／t163 四类前缀，逐个断言 realpath 在 TEMP 下后删除）；仓库外变异副本 `C:\path\to\fnAudio-mut-r163b`、`C:\path\to\fnAudio-mut-r164`；复核 `left=0`、副本目录 0 枚；跑后 `fnaudio-offline-pycache-*` 0 枚 |
+| 收尾后再算 | 三份根文档 `Ran 8 tests OK`（守卫）＋`Ran 3 tests OK`（`test_change_record.py`）；TODO 内容行 2186、CHANGELOG 6799→6800、PROJECT_CONTEXT 6205→6206（新增收尾记录与门禁退出码取证教训各 1 条） |
