@@ -293,6 +293,10 @@ state.deviceSwitchInFlight = false;
 state.deviceTargetRevision = 0;
 state.rendererSession = null;
 state.rendererSnapshotAt = 0;
+// The last render evidence this browser painted into the transport row.
+// The outbound channel has `remoteUiLast` for the same job; the inbound one
+// had none, and that asymmetry is what this memo closes (R156).
+state.rendererUiLast = null;
 // The uri of a cast this browser stopped with a local play intent (TODO.md:72
 // ruling D-2). The status poll would otherwise hand the row straight back to it.
 state.rendererPreemptedUri = "";
@@ -1998,9 +2002,11 @@ function resetTransportRow() {
   if (rail) rail.value = 0;
   updateSeekRail(0);
   setPlayButton(false);
-  // The memo that keeps `updateRemoteUi` from repainting describes the session that just ended,
-  // so it has to go with the row it was guarding.
+  // The memos that keep `updateRemoteUi` and `updateIncomingRendererUi` from
+  // repainting describe the session that just ended, so they have to go with the
+  // row they were guarding.
   state.remoteUiLast = null;
+  state.rendererUiLast = null;
 }
 function restoreLibraryNowPlaying() {
   const item = currentItem();
@@ -2199,20 +2205,43 @@ function updateRemoteUi() {
   updateMediaSessionPosition();
 }
 function updateIncomingRendererUi() {
-  if (!isIncomingRendererSession()) return false;
+  if (!isIncomingRendererSession()) {
+    // Self-healing: this memo describes the cast that just ended, so it must not
+    // survive to suppress the first paint of the next one.
+    state.rendererUiLast = null;
+    return false;
+  }
   const session = state.rendererSession;
+  const transport = String(session.transport || "").toUpperCase();
   const duration = seekDuration();
+  const seconds = duration > 0 && !state.seeking ? currentSeconds() : -1;
+  const previous = state.rendererUiLast || {};
+  // Exact equality on purpose. `updateRemoteUi` can afford a 0.45s tolerance because it
+  // only ticks while this app owns the target; this channel is repainted every 500ms
+  // (`ui_sync_scheduler.js`) and re-extrapolates its position between polls, so any
+  // tolerance would freeze a rail that is legitimately advancing. Equal values therefore
+  // mean the status poll brought no new evidence -- the one case in which neither the
+  // slider nor the host media session has anything to learn. While the caster is paused
+  // `transportExtrapolation` returns 0, so before this gate a frozen cast was rewritten
+  // about twice a second forever (TODO.md:61 class, R156).
+  const unchanged = previous.uri === session.uri && previous.transport === transport
+    && previous.duration === duration && previous.seconds === seconds;
+  if (!unchanged) state.rendererUiLast = { uri: session.uri, transport, duration, seconds };
   if (duration > 0) {
     setTextContentIfChanged($("duration"), clock(duration));
     if (!state.seeking) {
-      const seconds = currentSeconds();
       setTextContentIfChanged($("elapsed"), clock(seconds));
-      $("seek").value = Math.max(0, Math.min(100, seconds / duration * 100));
+      if (!unchanged) {
+        $("seek").value = Math.max(0, Math.min(100, seconds / duration * 100));
+      }
     }
   }
-  setPlayButton(String(session.transport || "").toUpperCase() === "PLAYING");
+  // Deliberately not gated: `syncPlayerProgress` owns `updateTransportStateUnknown`,
+  // which flips on wall-clock staleness while every value above stays identical. The
+  // compare-first writers below are already free when nothing changed.
+  setPlayButton(transport === "PLAYING");
   syncPlayerProgress();
-  updateMediaSessionPosition();
+  if (!unchanged) updateMediaSessionPosition();
   return true;
 }
 async function controlIncomingRenderer(action, position = null) {
