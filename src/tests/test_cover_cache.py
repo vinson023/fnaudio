@@ -391,7 +391,8 @@ class CoverCacheTests(unittest.TestCase):
         with cover_cache._MEMORY_CACHE_LOCK:
             cover_cache._ASSET_ALIAS_CACHE.clear()
             cover_cache._MISSING_MARKER_CACHE.clear()
-        with mock.patch("cover_cache.os.path.isfile", side_effect=AssertionError("page projection must not probe disk")):
+        with mock.patch("cover_cache.os.path.isfile", side_effect=AssertionError("page projection must not probe disk")), \
+             mock.patch("cover_cache.os.stat", side_effect=AssertionError("page projection must not stat the media file")):
             self.assertEqual(
                 cover_cache.thumbnail_asset_id_for_item(self.item, self.config, 160, allow_disk=False),
                 "",
@@ -410,6 +411,98 @@ class CoverCacheTests(unittest.TestCase):
         cover_cache.cached_thumbnail_for_item(missing_item, self.config, 160, mock.Mock(return_value=(None, None)))
         with mock.patch("cover_cache.os.path.isfile", side_effect=AssertionError("cached missing lookup must not stat")):
             self.assertTrue(cover_cache.cover_is_known_missing(missing_item, self.config, 160, allow_disk=False))
+
+    def test_fast_page_cover_lookups_do_not_stat_media_with_incomplete_identity(self):
+        # R153: both page helpers built their cache key through ``_cache_paths``
+        # without a version, so ``_cache_key`` recomputed it with the disk default.
+        # A row whose indexed identity is incomplete paid one NAS ``stat`` per
+        # visible song on the very path that ``allow_disk=False`` exists to keep
+        # off the filesystem, and the guard above only ever patched ``isfile``.
+        row = {"id": "track", "path": "/music/slow.nas.flac", "modified_ns": 123}
+        with cover_cache._MEMORY_CACHE_LOCK:
+            cover_cache._ASSET_ALIAS_CACHE.clear()
+            cover_cache._MISSING_MARKER_CACHE.clear()
+        with mock.patch("cover_cache.os.stat",
+                        side_effect=AssertionError("page projection must not stat the media file")):
+            self.assertEqual(
+                cover_cache.thumbnail_asset_id_for_item(row, self.config, 160, allow_disk=False), "")
+            self.assertFalse(
+                cover_cache.cover_is_known_missing(row, self.config, 160, allow_disk=False))
+
+    def test_fast_page_cover_lookups_agree_with_the_version_the_page_url_carries(self):
+        # ``library_presentation`` advertises ``cover/<id>?v=<bounded version>`` for
+        # exactly the rows whose identity is incomplete, while these two lookups
+        # keyed their marker and alias by the *filesystem* version. The page could
+        # never find the result the endpoint had stored under the version it just
+        # advertised, so the fast path answered "unknown" for covers that exist.
+        media = os.path.join(self.temp.name, "agreement.flac")
+        with open(media, "wb") as handle:
+            handle.write(b"audio")
+        row = {"id": "track", "path": media, "modified_ns": 123}
+        disk_version = cover_cache.cover_source_version(row)
+        bounded_version = cover_cache.cover_source_version(row, allow_disk=False)
+        self.assertNotEqual(disk_version, bounded_version, "the fixture must fork the two versions")
+        _root, target, missing = cover_cache._cache_paths(row, self.config, 160, bounded_version)
+        alias = target[:-4] + ".asset"
+        os.makedirs(os.path.dirname(alias), exist_ok=True)
+        asset_key = hashlib.sha256(b"artwork").hexdigest()
+        with open(alias, "w", encoding="ascii", newline="") as handle:
+            handle.write(asset_key + "\n")
+        _asset_root, asset_file = cover_cache._asset_path(self.config, 160, asset_key)
+        os.makedirs(_asset_root, exist_ok=True)
+        with open(asset_file, "wb") as handle:
+            handle.write(b"\xff\xd8jpeg")
+        with cover_cache._MEMORY_CACHE_LOCK:
+            cover_cache._ASSET_ALIAS_CACHE[alias] = asset_key
+            cover_cache._MISSING_MARKER_CACHE[missing] = time.monotonic()
+        self.assertEqual(
+            cover_cache.thumbnail_asset_id_for_item(row, self.config, 160, allow_disk=False), asset_key,
+            "the fast page must resolve the alias the version it advertises names")
+        self.assertTrue(
+            cover_cache.cover_is_known_missing(row, self.config, 160, allow_disk=False),
+            "the fast page must resolve the marker the version it advertises names")
+
+    def test_authoritative_cover_lookups_keep_the_filesystem_version(self):
+        # The other half of the same key: ``allow_disk=True`` is the cover endpoint
+        # and the prewarm worker, and they must stay authoritative. A "fix" that
+        # simply hardcodes the bounded version would split the cache namespace away
+        # from the writer for every row the index did not describe completely, and
+        # the endpoint would stop finding results it stored itself.
+        media = os.path.join(self.temp.name, "authoritative.flac")
+        with open(media, "wb") as handle:
+            handle.write(b"audio")
+        row = {"id": "track", "path": media, "modified_ns": 123}
+        disk_version = cover_cache.cover_source_version(row)
+        bounded_version = cover_cache.cover_source_version(row, allow_disk=False)
+        self.assertNotEqual(disk_version, bounded_version, "the fixture must fork the two versions")
+        _root, target, disk_marker = cover_cache._cache_paths(row, self.config, 160, disk_version)
+        _root, bounded_target, bounded_marker = cover_cache._cache_paths(row, self.config, 160, bounded_version)
+        os.makedirs(os.path.dirname(disk_marker), exist_ok=True)
+        with open(disk_marker, "wb"):
+            pass
+        alias = target[:-4] + ".asset"
+        asset_key = hashlib.sha256(b"authoritative").hexdigest()
+        with open(alias, "w", encoding="ascii", newline="") as handle:
+            handle.write(asset_key + "\n")
+        _asset_root, asset_file = cover_cache._asset_path(self.config, 160, asset_key)
+        os.makedirs(_asset_root, exist_ok=True)
+        with open(asset_file, "wb") as handle:
+            handle.write(b"\xff\xd8jpeg")
+        self.assertTrue(cover_cache.cover_is_known_missing(row, self.config, 160))
+        self.assertEqual(cover_cache.thumbnail_asset_id_for_item(row, self.config, 160), asset_key,
+                         "the authoritative lookup must stay on the filesystem version")
+        self.assertFalse(os.path.exists(bounded_marker), "the authoritative path must not be downgraded")
+        self.assertFalse(os.path.exists(bounded_target[:-4] + ".asset"), "the authoritative path must not be downgraded")
+
+    def test_complete_indexed_identity_keys_the_same_under_both_lookup_modes(self):
+        # Well-indexed rows are the overwhelming majority, and for them the two
+        # lookup modes must not drift into two namespaces: the indexed identity is
+        # the version regardless of the flag, so the page and the endpoint share
+        # one marker, one alias and one asset.
+        row = {"id": "track", "path": "/music/track.flac", "modified_ns": 123, "size": 456}
+        self.assertEqual(
+            cover_cache._cache_key(row, 160, cover_cache.cover_source_version(row, allow_disk=False)),
+            cover_cache._cache_key(row, 160, cover_cache.cover_source_version(row)))
 
     def _seed_alias_cache(self):
         """Warm one cover through the normal path; return (alias, asset_id, asset_path)."""
