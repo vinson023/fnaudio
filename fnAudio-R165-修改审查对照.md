@@ -72,3 +72,13 @@
 ## 五、遗留与下一步
 
 盘上 `- [ ]` 现存 **4** 条 @ `:117`、`:168`、`:2054`、`:2076`：前两条是**可排期的深读账**（`:168` 尚余 381−171＝**210** 枚未点名；`:117` 欠读 **18,190** 行＝`app.js` 8,495＋Android `.java` 9,695），后两条属 `## 2026-09-01 持续目标（无需真机）` 段，是**常设口径**（不可勾销）。真机与设备项已全部另册（`docs/REAL_DEVICE_GOALS.md`、`docs/external-acceptance.md`、`docs/REVIEW_ROUND_DISCIPLINE.md`），不计入当前目标。全树 `SPDX-License-Identifier` 头 0 命中一事只登记、不当轮处理。
+
+## 六、同轮收尾（提交与提交后端门禁）
+
+| 项 | 结果 |
+|---|---|
+| 提交（逐 pathspec，共六笔） | `83716f3` test(guard) → `9c933d2` fix(ui) → `42a024f` docs(round-R165) → `0bd8925` docs(round-review) → `7b0a9dd` chore(manifest) → 本收尾段与 CHANGELOG 收尾行随第六笔；无 `git add -A`、无 push、无 tag；`.gitignore`、`.gitattributes` 未触碰；`artifacts/`、`_external/`、`music/` 未入库 |
+| 提交后工作树 | `git status --porcelain -uno` 空；未跟踪面仍是变异副本与构建产物 |
+| 提交后端门禁 | `artifacts/offline-20260923-round261.log`：440,921 B、2,762 内容行、`Ran 2575 tests`、`OK (skipped=2)`、无 `Traceback`、无 `FAILED`；同会话双探针 `LASTEXITCODE=0`、`$?=True` |
+| 清理 | TEMP 内 r165x_ 与 r165y_ 取证脚本与中间产物、根目录 8 枚取证文件、仓库外变异副本 `C:\path\to\fnAudio-mut-r165`，逐个断言 realpath 后删除，复验 left=0 |
+| 收尾后再算 | TODO 内容行 2,187（收尾只在 L2 记录尾追句、不新增行）、CHANGELOG 6,803→6,804、PROJECT_CONTEXT 6,208→6,209；四份文件 0x0C=0、NUL=0、CR=0、尾 LF✓；根目录 .md 不在清单范围内，无需重刷清单 |
