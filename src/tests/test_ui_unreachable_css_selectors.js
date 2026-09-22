@@ -11,8 +11,11 @@ const index = fs.readFileSync(indexPath, "utf8");
 
 // Comments are not selectors, and a declaration value such as
 // `border:1px solid #dfe5ee` looks exactly like an id selector to a naive
-// regular expression (115 of the 117 `#word` tokens in this sheet are colors),
-// so the scanner has to walk the sheet and keep only selector preludes.
+// regular expression -- hex colors outnumber id selectors several times over
+// in this sheet -- so the scanner has to walk the sheet and keep only
+// selector preludes. No exact count is quoted here on purpose: a baked number
+// rots the first time the sheet changes, which is what happened to the
+// 117/115 pair this comment used to carry.
 function stripComments(text) {
   // Blank out comment content while keeping every newline, so the reported
   // prelude lines still match the file on disk.
