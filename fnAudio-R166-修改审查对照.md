@@ -111,3 +111,17 @@
 2. **符号账**：179／381，余 202 枚。近 8 轮每轮首次点名 3–9 枚 ⇒ 约 23–50 轮读完；`app.js` 按符号口径已读约 33%。行账 18,225＝`app.js` 8,530 ＋ 已跟踪 Android `.java` 43 文件 9,695（本棒复算逐字相符）；Android 面尚未进入点名口径。
 3. **下一段候选**：「歌词轮询与重试预算面」——`scheduleLyricsPoll` 一族与运行期预算输入；其宿主与输入函数在基线三份根文档仍为 0 点名，登记时须按坐标定位、不得提前点名。
 4. 真机验证项一律不在本轮账内，另册见 `docs/REAL_DEVICE_GOALS.md` 与 `docs/external-acceptance.md`。
+
+## 六、同轮收尾（提交后）
+
+| 项 | 实测 |
+|---|---|
+| 开工工作树 | `main`／HEAD `616444b`／`git status --porcelain -uno` 空／五枚未完成状态哨兵全不存在 |
+| app.js | 418,004 B／8,530 内容行／sha256 前缀 `c70277ca567c840b`（与清单逐文件抽查相符） |
+| `node --check` | `app.js`、新套件、`test_ui_lyrics_priority.js` 三枚 rc=0 |
+| JS 全扫 | `src/tests/test_*.js` ran=88 failed=0 |
+| 文档守卫 | `test_change_record`＋`test_decision_bucket_ledger`＋`test_source_manifest` Ran 18 tests in 0.805s／OK |
+| 门禁 | `artifacts/offline-20260923-round263.log` 440,975 B／2,763 内容行／L2654 `Ran 2575 tests in 122.686s`／L2656 `OK (skipped=2)`／无 FAILED 无 Traceback／82 枚 `passed.`／新套件标记 L2706 |
+| 退出码 | 同会话写入百分号 TEMP 下 `r167_exit.txt`＝`EXITCODE=0`；log 本身不含退出码行 |
+| 六笔提交 | `d679bfe`／`10242b5`／`d63da18`／`70aa580`／`616444b`／本笔 docs(round-R166-close) |
+| 未触碰 | `git add -A`、push、tag、`.gitignore`、`.gitattributes`、`artifacts/` 入库、设备段 |
