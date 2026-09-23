@@ -90,3 +90,11 @@ R130 曾把 4 枚 Android 面折进 `TODO.md` 的欠读代码账，所以它们�
 ## 六、本轮事故与恢复（如实记录）
 
 追加 `TODO.md` 的 L2 记录时踩了 PowerShell 变量名大小写不敏感：换行符变量 `$L` 覆盖了行集合变量 `$l`，使 `TODO.md` 被写成 2 字节。处置＝先用 `git cat-file blob HEAD:TODO.md` 取母本落地为恢复体并逐项复算（2,188 内容行／765,885 B／CR=0／行首 `- [ ]` 恰 4 枚／码点 U+7B21 恰 1 枚／设备段起点 L838／该条长度 10,493，全部与开工真值逐字相符），再改用以 `$LFlit` 命名的脚本文件重放两处编辑，重放后复验通过。全程未使用 `git checkout --`。
+
+## 七、同轮收尾（提交后端门禁与离仓清理）
+
+- 六笔逐 pathspec 提交：`354034b` → `530f6ff` → `285866d` → `6f9dd56` → `2cd24c6` → `a0ece5b`（父提交 `77605cb`）；本节与本节两份根文档注记所在的收尾提交为第七笔。
+- 提交后 `git status --porcelain -uno` 复归 0 行；未 push、未 tag、未碰 `.gitignore`／`.gitattributes`，`artifacts/`、`_external/` 与门禁日志未入库。
+- 提交后端门禁重跑 `artifacts/offline-20260923-round265.log`：`Ran 2581 tests in 124.029s`／`OK (skipped=2)`／`FAILED` 0／`Traceback` 0／JS 标记 82／包装退出码 0，与提交前 round264（`Ran 2581 tests in 134.233s`／`EXITCODE=0`）同套同数。
+- 提交后逐文件复算：`src/app/ui/app.js` 8,530 内容行／418,004 B／前缀 `c70277ca567c840b` 未变；`android-client` 43 枚 `.java`／9,695 行未变；清单 725 条全 MATCH。
+- 清理：变异克隆 `C:\path\to\fnAudio-mut-r167` 已删；`%TEMP%` 本轮工作目录已删；仓库根 `.r167_*` 四枚暂存件已删；`.orig`／`.rej` 0 枚。
