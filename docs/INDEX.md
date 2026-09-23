@@ -20,6 +20,7 @@
 - `external-acceptance.md`：设备与外部材料侧待办的唯一台账，含 45 条原文冻结块、固定编号与逐条处置计划。
 - `REVIEW_ROUND_DISCIPLINE.md`：逐轮记账口径的唯一成文处——第五桶不计入终止分母、0-close 轮的记法、真机取证分档白名单、终局收口形式与 c1～c8 裁定落点；由 `src/tests/test_device_todos_migrated.py` 与 `TODO.md` 双向核对。
 - `REAL_DEVICE_GOALS.md`：负责人常设指令（2026-09-22）下从逐轮目标移出的真机验收事项——固定编号 G01～G11、逐条真机口径、开工前置、与终止条件的关系和建议顺序；与 `external-acceptance.md` 共同构成「以后的目标」，由 `src/tests/test_real_device_goals_moved_out.py` 守护原文冻结。
+- `FUTURE_GOALS.md`：负责人裁定（2026-09-23）下从本次逐轮目标移出的 Android 客户端审计面——迁出范围（43 个文件／9,695 行中点名的 4 枚已审计面）、移出后留下的账、与 `external-acceptance.md`／`REAL_DEVICE_GOALS.md` 的分工、启动专项审计的前置与记录规则；由 `src/tests/test_android_audit_scope_moved_out.py` 守护「移出≠删除≠关闭」。
 
 ## 当前权威文档
 
