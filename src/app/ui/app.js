@@ -115,6 +115,12 @@ state.lyricsLoadingTrackId = "";
 state.lyricsRequestController = null;
 state.lyricsPollTimer = 0;
 state.lyricsPollAttempts = 0;
+// Which lyric line the highlight projection last painted.  The panel is repainted
+// from several polling surfaces while the active line only changes every few
+// seconds, so the projection needs a memory of its own output.  null means "the
+// [data-lyric] nodes were not painted by me", which is what renderLyrics() and
+// showLyricsMessage() declare whenever they rebuild the panel.
+state.lyricsActiveLine = null;
 state.seeking = false;
 state.streamOffset = 0;
 state.pendingSeekTime = null;
@@ -4785,6 +4791,9 @@ function updateLyricsMeta(item = currentItem()) {
 }
 function renderLyrics(lines) {
   state.lyrics = lines;
+  // Every line node below is replaced, so whatever the highlight projection
+  // remembers about the previous set describes nodes that no longer exist.
+  state.lyricsActiveLine = null;
   $("lyricsLines").innerHTML = lines.length
     ? lines.map((line, index) => `<p data-lyric="${index}">${escapeHtml(line.text)}</p>`).join("")
     : `<p class="muted-line">没有找到歌词。可以把同名 .lrc 文件放到歌曲目录。</p>`;
@@ -4792,6 +4801,9 @@ function renderLyrics(lines) {
 }
 function showLyricsMessage(message) {
   state.lyrics = [];
+  // Same rule as renderLyrics(): the message node replaces every lyric line, so
+  // there is no active line left to remember.
+  state.lyricsActiveLine = null;
   const lines = $("lyricsLines");
   lines.scrollTop = 0;
   lines.innerHTML = `<p class="muted-line">${escapeHtml(message)}</p>`;
@@ -5087,9 +5099,17 @@ function prefetchCurrentTrackMetadata(item = currentItem()) {
         scheduleMetadataRowRender(trackId, ["cover_url", "cover_thumbnail_url", "lyrics"]);
         if (state.lyricsTrackId === trackId) {
           if (lyrics) {
-            state.lyrics = parseLyrics(lyrics);
-            state.lyricsStatus = "ready";
-            if (!$('lyricsView')?.hidden) renderLyrics(state.lyrics);
+            // The visible loader keeps one invariant: a lyric body, a rendered
+            // panel and the word "loaded" arrive together.  This lane used to file
+            // the same body under a sixth word that no gate knows, which opted the
+            // track out of the reuse check in loadLyricsForCurrentTrack() - every
+            // reopen then blanked a panel that already held the lyric and
+            // re-requested the provider behind a 10 s timeout.  Skipping the render
+            // while the panel was hidden is the other half of the same fault: it
+            // leaves state.lyrics describing a DOM that never received it, so the
+            // reuse check can no longer be trusted.  Go through the one path.
+            state.lyricsStatus = "loaded";
+            renderLyrics(parseLyrics(lyrics));
           }
         }
       }).finally(() => {
@@ -5333,15 +5353,30 @@ async function openLyrics() {
   // failed provider job. Timed pending polls remain bounded and never request
   // an unbounded retry loop from the server.
   await loadLyricsForCurrentTrack(item, retry, state.lyricsStatus === "error");
+  // The reuse gate above can return without touching the panel, so this is also
+  // the only projection a reused lyric gets. A fresh render already did its own.
+  updateLyricHighlight();
 }
 function updateLyricHighlight() {
   if (!state.lyrics.length || $("lyricsView").hidden) return;
   const now = currentSeconds();
-  let active = 0;
+  // A cue only becomes active once its own timestamp is due, so "no line yet" is
+  // a real state: an intro before the first cue, and every plain-text lyric
+  // (parseLyrics gives those rows time: -1), have no line to blame on the clock.
+  // Starting at 0 announced the first line as if it were being sung.
+  let active = -1;
   state.lyrics.forEach((line, index) => {
     if (line.time >= 0 && line.time <= now + 0.25) active = index;
   });
+  // Three polling surfaces - the native status callback, the cast UI refresh and
+  // audio timeupdate at about four ticks a second - all arrive here, while the
+  // active line moves every few seconds.  Without this gate every tick re-toggled
+  // every line node and restarted the smooth scroll, so the animation never
+  // settled and the panel kept dragging the reader back to the current line.
+  if (active === state.lyricsActiveLine) return;
+  state.lyricsActiveLine = active;
   document.querySelectorAll("[data-lyric]").forEach(node => node.classList.toggle("active", Number(node.dataset.lyric) === active));
+  if (active < 0) return;
   const activeNode = document.querySelector(`[data-lyric="${active}"]`);
   const lyricBox = $("lyricsLines");
   if (activeNode && lyricBox) {
