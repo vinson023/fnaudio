@@ -41,7 +41,14 @@ assert.match(source, /fnAudioMetadataResponsePolicy\?\.unwrap\(value, 4\)/, "Met
 assert.match(source, /terminal = \["failed", "no_match"\]\.includes\(status\)/, "Terminal lyric misses must remain bounded-retryable");
 assert.match(source, /scheduleLyricsRetry\?\.\(!requestedRetry && \(terminal \|\| data\.ok !== true\)\)/, "Terminal lyric retry must request server-side recovery once");
 assert.match(source, /const lyricArtwork = usableCoverSource\(lyricPayload\?\.image_url\)/, "Playback lyric prefetch should apply resolved artwork");
-assert.match(source, /if \(!\$\('lyricsView'\)\?\.hidden\) renderLyrics\(state\.lyrics\)/, "Live lyric prefetch must preserve the parsed lyric array");
+// R166 rewrote this assertion.  It used to pin the prefetch lane to
+// "render only when the panel is visible, and stash state.lyrics either way", which is
+// the divergence that made the lane's private sixth status word fatal.  The replacement
+// is strictly stronger: the parsed body must reach the one painting path, and both
+// abolished shapes are now forbidden from returning.
+assert.match(source, /state\.lyricsStatus = "loaded";\n\s*renderLyrics\(parseLyrics\(lyrics\)\);/, "Live lyric prefetch must hand the parsed lyric array to the one path that paints it");
+assert.doesNotMatch(source, /if \(!\$\('lyricsView'\)\?\.hidden\) renderLyrics\(/, "A hidden panel may not be left holding a lyric body its DOM never received");
+assert.doesNotMatch(source, /state\.lyricsStatus = "ready"/, "The lyric status vocabulary must stay closed to the words the reuse gate knows");
 assert.match(source, /const needsPriorityLyricsLane = !String\(item\.lyrics \|\| ""\)\.trim\(\)/, "Embedded lyrics must not suppress artwork recovery");
 assert.match(source, /const METADATA_PREFETCH_MAX_ATTEMPTS = 12;/, "Metadata prefetch must use an explicit bounded budget");
 assert.match(source, /state\.metadataPrefetchAttempts < METADATA_PREFETCH_MAX_ATTEMPTS/, "Metadata prefetch polling must remain bounded");
