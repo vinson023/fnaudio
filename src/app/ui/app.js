@@ -1194,12 +1194,24 @@ function currentItem() { return state.queue[state.index]; }
 function isRemoteTarget() { return globalThis.fnAudioPlaybackTargetPolicy.isRemote(state.playTarget); }
 function isDacTarget(target = state.playTarget) { return globalThis.fnAudioPlaybackTargetPolicy.isDac(target); }
 function isMpdTarget(target = state.playTarget) { return globalThis.fnAudioPlaybackTargetPolicy.isMpd(target); }
+function writeStoredUserMedia(key, value) {
+  // The server copy is authoritative, and the 4 MB read bound already tolerates
+  // a missing or truncated shadow, so a quota or private-mode failure must cost
+  // this cache only. Letting it throw cost more than that: every caller keeps
+  // the queued server save and the favorite repaint after the write (R171).
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (_) {
+    // Best-effort by design; the in-memory copy and the server queue still hold it.
+  }
+}
+
 function loadStoredPlaylists() {
   const value = parseStoredJson(PLAYLIST_STORE_KEY, [], MAX_USER_MEDIA_STORAGE_CHARS);
   return normalizeUserMediaState({ playlists: value }).playlists;
 }
 function savePlaylists() {
-  localStorage.setItem(PLAYLIST_STORE_KEY, JSON.stringify(state.playlists));
+  writeStoredUserMedia(PLAYLIST_STORE_KEY, state.playlists);
   scheduleUserStateSave();
 }
 function loadStoredFavorites() {
@@ -1207,7 +1219,7 @@ function loadStoredFavorites() {
   return normalizeUserMediaState({ favorites: value }).favorites;
 }
 function saveFavorites() {
-  localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
+  writeStoredUserMedia(FAVORITE_STORE_KEY, state.favorites);
   scheduleUserStateSave();
 }
 function normalizeUserMediaState(source = {}) {
@@ -1222,8 +1234,8 @@ function applyUserStateChanges(source, changes) {
 function persistUserMediaState(value) {
   state.favorites = value.favorites;
   state.playlists = value.playlists;
-  localStorage.setItem(FAVORITE_STORE_KEY, JSON.stringify(state.favorites));
-  localStorage.setItem(PLAYLIST_STORE_KEY, JSON.stringify(state.playlists));
+  writeStoredUserMedia(FAVORITE_STORE_KEY, state.favorites);
+  writeStoredUserMedia(PLAYLIST_STORE_KEY, state.playlists);
   updateFavoriteControls();
 }
 function userStatePayload() {

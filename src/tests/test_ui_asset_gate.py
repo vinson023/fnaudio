@@ -92,6 +92,21 @@ class UiDeclarationInvariants(unittest.TestCase):
             "an undeclared UI script ships in the package but escapes every gate",
         )
 
+    def test_app_script_is_declared_last(self):
+        """app.js calls its policy modules directly, so every module must precede it.
+
+        The wrappers added for the creator-view and user-media faces use no
+        optional chaining, so a script declared after app.js would still pass
+        the declaration gate above yet be missing on the first render.
+        """
+        order = [src.split("?")[0] for src in re.findall(SCRIPT_SRC, INDEX_HTML.read_text(encoding="utf-8"))]
+        self.assertTrue(order, "index.html declares no scripts at all")
+        self.assertEqual(
+            order[-1],
+            "app.js",
+            "a UI script is declared after app.js, which its unguarded policy calls depend on",
+        )
+
     def test_every_declaration_exists_and_carries_the_build_stamp(self):
         for src in self.declared():
             name, _, query = src.partition("?")
