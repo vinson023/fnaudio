@@ -30,6 +30,19 @@ Volumio、moOde、MPD 和 libmpdclient 使用浅克隆保存当前源码快照�
 
 缓存仓库由根 `.gitignore` 排除；提交中只保留固定提交号、分析结论和产品侧实现，不复制第三方源码。
 
+## fnOS 真机侧工具与文档（trim-cli skill）
+
+| 路径 | 入库 | 说明 |
+|---|---|---|
+| `tools/skill/` | 否 | 厂商工具投送，共 45 个文件：`bin/` 是六个平台的可执行体，约 49.8 MB；`scripts/` 是三个包装脚本。仓库不复制二进制，也没有为它改 `.gitignore`，只在本地保留 |
+| `references/fnos-skill/` | 是 | 工具内 markdown 的字节级镜像，共 36 篇：`SKILL.md`、`manifest.json`、`entries/` 13 篇任务入口、`reference/` 15 篇模块文档、`reference/workflows/` 6 篇流程文档 |
+| `tools/sync_fnos_skill_docs.py` | 是 | 镜像的同步与漂移校验：`--write` 刷新副本，`--check` 一旦发现缺失、改动或多余即以非零退出 |
+
+镜像保留工具原本的层级结构，因为这些文档用 `./entries/...` 和 `../reference/...` 相对链接互指（当前 62 条），压平层级会让它们全部失效。
+
+文档里的命令示例写作 `./scripts/trim-cli ...`，指的是未入库的包装脚本；在本机对应 `tools\skill\scripts\trim-cli.cmd` 或 `trim-cli.ps1`，二者只是转发到 `bin\trim-cli-windows-x64.exe`。
+
+2026-09-25 起，上一代手抄文档 `references/SKILL.md` 与 `references/fnos-api/`（共 14 个文件）被移除。理由是它们与工具内文档同名却已经落后：`app-center.md` 手抄本 6.3 KB、工具内 19.1 KB，`media`、`network`、`photos`、`power` 四个模块整体缺失，`file-routing`、`device-validation`、`storage-dangerous-ops` 三篇在工具内已归入 `reference/workflows/`；而且仓库里已经没有任何文件引用这些手抄路径。此后由 `src/tests/test_fnos_skill_docs.py` 同时守住「镜像等于工具」和「手抄本不再回来」两件事。
 ## 分析文档
 
 - `FNAUDIO_REFERENCE_ANALYSIS.md`：Volumio/moOde/MPD/upmpdcli 对 fnAudio 的详细改进方案。
