@@ -16,8 +16,11 @@ Two definitions are pinned here and nowhere else:
   ``function`` or ``async function`` followed by a name and an opening paren.
   This is the anchor the historical registrations used, so the numbers printed
   here are comparable with them.
-* named -- the symbol's exact word occurs at least once across the three root
-  records (TODO.md, CHANGELOG_AI.md, PROJECT_CONTEXT.md).  "Exact word" matters:
+* named -- the symbol's exact word occurs at least once across the root records
+  (TODO.md, CHANGELOG_AI.md, PROJECT_CONTEXT.md, docs/AUDIT_LEDGER.md).  The last one
+  is the externalised per-round audit ledger added by R169, when the round-by-round
+  notes moved out of the two TODO ledger lines; naming sources are whatever ROOT_DOCS
+  lists, and an entry that is absent from disk names nothing.  "Exact word" matters:
   the ledger counts ``loadLibrary`` and ``loadLibraryResponse`` as two different
   symbols, so a record that only ever mentions the longer one has *not* named the
   shorter.  An earlier round recorded that treating a short name as a substring of
@@ -49,7 +52,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET = "src/app/ui/app.js"
-ROOT_DOCS = ("TODO.md", "CHANGELOG_AI.md", "PROJECT_CONTEXT.md")
+ROOT_DOCS = ("TODO.md", "CHANGELOG_AI.md", "PROJECT_CONTEXT.md",
+             "docs/AUDIT_LEDGER.md")
 
 # Line-anchored declaration: the historical convention.  Indented inner
 # functions are not counted, which is what keeps this index comparable with the
@@ -84,7 +88,13 @@ FACE_KEYS = ("start", "end", "count", "span", "held", "named_inside", "symbols")
 
 
 def read_text(repo_root: Path, relative: str) -> str:
-    return (repo_root / relative).read_text(encoding="utf-8", newline="")
+    path = Path(repo_root) / relative
+    if not path.is_file():
+        # A root record may legitimately be absent: fixtures write only the records a
+        # case cares about, and the externalised ledger has to exist before a round can
+        # name a symbol in it.  Absent means "names nothing", never "measurement fails".
+        return ""
+    return path.read_text(encoding="utf-8", newline="")
 
 
 def content_lines(text: str) -> int:

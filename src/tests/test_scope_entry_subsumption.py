@@ -23,6 +23,7 @@ recomputes the relationship from disk on every run:
 
 from pathlib import Path
 import re
+import tempfile
 import unittest
 
 
@@ -68,6 +69,19 @@ ANDROID_LEDGER_FACES = {
 
 FACE_COUNT = 16
 CARRIER_THRESHOLD = 14
+
+# R169 moved the round-by-round evidence these two open accounts accumulate into a
+# file of its own, because a TODO line that carries every registration grows until
+# rewriting it costs more than reading the code does.  The accounts stay open and
+# keep their judgement text; only the accumulating detail moved, so the pointer and
+# the single-carriage rule below are what keep the move honest.
+AUDIT_LEDGER = "docs/AUDIT_LEDGER.md"
+# The symbol account is the other open entry, pinned by the same phrase the bucket
+# ledger uses to find it, so the two guards can never drift onto different lines.
+SYMBOL_ACCOUNT_MARKER = "\u5269\u4f59\u7ea6 92% \u7b26\u53f7\u4ecd\u662f\u6d45\u8bfb\u9762"
+NOTE_CLOSER = "\u3015"
+# Registered blocks are long; their first characters agreeing is the block agreeing.
+BLOCK_FINGERPRINT = 60
 
 
 def content_lines(path):
@@ -123,6 +137,35 @@ def canonical(face):
     return stem if stem in ANDROID_LEDGER_FACES else face
 
 
+def read_lf_only(path, label):
+    """Text of a naming source, rejecting anything that carries a carriage return.
+
+    Both the TODO ledger and docs/AUDIT_LEDGER.md are parsed line-anchored, so a
+    stray CRLF would silently defeat every regex rather than announce itself.
+    ``read_text()`` cannot express that check: its universal-newline translation
+    strips the CR before any assertion can see it.  Byte-level reads are therefore
+    the only form of this rule that can fail, which the fixture below relies on.
+    """
+    raw = path.read_bytes()
+    if b"\r" in raw:
+        raise AssertionError("%s must stay LF-only" % label)
+    return raw.decode("utf-8")
+
+
+def note_blocks(text):
+    """The per-round 「〔RNNN …〕」 blocks carried by some text, in order.
+
+    These blocks are how a round registers what it read.  Before R169 they piled up
+    inside the two open TODO accounts; now they belong to docs/AUDIT_LEDGER.md, which
+    makes "one block, one carrier" checkable instead of merely intended.
+    """
+    return [
+        chunk.split(NOTE_CLOSER)[0].strip()
+        for chunk in text.split(NOTE_DELIMITER)[1:]
+        if chunk.split(NOTE_CLOSER)[0].strip()
+    ]
+
+
 def face_set(line, reader=entry_faces):
     """The distinct faces one entry line names, aliased and de-duplicated."""
     return {canonical(face) for face in reader(line)}
@@ -130,9 +173,7 @@ def face_set(line, reader=entry_faces):
 
 class ScopeEntrySubsumptionTests(unittest.TestCase):
     def setUp(self):
-        text = TODO.read_text(encoding="utf-8")
-        self.assertNotIn("\r", text, "TODO.md must stay LF-only before it is parsed")
-        self.lines = text.split("\n")
+        self.lines = read_lf_only(TODO, "TODO.md").split("\n")
         self.device_start = next(
             (index for index, line in enumerate(self.lines) if line.startswith(DEVICE_HEADING)),
             None,
@@ -223,6 +264,92 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
                     int(match.group(1).replace(",", "")), content_lines(path),
                     "the ledger line count for %s is stale" % path.name,
                 )
+
+
+    def open_code_accounts(self):
+        """Both open entries of the unread-code bucket, located the same way the guards pin them."""
+        accounts = [self.successor_entry()]
+        symbol = [
+            (number, line)
+            for number, line in enumerate(self.lines[: self.device_start], start=1)
+            if OPEN_ITEM.match(line) and SYMBOL_ACCOUNT_MARKER in line
+        ]
+        self.assertEqual(
+            len(symbol), 1,
+            "the app.js symbol queue must be exactly one open entry, found %d" % len(symbol),
+        )
+        accounts.append(symbol[0])
+        self.assertEqual(
+            len({number for number, _line in accounts}), len(accounts),
+            "the two open accounts collapsed onto one line",
+        )
+        return accounts
+
+    def test_the_external_ledger_exists_and_is_named_by_both_open_accounts(self):
+        # The ledger is now a naming source for tools/audit_coverage.py, so a reader who
+        # follows either account has to be able to find it.  An account that stops
+        # pointing at the file it delegated its detail to would send the next round
+        # back to appending inside TODO.md, which is the growth this move prevents.
+        ledger = REPO_ROOT / AUDIT_LEDGER
+        self.assertTrue(ledger.is_file(), "%s is missing from the tree" % AUDIT_LEDGER)
+        text = read_lf_only(ledger, AUDIT_LEDGER)
+        self.assertTrue(text.lstrip().startswith("# "), "%s lost its heading" % AUDIT_LEDGER)
+        for number, line in self.open_code_accounts():
+            with self.subTest(account=number):
+                self.assertIn(
+                    "`%s`" % AUDIT_LEDGER, line,
+                    "TODO.md line %d no longer names the ledger holding its detail" % number,
+                )
+
+    def test_no_registered_block_is_carried_twice(self):
+        # Copying without deleting is how an externalisation silently fails: the detail
+        # would live in two places, and the TODO line it was supposed to leave would keep
+        # growing.  Deleting without copying is the other half of the same accident, and
+        # the tools/audit_coverage.py side of this pair re-computes the symbols, so a
+        # block lost by both carriers cannot be hidden here.
+        ledger_blocks = note_blocks((REPO_ROOT / AUDIT_LEDGER).read_text(encoding="utf-8"))
+        self.assertGreater(
+            len(ledger_blocks), 1,
+            "%s carries no migrated registrations" % AUDIT_LEDGER,
+        )
+        fingerprints = {
+            block[:BLOCK_FINGERPRINT]
+            for block in ledger_blocks
+            if len(block) >= BLOCK_FINGERPRINT
+        }
+        self.assertEqual(
+            len(fingerprints), len([b for b in ledger_blocks if len(b) >= BLOCK_FINGERPRINT]),
+            "the ledger registers the same block twice",
+        )
+        for number, line in self.open_code_accounts():
+            for block in note_blocks(line):
+                with self.subTest(account=number, block=block[:24]):
+                    self.assertNotIn(
+                        block[:BLOCK_FINGERPRINT], fingerprints,
+                        "TODO.md line %d still carries a block the ledger already holds" % number,
+                    )
+
+
+    def test_the_lf_rule_rejects_a_ledger_that_carries_carriage_returns(self):
+        # Positive control for the reader above.  Without it the rule is only a
+        # statement about a file that happens to be clean today: a future round
+        # that rewrites docs/AUDIT_LEDGER.md through a Windows-flavoured editor,
+        # or a guard that quietly regresses to read_text(), would keep passing.
+        clean = (REPO_ROOT / AUDIT_LEDGER).read_bytes()
+        self.assertNotIn(b"\r", clean, "the fixture needs the ledger to start LF-only")
+        with tempfile.TemporaryDirectory() as scratch:
+            lf_path = Path(scratch) / "ledger.md"
+            crlf_path = Path(scratch) / "ledger-crlf.md"
+            lf_path.write_bytes(clean)
+            crlf_path.write_bytes(clean.replace(b"\n", b"\r\n"))
+            self.assertEqual(
+                read_lf_only(lf_path, "clean fixture"),
+                clean.decode("utf-8"),
+                "the reader rejects a file it should accept",
+            )
+            with self.assertRaises(AssertionError) as caught:
+                read_lf_only(crlf_path, "CRLF fixture")
+            self.assertIn("LF-only", str(caught.exception))
 
 
 if __name__ == "__main__":

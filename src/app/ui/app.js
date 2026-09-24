@@ -7020,9 +7020,6 @@ function createPlaylist(name, trackIds = []) {
   renderPlaylistNav();
   return playlist;
 }
-function addTrackToPlaylist(playlistId, trackId) {
-  addTracksToPlaylist(playlistId, [trackId]);
-}
 function addTracksToPlaylist(playlistId, trackIds = []) {
   const playlist = state.playlists.find(x => x.id === playlistId);
   const ids = [...new Set((trackIds || []).map(String).filter(id => itemById(id)))];
@@ -7299,6 +7296,11 @@ function showTrackInformation(trackId) {
   $("trackActionList").innerHTML = `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   $("trackActionDialog").showModal();
 }
+function renderMetadataCandidateRetry(list, trackId, message) {
+  list.innerHTML = `<div class="track-action-info">${escapeHtml(message)}</div><button class="track-action-choice" data-retry-track-metadata="${escapeHtml(String(trackId))}">重新查询此歌曲</button>`;
+  const retryButton = list.querySelector("[data-retry-track-metadata]");
+  if (retryButton) retryButton.onclick = () => showTrackMetadataCandidate(trackId, 0, true);
+}
 async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed = false) {
   const item = itemById(trackId);
   if (!item) return;
@@ -7333,23 +7335,40 @@ async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed
     const best = globalThis.fnAudioMetadataCandidatePresentationPolicy?.selectDisplayCandidate(data.best, candidates) || {};
     if (!best.title) {
       if (data.pending === true || String(data.status || "").toLowerCase() === "pending") {
-        list.textContent = "正在后台检索元数据，完成后将自动显示...";
-        if (state.metadataCandidatePollAttempts < METADATA_CANDIDATE_MAX_POLLS && state.actionTrackId === String(trackId) && $("trackActionDialog").open) {
+        // The promise and the follow-up have to be the same decision: the budget
+        // below stops arming polls, and a dialog left saying it will display the
+        // result automatically can never keep that word.
+        const canPollAgain = state.metadataCandidatePollAttempts < METADATA_CANDIDATE_MAX_POLLS
+          && state.actionTrackId === String(trackId) && $("trackActionDialog").open;
+        if (canPollAgain) {
           state.metadataCandidatePollAttempts += 1;
+          list.textContent = "正在后台检索元数据，完成后将自动显示...";
           state.metadataCandidatePollTimer = setTimeout(() => {
             state.metadataCandidatePollTimer = 0;
             if (isCurrentRequest()) showTrackMetadataCandidate(trackId, requestToken);
           }, 1200);
+        } else {
+          renderMetadataCandidateRetry(list, trackId, "后台检索仍未返回可信候选，可稍后重新查询。");
         }
+      } else {
+        // A finished lookup that produced nothing usable still has to leave the
+        // manual exit.  The two server fields describing it come from different
+        // tables: `status` is the cached match projection while `last_error` is
+        // whatever the job row remembers (the worker exception path rewrites only
+        // the job row), so a genuine "no match" can arrive carrying a leftover
+        // provider error.  Testing that error first used to relabel the answer as
+        // an outage and drop the retry button with it.
+        const terminalStatus = String(data.status || "").toLowerCase();
+        const terminalError = String(data.last_error || "").trim();
+        let terminalCopy = "没有找到可信的元数据候选。";
+        if (terminalStatus === "unavailable") terminalCopy = data.message || "后台元数据服务暂不可用，请稍后重试。";
+        else if (terminalStatus === "no_match") {
+          terminalCopy = terminalError
+            ? `当前数据源没有找到可信匹配（${terminalError}）。`
+            : "当前数据源没有找到可信匹配。";
+        } else if (terminalError) terminalCopy = `数据源暂不可用：${terminalError}`;
+        renderMetadataCandidateRetry(list, trackId, terminalCopy);
       }
-      else if (String(data.status || "").toLowerCase() === "unavailable") list.textContent = data.message || "后台元数据服务暂不可用，请稍后重试。";
-      else if (data.last_error) list.textContent = `数据源暂不可用：${data.last_error}`;
-      else if (data.status === "no_match") {
-        list.innerHTML = `<div class="track-action-info">当前数据源没有找到可信匹配。</div><button class="track-action-choice" data-retry-track-metadata="${escapeHtml(String(trackId))}">重新查询此歌曲</button>`;
-        const retryButton = list.querySelector("[data-retry-track-metadata]");
-        if (retryButton) retryButton.onclick = () => showTrackMetadataCandidate(trackId, 0, true);
-      }
-      else list.textContent = "没有找到可信的元数据候选。";
       return;
     }
     const review = data.status === "review";
@@ -7448,9 +7467,21 @@ function externalShareDateValue(date) {
 }
 function generateExternalSharePassword() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-  const bytes = new Uint8Array(10);
-  crypto.getRandomValues(bytes);
-  return [...bytes].map(value => alphabet[value % alphabet.length]).join("");
+  // 256 is not a multiple of the alphabet size.  Reducing a raw byte modulo it
+  // therefore hands the first 256 % alphabet.length characters a fifth byte
+  // value while the rest get four, which is a real skew in an outward-facing
+  // credential.  Draw until the buffer fills instead of reusing that tail.
+  const limit = Math.floor(256 / alphabet.length) * alphabet.length;
+  const characters = [];
+  while (characters.length < 10) {
+    const bytes = new Uint8Array(10);
+    crypto.getRandomValues(bytes);
+    for (const value of bytes) {
+      if (value < limit) characters.push(alphabet[value % alphabet.length]);
+      if (characters.length === 10) break;
+    }
+  }
+  return characters.join("");
 }
 function syncExternalShareOptions() {
   const expiryEnabled = $("shareExpiryEnabled").checked;

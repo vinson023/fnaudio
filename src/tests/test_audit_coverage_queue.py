@@ -44,6 +44,9 @@ _SPEC.loader.exec_module(_MODULE)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NL = "\n"
 
+# The naming source R169 externalised out of the two TODO ledger lines.
+LEDGER = "docs/AUDIT_LEDGER.md"
+
 FROZEN_COUNTS = (
     "286",
     "381",
@@ -94,9 +97,15 @@ def write_repo(root, app_text, records):
     target = root / _MODULE.TARGET
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(app_text.encode("utf-8"))
-    assert len(records) == len(_MODULE.ROOT_DOCS), records
+    # R169 grew the naming sources from three to four, and a fixture may
+    # legitimately leave the newest one off disk to prove that an absent
+    # source names nothing -- so the contract is "at most one record per
+    # naming source", never "exactly the number this file last remembered".
+    assert len(records) <= len(_MODULE.ROOT_DOCS), records
     for relative, text in zip(_MODULE.ROOT_DOCS, records):
-        (root / relative).write_bytes(text.encode("utf-8"))
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text.encode("utf-8"))
 
 
 class AuditCoverageRealRepositoryTests(unittest.TestCase):
@@ -188,6 +197,27 @@ class AuditCoverageRealRepositoryTests(unittest.TestCase):
         self.assertIn("named=%d" % self.result["named_symbols"], text)
         self.assertIn("faces=%d" % len(self.result["faces"]), text)
         self.assertEqual(len([line for line in text.split(NL) if line.startswith("#")]), 3)
+
+    def test_the_ledger_holds_naming_evidence_no_other_source_holds(self):
+        # The ledger exists because the registrations left the two TODO accounts, and the
+        # tool reads it as a naming source.  Two accidents defeat that: a migration that
+        # deletes from both files quietly re-opens every symbol it "moved", and a copy
+        # that deletes nothing leaves the ledger redundant.  Both show up the same way --
+        # the ledger stops being the only carrier of any name -- so that is what is
+        # asserted, without pinning how many symbols any round has ever named.
+        ledger = _MODULE.read_text(REPO_ROOT, LEDGER)
+        self.assertTrue(ledger.strip(), "the external ledger is empty")
+        others = [
+            _MODULE.read_text(REPO_ROOT, relative)
+            for relative in _MODULE.ROOT_DOCS
+            if relative != LEDGER
+        ]
+        without_ledger = independent_named(self.names, others)
+        self.assertLess(
+            len(without_ledger),
+            len(self.named),
+            "the ledger adds no naming evidence: migrated registrations are missing or duplicated",
+        )
 
     def test_no_historical_count_is_frozen_into_either_side_of_the_tool(self):
         tool = _MODULE_PATH.read_text(encoding="utf-8")
@@ -362,6 +392,36 @@ class AuditCoverageFixtureTests(unittest.TestCase):
         self.assertEqual(face["named_inside"], 1)
         self.assertEqual(face["symbols"], ["alpha", "beta"])
 
+    def test_the_external_ledger_retires_symbols_like_a_root_record(self):
+        # The deep-read evidence used to live inside two TODO lines, which grew until
+        # rewriting them cost more than reading the code.  It now lives in its own
+        # file, so that file has to carry the same authority: naming a symbol only in
+        # the ledger must remove it from the queue even when no root record mentions it.
+        self.assertEqual(_MODULE.ROOT_DOCS[-1], LEDGER)
+        app = NL.join(
+            [
+                "function root_named() { /* a */ }",
+                "function ledger_named() { /* b */ }",
+                "function owing() { /* c */ }",
+            ]
+        )
+        result = self.measure(app, ("root_named", "", "", "ledger_named"))
+        self.assertEqual(result["named_symbols"], 2)
+        self.assertEqual(result["zero_named_symbols"], 1)
+        self.assertEqual([face["symbols"] for face in result["faces"]], [["owing"]])
+
+    def test_an_absent_ledger_names_nothing_instead_of_failing_the_measure(self):
+        # A round that has not created the ledger yet must still get a queue; treating
+        # a missing naming source as an error would make the externalisation itself
+        # un-runnable, and treating it as an empty *string* would be the same lie.
+        app = NL.join(
+            ["function owing_one() { /* a */ }", "function owing_two() { /* b */ }"]
+        )
+        result = self.measure(app, ("", "", ""))
+        self.assertFalse((self.root / LEDGER).exists())
+        self.assertEqual(result["symbols"], 2)
+        self.assertEqual(result["named_symbols"], 0)
+        self.assertEqual(result["zero_named_symbols"], 2)
 
 if __name__ == "__main__":
     unittest.main()
