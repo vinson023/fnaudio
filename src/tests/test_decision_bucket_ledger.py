@@ -24,8 +24,10 @@ record and this guard makes the pair mechanically checkable:
    by that record, and the check refuses to pass vacuously;
 6. every phrase telling a future round to wait for the owner sits in a dated
    historical record and is overridden by that same ruling;
-7. the offline code bucket still holds exactly the two deep-read debts that gate
-   termination clause (1), so a decision record can never be mistaken for code work;
+7. the offline code bucket holds neither of the two deep-read debts that used to
+   gate termination clause (1) -- both were shut by R173 and each survives as
+   exactly one closed row -- so a decision record can never be mistaken for
+   unfinished code work, and re-opening one cannot be mistaken for paying it off;
 8. the ruling does not leak outside the decision bucket.
 
 Deliberately not pinned: the wording of the historical records themselves.
@@ -216,13 +218,24 @@ class DecisionBucketLedger(unittest.TestCase):
         self.assertEqual(1, len(ruling_of(self.bucket)))
 
     def test_offline_code_bucket_holds_exactly_the_deep_read_debts(self):
+        # The anchors themselves stay: they are how this bucket states what is no
+        # longer in it.  R173 shut both debts, so each has to appear as exactly one
+        # closed row and in no open row at all -- a second open row would double the
+        # measured bucket, and a vanished anchor would hide that it was deleted
+        # rather than paid.
         open_rows = [line for line in self.all_lines if line.startswith("- [ ] ")]
         self.assertTrue(open_rows, "TODO.md has no open checklist row at all")
         for anchor in OPEN_CODE_ITEMS:
             self.assertEqual(
-                1,
+                0,
                 len([line for line in open_rows if anchor in line]),
-                "deep-read debt is missing or duplicated: " + anchor,
+                "a shut deep-read debt is open again in the code bucket: " + anchor,
+            )
+            self.assertEqual(
+                1,
+                len([line for line in self.all_lines
+                     if line.startswith("- [x] ") and anchor in line]),
+                "deep-read debt record is missing or duplicated among closed rows: " + anchor,
             )
 
     def test_ruling_is_confined_to_the_decision_bucket(self):

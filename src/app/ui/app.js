@@ -5579,16 +5579,6 @@ function updateLibraryStatusDecorations() {
     setTextContentIfChanged($("mobileViewSub"), scanText);
   }
 }
-function clearLibraryQueryState() {
-  state.page = 1;
-  state.pageItems = [];
-  state.pageTotal = 0;
-  state.groupRows = [];
-  state.folderRows = [];
-  state.folderRootRows = [];
-  state.folderPage = 1;
-  state.folderTotal = 0;
-}
 function cancelVisibleMetadataPrefetch(options = {}) {
   const cancelRearms = options.cancelRearms !== false;
   const releaseKeys = options.releaseKeys === true;
