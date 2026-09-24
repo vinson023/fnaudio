@@ -152,6 +152,7 @@ except Exception:
     except OSError: pass
     raise
 PY
+  then
     return 1
   fi
   if ! chmod 600 "${TRIM_PKGETC}/config.json"; then return 1; fi
