@@ -1473,12 +1473,23 @@ class HttpIntegrationTests(unittest.TestCase):
         write_log.assert_not_called()
 
     def test_post_body_limit_is_enforced_before_json_parsing(self):
-        headers = {**self.auth_headers("playback.control"), "Content-Type": "application/json"}
+        # The gate reads the declared length, never the body, so an oversized
+        # declaration is refused with a two-byte payload on the wire. Pushing a
+        # real 2 MiB instead races the server: every response here is HTTP/1.0,
+        # so the socket is already closing while the client still has unsent
+        # bytes, and on Windows the pending write can abort the connection and
+        # discard the buffered 413 (WSAECONNABORTED). Withholding the body also
+        # proves something the full write could not: the limit is enforced before
+        # the body is read at all. Same idiom as
+        # test_transfer_encoding_is_rejected_before_body_parsing above.
+        oversized = str(2 * 1024 * 1024 + 1)
         status, _headers, body = self.request(
             "/api/playback/control",
             method="POST",
-            headers=headers,
-            data=b"x" * (2 * 1024 * 1024 + 1),
+            headers={**self.auth_headers("playback.control"),
+                     "Content-Type": "application/json",
+                     "Content-Length": oversized},
+            data=b"{}",
         )
         self.assertEqual(status, 413)
         self.assertIn(b"too large", body)

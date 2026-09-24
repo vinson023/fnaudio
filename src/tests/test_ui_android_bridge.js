@@ -808,7 +808,7 @@ if (!historyActivity.includes("RESULT_NEW_PROFILE") || !historyActivity.includes
 }
 if (!source.includes('$("mobileModeBtn").onclick = toggleMp3Transcode')
     || !source.includes('function toggleMp3Transcode()')
-    || !source.includes('localStorage.setItem("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0")')) {
+    || !source.includes('writeStoredPreference("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0")')) {
   throw new Error("Mobile top bar must expose the persisted MP3 transcoding control");
 }
 

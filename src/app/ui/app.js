@@ -1205,6 +1205,19 @@ function writeStoredUserMedia(key, value) {
     // Best-effort by design; the in-memory copy and the server queue still hold it.
   }
 }
+function writeStoredPreference(key, value) {
+  // Preferences are intent caches, not a truth source: the caller has already
+  // updated the in-memory copy, and the authoritative step queued behind the
+  // write -- the re-render, the header repaint, the track reload -- is what the
+  // user actually clicked for. A quota or private-mode refusal may cost the
+  // persisted intent and nothing else (R172). The read side compares bare
+  // strings, so the value is stored verbatim, never JSON-encoded.
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {
+    // Best-effort by design; the next launch falls back to the default.
+  }
+}
 
 function loadStoredPlaylists() {
   const value = parseStoredJson(PLAYLIST_STORE_KEY, [], MAX_USER_MEDIA_STORAGE_CHARS);
@@ -1638,8 +1651,8 @@ function applyTrackSort(sortKey) {
     state.sortKey = sortKey;
     state.sortDir = "asc";
   }
-  localStorage.setItem("fnaudio.sortKey.v1", state.sortKey);
-  localStorage.setItem("fnaudio.sortDir.v2", state.sortDir);
+  writeStoredPreference("fnaudio.sortKey.v1", state.sortKey);
+  writeStoredPreference("fnaudio.sortDir.v2", state.sortDir);
   refreshSortedView();
 }
 function columnDragIcon() {
@@ -1743,7 +1756,7 @@ function updateSortOptions() {
     : (options.some(([value]) => value === defaultKey) ? defaultKey : options[0][0]);
   // Persist only a corrected/changed key. `render()` is also called for
   // playback progress and must not turn into synchronous storage churn.
-  if (state.sortKey !== previousKey) localStorage.setItem("fnaudio.sortKey.v1", state.sortKey);
+  if (state.sortKey !== previousKey) writeStoredPreference("fnaudio.sortKey.v1", state.sortKey);
 }
 function compareTrackValue(a, b, key) {
   return globalThis.fnAudioTrackSortPolicy.compare(a, b, key, { displayText, itemAddedTime });
@@ -8260,7 +8273,7 @@ $("trackList").addEventListener("scroll", () => {
 $("refreshBtn").onclick = () => requestLibraryLoad(1, true);
 function toggleMp3Transcode() {
   state.mp3Transcode = !state.mp3Transcode;
-  localStorage.setItem("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0");
+  writeStoredPreference("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0");
   updateModeButton();
   if (currentItem() && !isRemoteTarget()) loadCurrent();
 }

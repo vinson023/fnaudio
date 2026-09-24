@@ -325,7 +325,7 @@ assert.match(app, /setTrackSelection\(\[\.\.\.state\.selectedTrackRowKeys\], lis
 assert.match(app, /function sameTrackSelection\(left, right\)/, "Selection comparison must remain a pure bounded set check");
 assert.match(app, /if \(!force && sameTrackSelection\(state\.selectedTrackRowKeys, requested\)\) return;/, "Unchanged selection must not traverse visible rows");
 assert.match(app, /if \(nav\.dataset\.fnaudioPlaylistNavMarkup === markup\) return;/, "Stable playlist navigation must not be rebuilt on player-only renders");
-assert.match(app, /if \(state\.sortKey !== previousKey\) localStorage\.setItem\("fnaudio\.sortKey\.v1", state\.sortKey\);/, "Sort-key persistence must not run on every player-state render");
+assert.match(app, /if \(state\.sortKey !== previousKey\) writeStoredPreference\("fnaudio\.sortKey\.v1", state\.sortKey\);/, "Sort-key persistence must not run on every player-state render");
 assert.doesNotMatch(app, /sortDirBtn|updateSortDirectionButton/, "Removed toolbar sort-direction projection must not return");
 assert.match(app, /data-track-sort="\$\{sortKey\}"/, "Sort direction must remain projected through dynamic table-header controls");
 assert.match(app, /track-sort-indicator/, "Active sort direction must remain visible in the table header");
