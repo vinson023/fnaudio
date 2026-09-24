@@ -1008,8 +1008,8 @@ function trackColumnScopeLabel() {
   return { all: "全部音乐", dsd: "DSD 音乐", albums: "专辑列表", artists: "歌手列表", composers: "作曲者列表", genres: "类型列表", recent: "最近添加", random100: "随机 100 首", favorites: "收藏歌曲", queue: "当前队列" }[scope] || "当前列表";
 }
 function persistTrackColumnPreferences() {
-  localStorage.setItem(TRACK_COLUMNS_STORE_KEY, JSON.stringify(state.trackColumnPreferences));
-  localStorage.setItem(TRACK_COLUMN_WIDTHS_STORE_KEY, JSON.stringify(state.trackColumnWidthPreferences));
+  try { localStorage.setItem(TRACK_COLUMNS_STORE_KEY, JSON.stringify(state.trackColumnPreferences)); } catch (_) {}
+  try { localStorage.setItem(TRACK_COLUMN_WIDTHS_STORE_KEY, JSON.stringify(state.trackColumnWidthPreferences)); } catch (_) {}
 }
 function currentTrackColumns() {
   const scope = trackColumnScope();
@@ -1047,9 +1047,10 @@ function saveTrackColumnWidth(key, width) {
 }
 
 function formatSize(bytes) {
-  if (!bytes) return "";
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "";
   const units = ["B", "KB", "MB", "GB"];
-  let n = bytes, i = 0;
+  let n = size, i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
 }
@@ -4046,7 +4047,7 @@ function toggleTrackSelection(rowKey) {
   if (!row) return;
   if (state.selectedTrackRowKeys.has(key)) state.selectedTrackRowKeys.delete(key);
   else state.selectedTrackRowKeys.add(key);
-  setTrackSelection([...state.selectedTrackRowKeys]);
+  setTrackSelection([...state.selectedTrackRowKeys], true);
 }
 function selectedTrackIds(trackId = "") {
   const selected = [...document.querySelectorAll("[data-track-row-key]")]
