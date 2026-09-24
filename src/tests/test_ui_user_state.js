@@ -92,4 +92,103 @@ assert.match(source, /async function loadServerUserState\(\)[\s\S]*?cache: "no-s
 assert.match(source, /async function refreshServerUserState\(\)[\s\S]*?cache: "no-store"[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?timeoutMs: 6000,[\s\S]*?onTimeout:[\s\S]*?state\.userStateRefreshInFlight = false;/, "Periodic user-state refresh must release its in-flight guard after a bounded timeout");
 assert.match(responseJsonLoader, /Promise\.race\(\[operation, timeout\]\)/, "Shared user-state loader must release its deadline after headers or body settle");
 
+// A rejected local shadow write must cost the offline cache only: never the
+// edit itself, the queued server save, or the favorite repaint (R171).
+const guardedWriterStart = source.indexOf("function writeStoredUserMedia");
+const guardedWriterEnd = source.indexOf("function loadStoredPlaylists", guardedWriterStart);
+assert.ok(guardedWriterStart >= 0 && guardedWriterEnd > guardedWriterStart,
+  "A guarded local-cache writer must sit next to the user-media writers that need it");
+
+const shadowCalls = [];
+function userMediaShadowContext(failing) {
+  shadowCalls.length = 0;
+  const context = vm.createContext({
+    state: {
+      favorites: ["one"],
+      playlists: [{ id: "p", name: "P", trackIds: ["one"] }],
+      userStateHydrated: true,
+      userStateDirty: false,
+      userStateSaveInFlight: false,
+      userStateSaveTimer: 0,
+    },
+    localStorage: {
+      setItem(key, value) {
+        shadowCalls.push({ key, value });
+        if (failing) throw new Error("local storage is full");
+      },
+    },
+    FAVORITE_STORE_KEY: "fnaudio.favorites",
+    PLAYLIST_STORE_KEY: "fnaudio.playlists",
+    MAX_USER_MEDIA_STORAGE_CHARS: 4 * 1024 * 1024,
+    clearTimeout() {},
+    setTimeout(fn, delay) { shadowCalls.push({ timer: delay }); return 9; },
+    apiFetch() {},
+    updateFavoriteControls() { shadowCalls.push({ repaint: 1 }); },
+    parseStoredJson() { return []; },
+  });
+  vm.runInContext(policySource, context);
+  vm.runInContext(source.slice(guardedWriterStart, end), context);
+  return context;
+}
+function runUserMedia(context, code) {
+  try {
+    vm.runInContext(code, context);
+    return null;
+  } catch (error) {
+    return String((error && error.message) || error);
+  }
+}
+const shadowKeys = () => shadowCalls.filter(call => call.key).map(call => call.key);
+const shadowTimerDelays = () => shadowCalls.filter(call => call.timer !== undefined).map(call => call.timer);
+const shadowRepaintCount = () => shadowCalls.filter(call => call.repaint).length;
+
+const brokenStore = userMediaShadowContext(true);
+assert.equal(runUserMedia(brokenStore, "saveFavorites()"), null,
+  "A rejected favorite-cache write must not escape the writer");
+assert.deepEqual(shadowKeys(), ["fnaudio.favorites"], "The cache write must still be attempted");
+assert.deepEqual(shadowTimerDelays(), [350],
+  "A rejected cache write must not cancel the queued server save");
+
+const brokenPlaylistStore = userMediaShadowContext(true);
+assert.equal(runUserMedia(brokenPlaylistStore, "savePlaylists()"), null,
+  "A rejected playlist-cache write must not escape the writer");
+assert.deepEqual(shadowKeys(), ["fnaudio.playlists"], "The playlist cache write must still be attempted");
+assert.deepEqual(shadowTimerDelays(), [350],
+  "A rejected playlist cache write must not cancel the queued server save");
+
+const brokenHydration = userMediaShadowContext(true);
+assert.equal(runUserMedia(brokenHydration, "persistUserMediaState({ favorites: ['two'], playlists: [] })"), null,
+  "A rejected cache write must not abort server-state hydration");
+assert.deepEqual(shadowKeys(), ["fnaudio.favorites", "fnaudio.playlists"],
+  "Both stores must be attempted even when the first write fails");
+assert.equal(shadowRepaintCount(), 1,
+  "Favorite controls must repaint even when the cache write failed");
+assert.deepEqual(Array.from(brokenHydration.state.favorites), ["two"],
+  "The in-memory copy must still take the new value");
+
+const workingStore = userMediaShadowContext(false);
+assert.equal(runUserMedia(workingStore, "persistUserMediaState({ favorites: ['two', 'three'], playlists: [{ id: 'q', name: 'Q', trackIds: [] }] })"), null);
+assert.deepEqual(shadowKeys(), ["fnaudio.favorites", "fnaudio.playlists"],
+  "Guarding the write must not stop the write from happening");
+assert.deepEqual(JSON.parse(shadowCalls[0].value), ["two", "three"], "The favorites cache must hold the new ids");
+assert.deepEqual(JSON.parse(shadowCalls[1].value), [{ id: "q", name: "Q", trackIds: [] }], "The playlist cache must hold the new list");
+assert.equal(shadowRepaintCount(), 1);
+
+// Source-level sentinels: the writers must not regress to bare writes, and the
+// guard must swallow storage failures only.
+for (const [name, next] of [
+  ["savePlaylists", "function loadStoredFavorites"],
+  ["saveFavorites", "function normalizeUserMediaState"],
+  ["persistUserMediaState", "function userStatePayload"],
+]) {
+  const from = source.indexOf("function " + name + "(");
+  const to = source.indexOf(next, from);
+  assert.ok(from >= 0 && to > from, "Unable to locate " + name);
+  assert.doesNotMatch(source.slice(from, to), /localStorage\s*\./,
+    name + " must persist through the guarded writer instead of touching storage directly");
+}
+assert.match(source.slice(guardedWriterStart, guardedWriterEnd),
+  /function writeStoredUserMedia\(key, value\) \{[\s\S]{0,420}?try \{[\s\S]{0,80}?localStorage\.setItem\(key, JSON\.stringify\(value\)\);[\s\S]{0,40}?\} catch \(_\) \{/,
+  "The guarded writer must wrap exactly the storage call");
+
 console.log("User-state concurrency regression checks passed.");
