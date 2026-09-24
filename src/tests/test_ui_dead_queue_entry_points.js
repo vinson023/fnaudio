@@ -1,4 +1,4 @@
-// L71 的判别测试：三个死函数连同 queue-play 别名必须已经消失，且右键菜单的
+// L71 的判别测试：四个死函数连同 queue-play 别名必须已经消失，且右键菜单的
 // 队列入口仍然真实可达。删错方向（把活代码一起删掉）与留死代码都会红。
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -15,7 +15,7 @@ function uiSources() {
 }
 
 // 1) 死码确实消失：不是「调用点为 0」，而是全 UI 树里连名字都不再出现。
-["addQueue", "addQueueAndPlay", "playFolder"].forEach(name => {
+["addQueue", "addQueueAndPlay", "playFolder", "addTrackToPlaylist"].forEach(name => {
   uiSources().forEach(([file, text]) => {
     assert.doesNotMatch(text, new RegExp("\\b" + name + "\\b"), `${name} must stay deleted (${file})`);
   });
