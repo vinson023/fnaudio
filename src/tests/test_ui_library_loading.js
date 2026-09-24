@@ -752,7 +752,20 @@ progressContext.tick();
 assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 2,
   "re-ticking the same position must touch the DOM zero times - that is what the poll duplicate costs");
 
-
+// R173 dead-code pin.  clearLibraryQueryState() had no caller anywhere in the tree: a
+// full-repo scan over .js/.py/.html/.json/.ts/.md/.ps1/.sh found exactly one hit, its own
+// declaration, and `git log -S` names only the baseline commit that introduced it.  Every
+// field it reset keeps a live reset path (the boot block, the view/query switches and the
+// page-commit lanes), so an unreferenced second answer to "what clears the query state" is
+// what had to go -- not the reset itself, which the counts below keep pinned.
+assert.doesNotMatch(app, /clearLibraryQueryState/,
+  "the caller-less library query reset helper must not return");
+for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows",
+                     "folderRootRows", "folderPage", "folderTotal"]) {
+  const writes = (app.match(new RegExp("state\\." + field + "\\s*=", "g")) || []).length;
+  assert.ok(writes >= 2,
+    `state.${field} must keep a live reset path beside the boot block (found ${writes})`);
+}
 // ---------------------------------------------------------------------------
 // TODO.md R108 regex-constraint item + TODO.md R108 body-trust item - the bounded JSON lane is executed here, not matched
 // ---------------------------------------------------------------------------

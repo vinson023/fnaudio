@@ -47,11 +47,38 @@ NL = "\n"
 # The naming source R169 externalised out of the two TODO ledger lines.
 LEDGER = "docs/AUDIT_LEDGER.md"
 
+# R173 drained the queue, so this file's non-vacuity measure can no longer be "some
+# symbol is still unread": the invariant is now a ratchet, and the two deep-read
+# accounts it is coupled to are located by anchor phrase -- never by line number,
+# because every recorded round prepends above them.
+TODO = REPO_ROOT / "TODO.md"
+DEEP_READ_ACCOUNTS = (
+    "\u91cf\u5316\u6210\u53ef\u6392\u671f\u7684\u6e05\u5355",
+    "\u5269\u4f59\u7ea6 92% \u7b26\u53f7\u4ecd\u662f\u6d45\u8bfb\u9762",
+)
+
+
+def deep_read_account_states():
+    """(open, closed) hit counts per anchor phrase, over TODO.md checklist rows."""
+    lines = TODO.read_text(encoding="utf-8").split(NL)
+    states = []
+    for anchor in DEEP_READ_ACCOUNTS:
+        rows = [line for line in lines if anchor in line and (
+            line.startswith("- [ ] ") or line.startswith("- [x] "))]
+        states.append((
+            anchor,
+            sum(1 for line in rows if line.startswith("- [ ] ")),
+            sum(1 for line in rows if line.startswith("- [x] ")),
+        ))
+    return states
+
+
 FROZEN_COUNTS = (
     "286",
     "381",
     "461",
     "463",
+    "462",
     "918",
     "175",
     "183",
@@ -128,7 +155,8 @@ class AuditCoverageRealRepositoryTests(unittest.TestCase):
     def test_the_reported_zero_named_count_is_reproducible_from_first_principles(self):
         unnamed = [entry for entry in self.symbols if entry["name"] not in self.named]
         self.assertEqual(self.result["zero_named_symbols"], len(unnamed))
-        self.assertGreater(len(unnamed), 0, "the queue is empty: this guard measures nothing")
+        self.assertGreater(self.result["named_symbols"], 0,
+                           "nothing is named: this guard measures nothing")
         self.assertEqual(
             self.result["zero_named_symbols"],
             sum(face["count"] for face in self.result["faces"]),
@@ -137,6 +165,18 @@ class AuditCoverageRealRepositoryTests(unittest.TestCase):
             self.result["symbols"],
             self.result["named_symbols"] + self.result["zero_named_symbols"],
         )
+
+    def test_the_queue_is_drained_and_the_accounts_are_shut(self):
+        # R173 closed the last deep-read face.  From here on "still unread" is not a
+        # state this repository may sit in: a round that adds a declaration without
+        # registering it, or deletes one without retiring its name, reddens here --
+        # which is termination clause (1) measured mechanically instead of by prose.
+        unnamed = sorted(entry["name"] for entry in self.symbols if entry["name"] not in self.named)
+        self.assertEqual(unnamed, [], "app.js symbols the records never named came back: %s" % unnamed)
+        self.assertEqual(self.result["faces"], [], "a drained queue cannot hold faces")
+        for anchor, opened, closed in deep_read_account_states():
+            self.assertEqual((opened, closed), (0, 1),
+                             "TODO.md must record this deep-read account as shut exactly once: " + anchor)
 
     def test_the_symbol_index_is_line_anchored_and_unique(self):
         self.assertEqual(len(self.symbols), len(independent_index(self.text)))
@@ -173,7 +213,10 @@ class AuditCoverageRealRepositoryTests(unittest.TestCase):
     def test_the_densest_face_is_queued_first(self):
         counts = [face["count"] for face in self.result["faces"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
-        self.assertGreaterEqual(min(counts), 1)
+        # ``min(counts)`` raises on a drained queue; the law it stood for -- a queued
+        # face always holds a symbol -- is stated directly and stays measured, while
+        # the ranking itself is exercised on fixtures that own their rows.
+        self.assertTrue(all(count >= 1 for count in counts), "a face was queued holding no symbol")
 
     def test_the_json_answer_has_the_declared_shape_and_the_same_numbers(self):
         buffer = io.StringIO()
@@ -196,7 +239,12 @@ class AuditCoverageRealRepositoryTests(unittest.TestCase):
         self.assertIn("zero_named=%d" % self.result["zero_named_symbols"], text)
         self.assertIn("named=%d" % self.result["named_symbols"], text)
         self.assertIn("faces=%d" % len(self.result["faces"]), text)
-        self.assertEqual(len([line for line in text.split(NL) if line.startswith("#")]), 3)
+        self.assertTrue(text.startswith("target="), "the report lost its header block")
+        self.assertEqual(
+            len([line for line in text.split(NL) if line.startswith("#")]),
+            min(len(self.result["faces"]), 3),
+            "--limit caps the ranked rows, it does not invent them",
+        )
 
     def test_the_ledger_holds_naming_evidence_no_other_source_holds(self):
         # The ledger exists because the registrations left the two TODO accounts, and the
@@ -409,6 +457,44 @@ class AuditCoverageFixtureTests(unittest.TestCase):
         self.assertEqual(result["named_symbols"], 2)
         self.assertEqual(result["zero_named_symbols"], 1)
         self.assertEqual([face["symbols"] for face in result["faces"]], [["owing"]])
+
+    def test_the_text_report_ranks_rows_and_the_limit_caps_them(self):
+        # This law used to be read off the real repository, where the queue was long
+        # enough to demonstrate it.  R173 drained that queue, so a fixture owns the
+        # rows now: four faces of one symbol each, and 「limit three」 must drop the
+        # fourth rather than the ranking.
+        # The four unread faces need a named declaration between each pair: the
+        # symbol index ends a one-line function at the line before the *next*
+        # declaration, so without a named neighbour every gap measures one line
+        # and the four faces collapse into one.  The keepers carry the names, so
+        # they stay out of the queue while still bounding their neighbours.
+        app = make_app(
+            [
+                ("solo_one", 1),
+                ("keeper_a", 2),
+                ("solo_two", 60),
+                ("keeper_b", 61),
+                ("solo_three", 120),
+                ("keeper_c", 121),
+                ("solo_four", 180),
+            ]
+        )
+        write_repo(self.root, app, ("keeper_a keeper_b keeper_c", "", ""))
+        result = _MODULE.measure(self.root)
+        self.assertEqual([face["count"] for face in result["faces"]], [1, 1, 1, 1])
+        ranked = [line for line in _MODULE.format_report(result).split(NL) if line.startswith("#")]
+        self.assertEqual([line.split()[0] for line in ranked], ["#1", "#2", "#3", "#4"])
+        self.assertIn("solo_one", ranked[0])
+        self.assertIn("solo_four", ranked[-1])
+        limited = [line for line in _MODULE.format_report(result, 3).split(NL) if line.startswith("#")]
+        self.assertEqual(len(limited), 3, "the limit printed every row")
+        self.assertIn("solo_three", limited[-1])
+        self.assertNotIn("solo_four", "\n".join(limited))
+        drained = self.measure("function all_named() { /* a */ }", ("all_named", "", ""))
+        self.assertEqual(drained["faces"], [])
+        rows = [line for line in _MODULE.format_report(drained, 3).split(NL) if line.startswith("#")]
+        self.assertEqual(rows, [], "an empty queue must print header lines only")
+        self.assertIn("faces=0", _MODULE.format_report(drained, 3))
 
     def test_an_absent_ledger_names_nothing_instead_of_failing_the_measure(self):
         # A round that has not created the ledger yet must still get a queue; treating

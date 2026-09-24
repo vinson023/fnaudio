@@ -9,10 +9,12 @@ recomputes the relationship from disk on every run:
 * the superseded entry is found by a date-anchored marker, exists once, is
   closed, and still names all 16 audited faces in the text it was written with
   (emptying it would make the other checks vacuous),
-* exactly one open code-bucket entry carries that face list -- a face counts
-  under either its class or its file spelling, a live ledger may grow its list
-  through the notes appended under it, and the closed entry's list is pinned to
-  its own text so a note can never move the yardstick,
+* the drained face list may only be carried by closed entries: no open code-bucket
+  entry may schedule it again, and exactly two closed rows carry it -- the
+  superseded entry and the ledger that shut it.  A face counts under either its
+  class or its file spelling, a shut entry keeps growing its notes, and the
+  superseded entry's list is pinned to its own text so a note cannot move the
+  yardstick,
 * no face was dropped on the floor: each one has to be named again either by
   the successor entry or by the device segment, and
 * the retirement guards the successor entry cites are still in the tree --
@@ -187,7 +189,7 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
         self.successor = [
             (number, line)
             for number, line in enumerate(self.lines[: self.device_start], start=1)
-            if SUCCESSOR_MARKER in line and OPEN_ITEM.match(line)
+            if SUCCESSOR_MARKER in line
         ]
 
     def closed_entry(self):
@@ -200,8 +202,14 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
     def successor_entry(self):
         self.assertEqual(
             len(self.successor), 1,
-            "the live scope ledger must be one open code-bucket entry, found %s"
+            "the scope ledger must be one code-bucket entry, found %s"
             % [number for number, _line in self.successor],
+        )
+        number, line = self.successor[0]
+        self.assertTrue(
+            CLOSED_ITEM.match(line),
+            "TODO.md line %d is the shut scope ledger; an open copy here is the "
+            "drained queue coming back" % number,
         )
         return self.successor[0]
 
@@ -217,19 +225,26 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
             "TODO.md line %d must keep naming all %d audited faces, found %s" % (number, FACE_COUNT, named),
         )
 
-    def test_exactly_one_open_entry_carries_the_audit_scope(self):
-        # Pinned to the closed entry as written, notes excluded.
+    def test_the_drained_audit_scope_is_carried_only_by_closed_entries(self):
+        # Pinned to the closed entry as written, notes excluded.  The law is
+        # two-sided: an open carrier means the drained queue is scheduled again,
+        # and a third closed carrier means one queue is counted twice -- which is
+        # exactly how the per-round counters drifted away from the real bucket size.
         wanted = face_set(self.closed_entry()[1])
         carriers = [
             (number, line)
             for number, line in enumerate(self.lines[: self.device_start], start=1)
-            if OPEN_ITEM.match(line)
-            and len(wanted & face_set(line, carried_faces)) >= CARRIER_THRESHOLD
+            if len(wanted & face_set(line, carried_faces)) >= CARRIER_THRESHOLD
         ]
         self.assertEqual(
-            [number for number, _line in carriers], [self.successor_entry()[0]],
-            "the audit-scope queue may be carried by exactly one open code-bucket entry, got %s"
-            % [number for number, _line in carriers],
+            [number for number, line in carriers if OPEN_ITEM.match(line)], [],
+            "no open code-bucket entry may carry the audit-scope face list any more",
+        )
+        self.assertEqual(
+            sorted(number for number, _line in carriers),
+            sorted([self.successor_entry()[0], self.closed_entry()[0]]),
+            "the audit-scope face list belongs to the shut ledger and the entry it "
+            "superseded, got %s" % [number for number, _line in carriers],
         )
 
     def test_no_face_of_the_closed_entry_is_orphaned(self):
@@ -266,26 +281,47 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
                 )
 
 
-    def open_code_accounts(self):
-        """Both open entries of the unread-code bucket, located the same way the guards pin them."""
+    def deep_read_accounts(self):
+        """Both deep-read accounts, located the way the sibling guards pin them.
+
+        R173 drained the queue they measure and shut both, so the shape returned
+        here is a closed pair: one row per marker, on two different lines, and no
+        open row carrying either marker.  A shut account found open again puts one
+        queue under two ledgers, which is the double count this file exists to stop.
+        """
         accounts = [self.successor_entry()]
         symbol = [
             (number, line)
             for number, line in enumerate(self.lines[: self.device_start], start=1)
-            if OPEN_ITEM.match(line) and SYMBOL_ACCOUNT_MARKER in line
+            if SYMBOL_ACCOUNT_MARKER in line
         ]
         self.assertEqual(
             len(symbol), 1,
-            "the app.js symbol queue must be exactly one open entry, found %d" % len(symbol),
+            "the app.js symbol account must be exactly one code-bucket entry, found %d" % len(symbol),
+        )
+        self.assertTrue(
+            CLOSED_ITEM.match(symbol[0][1]),
+            "TODO.md line %d is the shut symbol account; an open copy here is the "
+            "symbol queue coming back" % symbol[0][0],
         )
         accounts.append(symbol[0])
         self.assertEqual(
             len({number for number, _line in accounts}), len(accounts),
-            "the two open accounts collapsed onto one line",
+            "the two deep-read accounts collapsed onto one line",
         )
+        for marker in (SUCCESSOR_MARKER, SYMBOL_ACCOUNT_MARKER):
+            reopened = [
+                number
+                for number, line in enumerate(self.lines[: self.device_start], start=1)
+                if marker in line and OPEN_ITEM.match(line)
+            ]
+            self.assertEqual(
+                reopened, [],
+                "an open code-bucket entry re-schedules the shut account %r" % marker,
+            )
         return accounts
 
-    def test_the_external_ledger_exists_and_is_named_by_both_open_accounts(self):
+    def test_the_external_ledger_exists_and_is_named_by_both_deep_read_accounts(self):
         # The ledger is now a naming source for tools/audit_coverage.py, so a reader who
         # follows either account has to be able to find it.  An account that stops
         # pointing at the file it delegated its detail to would send the next round
@@ -294,7 +330,7 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
         self.assertTrue(ledger.is_file(), "%s is missing from the tree" % AUDIT_LEDGER)
         text = read_lf_only(ledger, AUDIT_LEDGER)
         self.assertTrue(text.lstrip().startswith("# "), "%s lost its heading" % AUDIT_LEDGER)
-        for number, line in self.open_code_accounts():
+        for number, line in self.deep_read_accounts():
             with self.subTest(account=number):
                 self.assertIn(
                     "`%s`" % AUDIT_LEDGER, line,
@@ -321,7 +357,7 @@ class ScopeEntrySubsumptionTests(unittest.TestCase):
             len(fingerprints), len([b for b in ledger_blocks if len(b) >= BLOCK_FINGERPRINT]),
             "the ledger registers the same block twice",
         )
-        for number, line in self.open_code_accounts():
+        for number, line in self.deep_read_accounts():
             for block in note_blocks(line):
                 with self.subTest(account=number, block=block[:24]):
                     self.assertNotIn(

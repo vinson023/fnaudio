@@ -48,7 +48,13 @@ try:
         TODO_LINE_REF,
     )
     from test_real_device_goals_moved_out import MOVED_GOAL_IDS, goal_blocks
-    from test_scope_entry_subsumption import NOTE_DELIMITER, OPEN_ITEM, SUCCESSOR_MARKER, content_lines
+    from test_scope_entry_subsumption import (
+        CLOSED_ITEM,
+        NOTE_DELIMITER,
+        OPEN_ITEM,
+        SUCCESSOR_MARKER,
+        content_lines,
+    )
     from test_source_manifest import manifest_scoped_files
 except ImportError:  # pragma: no cover - depends on how the suite was started
     from tests.test_device_todos_migrated import (
@@ -58,6 +64,7 @@ except ImportError:  # pragma: no cover - depends on how the suite was started
     )
     from tests.test_real_device_goals_moved_out import MOVED_GOAL_IDS, goal_blocks
     from tests.test_scope_entry_subsumption import (
+        CLOSED_ITEM,
         NOTE_DELIMITER,
         OPEN_ITEM,
         SUCCESSOR_MARKER,
@@ -144,9 +151,12 @@ class AndroidAuditScopeMovedOutTests(unittest.TestCase):
             for number, line in enumerate(self.lines[: self.device_start], start=1)
             if OPEN_ITEM.match(line)
         ]
+        # Located by marker and not by state: R173 shut the ledger, so requiring an
+        # open row here would only make this guard blind the moment the debt it
+        # records was actually paid.
         ledger = [
             (number, line)
-            for number, line in open_code
+            for number, line in enumerate(self.lines[: self.device_start], start=1)
             if SUCCESSOR_MARKER in line
         ]
         self.assertEqual(
@@ -154,22 +164,37 @@ class AndroidAuditScopeMovedOutTests(unittest.TestCase):
             "this guard locates the debt ledger the same way its sibling does, and found %d" % len(ledger),
         )
         self.ledger_number, self.ledger_text = ledger[0]
+        self.assertTrue(
+            CLOSED_ITEM.match(self.ledger_text),
+            "TODO.md line %d is the shut debt ledger; an open row carrying the moved-out "
+            "Android scope would schedule it again" % self.ledger_number,
+        )
         self.open_code_entries = open_code
 
     def classes_named_by(self, line):
         return [name for name in AUDIT_CLASSES if name in line]
 
     def test_only_the_debt_ledger_still_names_the_audited_classes(self):
-        """Discriminating case for the move: re-scheduling Android turns this red."""
+        """Discriminating case for the move: re-scheduling Android turns this red.
+
+        Two halves.  No *open* code-bucket entry may name the audited classes -- that
+        is the move-out being quietly reversed -- while the shut ledger must keep
+        naming all four, so paying the debt cannot be made to look like deleting it.
+        """
         carriers = [
             (number, self.classes_named_by(line))
             for number, line in self.open_code_entries
             if len(self.classes_named_by(line)) >= 3
         ]
         self.assertEqual(
-            [number for number, _names in carriers], [self.ledger_number],
-            "the audited Android classes may be named by exactly one open code-bucket entry -- the "
-            "ledger that records the move-out -- got %s" % carriers,
+            carriers, [],
+            "the audited Android classes may be named by no open code-bucket entry: doing so puts "
+            "the moved-out scope back on the per-round queue -- got %s" % carriers,
+        )
+        self.assertEqual(
+            sorted(self.classes_named_by(self.ledger_text)), sorted(AUDIT_CLASSES),
+            "TODO.md line %d must keep naming every audited Android class the move-out covered"
+            % self.ledger_number,
         )
 
     def test_the_ledger_note_keeps_the_history_and_states_the_remainder(self):
