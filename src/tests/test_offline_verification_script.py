@@ -289,5 +289,36 @@ class OfflineVerificationScriptTests(unittest.TestCase):
         self.assertIn("OutputPath", invocations.get("index_release_evidence.ps1", set()))
 
 
+    def test_whitespace_check_names_a_missing_repository_separately(self):
+        """The whitespace step must not be able to blame the tree for the checkout.
+
+        round274 turned the whole gate red on a clean tree: on a UNC-mapped
+        checkout the ownership check makes git print its usage text instead of a
+        diff, and a bare `git diff --check` reports that the same way a real
+        trailing-space finding does. The law is therefore about the two failure
+        modes, not the command name: a repository probe has to run first, it has to
+        fail with its own message, and the trust override has to name this checkout
+        instead of every path on the machine.
+        """
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "test_offline.ps1").read_text(encoding="utf-8")
+        probe = script.index("rev-parse --show-toplevel")
+        checked = script.index("diff --check")
+        self.assertLess(probe, checked, "the repository probe must run before the whitespace check")
+        self.assertIn(
+            "git cannot read the repository at $projectRoot", script,
+            "an unreadable checkout must be reported as itself, not as a whitespace failure",
+        )
+        self.assertIn(
+            "git diff --check failed", script,
+            "a real whitespace finding must keep its own message",
+        )
+        self.assertIn(chr(34) + "safe.directory=$projectRoot" + chr(34), script)
+        # The scope has to reach the diff itself: a probe that is trusted while the
+        # whitespace call stays bare reproduces the round274 abort verbatim.
+        self.assertIn("git @gitScope diff --check", script)
+        self.assertNotIn("safe.directory=*", script, "trusting every path turns a gate fix into a policy change")
+
+
 if __name__ == "__main__":
     unittest.main()

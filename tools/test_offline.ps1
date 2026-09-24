@@ -95,7 +95,20 @@ try {
             throw "PowerShell syntax check failed: $($scriptPath.Name): $($errors[0].Message)"
         }
     }
-    git diff --check
+    # Two different failures used to print the same line here: a tree that really
+    # carries whitespace errors, and a tree git refuses to open at all. On a UNC
+    # mapped checkout the ownership check makes git emit its usage text instead of a
+    # diff, and that aborts the gate looking exactly like a whitespace finding, with
+    # the tree clean. Ask for the repository first and name that cause separately, so
+    # a red whitespace step always means whitespace. The override trusts this one
+    # checkout -- the directory the operator chose to gate -- not every path on the
+    # machine.
+    $gitScope = @("-c", "safe.directory=$projectRoot")
+    & git @gitScope rev-parse --show-toplevel | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "git cannot read the repository at $projectRoot; the whitespace check needs an owned checkout"
+    }
+    & git @gitScope diff --check
     if ($LASTEXITCODE -ne 0) { throw "git diff --check failed" }
     if ($Package) {
         & (Join-Path $PSScriptRoot "build_release.ps1")
