@@ -1,0 +1,284 @@
+"""Identity and install-target guards for the fnAudio packages.
+
+The two facts this file pins down came out of one operator instruction: the
+developer and publisher must read as the platform vendor name, and the app must
+land on the system partition.  Both live in ``src/manifest``, and the beta
+packaging script is the only other place that can rewrite them, so every check
+below is either a byte-level read of the manifest or a read of the packaging
+logic that has to survive into the built package.
+"""
+
+import io
+import json
+from pathlib import Path
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+REPO_ROOT = str(Path(__file__).resolve().parents[2])
+MANIFEST = os.path.join(REPO_ROOT, "src", "manifest")
+PACKAGER = os.path.join(REPO_ROOT, "tools", "build_beta_fpk.ps1")
+ARTIFACT_ROOT = os.path.join(REPO_ROOT, "artifacts")
+
+# The vendor name as a literal: this file is UTF-8, so a glyph here means exactly
+# what it says.  Only the packaging script has to avoid literals, because a
+# BOM-less .ps1 is decoded as ANSI by Windows PowerShell 5.1.
+FEI_NIU = "飞牛"
+LEGACY_TOKENS = ("fnaudio", "vinson023")
+IDENTITY_KEYS = ("developer", "publisher", "maintainer", "distributor")
+
+
+def read_bytes(path):
+    with io.open(path, "rb") as handle:
+        return handle.read()
+
+
+def manifest_values(text):
+    values = {}
+    for line in text.split("\n"):
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        name, _, value = line.partition("=")
+        values.setdefault(name.strip(), value.strip())
+    return values
+
+
+class ManifestIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = read_bytes(MANIFEST)
+        self.text = self.raw.decode("utf-8")
+        self.values = manifest_values(self.text)
+
+    def test_every_identity_role_carries_the_vendor_name(self):
+        for key in IDENTITY_KEYS:
+            self.assertIn(key, self.values, key)
+            self.assertEqual(self.values[key], FEI_NIU, key)
+
+    def test_no_legacy_identity_token_survives_in_the_manifest(self):
+        for key in IDENTITY_KEYS:
+            for token in LEGACY_TOKENS:
+                self.assertNotIn(token, self.values[key], "%s still says %s" % (key, token))
+
+    def test_the_manifest_asks_for_the_system_partition(self):
+        self.assertIn("install_type", self.values, "the install target is undeclared")
+        self.assertEqual(self.values["install_type"], "root")
+
+    def test_the_manifest_is_utf8_without_bom_and_bare_lf(self):
+        self.assertFalse(self.raw.startswith(b"\xef\xbb\xbf"), "a BOM would ride into the package")
+        self.assertNotIn(b"\r", self.raw, "the manifest must stay LF-only")
+        self.assertEqual(self.raw.decode("utf-8").count(FEI_NIU), len(IDENTITY_KEYS))
+
+    def test_the_install_target_documentation_is_contiguous_with_its_key(self):
+        # Remove-ManifestKey deletes a key together with the comment run above it,
+        # so the comment has to be the line directly above the assignment.
+        lines = self.text.split("\n")
+        at = next(i for i, line in enumerate(lines) if line.startswith("install_type="))
+        self.assertTrue(lines[at - 1].startswith("#"), "the comment run broke away from install_type")
+
+
+class PackagerIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.raw = read_bytes(PACKAGER)
+        self.text = self.raw.decode("utf-8")
+
+    def test_the_packaging_script_stays_pure_ascii(self):
+        # A BOM-less .ps1 is decoded as ANSI by Windows PowerShell 5.1, so a literal
+        # vendor name in this file would reach the manifest mangled.  The script keeps
+        # to code points instead, which only works while the file is ASCII.
+        offending = [i for i, byte in enumerate(self.raw) if byte > 127]
+        self.assertEqual(offending, [], "non-ASCII bytes at %r" % offending[:5])
+
+    def test_the_identity_defaults_are_built_from_the_vendor_code_points(self):
+        for role in ("Developer", "Publisher"):
+            match = re.search(
+                r"\[string\]\$" + role + r" = \(\[string\]\[char\]0x([0-9A-Fa-f]{4})"
+                r" \+ \[string\]\[char\]0x([0-9A-Fa-f]{4})\)",
+                self.text,
+            )
+            self.assertIsNotNone(match, "%s default is no longer built from code points" % role)
+            built = "".join(chr(int(group, 16)) for group in match.groups())
+            self.assertEqual(built, FEI_NIU, role)
+
+    def test_the_script_accepts_only_the_two_contracted_install_targets(self):
+        self.assertIn("$InstallType -ceq 'root'", self.text)
+        self.assertIn("$InstallType -ceq 'unset'", self.text)
+        self.assertIn("[string]$InstallType = 'root'", self.text)
+
+    def test_the_staged_manifest_must_still_declare_the_install_target(self):
+        presence = re.search(r"foreach \(\$key in @\('appname'.*?\)\) \{", self.text, re.S)
+        self.assertIsNotNone(presence, "the staged-manifest key list moved")
+        self.assertIn("'install_type'", presence.group(0))
+
+    def test_the_unset_branch_deletes_the_key_rather_than_blanking_it(self):
+        self.assertEqual(1, len(re.findall(r"function Remove-ManifestKey \{", self.text)))
+        self.assertIn("Remove-ManifestKey -Text $nextManifest -Name 'install_type'", self.text)
+
+    def test_the_package_gate_asserts_the_install_target(self):
+        # The check lives in its own helper so the gate can be exercised without a
+        # staged tree; asserting the call, not the message wording, is what keeps a
+        # renamed or bypassed helper from passing.
+        self.assertEqual(1, len(re.findall(r"function Get-ManifestInstallTypeViolations \{", self.text)))
+        self.assertIn(
+            "Get-ManifestInstallTypeViolations -Text $checkedManifest -Expected $InstallType -Label $Label",
+            self.text,
+        )
+        # Reverting to a table lookup would throw on a missing key instead of
+        # reporting which tree failed, so the throwing read must stay out.
+        self.assertNotIn("Get-ManifestValue -Text $checkedManifest -Name 'install_type'", self.text)
+
+    def test_the_report_and_the_provenance_carry_the_install_target(self):
+        self.assertEqual(2, self.text.count("install_type    = $InstallType")
+                         + self.text.count("install_type     = $InstallType"))
+
+    def test_the_identity_gate_still_checks_the_four_roles(self):
+        for key in IDENTITY_KEYS:
+            self.assertIn("        %s " % key, self.text, key)
+            self.assertIn("$manifestExpectations[$key]", self.text)
+
+
+class ManifestHelperBehaviourTests(unittest.TestCase):
+    """Runs the real PowerShell helpers against the real manifest text."""
+
+    POWERSHELL = next((exe for exe in ("powershell", "pwsh") if shutil.which(exe)), None)
+    # Class level on purpose: the slicing below has to read the shipped script, and a
+    # per-instance setUp would let a typo quietly turn the slice into an empty string.
+    text = read_bytes(PACKAGER).decode("utf-8")
+
+    def helper_source(self):
+        # The three manifest helpers sit in one contiguous block ahead of
+        # Assert-Condition, so the block is sliced rather than re-typed: a re-typed
+        # copy would keep passing while the shipped script rotted.
+        start = self.text.index("function Get-ManifestValue {")
+        stop = self.text.index("function Assert-Condition {")
+        return self.text[start:stop]
+
+    @unittest.skipUnless(POWERSHELL, "no PowerShell available to run the helpers")
+    def test_setting_and_removing_the_install_target_behave_as_the_platform_spells_them(self):
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$text = [IO.File]::ReadAllText('%s')\n"
+            "$rooted = Set-ManifestValue -Text $text -Name 'install_type' -Value 'root'\n"
+            "$gone = Remove-ManifestKey -Text $text -Name 'install_type'\n"
+            "Write-Output ('SET=' + (Get-ManifestValue -Text $rooted -Name 'install_type'))\n"
+            "Write-Output ('KEPT=' + (Get-ManifestValue -Text $gone -Name 'appname'))\n"
+            "Write-Output ('KEY_GONE=' + [string](-not ($gone -cmatch '(?m)^\\s*install_type\\s*=')))\n"
+            "Write-Output ('COMMENT_GONE=' + [string](-not ($gone -cmatch 'system partition')))\n"
+        ) % MANIFEST.replace(os.sep, "/")
+        with tempfile.TemporaryDirectory() as workdir:
+            script = os.path.join(workdir, "driver.ps1")
+            with io.open(script, "w", encoding="ascii", newline="\n") as handle:
+                handle.write(self.helper_source() + driver)
+            completed = subprocess.run(
+                [self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        rows = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        self.assertEqual(rows.get("SET"), "root")
+        self.assertEqual(rows.get("KEPT"), "fnaudio")
+        self.assertEqual(rows.get("KEY_GONE"), "True")
+        self.assertEqual(rows.get("COMMENT_GONE"), "True")
+
+
+    @unittest.skipUnless(POWERSHELL, "no PowerShell available to run the gate helper")
+    def test_the_gate_reports_every_shape_of_the_install_target(self):
+        # Four shapes the packager can produce plus a case-only misspelling, all run
+        # through the shipped helper: the platform accepts an absent key and rejects
+        # nothing else, so "expected root" has to be reported for each of the other
+        # three without ever raising an exception out of the gate.
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$text = [IO.File]::ReadAllText('%s')\n"
+            "$missing = Remove-ManifestKey -Text $text -Name 'install_type'\n"
+            "$blanked = Set-ManifestValue -Text $text -Name 'install_type' -Value ''\n"
+            "$wrongcase = Set-ManifestValue -Text $text -Name 'install_type' -Value 'ROOT'\n"
+            "Write-Output ('BLANK_READ=[' + (Get-ManifestValue -Text $blanked -Name 'install_type') + ']')\n"
+            "$rewrote = Set-ManifestValue -Text $blanked -Name 'install_type' -Value 'root'\n"
+            "Write-Output ('ROUNDTRIP=' + [string]($rewrote -ceq $text))\n"
+            "Write-Output ('DEPS_KEPT=' + [string]($rewrote.Contains('install_dep_apps=python312')))\n"
+            "$shapes = [ordered]@{\n"
+            "    ROOT_DECLARED = @($text, 'root')\n"
+            "    ROOT_MISSING = @($missing, 'root')\n"
+            "    ROOT_BLANKED = @($blanked, 'root')\n"
+            "    ROOT_WRONGCASE = @($wrongcase, 'root')\n"
+            "    UNSET_DECLARED = @($text, 'unset')\n"
+            "    UNSET_MISSING = @($missing, 'unset')\n"
+            "}\n"
+            "foreach ($shape in $shapes.Keys) {\n"
+            "    $found = @(Get-ManifestInstallTypeViolations -Text $shapes[$shape][0] "
+            "-Expected $shapes[$shape][1] -Label 'probe')\n"
+            "    Write-Output ($shape + '=' + $found.Count + '|' + ($found -join ';'))\n"
+            "}\n"
+        ) % MANIFEST.replace(os.sep, "/")
+        with tempfile.TemporaryDirectory() as workdir:
+            script = os.path.join(workdir, "gate-driver.ps1")
+            with io.open(script, "w", encoding="ascii", newline="\n") as handle:
+                handle.write(self.helper_source() + driver)
+            completed = subprocess.run(
+                [self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        # A blank value has to read back blank, and writing over it has to land on
+        # that key's own line.  All three helpers matched the whitespace around "="
+        # with \s, which also covers newlines, so on a key with an empty value the
+        # match resumed on the NEXT line: the reader returned that line, the writer
+        # replaced it, and the remover deleted it.  DEPS_KEPT is the line that used
+        # to be destroyed, and ROUNDTRIP is the byte-for-byte shape the package needs.
+        self.assertIn("BLANK_READ=[]", completed.stdout)
+        self.assertIn("ROUNDTRIP=True", completed.stdout)
+        self.assertIn("DEPS_KEPT=True", completed.stdout)
+        rows = {}
+        for line in completed.stdout.splitlines():
+            if "|" in line:
+                name, _, payload = line.partition("=")
+                count, _, messages = payload.partition("|")
+                rows[name] = (int(count), messages)
+        self.assertEqual(sorted(rows), sorted(
+            "ROOT_DECLARED ROOT_MISSING ROOT_BLANKED ROOT_WRONGCASE UNSET_DECLARED UNSET_MISSING".split()))
+        # A good package is silent, and a bad one says so once, with the label that
+        # names which of the three trees the gate was looking at.
+        self.assertEqual(rows["ROOT_DECLARED"], (0, ""))
+        self.assertEqual(rows["UNSET_MISSING"], (0, ""))
+        for name in ("ROOT_MISSING", "ROOT_BLANKED", "ROOT_WRONGCASE", "UNSET_DECLARED"):
+            count, messages = rows[name]
+            self.assertEqual(count, 1, "%s reported %r" % (name, messages))
+            self.assertTrue(messages.startswith("[probe] "), "%s lost its label: %r" % (name, messages))
+        self.assertIn("does not declare install_type", rows["ROOT_MISSING"][1])
+        self.assertIn("is '', expected 'root'", rows["ROOT_BLANKED"][1])
+        self.assertIn("is 'ROOT', expected 'root'", rows["ROOT_WRONGCASE"][1])
+        self.assertIn("still declares install_type", rows["UNSET_DECLARED"][1])
+
+
+class BuiltPackageTests(unittest.TestCase):
+    """The beta provenance file is the only record of what went into a package."""
+
+    def latest_provenance(self):
+        if not os.path.isdir(ARTIFACT_ROOT):
+            return None
+        found = []
+        for dirpath, _dirnames, filenames in os.walk(ARTIFACT_ROOT):
+            if "BETA_PROVENANCE.json" in filenames:
+                found.append(os.path.join(dirpath, "BETA_PROVENANCE.json"))
+        if not found:
+            return None
+        return max(found, key=os.path.getmtime)
+
+    def test_the_newest_beta_reports_the_reviewed_identity(self):
+        path = self.latest_provenance()
+        if path is None:
+            self.skipTest("no beta package has been built locally")
+        with io.open(path, "r", encoding="utf-8") as handle:
+            provenance = json.load(handle)
+        self.assertEqual(provenance.get("developer"), FEI_NIU, path)
+        self.assertEqual(provenance.get("publisher"), FEI_NIU, path)
+        self.assertEqual(provenance.get("install_type"), "root", path)
+
+
+if __name__ == "__main__":
+    unittest.main()

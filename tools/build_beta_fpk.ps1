@@ -9,8 +9,16 @@ param(
     # /privilege overrides it; that override is what "the application account"
     # means on the platform, so the requested name lands here.
     [string]$AppUser = 'trim.music',
-    [string]$Developer = 'vinson023',
-    [string]$Publisher = 'vinson023',
+    # Developer and publisher are Chinese text that only travels inside the
+    # manifest, never inside this script: a BOM-less .ps1 is read as ANSI by
+    # Windows PowerShell 5.1, so a literal here would arrive mangled. The name is
+    # built from its code points instead, the same trick $betaTag uses below.
+    [string]$Developer = ([string][char]0x98DE + [string][char]0x725B),
+    [string]$Publisher = ([string][char]0x98DE + [string][char]0x725B),
+    # Install target, matching the platform manifest contract:
+    #   root   -> manifest keeps install_type=root (system partition)
+    #   unset  -> the key is dropped, so fnOS asks for a storage volume
+    [string]$InstallType = 'root',
     [string]$DisplayName = 'fnAudio BETA',
     [int]$ServicePort = 53299,
     [string]$SharePrefix = 'fnaudio-beta',
@@ -74,17 +82,50 @@ function Test-BinaryFile {
 
 function Get-ManifestValue {
     param([string]$Text, [string]$Name)
-    $match = [regex]::Match($Text, "(?m)^\s*$([regex]::Escape($Name))\s*=\s*(.+?)\s*$")
+    # Whitespace around the assignment is matched as [ \t], not \s: \s also covers
+    # newlines, so a key with an empty value let the match resume on the NEXT line and
+    # this reader handed back an unrelated key instead of the blank value that is
+    # actually there.  The value itself stops at the line break for the same reason.
+    $match = [regex]::Match($Text, "(?m)^[ \t]*$([regex]::Escape($Name))[ \t]*=[ \t]*([^\r\n]*)")
     if (-not $match.Success) { throw "manifest is missing the '$Name' key." }
     return $match.Groups[1].Value.Trim().Trim('"')
 }
 
 function Set-ManifestValue {
     param([string]$Text, [string]$Name, [string]$Value)
-    $pattern = "(?m)^(\s*$([regex]::Escape($Name))\s*=\s*)(.+?)(\s*)$"
+    $pattern = "(?m)^([ \t]*$([regex]::Escape($Name))[ \t]*=[ \t]*)(.*)([ \t]*)$"
     if ($Text -notmatch $pattern) { throw "manifest is missing the '$Name' key; refusing to guess where to add it." }
     $evaluator = { param($match) $match.Groups[1].Value + $Value + $match.Groups[4].Value }
     return [regex]::Replace($Text, $pattern, $evaluator)
+}
+
+function Remove-ManifestKey {
+    param([string]$Text, [string]$Name)
+    # The comment run directly above the key belongs to it: deleting only the
+    # assignment would leave prose standing in a package that no longer declares it.
+    # As in the reader, the whitespace around '=' is horizontal only, so an empty value
+    # cannot make the match reach onto the following line.
+    $pattern = '(?m)(?:^#[^\r\n]*\r?\n)*^' + [regex]::Escape($Name) + '[ \t]*=[^\r\n]*\r?\n?'
+    return [regex]::Replace($Text, $pattern, '')
+}
+
+function Get-ManifestInstallTypeViolations {
+    param([string]$Text, [string]$Expected, [string]$Label)
+    # The platform spells "let the user pick a storage volume" by leaving the key
+    # out, so this check cannot ride on the expectation table below: Get-ManifestValue
+    # turns a missing key into an exception, and an exception here would lose the
+    # [$Label] prefix that says which of the three trees failed while skipping every
+    # remaining check of that tree. An empty assignment is reported too: the platform
+    # accepts it, but this packager only ever writes 'root' or deletes the key, so
+    # seeing one means the deletion path stopped removing something.
+    $violations = [System.Collections.Generic.List[string]]::new()
+    $declared = [regex]::Match($Text, '(?m)^[ \t]*install_type[ \t]*=[ \t]*([^\r\n]*)')
+    if ($Expected -ceq 'root') {
+        if (-not $declared.Success) { $violations.Add("[$Label] manifest does not declare install_type although -InstallType is 'root'") | Out-Null }
+        elseif ($declared.Groups[1].Value.Trim() -cne 'root') { $violations.Add("[$Label] manifest install_type is '$($declared.Groups[1].Value.Trim())', expected 'root'") | Out-Null }
+    }
+    elseif ($declared.Success) { $violations.Add("[$Label] manifest still declares install_type although -InstallType is '$Expected'") | Out-Null }
+    return $violations
 }
 
 function Assert-Condition {
@@ -117,6 +158,9 @@ Assert-Condition ($LibraryPath -cne '/vol1/1000/music') "LibraryPath must differ
 foreach ($name in @($Developer, $Publisher, $DisplayName)) {
     Assert-Condition ($name.Trim().Length -gt 0) 'Developer, Publisher and DisplayName must not be blank.'
 }
+# The platform only knows two install targets, and the empty one is spelled by
+# omitting the key, so the accepted set is written out instead of passing text on.
+Assert-Condition ($InstallType -ceq 'root' -or $InstallType -ceq 'unset') "InstallType must be 'root' (system partition) or 'unset' (ask for a volume); got '$InstallType'."
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceRoot = Join-Path $repoRoot 'src'
@@ -395,6 +439,12 @@ function Assert-Identity {
         $actual = Get-ManifestValue -Text $checkedManifest -Name $key
         if ($actual -ne $manifestExpectations[$key]) { $violations.Add("[$Label] manifest $key is '$actual', expected '$($manifestExpectations[$key])'") | Out-Null }
     }
+    # install_type is asserted outside the expectation table, in a helper that can
+    # be executed on its own, because the platform spells "ask the user" by the
+    # absence of the key rather than by a value.
+    foreach ($installTypeViolation in Get-ManifestInstallTypeViolations -Text $checkedManifest -Expected $InstallType -Label $Label) {
+        $violations.Add($installTypeViolation) | Out-Null
+    }
     if (-not (Get-ManifestValue -Text $checkedManifest -Name 'desc').StartsWith($betaTag)) { $violations.Add("[$Label] manifest desc must carry the beta tag") | Out-Null }
     foreach ($command in @('config_callback', 'config_init', 'install_callback', 'install_init', 'main', 'uninstall_callback', 'uninstall_init', 'upgrade_callback', 'upgrade_init')) {
         $commandText = Read-TextFile -Path (Join-Path $Root "cmd\$command")
@@ -451,6 +501,7 @@ $reported = [ordered]@{
     library_path    = $LibraryPath
     developer       = $Developer
     publisher       = $Publisher
+    install_type    = $InstallType
 }
 $validationNotes = [System.Collections.Generic.List[string]]::new()
 $changedReports = @()
@@ -505,7 +556,7 @@ $validationNotes.Add("staged $(@($stagedFiles).Count) source files (tests, __pyc
     $manifestPath = Join-Path $stageRoot 'manifest'
     $manifestText = Read-TextFile -Path $manifestPath
     $productionDescription = Get-ManifestValue -Text $manifestText.Text -Name 'desc'
-    foreach ($key in @('appname', 'version', 'display_name', 'desc', 'developer', 'publisher', 'maintainer', 'distributor')) {
+    foreach ($key in @('appname', 'version', 'display_name', 'desc', 'developer', 'publisher', 'maintainer', 'distributor', 'install_type')) {
         Assert-Condition ($manifestText.Text -match "(?m)^\s*$key\s*=") "staged manifest lost the '$key' key."
     }
     $nextManifest = $manifestText.Text
@@ -517,8 +568,15 @@ $validationNotes.Add("staged $(@($stagedFiles).Count) source files (tests, __pyc
     $nextManifest = Set-ManifestValue -Text $nextManifest -Name 'publisher' -Value $Publisher
     $nextManifest = Set-ManifestValue -Text $nextManifest -Name 'maintainer' -Value $Developer
     $nextManifest = Set-ManifestValue -Text $nextManifest -Name 'distributor' -Value $Publisher
+    if ($InstallType -ceq 'root') {
+        $nextManifest = Set-ManifestValue -Text $nextManifest -Name 'install_type' -Value 'root'
+    }
+    else {
+        $nextManifest = Remove-ManifestKey -Text $nextManifest -Name 'install_type'
+    }
     Write-TextFile -Path $manifestPath -Text $nextManifest -HasBom $manifestText.HasBom
     $validationNotes.Add('manifest identity keys set (appname/version/display_name/desc/developer/publisher/maintainer/distributor)')
+    $validationNotes.Add(('manifest install_type is ''{0}''' -f $InstallType))
 
     # config/privilege carries no username today, so fnOS would derive the
     # service account from the appname. The requested account is written
@@ -670,6 +728,7 @@ $validationNotes.Add("staged $(@($stagedFiles).Count) source files (tests, __pyc
         library_path     = $LibraryPath
         developer        = $Developer
         publisher        = $Publisher
+        install_type     = $InstallType
         git_commit       = $gitCommit
         git_worktree     = $gitWorktree
         staged_file_count = $stagedFileCount
