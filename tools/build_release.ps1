@@ -97,6 +97,19 @@ function Assert-PackagedInstallTarget([string]$SourceText, [string]$PackagedText
     }
 }
 
+function Get-GradleVersionCodePattern() {
+    # Gradle spells the key "versionCode 303" with a space rather than an equals sign,
+    # so its shape differs from Get-ManifestKeyPattern -- its line rule does not.  This
+    # one matched with \s on both sides of the number, and \s covers newlines: a
+    # versionCode key that had lost its number still "matched", by resuming on the NEXT
+    # line and handing the gate that neighbour's integer, so a build.gradle declaring
+    # nothing at all cleared the android version check.  The number has to sit on the
+    # key's own line.  The optional carriage return is the packaged-manifest lesson
+    # recorded below: this assertion is about the end of the line only, and a CRLF
+    # checkout must not be failed by it.
+    return '(?m)^[ \t]*versionCode[ \t]+([0-9]+)[ \t]*\r?$'
+}
+
 function Assert-Contains([string]$Text, [string]$Expected, [string]$File) {
     if (-not $Text.Contains($Expected)) {
         throw "$File does not contain expected value '$Expected'."
@@ -219,7 +232,7 @@ $index = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
 $sourceStampedAssets = Get-StampedUiAssetPaths $index (Join-Path $sourceRoot "app\ui")
 
 $gradle = Get-Content -LiteralPath $gradlePath -Raw -Encoding UTF8
-if ($gradle -notmatch '(?m)^\s*versionCode\s+(\d+)\s*$') {
+if ($gradle -notmatch (Get-GradleVersionCodePattern)) {
     throw "android-client/app/build.gradle must define a positive integer versionCode."
 }
 $versionCode = [int]$Matches[1]

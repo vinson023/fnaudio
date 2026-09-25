@@ -289,6 +289,60 @@ class ManifestHelperBehaviourTests(unittest.TestCase):
         self.assertIn("still declares install_type", rows["UNSET_DECLARED"][1])
 
 
+    @unittest.skipUnless(POWERSHELL, "no PowerShell available to run the presence check")
+    def test_the_presence_check_does_not_count_a_broken_key_line(self):
+        # The staged manifest is asserted key by key before the identity rewrite runs.
+        # That check used to match with \s around the equals sign -- and \s covers
+        # newlines -- so a key whose "=" had fallen onto the next line was still called
+        # present, while the Set-ManifestValue right below it uses [ \t] and died later
+        # under its own message, on a tree the operator had just been assured was whole.
+        # The REAL_* rows pin the other direction: the shipped manifest must keep
+        # declaring every key this loop asks about.
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "function Check-It([string]$label, [string]$text) {\n"
+            "    Write-Output ($label + '=' + [string](Test-ManifestKeyPresent -Text $text -Name 'install_type'))\n"
+            "}\n"
+            "Check-It 'COMPACT' \"appname=fnaudio`ninstall_type=root`n\"\n"
+            "Check-It 'ALIGNED' \"install_type          = root`n\"\n"
+            "Check-It 'SPACED' \"install_type =root`n\"\n"
+            "Check-It 'BLANK_VALUE' \"install_type=`n\"\n"
+            "Check-It 'CRLF' \"install_type=root`r`n\"\n"
+            "Check-It 'SPLIT_ASSIGN' \"install_type`n=root`n\"\n"
+            "Check-It 'STRANDED' \"install_type`nappname=fnaudio`n\"\n"
+            "Check-It 'ABSENT' \"appname=fnaudio`n\"\n"
+            "Check-It 'LONGER_KEY' \"install_type_extra=root`n\"\n"
+            "$real = [IO.File]::ReadAllText('%s')\n"
+            "foreach ($key in @('appname', 'version', 'display_name', 'desc', 'developer', "
+            "'publisher', 'maintainer', 'distributor', 'install_type')) {\n"
+            "    Write-Output ('REAL_' + $key + '=' + [string](Test-ManifestKeyPresent -Text $real -Name $key))\n"
+            "}\n"
+        ) % MANIFEST.replace(os.sep, "/")
+        with tempfile.TemporaryDirectory() as workdir:
+            script = os.path.join(workdir, "presence-driver.ps1")
+            with io.open(script, "w", encoding="ascii", newline="\n") as handle:
+                handle.write(self.helper_source() + driver)
+            completed = subprocess.run(
+                [self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+                capture_output=True,
+                text=True, errors="replace",
+            )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        rows = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        for label in ("COMPACT", "ALIGNED", "SPACED", "BLANK_VALUE", "CRLF"):
+            self.assertEqual(rows.get(label), "True", label)
+        # The trap: the old check answered True for a key with no equals sign of its
+        # own, which is the one manifest shape this loop exists to catch.
+        self.assertEqual(rows.get("SPLIT_ASSIGN"), "False")
+        self.assertEqual(rows.get("STRANDED"), "False")
+        self.assertEqual(rows.get("ABSENT"), "False")
+        self.assertEqual(rows.get("LONGER_KEY"), "False")
+        real = {name: value for name, value in rows.items() if name.startswith("REAL_")}
+        self.assertEqual(len(real), 9, "the staged-manifest key list stopped being reported")
+        self.assertEqual([name for name, value in sorted(real.items()) if value != "True"], [],
+                         "src/manifest no longer satisfies its own presence check")
+
+
 class BuiltPackageTests(unittest.TestCase):
     """The beta provenance file is the only record of what went into a package."""
 
