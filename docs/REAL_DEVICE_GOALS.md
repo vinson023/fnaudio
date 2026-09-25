@@ -150,4 +150,84 @@ R1-R10 逐轮处置与结案记录）；本文件装的是**只登记观察口�
 - 第三批：G11 —— 需要 WebView 端计数器导出，可与第一批同场执行，但判定项独立。
 - 第四批：G01 —— 依赖外部材料（飞牛官方桥接/扩展点），本机永不可取证，预计按「不可取证」结案。
 - 并账口径沿用台账 R3 的做法：同族条目可在主条记一次取证、其余条注明被覆盖，但**不得改写冻结原文**。
+## 第六节 · 2026-09-25（R178）测试虚拟机能力分级
+
+负责人提供了一台 fnOS 虚拟机（Debian 12，内核 `6.18.18.c1107-trim`，地址 `198.51.100.141`，SSH 端口 22，
+设备登录口令由负责人持有、不写入本仓库任何文件）。它同时是通过 SMB 挂载的工作区宿主，
+因此仓库里 `artifacts/` 下的每一个 fpk 都天然存在于设备本地存储，不需要额外上传。
+下面把「哪一类工作可以在这台机器上做」一次说清楚。**本节只登记能力边界与一次已发生的真机验收，
+G01-G11 的冻结原文、其后的 `> 真机口径：` 行以及条目归属一字未改、一条未动。**
+
+### A 级 · 现在就可测（只读，不改变设备状态）
+
+- 安装态与落位形状：`appcenter-cli list` / `check` / `status`、`/var/apps/<app>` 目录、`target` 链接指向、
+  `/usr/local/apps/@appcenter`（系统分区）与 `/vol1/@appcenter`（存储卷）两个集合的差。
+- 运行态：`ss -lntp` 端口监听、`/proc/<pid>/cmdline`、`/proc/<pid>/cwd`、`/proc/<pid>/fd` 里打开的 `library.sqlite3`。
+- 服务面（无需登录态）：`GET /api/health`、`GET /`、静态资源与其 `?v=<asset_build>` 版本标记。
+- 数据面：以只读方式打开曲库 SQLite，核对表、行数与 `tracks` 行的标签字段，判断扫描与元数据链路是否真的跑过。
+- 环境回归：`/etc/resolv.conf` 校验和、`/tmp` 残留计数、`df -h`，用来证明一次安装没有顺手改系统配置。
+
+### B 级 · 可测但有副作用（虚拟机可接受，实体 NAS 不做）
+
+- 安装 / 升级 / 卸载 fpk，含 `appcenter-cli install-fpk <fpk> -e <env>` 的向导变量注入。
+- 服务生命周期：`stop` 后端口必须消失、`start` 后必须恢复，`ctl_stop=true` 是否真被平台 honour。
+- 改配置：端口、曲库路径、`wizard_*` 变量写入后 `config.json` 的实际落地值。
+- 造真实曲库文件（例如在 `music/` 下放一首样本歌曲）观察扫描、FTS 索引与封面链路。
+- 双实例并存：同一台机器上同时跑生产与 beta 两个 appname／两个端口，用来实证「测试版没和生产版混在一起」。
+
+> 本节与第三节那份「真机取证分档白名单」的关系：第三节的禁令约束的是**实体 NAS**，本节的 B 级只在这台负责人指定的测试虚拟机上成立。本轮的停止／启动服务与安装新构建都发生在 VM 上，依据是负责人「在这台测试机上跑测试」的明示，不构成对第三节的放宽，也不改变「涉及停止服务的动作先在实体机上请示」这条口径。
+
+### C 级 · 这台机器测不了（无论怎么折腾都不行）
+
+- 全部 USB DAC／高解析输出／DoP／DSD：`/proc/asound/cards` 只有 `pcsp`（Internal PC-Speaker），没有 `aplay`、`amixer`，
+  `lsusb` 只有 VMware 虚拟 hub 与虚拟鼠标（这台机器本身是 VMware 虚拟机，插不到实体 DAC）；
+  `/api/health` 的 `components.mpd.error_category` 实测为 `output_device_missing`。
+- Android 真机与锁屏 MediaSession：G03、G05、G06、G08、G09 的载体是手机，不是这台 VM。
+- 低端真实 WebView 的重排与闪烁观察（G11 一族）：需要录屏与 DOM 提交计数器。
+- 真实外网第三方 provider 的抓取成功率与时延、实体 DLNA 控制点、公网与 fn Connect、
+  应用商店托管与云端 CI：都需要本仓库不持有的外部材料或外部网络。
+
+### 已在这台机器上落地的一次 B 级验收（2026-09-25，正式版 0.2.35）
+
+- 用 `install-fpk` 从设备本地路径安装正式版 fpk，向导变量给 `wizard_library_path` 与 `wizard_server_port`；
+  安装完成后 `check` 报 `Installed`、`status` 报 `running`、`list` 里版本为 0.2.35、依赖 `python312` 满足。
+- **`source=thirdparty` + `install_type=root` 被平台接受**：落位在 `/usr/local/apps/@appcenter/fnaudio`，
+  `/var/apps/fnaudio/target` 指向它，`/vol1/@appcenter/fnaudio` 始终不存在；安装前后三个集合的计数是
+  12→13（`/var/apps`）、8→8（`/vol1/@appcenter`）、4→5（`/usr/local/apps/@appcenter`）。
+  这条读数就是 D4「fnOS 降权还是接受 root」裁定为「接受 root」之后第一次拿到的真机证据。
+- 包内 `manifest` 的这份形状是 **fnpack 在打包时就写好的，不是平台安装时改的**：把交付 fpk 用 `tar -xf` 解出来逐字节比，包内 `manifest`
+  与设备上 `/var/apps/fnaudio/manifest` 完全相同（两边 SHA-256 都是 `dfadb0dc22e7d89ceb0d2d8e65ed9a7bdd22f70527b29c7b85229630ed2dc0a9`，
+  1,500 字节／29 行，源文件 28 行），安装树只是把包内那份原样落盘。改写内容＝键名按列对齐到第 21 列、以 ` = ` 分隔、
+  **条目之间没有空行**、**值不加引号**、末尾追加 fnpack 自己算出的 `checksum = d50b5b337f5a23930e5f0a91b945e45c`；
+  行尾是**混合**的：24 行 CRLF、5 行裸 LF，裸 LF 只落在三处注释块内部（除每组末行外的前导行保留了源文件的 LF）。
+  四个身份键（developer／publisher／maintainer／distributor）在设备上读回仍是 `vinson023`，未被替换成厂商名。
+  归属改对了，打包器门禁的理由才讲得通：它要读的那份文件是它自己的上游工具产的，与设备无关，所以必须按「列对齐 + CRLF」的形状去读，
+  任何按 `\s` 跨行取值的读法都会把下一行的注释吞进上一个值。
+- 同一次解包顺带回答了「设备上装的是哪一次构建」：本轮两次成功打包（中间产物 `2242D9CF7AAC89C988451614E8D4979774F0E3AE138DD2CF8C81C3B0F4D94C90`
+  与交付包 `9EB342F13319A708FFF8ABE8549FA33CCF70747DDA082657848584A747D276FF`）之间，包内 `manifest` 只差最后一行 `checksum`
+  （`f1ac4603…` 对 `d50b5b33…`），设备读回的是后者，因此设备上跑的就是交付包；而两次 `app.tgz` 的 328 个成员名字、逐个大小、逐个内容
+  SHA-256 全部相同，成员内容总长同为 12,997,133 字节，只有 328 个 mtime 无一相同（23:18:04Z 对 23:34:10Z），
+  gzip 文件因此相差 14 字节。这是 R177「fpk 摘要只作交付指纹、不作变更证据」在正式版打包器上第一次拿到的逐成员级证明。
+- 服务与页面：`0.0.0.0:53199` 监听，`/api/health` 与 `/` 均 200，`ui/app.js` 420,804 字节，
+  `index.html` 里 60 处 `?v=` 全部是 `0.2.35-58a38563247b`，与发布产物侧 `SOURCE_PROVENANCE.json` 的 `asset_build` 逐字相同
+  （该 JSON 只留在 `artifacts/0.2.35/`，安装树里没有，所以这是一次跨产物比对，不是在设备上读到的）。
+- 数据面：曲库 SQLite 已建表并完成一次扫描，`tracks` 1 行（FLAC／audio/flac／44.1 kHz／16 bit／225.186667 s／26,325,514 字节），
+  `tracks_search` 1 行（fts5，`tokenize='trigram'`），`library_meta` 14 个键、其中 `track_count=1`。
+  样本曲 `伍佰 - 泪桥.flac` 的内嵌标签只有 `date=2024-04-02` 一条，没有 TITLE／ARTIST／ALBUM／COMPOSER／GENRE：
+  标题与艺术家是从文件名解析出来的（`item_json.metadata_source` 标为 `filename`），专辑／作曲者／流派落到「未分类／未知作曲者／未分类」占位，
+  `covers` 表 1 行 `source=indexed`、缩略图目录里只有一个 `*.none` 占位文件 —— 负责人要的「无标签回落」这一次是真被测到了。
+- 两条先前的读数作废并已在上面替换：其一，`library_meta` 并非「10 个键且没有 `track_count`」，两次独立复测都是 14 个键并含 `track_count=1`；
+  其二，样本曲并非「带标签、标题艺术家齐全」，那两个值是文件名推导的结果，不是内嵌标签。
+  教训：设备侧只读一次就写进结论的读数不可信，本轮所有 §6 读数都要求第二遍独立复测才入账。
+- 隔离：beta（`fnaudio-beta`，53299）在同一台机器上全程 running 且 `/api/health` 200，两实例并存互不影响。
+- 恢复：`stop` 后 53199 计数归零，`start` 后下一轮探测即恢复监听，随后 `/tmp` 无本轮残留、
+  `/etc/resolv.conf` 校验和与安装前相同。
+
+### 从这次验收里得到的两条设备侧教训（登记，不新立代码待办）
+
+1. **`appcenter-cli` 的退出码不可信**：一次 env 文件格式错误导致安装以 `[Error]Something wrong with   environment variables.` 终止，命令仍然返回 0。任何驱动它的自动化都必须判输出文本，不能只判 `$?`。
+   本仓库没有任何代码路径调用它（代码目录 `src`／`tools`／`android-client` 三处 grep 命中 0 条；全树只剩本节的散文和一份
+   历史 `artifacts/0.1.148/VALIDATION.md` 提到过这个名字），所以这条只作为设备侧口径登记。
+2. **向导 env 必须是干净的逐行 `key=value`**：在远端 shell 里用不带引号的 `printf %s\n` 拼这个文件，
+   反斜杠会被引号移除前的解析吃掉，两行会粘成一行，直接触发上一条错误。落文件请用带引号的格式串或逐行 `echo`。
 

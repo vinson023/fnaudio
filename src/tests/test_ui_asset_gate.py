@@ -38,7 +38,7 @@ class UiAssetGateTests(unittest.TestCase):
             completed = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=180,
             )
         return completed.stdout.strip(), completed.returncode, completed.stderr

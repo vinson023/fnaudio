@@ -9,12 +9,16 @@ param(
     # /privilege overrides it; that override is what "the application account"
     # means on the platform, so the requested name lands here.
     [string]$AppUser = 'trim.music',
-    # Developer and publisher are Chinese text that only travels inside the
-    # manifest, never inside this script: a BOM-less .ps1 is read as ANSI by
-    # Windows PowerShell 5.1, so a literal here would arrive mangled. The name is
-    # built from its code points instead, the same trick $betaTag uses below.
-    [string]$Developer = ([string][char]0x98DE + [string][char]0x725B),
-    [string]$Publisher = ([string][char]0x98DE + [string][char]0x725B),
+    # Identity is the author handle, so it is plain ASCII and a literal is safe
+    # here. It used to be the platform vendor name, which is Chinese text that
+    # could not be written literally in a BOM-less .ps1 (PowerShell 5.1 decodes
+    # such a file as ANSI) and had to be assembled from code points. Should a
+    # non-ASCII name ever return, it must come back as code points too; this file
+    # stays pure ASCII either way, which src/tests/test_beta_identity_install_target.py
+    # pins, and the beta keeps its own appname so the official namespace is never
+    # occupied.
+    [string]$Developer = 'vinson023',
+    [string]$Publisher = 'vinson023',
     # Install target, matching the platform manifest contract:
     #   root   -> manifest keeps install_type=root (system partition)
     #   unset  -> the key is dropped, so fnOS asks for a storage volume

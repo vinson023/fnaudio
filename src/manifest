@@ -1,13 +1,13 @@
 appname=fnaudio
-version=0.2.34
+version=0.2.35
 display_name=fnAudio
 desc=本地音乐播放器，支持高解析音乐库、歌词封面补全、USB DAC、DLNA 推送及 Android 锁屏控制。
 platform=x86
 source=thirdparty
-developer=飞牛
-publisher=飞牛
-maintainer=飞牛
-distributor=飞牛
+developer=vinson023
+publisher=vinson023
+maintainer=vinson023
+distributor=vinson023
 # install_type=root asks fnOS for the system partition instead of a storage
 # volume. The runtime layout is written against /var/apps/fnaudio (src/cmd and
 # several src/app/server paths), so a volume install is what needs explaining.

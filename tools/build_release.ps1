@@ -41,12 +41,60 @@ if (-not $FnpackPath) {
 $FnpackPath = (Resolve-Path -LiteralPath $FnpackPath).Path
 $fnpackSha256 = Get-Sha256Hex -Path $FnpackPath
 
+function Get-ManifestKeyPattern([string]$Name) {
+    # The one key shape every reader below shares. Two rules are baked in here, and
+    # both come from a build that broke:
+    #  * [ \t] rather than \s, because \s also matches newlines: a blank-valued key
+    #    made the old match resume on the NEXT line and answer with that neighbour
+    #    (build_beta_fpk.ps1 lost this in R177).
+    #  * whitespace on BOTH sides of the equals sign, because fnpack rewrites every
+    #    manifest it packs with column-aligned keys ("install_type          = root").
+    #    A compact "key=" pattern matches the source tree and never finds the key in
+    #    the package, which is what killed the 0.2.35 release build.
+    return "(?m)^[ \t]*$([regex]::Escape($Name))[ \t]*="
+}
+
+function Find-ManifestValue([string]$Text, [string]$Name) {
+    # Extends the shared key shape with a value group that cannot cross the line.
+    # The value stops at the line, and the optional carriage return lets it stop
+    # cleanly there: the manifest inside a packed FPK ends its lines with CRLF, so a
+    # bare end-of-line assertion matched nothing and the build reported a missing
+    # version key it could plainly see in the package.
+    return [regex]::Match($Text, ((Get-ManifestKeyPattern $Name) + "[ \t]*([^\r\n]*?)[ \t]*\r?$"))
+}
+
 function Get-ManifestValue([string]$Text, [string]$Name) {
-    $match = [regex]::Match($Text, "(?m)^\s*$([regex]::Escape($Name))\s*=\s*(.+?)\s*$")
-    if (-not $match.Success) {
+    $match = Find-ManifestValue $Text $Name
+    if (-not $match.Success -or $match.Groups[1].Value.Trim() -eq '') {
         throw "Missing '$Name' in src/manifest."
     }
     return $match.Groups[1].Value.Trim()
+}
+
+function Test-ManifestKey([string]$Text, [string]$Name) {
+    # A key line counts even when its value is blank: padding a blank value with the
+    # spaces fnpack aligns with must not turn a declaration into an absence.
+    return [regex]::IsMatch($Text, (Get-ManifestKeyPattern $Name))
+}
+
+function Assert-PackagedInstallTarget([string]$SourceText, [string]$PackagedText) {
+    # install_type decides which partition fnOS puts the app on, so a package that
+    # quietly loses or gains it is not the application the source tree describes.
+    $sourceDeclared = Test-ManifestKey $SourceText "install_type"
+    $packagedDeclared = Test-ManifestKey $PackagedText "install_type"
+    if ($sourceDeclared -ne $packagedDeclared) {
+        throw "Packaged manifest install_type presence differs from src/manifest."
+    }
+    # The value is only compared once both sides have a key line, and it is read with
+    # the blank-tolerant finder: Get-ManifestValue would throw for a legitimate unset
+    # or blank-valued build (R177 lesson).
+    if ($sourceDeclared) {
+        $sourceTarget = (Find-ManifestValue $SourceText "install_type").Groups[1].Value.Trim()
+        $packagedTarget = (Find-ManifestValue $PackagedText "install_type").Groups[1].Value.Trim()
+        if ($packagedTarget -ne $sourceTarget) {
+            throw "Packaged manifest install_type differs from src/manifest."
+        }
+    }
 }
 
 function Assert-Contains([string]$Text, [string]$Expected, [string]$File) {
@@ -361,6 +409,18 @@ try {
     if ((Get-ManifestValue $packagedManifest "version") -ne $version) {
         throw "Packaged manifest version differs from VERSION."
     }
+
+    # The package must carry the identity the source declares.  Comparing against
+    # $manifest instead of literals keeps src/manifest the single source of truth, so
+    # an identity change is made in exactly one place and every tree is still pinned.
+    foreach ($identityKey in @("appname", "developer", "publisher", "maintainer", "distributor")) {
+        if ((Get-ManifestValue $packagedManifest $identityKey) -ne (Get-ManifestValue $manifest $identityKey)) {
+            throw "Packaged manifest '$identityKey' differs from src/manifest."
+        }
+    }
+    # install_type decides the install partition, so the package has to carry the same
+    # declaration the source tree makes, in whichever shape the packager rewrites it to.
+    Assert-PackagedInstallTarget $manifest $packagedManifest
     $payload = Join-Path $inspectionRoot "app.tgz"
     if (-not (Test-Path -LiteralPath $payload)) {
         throw "FPK payload app.tgz is missing."

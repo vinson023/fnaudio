@@ -90,7 +90,7 @@ class BuildReleaseScriptTests(unittest.TestCase):
             process = subprocess.run(
                 [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver),
                  "-Verifier", verifier, "-ScenarioFile", str(scenario_file)],
-                text=True, capture_output=True, check=False, timeout=30 + 30 * len(scenarios),
+                text=True, errors="replace", capture_output=True, check=False, timeout=30 + 30 * len(scenarios),
             )
         results = []
         for line in (process.stdout or "").splitlines():
@@ -147,10 +147,10 @@ class BuildReleaseScriptTests(unittest.TestCase):
                 [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                  str(root / "tools" / "build_release.ps1"),
                  "-OutputRoot", str(output_root), "-FnpackPath", str(fake_fnpack)],
-                text=True, capture_output=True, check=False, timeout=30,
+                text=True, errors="replace", capture_output=True, check=False, timeout=30,
             )
             self.assertNotEqual(result.returncode, 0)
-            output = result.stdout + result.stderr
+            output = (result.stdout or "") + (result.stderr or "")
             self.assertIn("Release output already exists", output)
             self.assertIn("Refusing to overwrite", output)
 
@@ -365,7 +365,7 @@ $payload | ConvertTo-Json -Compress
                 [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                  str(tools / "index_release_evidence.ps1"),
                  "-ArtifactRoot", str(artifacts), "-OutputPath", str(output)],
-                text=True, capture_output=True, check=False, timeout=15,
+                text=True, errors="replace", capture_output=True, check=False, timeout=15,
             )
             self.assertEqual(indexed.returncode, 0, indexed.stderr)
             payload = json.loads(output.read_text(encoding="utf-8-sig"))
@@ -642,6 +642,213 @@ $payload | ConvertTo-Json -Compress
         self.assertIn("Unable to inspect the built FPK with tar", script)
         self.assertIn("Unable to inspect the packaged app payload with tar", script)
         self.assertGreaterEqual(script.count("if ($LASTEXITCODE -ne 0)"), 3)
+
+    def test_script_gates_the_packaged_identity_against_the_source_manifest(self):
+        """R178: appname and the four identity roles must survive into the FPK.
+
+        Packaging copies src/ verbatim today, so nothing *was* rewriting the
+        identity; the release script simply never looked at it.  A version check
+        alone let a package whose developer/publisher had drifted ship green.
+        """
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+
+        self.assertIn(
+            '@("appname", "developer", "publisher", "maintainer", "distributor")', script
+        )
+        self.assertIn(
+            "Get-ManifestValue $packagedManifest $identityKey", script
+        )
+        # The prefix is part of the assertion: a gate that only warns about a wrong
+        # identity still ships the package, so "is the message present" proves nothing.
+        q = chr(39)
+        self.assertIn("throw \"Packaged manifest " + q + "$identityKey" + q, script)
+        # install_type decides the install partition, so the package has to carry the
+        # source's declaration. Presence alone was the first cut and it still passed a
+        # package that renamed the target, so the value is compared as well.
+        self.assertIn(
+            "Assert-PackagedInstallTarget $manifest $packagedManifest", script
+        )
+        self.assertIn(
+            "Packaged manifest install_type presence differs from src/manifest.", script
+        )
+        self.assertIn(
+            'throw "Packaged manifest install_type differs from src/manifest."', script
+        )
+        # An unguarded value read throws for a legitimate unset build (R177 lesson), so
+        # the read has to stay behind the presence test.
+        self.assertIn("if ($sourceDeclared) {", script)
+        # These are only text checks. The shapes that used to break the real build are
+        # pinned by test_install_target_gate_accepts_the_shapes_the_packager_writes.
+
+    def test_manifest_reader_does_not_cross_line_boundaries(self):
+        """Runs the shipped reader over the shapes that used to silently lie.
+
+        Every class matcher used \\s around the key, the equals sign and the end of
+        the line, and \\s covers newlines.  On a key with a blank value the match
+        resumed on the NEXT line, so the reader returned that neighbour's value;
+        with the equals sign on the next line it read the key as if it had a value.
+        Both have to fail closed now rather than answer with somebody else's data.
+        """
+        powershell = self._powershell()
+        if powershell is None:
+            self.skipTest("no PowerShell available to run the reader")
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        start = script.index("function Get-ManifestKeyPattern(")
+        stop = script.index("function Assert-Contains(")
+        helper = script[start:stop]
+        self.assertTrue(helper.strip().endswith("}"), "the reader slice lost its body")
+
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "function Read-It([string]$label, [string]$text, [string]$name) {\n"
+            "    try { Write-Output ($label + '=[' + (Get-ManifestValue $text $name) + ']') }\n"
+            "    catch { Write-Output ($label + '=THREW') }\n"
+            "}\n"
+            "Read-It 'PLAIN' \"appname=fnaudio`nversion=0.2.35`n\" 'appname'\n"
+            "Read-It 'TRAILING' \"appname=fnaudio   `nversion=0.2.35`n\" 'appname'\n"
+            "Read-It 'INDENTED' \"  appname=fnaudio`n\" 'appname'\n"
+            "Read-It 'COMMENTED' \"# appname=decoy`nappname=fnaudio`n\" 'appname'\n"
+            "Read-It 'BLANK_VALUE' \"appname=fnaudio`ninstall_type=`nversion=0.2.35`n\" 'install_type'\n"
+            "Read-It 'SPLIT_ASSIGN' \"install_type`n=root`nversion=0.2.35`n\" 'install_type'\n"
+            "Read-It 'ABSENT' \"appname=fnaudio`n\" 'install_type'\n"
+            "Read-It 'ALIGNED' \"install_type          = root`n\" 'install_type'\n"
+            "Read-It 'ALIGNED_CRLF' \"version               = 0.2.35`r`n\" 'version'\n"
+        )
+        with tempfile.TemporaryDirectory() as workdir:
+            probe = Path(workdir) / "reader-driver.ps1"
+            probe.write_text(helper + driver, encoding="ascii", newline="\n")
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(probe)],
+                capture_output=True,
+                text=True, errors="replace",
+            )
+        self.assertEqual(completed.returncode, 0,
+                         (completed.stdout or "") + (completed.stderr or ""))
+        rows = dict(
+            line.partition("=")[0::2][:2]
+            for line in completed.stdout.splitlines()
+            if line.startswith(("PLAIN", "TRAILING", "INDENTED", "COMMENTED", "BLANK_VALUE", "SPLIT_ASSIGN", "ABSENT", "ALIGNED", "ALIGNED_CRLF"))
+        )
+        self.assertEqual(rows.get("PLAIN"), "[fnaudio]")
+        self.assertEqual(rows.get("TRAILING"), "[fnaudio]")
+        self.assertEqual(rows.get("INDENTED"), "[fnaudio]")
+        self.assertEqual(rows.get("COMMENTED"), "[fnaudio]")
+        # The two traps: the old reader answered 'version=0.2.35' for both.  The
+        # probe only brackets a value it actually managed to read, so a failure to
+        # read reports bare THREW.
+        self.assertEqual(rows.get("BLANK_VALUE"), "THREW")
+        self.assertEqual(rows.get("SPLIT_ASSIGN"), "THREW")
+        self.assertEqual(rows.get("ABSENT"), "THREW")
+        # fnpack column-aligns every key it writes into a package, so the reader has to
+        # tolerate whitespace on both sides of the equals sign or the packaged manifest reads
+        # as an empty file to it.
+        self.assertEqual(rows.get("ALIGNED"), "[root]")
+        # A packed FPK writes its manifest with CRLF line endings, so the value has
+        # to stop at the carriage return instead of failing the line-end assertion.
+        self.assertEqual(rows.get("ALIGNED_CRLF"), "[0.2.35]")
+
+
+    def test_install_target_gate_accepts_the_shapes_the_packager_writes(self):
+        """Runs the shipped install-target gate over the manifests it really receives.
+
+        The first version of this gate matched "install_type=" on both sides of the
+        packaging boundary. fnpack rewrites the manifest it packs with column-aligned
+        keys -- "install_type          = root" -- so the packaged side never matched and
+        the 0.2.35 release build died on its own gate six seconds in. Text assertions
+        could not catch that: they only repeated the wrong pattern back. Every case
+        below is a shape either the packager or the platform actually produces.
+        """
+        powershell = self._powershell()
+        if powershell is None:
+            self.skipTest("no PowerShell available to run the gate")
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        start = script.index("function Get-ManifestKeyPattern(")
+        stop = script.index("function Assert-Contains(")
+        helper = script[start:stop]
+        self.assertTrue(helper.strip().endswith("}"), "the gate slice lost its body")
+
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "function Check-It([string]$label, [string]$source, [string]$packaged) {\n"
+            "    try {\n"
+            "        Assert-PackagedInstallTarget $source $packaged\n"
+            "        Write-Output ($label + '=OK')\n"
+            "    } catch {\n"
+            "        Write-Output ($label + '=THREW:' + $_.Exception.Message)\n"
+            "    }\n"
+            "}\n"
+            "$SRC_ROOT = \"install_type=root`n\"\n"
+            "$SRC_UNSET = \"appname=fnaudio`n\"\n"
+            "$SRC_BLANK = \"install_type=`n\"\n"
+            "$PKG_ALIGNED = \"appname               = fnaudio`ninstall_type          = root`nchecksum              = 0123456789abcdef`n\"\n"
+            "$PKG_UNSET = \"appname               = fnaudio`nchecksum              = 0123456789abcdef`n\"\n"
+            "$PKG_BLANK = \"install_type=`n\"\n"
+            "$PKG_PADDED_BLANK = \"appname               = fnaudio`ninstall_type          = `n\"\n"
+            "$PKG_DROPPED = \"appname               = fnaudio`nchecksum              = 0123456789abcdef`n\"\n"
+            "$PKG_COMMENT_ONLY = \"# install_type=root asks for the system partition`nchecksum              = 0123456789abcdef`n\"\n"
+            "$PKG_DRIFT = \"install_type          = volume`n\"\n"
+            "$PKG_CRLF = \"appname               = fnaudio`r`ninstall_type          = root`r`nchecksum              = 0123456789abcdef`r`n\"\n"
+            "$SRC_VOLUME = \"install_type=volume`n\"\n"
+            "Check-It 'ALIGNED_PAIR' $SRC_ROOT $PKG_ALIGNED\n"
+            "Check-It 'UNSET_PAIR' $SRC_UNSET $PKG_UNSET\n"
+            "Check-It 'BLANK_PAIR' $SRC_BLANK $PKG_BLANK\n"
+            "Check-It 'PADDED_BLANK_PAIR' $SRC_BLANK $PKG_PADDED_BLANK\n"
+            "Check-It 'BLANK_VS_ROOT' $SRC_BLANK $PKG_ALIGNED\n"
+            "Check-It 'PACKAGED_DROPPED' $SRC_ROOT $PKG_DROPPED\n"
+            "Check-It 'PACKAGED_COMMENT_ONLY' $SRC_ROOT $PKG_COMMENT_ONLY\n"
+            "Check-It 'SOURCE_UNSET' $SRC_UNSET $PKG_ALIGNED\n"
+            "Check-It 'VALUE_DRIFT' $SRC_ROOT $PKG_DRIFT\n"
+            "Check-It 'CRLF_PAIR' $SRC_ROOT $PKG_CRLF\n"
+            "Check-It 'CRLF_UNSET' $SRC_UNSET $PKG_CRLF\n"
+            "Check-It 'CRLF_VALUE_DRIFT' $SRC_VOLUME $PKG_CRLF\n"
+        )
+        with tempfile.TemporaryDirectory() as workdir:
+            probe = Path(workdir) / "gate-driver.ps1"
+            probe.write_text(helper + driver, encoding="ascii", newline="\n")
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(probe)],
+                capture_output=True,
+                text=True, errors="replace",
+            )
+        self.assertEqual(completed.returncode, 0,
+                         (completed.stdout or "") + (completed.stderr or ""))
+        rows = dict(
+            line.partition("=")[0::2][:2]
+            for line in completed.stdout.splitlines()
+            if line.startswith(("ALIGNED_PAIR", "UNSET_PAIR", "BLANK_PAIR",
+                               "PADDED_BLANK_PAIR", "BLANK_VS_ROOT",
+                               "PACKAGED_DROPPED", "PACKAGED_COMMENT_ONLY",
+                               "SOURCE_UNSET", "VALUE_DRIFT",
+                               "CRLF_PAIR", "CRLF_UNSET", "CRLF_VALUE_DRIFT"))
+        )
+        self.assertEqual(len(rows), 12, completed.stdout)
+        # The pair that killed the real build, plus the two legitimate "no target"
+        # builds: a blank value is still a declaration, on either side of the boundary.
+        self.assertEqual(rows["ALIGNED_PAIR"], "OK")
+        self.assertEqual(rows["UNSET_PAIR"], "OK")
+        self.assertEqual(rows["BLANK_PAIR"], "OK")
+        # The padded shape is what a packager writes for an empty value; treating it
+        # as "absent" while treating the compact blank as "present" was the first cut of
+        # this helper, and it disagreed with itself across the packaging boundary.
+        self.assertEqual(rows["PADDED_BLANK_PAIR"], "OK")
+        self.assertTrue(rows["BLANK_VS_ROOT"].startswith("THREW:"), rows["BLANK_VS_ROOT"])
+        self.assertIn("install_type differs", rows["BLANK_VS_ROOT"])
+        # Anything that changes the partition the app lands on has to fail closed.
+        for label in ("PACKAGED_DROPPED", "PACKAGED_COMMENT_ONLY", "SOURCE_UNSET"):
+            self.assertTrue(rows[label].startswith("THREW:"), rows[label])
+            self.assertIn("presence differs", rows[label])
+        self.assertTrue(rows["VALUE_DRIFT"].startswith("THREW:"), rows["VALUE_DRIFT"])
+        self.assertIn("install_type differs", rows["VALUE_DRIFT"])
+        # The package the packager actually produces: aligned keys AND CRLF lines.
+        # Reading it wrong used to look like "the package has no install_target".
+        self.assertEqual(rows["CRLF_PAIR"], "OK")
+        self.assertTrue(rows["CRLF_UNSET"].startswith("THREW:"), rows["CRLF_UNSET"])
+        self.assertIn("presence differs", rows["CRLF_UNSET"])
+        self.assertTrue(rows["CRLF_VALUE_DRIFT"].startswith("THREW:"), rows["CRLF_VALUE_DRIFT"])
+        self.assertIn("install_type differs", rows["CRLF_VALUE_DRIFT"])
 
 
 if __name__ == "__main__":

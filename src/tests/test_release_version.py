@@ -48,6 +48,53 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertIsNotNone(version_code)
         self.assertGreater(int(version_code.group(1)), 0)
 
+    def test_manuals_state_the_release_version_wherever_they_claim_current(self):
+        """Every "current version" sentence in the manuals is answered from VERSION.
+
+        A release bump moves VERSION, src/manifest, the Gradle block and several
+        sentences that restate the same fact by hand.  Until now the guard checked
+        exactly one of those sentences ("当前发布基线为"), so the 0.2.35 bump left
+        README, ARCHITECTURE and the source inventory still naming 0.2.34: a second,
+        older record of the current version, which is the rot RECOVERY.md already has
+        a dedicated guard against.  The loop below derives the expected value from
+        VERSION instead of repeating a number here, and it scans for any sentence that
+        claims a current version rather than for a fixed list, so a coordinate nobody
+        thought to pin is covered as well.
+        """
+        root = Path(__file__).resolve().parents[2]
+        version = (root / "VERSION").read_text(encoding="utf-8").strip()
+        current_claims = re.compile(r"当前[^。\n]*`([0-9]+\.[0-9]+\.[0-9]+)`")
+        for relative in ("README.md", "ARCHITECTURE.md", "docs/SOURCE_INVENTORY.md", "android-client/README.md"):
+            text = (root / relative).read_text(encoding="utf-8").replace("\r\n", "\n")
+            claims = current_claims.findall(text)
+            self.assertTrue(
+                claims,
+                relative + " must keep at least one sentence naming the current version",
+            )
+            self.assertEqual(
+                sorted(set(claims)),
+                [version],
+                relative + " states a version that is not the current VERSION: " + repr(claims),
+            )
+        # The summary table row is the only current-version coordinate that never
+        # says "当前", so it is pinned on its own shape instead of by the sweep.
+        readme = (root / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertEqual(
+            re.findall(r"(?m)^\| 版本 \| `([^`]*)` \|$", readme),
+            [version],
+            "README.md must state the current version in exactly one summary row",
+        )
+        # The artifact directory named in the manual is the same claim seen from the
+        # other side: README sends a maintainer to artifacts/<VERSION>/, and a stale
+        # path there points at the previous package. It sits in a sentence without
+        # the "current" wording, so the sweep above cannot see it and it is pinned
+        # on its own.
+        self.assertEqual(
+            re.findall(r"产物位于 `artifacts/([^/`]*)/`", readme),
+            [version],
+            "README.md must point at the artifact directory of the current version",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
