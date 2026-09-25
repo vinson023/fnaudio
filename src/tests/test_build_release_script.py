@@ -472,6 +472,9 @@ $payload | ConvertTo-Json -Compress
             'artifact_sha256',
             'Release SHA256SUMS does not match the final FPK.',
             'git_provenance_status',
+            '--untracked-files=no -- $Scope',
+            '--exclude-standard -- $Scope',
+            'git_provenance_scope = ($gitProvenance.scope',
             '"commit_only"',
             '"unavailable"',
             'invalid Git provenance status',
@@ -948,6 +951,179 @@ $payload | ConvertTo-Json -Compress
         self.assertIn("presence differs", rows["CRLF_UNSET"])
         self.assertTrue(rows["CRLF_VALUE_DRIFT"].startswith("THREW:"), rows["CRLF_VALUE_DRIFT"])
         self.assertIn("install_type differs", rows["CRLF_VALUE_DRIFT"])
+
+
+class GitProvenanceScopeTests(unittest.TestCase):
+    """`Get-GitProvenance` must measure the release input scopes, not the tree.
+
+    The rule it replaces counted every untracked line `git status` reported for the
+    whole repository.  This repository keeps hundreds of intentional untracked paths
+    (artifacts/, _external/, music/, cached toolchains under tools/), so that count
+    was never zero and `git_worktree_dirty` read "dirty" for every release ever
+    built -- a constant masquerading as evidence.  Each scenario below builds a
+    scratch repository whose noise lives outside the release scopes and runs the
+    shipped function text, sliced out of tools/build_release.ps1 rather than
+    re-typed, over it.
+    """
+
+    REPO = Path(__file__).resolve().parents[2]
+    POWERSHELL = next((exe for exe in ("powershell", "pwsh") if shutil.which(exe)), None)
+    GIT = shutil.which("git")
+    SCOPED_SOURCES = ("src/app/server.py", "android-client/app/build.gradle")
+    NOISE = ("artifacts/0.9.9/fnaudio-0.9.9-fnpack.fpk", "_external/cache.bin", "music/sample.flac")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.workdir = Path(self.tmp.name) / "repo"
+        self.workdir.mkdir(parents=True)
+        for relative in self.SCOPED_SOURCES:
+            self._file(relative)
+        self.git("init", "-q")
+        self.git("config", "user.email", "provenance@example.invalid")
+        self.git("config", "user.name", "provenance")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        # The noise is committed *after* the baseline, so it stays untracked -- that
+        # is the state the old whole-tree rule could never distinguish from real drift.
+        for relative in self.NOISE:
+            self._file(relative)
+
+    def _file(self, relative):
+        target = self.workdir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("payload\n", encoding="utf-8")
+
+    def git(self, *args, **kwargs):
+        cwd = kwargs.pop("cwd", None) or str(self.workdir)
+        return subprocess.run([self.GIT, *args], cwd=cwd, check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def shipped_probe_source(self):
+        script = (self.REPO / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        block = script[script.index("function Get-GitProvenance"):script.index("$manifestPath = Join-Path")]
+        self.assertIn("function Get-GitProvenance([string]$Root", script)
+        self.assertIn("--untracked-files=no -- $Scope", block)
+        self.assertIn("--exclude-standard -- $Scope", block)
+        return block
+
+    def run_probe(self, repo_path, scope=None, preference="Stop"):
+        quoted = str(repo_path).replace("'", "''")
+        driver = ["$ErrorActionPreference = '%s'" % preference]
+        driver.append(self.shipped_probe_source())
+        call = "Get-GitProvenance -Root '%s'" % quoted
+        if scope is not None:
+            call += " -Scope %s" % scope
+        driver.append("$p = " + call)
+        for key in ("status", "worktree_dirty", "tracked_edits", "untracked_inputs"):
+            driver.append("Write-Output ('%s=' + $p.%s)" % (key.upper(), key))
+        # Test instrumentation only: outside Stop so a non-repo can still be counted.
+        driver.append("$ErrorActionPreference = 'Continue'")
+        driver.append("$w = @(& git -C '%s' status --porcelain=v1 --untracked-files=normal 2>$null)" % quoted)
+        driver.append("Write-Output ('WHOLE=' + $w.Count)")
+        script_path = Path(self.tmp.name) / "probe.ps1"
+        script_path.write_text("\n".join(driver) + "\n", encoding="utf-8")
+        done = subprocess.run([self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-File", str(script_path)], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        output = done.stdout.decode("utf-8", "replace")
+        self.assertEqual(done.returncode, 0, output)
+        rows = {}
+        for line in output.splitlines():
+            if "=" in line:
+                name, _, value = line.partition("=")
+                if name.isupper():
+                    rows[name] = value.strip()
+        return rows
+
+    def test_untracked_noise_outside_the_release_scopes_keeps_the_record_clean(self):
+        rows = self.run_probe(self.workdir)
+        # The old rule read WHOLE > 0 as dirty; the scopes are untouched here.
+        self.assertGreater(int(rows["WHOLE"]), 0)
+        self.assertEqual(rows["STATUS"], "clean")
+        self.assertEqual(rows["WORKTREE_DIRTY"], "False")
+        self.assertEqual(rows["TRACKED_EDITS"], "0")
+        self.assertEqual(rows["UNTRACKED_INPUTS"], "0")
+
+    def test_a_tracked_edit_inside_a_release_scope_marks_the_record_dirty(self):
+        (self.workdir / "src" / "app" / "server.py").write_text("tampered\n", encoding="utf-8")
+        rows = self.run_probe(self.workdir)
+        self.assertEqual(rows["STATUS"], "dirty")
+        self.assertEqual(rows["TRACKED_EDITS"], "1")
+
+    def test_an_untracked_file_inside_a_release_scope_marks_the_record_dirty(self):
+        stray = self.workdir / "src" / "app" / "server" / "untracked.py"
+        stray.parent.mkdir(parents=True, exist_ok=True)
+        stray.write_text("smuggled\n", encoding="utf-8")
+        rows = self.run_probe(self.workdir)
+        self.assertEqual(rows["STATUS"], "dirty")
+        self.assertEqual(rows["UNTRACKED_INPUTS"], "1")
+
+    def test_the_android_scope_counts_as_much_as_the_payload_scope(self):
+        (self.workdir / "android-client" / "app" / "build.gradle").write_text("drifted\n", encoding="utf-8")
+        rows = self.run_probe(self.workdir)
+        self.assertEqual(rows["STATUS"], "dirty")
+        self.assertEqual(rows["TRACKED_EDITS"], "1")
+
+    def test_a_narrower_scope_is_honoured_rather_than_hardcoded(self):
+        # Only src staged: an android-client edit must then read clean.  Proves the
+        # scopes arrive as a parameter and are not decoration inside the function.
+        (self.workdir / "android-client" / "app" / "build.gradle").write_text("drifted\n", encoding="utf-8")
+        rows = self.run_probe(self.workdir, scope="@('src')")
+        self.assertEqual(rows["STATUS"], "clean")
+        self.assertEqual(rows["TRACKED_EDITS"], "0")
+
+    def test_a_tree_without_git_stays_unavailable_instead_of_reading_clean(self):
+        plain = Path(self.tmp.name) / "export"
+        plain.mkdir()
+        (plain / "src").mkdir()
+        (plain / "src" / "server.py").write_text("payload\n", encoding="utf-8")
+        rows = self.run_probe(plain)
+        self.assertEqual(rows["STATUS"], "unavailable")
+        self.assertEqual(rows["WORKTREE_DIRTY"], "")
+        self.assertEqual(rows["TRACKED_EDITS"], "")
+
+    def test_git_probes_that_fail_without_throwing_never_read_clean(self):
+        # A scope git refuses to parse exits non-zero and says so only on stderr.
+        # Under Continue that reaches the guard instead of the catch, and the guard is
+        # what keeps an unreadable tree from being reported as a clean release input.
+        rows = self.run_probe(self.workdir, scope="@(':(bogus')", preference="Continue")
+        self.assertEqual(rows["STATUS"], "commit_only")
+        self.assertEqual(rows["TRACKED_EDITS"], "")
+        self.assertEqual(rows["UNTRACKED_INPUTS"], "")
+
+    def test_the_shipped_default_scopes_cover_both_release_inputs(self):
+        script = (self.REPO / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        signature = script[script.index("function Get-GitProvenance"):]
+        signature = signature[:signature.index("\n")]
+        self.assertIn("'src'", signature)
+        self.assertIn("'android-client'", signature)
+
+    def test_the_real_release_tree_is_judged_by_the_scopes_it_ships(self):
+        whole_status = self.git("status", "--porcelain=v1", "--untracked-files=normal", cwd=str(self.REPO))
+        whole = [line for line in whole_status.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+        edits = self.git("status", "--porcelain=v1", "--untracked-files=no", "--", "src", "android-client",
+                         cwd=str(self.REPO))
+        strays = self.git("ls-files", "--others", "--exclude-standard", "--", "src", "android-client",
+                          cwd=str(self.REPO))
+        scoped = [line for line in edits.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+        stray_lines = [line for line in strays.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+        expected = "dirty" if (scoped or stray_lines) else "clean"
+        # The hundred-line constant below is a property of *this* checkout: artifacts/,
+        # _external/, music/ and the cached toolchains live untracked in the working
+        # tree.  A fresh clone has none of them, so only the whole-tree comparison is
+        # conditional; the scoped verdicts still run everywhere, and the discriminating
+        # "noise outside the scopes" case is covered unconditionally by the scratch
+        # repository above.
+        if len(whole) <= 100:
+            self.skipTest("whole-tree untracked noise is absent outside the source checkout")
+        rows = self.run_probe(self.REPO, scope="@('src', 'android-client')")
+        self.assertEqual(rows["STATUS"], expected)
+        self.assertEqual(rows["TRACKED_EDITS"], str(len(scoped)))
+        self.assertEqual(rows["UNTRACKED_INPUTS"], str(len(stray_lines)))
+        # The whole-repo line count is a constant here, so agreeing with the scoped
+        # verdict can only come from actually using the scopes.
+        self.assertGreater(len(whole), 100)
 
 
 if __name__ == "__main__":
