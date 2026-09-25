@@ -181,21 +181,35 @@ function Get-StampedUiAssetPaths([string]$IndexText, [string]$UiRoot) {
     return $result
 }
 
-function Get-GitProvenance([string]$Root) {
+function Get-GitProvenance([string]$Root, [string[]]$Scope = @('src', 'android-client')) {
     # Keep the release recovery record explicit when an exported source tree
     # is built outside a Git checkout.  An empty commit plus a null boolean
     # was technically sufficient, but indistinguishable from an interrupted
     # Git probe once the original build session had been deleted.
-    $result = [ordered]@{ commit = ""; worktree_dirty = $null; status = "unavailable" }
+    #
+    # The probe used to count whole-repository untracked lines, and in this tree
+    # that count is a constant: hundreds of paths are intentionally untracked
+    # (artifacts/, _external/, music/, references/, cached toolchains under
+    # tools/), so every release ever built read "dirty" and the field stopped
+    # carrying information.  Only dirt that can travel into the package counts
+    # now, which means the release input scopes: the staged payload tree and the
+    # Android side whose versionCode this build gates.
+    $result = [ordered]@{ commit = ""; worktree_dirty = $null; status = "unavailable"; tracked_edits = $null; untracked_inputs = $null; scope = @() }
     try {
         $commit = (& git -C $Root rev-parse HEAD 2>$null).Trim()
         if ($LASTEXITCODE -eq 0 -and $commit) {
             $result.commit = $commit
             $result.status = "commit_only"
         }
-        $status = @(& git -C $Root status --porcelain=v1 --untracked-files=normal 2>$null)
-        if ($LASTEXITCODE -eq 0) {
-            $result.worktree_dirty = $status.Count -gt 0
+        $edits = @(& git -C $Root status --porcelain=v1 --untracked-files=no -- $Scope 2>$null)
+        $edit_probe_ok = ($LASTEXITCODE -eq 0)
+        $strays = @(& git -C $Root ls-files --others --exclude-standard -- $Scope 2>$null)
+        $stray_probe_ok = ($LASTEXITCODE -eq 0)
+        if ($edit_probe_ok -and $stray_probe_ok) {
+            $result.scope = $Scope
+            $result.tracked_edits = $edits.Count
+            $result.untracked_inputs = $strays.Count
+            $result.worktree_dirty = ($edits.Count -gt 0) -or ($strays.Count -gt 0)
             $result.status = if ($result.worktree_dirty) { "dirty" } else { "clean" }
         }
     }
@@ -323,6 +337,9 @@ try {
         git_commit = $gitProvenance.commit
         git_worktree_dirty = $gitProvenance.worktree_dirty
         git_provenance_status = $gitProvenance.status
+        git_provenance_scope = ($gitProvenance.scope -join ",")
+        git_tracked_edits = $gitProvenance.tracked_edits
+        git_untracked_inputs = $gitProvenance.untracked_inputs
     } | ConvertTo-Json | Set-Content -LiteralPath $provenancePath -Encoding UTF8
 
     Push-Location -LiteralPath $stageRoot

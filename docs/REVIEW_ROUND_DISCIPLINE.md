@@ -116,6 +116,30 @@ R169 补记（同一依据的第二条实测）：把逐轮明细从 TODO 两条
 证据一枚未丢（由 `tools/audit_coverage.py` 现盘复算证明，点名集合迁移前后逐字相等）。批大小与门禁
 分层只影响一轮多久，外置台账影响的是每一轮都要付的那笔钱。
 
+## 九、发布证据判据的作用域与未跟踪项处置（R180 自决，来源：负责人常设指令「按你的建议执行」）
+
+本轮 6 条待拍板项按第七节常设指令由执行体自决，逐条留痕：
+
+| 项 | 裁定 | 落点 |
+| --- | --- | --- |
+| ① dirty 判据 | 由整仓 `git status` 收缩为**发布输入作用域**（默认 `src`＋`android-client`），双探针（tracked 编辑＋作用域内未跟踪）都读到 0 才记 clean | `tools/build_release.ps1` `Get-GitProvenance` |
+| ② 未跟踪项 | 走「永不入库」白名单**文档化**，不删任何文件 | 本节下方清单 |
+| ③ 真机排期 | A 级（G01～G05）先排，C 级挂实体 DAC 后另约 | `docs/REAL_DEVICE_GOALS.md` 维持原序，不改冻结块 |
+| ④ tag | 给 0.2.35 补 annotated tag，指向该包 provenance 的 `git_commit`（`75c38a2`），本地不 push | `git tag -a v0.2.35` |
+| ⑤ DEVICE_VALIDATION 更正行 | 保留「复测更正（R179）」行，作废读数不删除、只标注 | `artifacts/0.2.35/DEVICE_VALIDATION.md` |
+| ⑥ 长期观察 2 条 | 维持不关闭：一条需真机读数，一条是拆分决策，均无离线判据 | `TODO.md` 长期观察桶 |
+
+**「永不入库」未跟踪清单**（本仓常态，任何一轮不得据此判 dirty，也不得提交、不得删除）：
+`artifacts/**`、`_external/**`、`music/**`、`references/**`、`tools/android-sdk*`、
+`tools/platform-tools*`、`tools/skill/**`、`full-test-output.txt`、`offline-*.log`。
+
+与之相对，`artifacts/` 内**已发布版本**目录必须保留发布三件套——FPK、`SHA256SUMS.txt`、
+`SOURCE_PROVENANCE.json`，外加当轮 staged 的 `SOURCE_MANIFEST.sha256`；缺件即不得对外称「已发布」。
+
+口径边界：作用域收缩只改变 dirty 的**测量范围**，不改变其语义。凡能影响产物字节的仓库路径都在
+`src` 与 `android-client` 之内，因此新判据覆盖面不丢；`tools/**`、`docs/**` 与三份根文档不进入
+FPK 字节，其未跟踪常态不再被当作异常上报。
+
 ## 使用规则
 
 - 本文件是被守卫读取的口径源，改动任一锚点必须与 `TODO.md` 或守卫同步，否则门禁判红。
