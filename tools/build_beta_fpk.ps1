@@ -132,6 +132,17 @@ function Get-ManifestInstallTypeViolations {
     return $violations
 }
 
+function Test-ManifestKeyPresent {
+    param([string]$Text, [string]$Name)
+    # Presence has to be judged inside one line, exactly like the readers beside it.
+    # The inline check this replaces matched with \s around the equals sign, and \s
+    # covers newlines, so a key stranded on its own line with its "=" fallen onto the
+    # next one was still reported as present -- while the rewrite helpers that follow
+    # use [ \t] and would then fail, under a different message, on a staged tree the
+    # operator had just been assured was intact.
+    return [regex]::IsMatch($Text, "(?m)^[ \t]*$([regex]::Escape($Name))[ \t]*=")
+}
+
 function Assert-Condition {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
@@ -561,7 +572,7 @@ $validationNotes.Add("staged $(@($stagedFiles).Count) source files (tests, __pyc
     $manifestText = Read-TextFile -Path $manifestPath
     $productionDescription = Get-ManifestValue -Text $manifestText.Text -Name 'desc'
     foreach ($key in @('appname', 'version', 'display_name', 'desc', 'developer', 'publisher', 'maintainer', 'distributor', 'install_type')) {
-        Assert-Condition ($manifestText.Text -match "(?m)^\s*$key\s*=") "staged manifest lost the '$key' key."
+        Assert-Condition (Test-ManifestKeyPresent -Text $manifestText.Text -Name $key) "staged manifest lost the '$key' key."
     }
     $nextManifest = $manifestText.Text
     $nextManifest = Set-ManifestValue -Text $nextManifest -Name 'appname' -Value $AppName

@@ -750,6 +750,105 @@ $payload | ConvertTo-Json -Compress
         self.assertEqual(rows.get("ALIGNED_CRLF"), "[0.2.35]")
 
 
+    def test_gradle_version_code_gate_does_not_cross_line_boundaries(self):
+        r"""Runs the shipped gradle pattern over the shapes it has to reject.
+
+        This gate is the only thing standing between a drifted build.gradle and a
+        release whose android versionCode is whatever the file failed to say.  The old
+        pattern matched with \s on both sides of the number, and \s covers newlines, so
+        a bare "versionCode" line answered with its neighbour's digits and passed.
+        Every case below is a shape a real gradle file, or a hand edit of one, gives.
+        """
+        powershell = self._powershell()
+        if powershell is None:
+            self.skipTest("no PowerShell available to run the gate")
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        start = script.index("function Get-GradleVersionCodePattern(")
+        stop = script.index("function Assert-Contains(")
+        helper = script[start:stop]
+        self.assertTrue(helper.strip().endswith("}"), "the gate slice lost its body")
+        gradle = (root / "android-client" / "app" / "build.gradle").as_posix()
+
+        driver = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "function Read-It([string]$label, [string]$text) {\n"
+            "    if ($text -match (Get-GradleVersionCodePattern)) {\n"
+            "        Write-Output ($label + '=[' + [int]$Matches[1] + ']')\n"
+            "    } else {\n"
+            "        Write-Output ($label + '=NOMATCH')\n"
+            "    }\n"
+            "}\n"
+            "Read-It 'PLAIN' \"        versionCode 303`n\"\n"
+            "Read-It 'TWO_SPACES' \"        versionCode  303`n\"\n"
+            "Read-It 'TRAILING_WS' \"        versionCode 303   `n\"\n"
+            "Read-It 'TAB' \"        versionCode`t303`n\"\n"
+            "Read-It 'CRLF' \"        versionCode 303`r`n\"\n"
+            "Read-It 'COMMENTED_DECOY' \"        // versionCode 99`n        versionCode 303`n\"\n"
+            "Read-It 'NEIGHBOUR_DIGITS' \"        versionCode`n        303`n\"\n"
+            "Read-It 'NEIGHBOUR_WORD' \"        versionCode`n        targetSdk 36`n\"\n"
+            "Read-It 'TRAILING_COMMENT' \"        versionCode 303 // bump me`n\"\n"
+            "Read-It 'ABSENT' \"    defaultConfig {`n        versionName 0.2.35`n    }`n\"\n"
+            "Read-It 'REALFILE' ([IO.File]::ReadAllText('%s'))\n" % gradle
+        )
+        with tempfile.TemporaryDirectory() as workdir:
+            probe = Path(workdir) / "gradle-driver.ps1"
+            probe.write_text(helper + driver, encoding="ascii", newline="\n")
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(probe)],
+                capture_output=True,
+                text=True, errors="replace",
+            )
+        self.assertEqual(completed.returncode, 0,
+                         (completed.stdout or "") + (completed.stderr or ""))
+        labels = ("PLAIN", "TWO_SPACES", "TRAILING_WS", "TAB", "CRLF", "COMMENTED_DECOY",
+                  "NEIGHBOUR_DIGITS", "NEIGHBOUR_WORD", "TRAILING_COMMENT", "ABSENT", "REALFILE")
+        rows = dict(
+            line.partition("=")[0::2][:2]
+            for line in completed.stdout.splitlines()
+            if line.partition("=")[0] in labels
+        )
+        self.assertEqual(sorted(rows), sorted(labels), "a gradle shape never reported")
+        # The shapes a real tree produces keep working, in either line-ending style,
+        # and a commented-out decoy must never be the line that answers.
+        for label in ("PLAIN", "TWO_SPACES", "TRAILING_WS", "TAB", "CRLF", "COMMENTED_DECOY"):
+            self.assertEqual(rows[label], "[303]", label)
+        # The trap the old pattern fell into: no number on the key's own line, so
+        # there is nothing to read, and the gate has to say so instead of borrowing.
+        self.assertEqual(rows["NEIGHBOUR_DIGITS"], "NOMATCH")
+        self.assertEqual(rows["NEIGHBOUR_WORD"], "NOMATCH")
+        self.assertEqual(rows["ABSENT"], "NOMATCH")
+        # Prose after the number is not a declared versionCode either: failing closed
+        # here is what keeps a half-edited gradle file out of a release.
+        self.assertEqual(rows["TRAILING_COMMENT"], "NOMATCH")
+        # And the file the release actually ships still satisfies its own gate, so
+        # tightening the pattern cannot be what breaks the next build (R178 lesson).
+        self.assertTrue(rows["REALFILE"].startswith("[3"),
+                        "the shipped build.gradle no longer satisfies its own gate: %r" % rows["REALFILE"])
+
+    def test_no_multiline_pattern_in_tools_reads_across_line_boundaries(self):
+        r"""Keeps the whole \s family shut, not just the two sites that already broke.
+
+        A pattern carrying (?m) is read line by line, which is exactly when \s turns
+        dangerous: it also matches the newline, so a key that lost its value or its
+        equals sign keeps matching onto the following line.  build_beta_fpk.ps1 lost
+        the readers this way in R177 and build_release.ps1 lost the gradle gate in
+        R179.  A new (?m)...\s site in tools/ therefore has to be a deliberate choice
+        somebody wrote down, not something that slipped in.
+        """
+        root = Path(__file__).resolve().parents[2]
+        offenders = []
+        for script in sorted((root / "tools").glob("*.ps1")):
+            text = script.read_text(encoding="utf-8", errors="replace")
+            for number, line in enumerate(text.splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if "(?m)" in line and "\\s" in line:
+                    offenders.append("%s:%d" % (script.name, number))
+        self.assertEqual(offenders, [],
+                         "a multiline pattern still matches whitespace across lines: "
+                         + "; ".join(offenders))
+
     def test_install_target_gate_accepts_the_shapes_the_packager_writes(self):
         """Runs the shipped install-target gate over the manifests it really receives.
 
