@@ -125,6 +125,33 @@ class SourceHygieneTests(unittest.TestCase):
             visit(tree, path)
         self.assertEqual(failures, [])
 
+    def test_subprocess_text_mode_calls_declare_a_decoding_policy(self):
+        """A missing errors= turns a console-less parent into a silent None stream.
+
+        subprocess.run(text=True) decodes with locale.getpreferredencoding(False).
+        Under -X utf8 that is utf-8, but a PowerShell child of a parent with no
+        console writes the system ANSI code page, so its stderr can carry bytes
+        like 0xcb. The reader thread then dies on UnicodeDecodeError,
+        communicate() hands back None for that stream, and the test reports
+        "can only concatenate str" instead of whatever it was meant to observe.
+        """
+        tests_root = Path(__file__).resolve().parent
+        offenders = []
+        for path in sorted(tests_root.glob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "run"
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "subprocess"):
+                    continue
+                names = [keyword.arg for keyword in node.keywords]
+                text_mode = "text" in names or "universal_newlines" in names
+                if text_mode and "errors" not in names:
+                    offenders.append("%s:%d" % (path.name, node.lineno))
+        self.assertEqual(offenders, [])
+
 
 if __name__ == "__main__":
     unittest.main()

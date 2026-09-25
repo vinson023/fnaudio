@@ -254,7 +254,7 @@ class PackageShellScriptTests(unittest.TestCase):
             result = subprocess.run(
                 [shell, "-n", str(root / relative)],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=60,
             )
             self.assertEqual(

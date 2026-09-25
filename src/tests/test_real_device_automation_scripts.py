@@ -17,7 +17,7 @@ class RealDeviceAutomationScriptTests(unittest.TestCase):
                 'sample=1 at=now {"status":{"raw":{"songid":"a","state":"play"}},"idle":{"underrun":{"count":"bad"}}}\n',
                 encoding="utf-8",
             )
-            result = subprocess.run([sys.executable, str(script), str(log)], text=True, capture_output=True)
+            result = subprocess.run([sys.executable, str(script), str(log)], text=True, errors="replace", capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('"max_underrun": 0', result.stdout)
 

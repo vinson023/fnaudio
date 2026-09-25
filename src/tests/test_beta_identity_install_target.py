@@ -1,8 +1,9 @@
 """Identity and install-target guards for the fnAudio packages.
 
-The two facts this file pins down came out of one operator instruction: the
-developer and publisher must read as the platform vendor name, and the app must
-land on the system partition.  Both live in ``src/manifest``, and the beta
+The two facts this file pins down came out of operator instructions: the
+package ships under the maintainer's own account, and the app must land on the
+system partition.  R177 moved the identity to the platform vendor name and R178
+moved it back, so the vendor name is now the token that must NOT appear.  Both live in ``src/manifest``, and the beta
 packaging script is the only other place that can rewrite them, so every check
 below is either a byte-level read of the manifest or a read of the packaging
 logic that has to survive into the built package.
@@ -23,11 +24,12 @@ MANIFEST = os.path.join(REPO_ROOT, "src", "manifest")
 PACKAGER = os.path.join(REPO_ROOT, "tools", "build_beta_fpk.ps1")
 ARTIFACT_ROOT = os.path.join(REPO_ROOT, "artifacts")
 
-# The vendor name as a literal: this file is UTF-8, so a glyph here means exactly
-# what it says.  Only the packaging script has to avoid literals, because a
-# BOM-less .ps1 is decoded as ANSI by Windows PowerShell 5.1.
-FEI_NIU = "飞牛"
-LEGACY_TOKENS = ("fnaudio", "vinson023")
+# The forbidden token as a literal: this file is UTF-8, so a glyph here means
+# exactly what it says.  IDENTITY_OWNER has to survive as a literal too, which it
+# can because R178 moved the identity back onto an ASCII account name.
+VENDOR_NAME = "飞牛"
+IDENTITY_OWNER = "vinson023"
+FORBIDDEN_IDENTITY_TOKENS = (VENDOR_NAME,)
 IDENTITY_KEYS = ("developer", "publisher", "maintainer", "distributor")
 
 
@@ -52,14 +54,14 @@ class ManifestIdentityTests(unittest.TestCase):
         self.text = self.raw.decode("utf-8")
         self.values = manifest_values(self.text)
 
-    def test_every_identity_role_carries_the_vendor_name(self):
+    def test_every_identity_role_carries_the_maintainer_account(self):
         for key in IDENTITY_KEYS:
             self.assertIn(key, self.values, key)
-            self.assertEqual(self.values[key], FEI_NIU, key)
+            self.assertEqual(self.values[key], IDENTITY_OWNER, key)
 
-    def test_no_legacy_identity_token_survives_in_the_manifest(self):
+    def test_no_vendor_identity_token_survives_in_the_manifest(self):
         for key in IDENTITY_KEYS:
-            for token in LEGACY_TOKENS:
+            for token in FORBIDDEN_IDENTITY_TOKENS:
                 self.assertNotIn(token, self.values[key], "%s still says %s" % (key, token))
 
     def test_the_manifest_asks_for_the_system_partition(self):
@@ -69,7 +71,36 @@ class ManifestIdentityTests(unittest.TestCase):
     def test_the_manifest_is_utf8_without_bom_and_bare_lf(self):
         self.assertFalse(self.raw.startswith(b"\xef\xbb\xbf"), "a BOM would ride into the package")
         self.assertNotIn(b"\r", self.raw, "the manifest must stay LF-only")
-        self.assertEqual(self.raw.decode("utf-8").count(FEI_NIU), len(IDENTITY_KEYS))
+        body = self.raw.decode("utf-8")
+        self.assertEqual(body.count(IDENTITY_OWNER), len(IDENTITY_KEYS))
+        self.assertEqual(body.count(VENDOR_NAME), 0, "the vendor name must be gone from the manifest")
+
+    def test_the_production_app_account_is_the_unsuffixed_one(self):
+        # The beta line owns the "-beta" suffix and the release keeps the plain
+        # name, which is what keeps two App Center entries apart.  R177 built a
+        # beta under a first-party-looking account; reverting the identity must not
+        # revert the account as well.
+        self.assertEqual(self.values["appname"], "fnaudio")
+        self.assertNotIn("-beta", self.values["appname"])
+
+    def test_the_reserved_first_party_account_stays_out_of_the_sources(self):
+        # The account belongs to the platform itself, so src/ must never name it;
+        # only the beta packager may, and only as a rejected value.  The needle is
+        # spelled as two adjacent literals so this file, which lives under src/,
+        # does not report itself as a hit.
+        needle = "trim" ".music"
+        root = Path(__file__).resolve().parents[2]
+        hits = []
+        for path in sorted((root / "src").rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                body = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if needle in body:
+                hits.append(str(path.relative_to(root).as_posix()))
+        self.assertEqual(hits, [], "src/ references the reserved first-party account")
 
     def test_the_install_target_documentation_is_contiguous_with_its_key(self):
         # Remove-ManifestKey deletes a key together with the comment run above it,
@@ -91,16 +122,19 @@ class PackagerIdentityTests(unittest.TestCase):
         offending = [i for i, byte in enumerate(self.raw) if byte > 127]
         self.assertEqual(offending, [], "non-ASCII bytes at %r" % offending[:5])
 
-    def test_the_identity_defaults_are_built_from_the_vendor_code_points(self):
+    def test_the_identity_defaults_are_plain_literals_of_the_owner_account(self):
+        # R177 built these two defaults from [char]0xNNNN code points only because
+        # the value then had to be a vendor name, which a BOM-less .ps1 cannot carry.
+        # The account name is ASCII, so the indirection now only serves to hide the
+        # value from a grep; the literal is the honest shape.
         for role in ("Developer", "Publisher"):
-            match = re.search(
-                r"\[string\]\$" + role + r" = \(\[string\]\[char\]0x([0-9A-Fa-f]{4})"
-                r" \+ \[string\]\[char\]0x([0-9A-Fa-f]{4})\)",
+            self.assertRegex(
                 self.text,
+                r"\[string\]\$" + role + r" = '" + IDENTITY_OWNER + r"'",
+                role,
             )
-            self.assertIsNotNone(match, "%s default is no longer built from code points" % role)
-            built = "".join(chr(int(group, 16)) for group in match.groups())
-            self.assertEqual(built, FEI_NIU, role)
+        # The one legitimate code-point use left is the bracket pair around BETA.
+        self.assertEqual(2, self.text.count("[char]0x"), "unexpected code-point indirection grew back")
 
     def test_the_script_accepts_only_the_two_contracted_install_targets(self):
         self.assertIn("$InstallType -ceq 'root'", self.text)
@@ -174,7 +208,7 @@ class ManifestHelperBehaviourTests(unittest.TestCase):
             completed = subprocess.run(
                 [self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
             )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         rows = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
@@ -221,7 +255,7 @@ class ManifestHelperBehaviourTests(unittest.TestCase):
             completed = subprocess.run(
                 [self.POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
             )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         # A blank value has to read back blank, and writing over it has to land on
@@ -270,14 +304,25 @@ class BuiltPackageTests(unittest.TestCase):
         return max(found, key=os.path.getmtime)
 
     def test_the_newest_beta_reports_the_reviewed_identity(self):
+        # src/manifest is the single source of truth: asserting a literal here would
+        # pin this test to whichever identity happened to be current when it was
+        # written, which is exactly how R178 found itself contradicted by its own
+        # green gate.  The beta rewrites appname, so that key stays out of the loop.
+        #
+        # The schema (BETA_PROVENANCE.json, schema=1) records the two roles the
+        # platform shows in App Center plus the install target.  It carries no
+        # maintainer/distributor because the packager already compares all four
+        # against the manifest inside the built package, which is a stronger claim
+        # than a self-reported summary line could be.
         path = self.latest_provenance()
         if path is None:
             self.skipTest("no beta package has been built locally")
+        expected = manifest_values(read_bytes(MANIFEST).decode("utf-8"))
         with io.open(path, "r", encoding="utf-8") as handle:
             provenance = json.load(handle)
-        self.assertEqual(provenance.get("developer"), FEI_NIU, path)
-        self.assertEqual(provenance.get("publisher"), FEI_NIU, path)
-        self.assertEqual(provenance.get("install_type"), "root", path)
+        for key in ("developer", "publisher", "install_type"):
+            self.assertEqual(provenance.get(key), expected[key], "%s: %s" % (key, path))
+        self.assertEqual(provenance.get("production_base"), expected["version"], path)
 
 
 if __name__ == "__main__":
