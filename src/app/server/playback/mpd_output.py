@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import math
 
 from .models import PlaybackCommand, PlaybackState, TrackRef
@@ -148,37 +148,7 @@ class MpdOutput(OutputPlugin):
                 self.service.suppress_stop_transition()
             if self.service and hasattr(self.service, "sync_playback_queue"):
                 resolver = (context or {}).get("resolve_track")
-                try:
-                    result = self.service.sync_playback_queue(
-                        state.queue,
-                        state.current_track_id,
-                        resolver=resolver,
-                        current_item=item,
-                        start=cue_start,
-                        repeat=state.repeat,
-                        shuffle=state.shuffle,
-                    )
-                except MpdError as exc:
-                    # fnAudio can finish scanning before MPD notices a new
-                    # file. Keep the native queue path consistent with the
-                    # single-track fallback: refresh MPD once, then retry.
-                    if not self._is_missing_mpd_library_entry(exc):
-                        raise
-                    queue_uri = self._entry_uri(path)
-                    update = mpd_update_and_wait(path=mpd_update_hint(queue_uri), **self._connection())
-                    try:
-                        result = self.service.sync_playback_queue(
-                            state.queue,
-                            state.current_track_id,
-                            resolver=resolver,
-                            current_item=item,
-                            start=cue_start,
-                            repeat=state.repeat,
-                            shuffle=state.shuffle,
-                        )
-                    except MpdError as retry_exc:
-                        raise self._missing_entry_error(queue_uri, exc, update, retry_exc) from retry_exc
-                    result = {**result, "mpd_update": update}
+                result = self._sync_queue_with_refresh(state, item, resolver, cue_start, path)
             elif self.service and hasattr(self.service, "uri_for_path"):
                 result = self._load_uri_with_retry(self.service.uri_for_path(path), cue_start)
             else:
@@ -283,6 +253,67 @@ class MpdOutput(OutputPlugin):
             "capabilities": caps,
         }
 
+    queue_refresh_folders = 2
+
+    def _sync_queue_with_refresh(
+        self,
+        state: PlaybackState,
+        item: Dict[str, Any],
+        resolver: Any,
+        cue_start: float,
+        path: str,
+    ) -> Dict[str, Any]:
+        """Mirror the logical queue into MPD, refreshing whatever folder MPD rejects.
+
+        fnAudio owns the queue, but MPD can only play songs its own database
+        already knows.  ``mpd_replace_queue`` sends ``clear`` plus one ``addid``
+        per entry in a single command list, so one un-indexed file anywhere in
+        the queue fails the whole batch and the ``ACK [50@N]`` names that entry.
+        Refreshing the current track's folder retried the identical failure, so
+        the refresh is aimed at the entry MPD blamed and stops after a bounded
+        number of folders: a queue full of un-indexed albums must not turn one
+        play request into a scan of the library.
+        """
+        refreshed: Tuple[str, ...] = ()
+        update: Dict[str, Any] = {"ok": True, "updated": False, "scope": ""}
+        primary: Optional[MpdError] = None
+        while True:
+            try:
+                result = self.service.sync_playback_queue(
+                    state.queue,
+                    state.current_track_id,
+                    resolver=resolver,
+                    current_item=item,
+                    start=cue_start,
+                    repeat=state.repeat,
+                    shuffle=state.shuffle,
+                )
+            except MpdError as exc:
+                if not self._is_missing_mpd_library_entry(exc):
+                    raise
+                uri = self._failing_entry_uri(exc, path)
+                hint = mpd_update_hint(uri) if uri else ""
+                if primary is None:
+                    primary = exc
+                if hint in refreshed or len(refreshed) >= self.queue_refresh_folders:
+                    raise self._missing_entry_error(uri, primary, update, exc) from exc
+                update = mpd_update_and_wait(path=hint, **self._connection())
+                refreshed = refreshed + (hint,)
+                continue
+            if not refreshed:
+                return result
+            return {**result, "mpd_update": update, "mpd_refreshed_folders": list(refreshed)}
+
+    def _failing_entry_uri(self, exc: Exception, path: str) -> str:
+        """Pick the uri MPD actually blamed, falling back to the requested track.
+
+        ``mpd_replace_queue`` annotates command-list failures; a standalone
+        ``addid`` (measured as ``ACK [50@0]``) names no entry, and then the track
+        the user pressed is still the only defensible scope.
+        """
+        named = str(getattr(exc, "uri", "") or "")
+        return named or self._entry_uri(path)
+
     def _load_uri_with_retry(self, uri: str, cue_start: float) -> Dict[str, Any]:
         try:
             return mpd_load_uri(uri, start=cue_start, **self._connection())
@@ -309,18 +340,21 @@ class MpdOutput(OutputPlugin):
     def _missing_entry_error(
         self, uri: str, primary: Exception, update: Dict[str, Any], retry: Exception
     ) -> MpdError:
-        """Explain why MPD refused a song instead of echoing its ACK line.
+        """Explain why MPD refused a song, leading with the sentence a human can act on.
 
         ``No such song`` has three different causes on fnOS: MPD is still
         building its database, the file sits outside the configured music
         root, or the file really disappeared.  The bare ``ACK`` sentence
-        carries none of that, so the user cannot tell "wait" from "broken".
+        carries none of that, so it is quoted last: the toast renders the whole
+        message, and a sentence that *starts* with ``ACK [50@1] {addid}`` is
+        read as "playback is broken" even when the actionable half of the same
+        string says the index is still being built.
         """
         scope = str((update or {}).get("scope") or "") or "整个曲库"
         state = mpd_library_state_message(mpd_library_state(**self._connection()))
         return MpdError(
-            "%s；已请求 MPD 收录 %s 后重试仍失败：%s；uri=%s；%s"
-            % (primary, scope, retry, uri, state)
+            "%s；曲目 uri=%s；已请求 MPD 收录 %s 后重试仍失败（原始报错：%s；重试：%s）"
+            % (state, uri, scope, primary, retry)
         )
 
 

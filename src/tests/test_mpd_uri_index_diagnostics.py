@@ -9,9 +9,12 @@ sys.path.insert(0, "app/server")
 from playback.models import PlaybackState, TrackRef
 from playback.mpd_client import (
     MpdError,
+    MpdQueueEntryError,
     local_file_uri,
+    mpd_addid_failure_uri,
     mpd_library_state,
     mpd_library_state_message,
+    mpd_replace_queue,
     mpd_update_and_wait,
     mpd_update_hint,
 )
@@ -219,3 +222,229 @@ class MpdFailureDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Measured on the fnOS host against MPD 0.23.5.  ``mpd_replace_queue`` sends
+# ``clear`` first, so command-list slots start counting at the first ``addid``:
+# the entry at queue position 0 answers ``ACK [50@1]``, position 1 answers
+# ``ACK [50@2]``, and a standalone ``addid`` answers ``ACK [50@0]``.
+ACK_AT_1 = "ACK [50@1] {addid} No such song"
+ACK_AT_2 = "ACK [50@2] {addid} No such song"
+ACK_AT_0 = "ACK [50@0] {addid} No such song"
+QUEUE_ENTRIES = [
+    {"track_id": "a", "uri": "新专辑/未命名 1.flac"},
+    {"track_id": "b", "uri": "旧专辑/曲目 2.flac"},
+]
+
+
+class MpdAckRoutingTests(unittest.TestCase):
+    """The ``@N`` in an ACK is a command-list slot, and it has to name the entry."""
+
+    def test_index_one_blames_the_first_queue_entry_not_the_current_track(self):
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, ACK_AT_1), "新专辑/未命名 1.flac")
+
+    def test_index_two_blames_the_second_queue_entry(self):
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, ACK_AT_2), "旧专辑/曲目 2.flac")
+
+    def test_a_standalone_addid_names_no_entry(self):
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, ACK_AT_0), "")
+
+    def test_only_addid_and_an_in_range_slot_names_no_entry(self):
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, "ACK [50@1] {playid} No such song ID"), "")
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, "ACK [50@3] {addid} No such song"), "")
+        self.assertEqual(mpd_addid_failure_uri(QUEUE_ENTRIES, "ACK [2@0] {update} Malformed path"), "")
+
+    def test_replace_queue_keeps_the_ack_and_adds_the_blamed_uri(self):
+        class RejectingConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def command_list_ok(self, commands):
+                self.commands = list(commands)
+                raise MpdError(ACK_AT_1)
+
+        fake = RejectingConnection()
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=fake):
+            with self.assertRaises(MpdQueueEntryError) as caught:
+                mpd_replace_queue(QUEUE_ENTRIES)
+        self.assertEqual(caught.exception.uri, "新专辑/未命名 1.flac")
+        # The classifier reads the protocol sentence, so it must survive intact.
+        self.assertEqual(str(caught.exception), ACK_AT_1)
+        self.assertIsInstance(caught.exception, MpdError)
+
+
+class MpdQueueRefreshRoutingTests(unittest.TestCase):
+    """A queue failure refreshes what MPD blamed, not what the user pressed."""
+
+    @staticmethod
+    def _output(service):
+        output = MpdOutput(service)
+        output.start_service = mock.Mock(return_value={"ok": True, "running": True})
+        output._output_ready = mock.Mock(return_value={"ok": True})
+        return output
+
+    @staticmethod
+    def _state(path):
+        state = PlaybackState(target_id="mpd", target_kind="mpd")
+        track = TrackRef.from_mapping({"id": "cur", "path": path})
+        state.queue = [track]
+        state.current_track_id = "cur"
+        return state, track
+
+    def test_the_retry_refreshes_the_folder_mpd_blamed(self):
+        class QueueService:
+            host = "127.0.0.1"
+            port = 56660
+
+            def __init__(self):
+                self.sync_calls = 0
+
+            def prepare_track_output(self, _item):
+                return {"ok": True}
+
+            def uri_for_path(self, _path):
+                return "当前播放/曲目.flac"
+
+            def sync_playback_queue(self, *_args, **_kwargs):
+                self.sync_calls += 1
+                if self.sync_calls == 1:
+                    raise MpdQueueEntryError(ACK_AT_1, "新专辑/未命名 1.flac")
+                return {"ok": True}
+
+        service = QueueService()
+        output = self._output(service)
+        state, track = self._state("/vol2/1000/music/当前播放/曲目.flac")
+        with mock.patch("playback.mpd_output.mpd_update_and_wait",
+                        return_value={"ok": True, "updated": True, "scope": "新专辑"}) as update, \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 63546, "updating": False}):
+            result = output.open(track, state, {"item": track.item})
+        self.assertTrue(result["ok"])
+        self.assertEqual(service.sync_calls, 2)
+        # Discriminating: the previous code refreshed 当前播放, the folder that
+        # MPD never complained about, and retried the identical failure.
+        self.assertEqual(update.call_args.kwargs["path"], "新专辑")
+        self.assertEqual(result["mpd_refreshed_folders"], ["新专辑"])
+
+    def test_a_queue_of_unindexed_albums_stops_after_two_folders(self):
+        blamed = ["专辑一/曲 1.flac", "专辑二/曲 2.flac", "专辑三/曲 3.flac"]
+
+        class QueueService:
+            host = "127.0.0.1"
+            port = 56660
+
+            def __init__(self):
+                self.sync_calls = 0
+
+            def prepare_track_output(self, _item):
+                return {"ok": True}
+
+            def uri_for_path(self, _path):
+                return "当前播放/曲目.flac"
+
+            def sync_playback_queue(self, *_args, **_kwargs):
+                uri = blamed[min(self.sync_calls, len(blamed) - 1)]
+                self.sync_calls += 1
+                raise MpdQueueEntryError(ACK_AT_1, uri)
+
+        service = QueueService()
+        output = self._output(service)
+        state, track = self._state("/vol2/1000/music/当前播放/曲目.flac")
+        with mock.patch("playback.mpd_output.mpd_update_and_wait",
+                        return_value={"ok": True, "updated": False, "scope": "专辑二"}) as update, \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 63546, "updating": True}):
+            result = output.open(track, state, {"item": track.item})
+        self.assertFalse(result["ok"])
+        self.assertEqual([call.kwargs["path"] for call in update.call_args_list], ["专辑一", "专辑二"])
+        self.assertEqual(service.sync_calls, 3)
+        self.assertIn("已请求 MPD 收录 专辑二 后重试仍失败", result["message"])
+
+    def test_an_unrelated_mpd_error_never_triggers_a_library_update(self):
+        class QueueService:
+            host = "127.0.0.1"
+            port = 56660
+
+            def prepare_track_output(self, _item):
+                return {"ok": True}
+
+            def uri_for_path(self, _path):
+                return "当前播放/曲目.flac"
+
+            def sync_playback_queue(self, *_args, **_kwargs):
+                raise MpdError("ACK [2@0] {update} Malformed path")
+
+        output = self._output(QueueService())
+        state, track = self._state("/vol2/1000/music/当前播放/曲目.flac")
+        with mock.patch("playback.mpd_output.mpd_update_and_wait") as update, \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 63546, "updating": False}):
+            result = output.open(track, state, {"item": track.item})
+        self.assertFalse(result["ok"])
+        update.assert_not_called()
+        self.assertIn("Malformed path", result["message"])
+
+
+class MpdFailureMessageOrderTests(unittest.TestCase):
+    """A toast that starts with a protocol line is read as "playback is broken"."""
+
+    def test_the_single_track_message_leads_with_the_actionable_sentence(self):
+        output = MpdOutput()
+        with mock.patch("playback.mpd_output.mpd_load_uri",
+                        side_effect=[MpdError(ACK_AT_0), MpdError(ACK_AT_0)]), \
+             mock.patch("playback.mpd_output.mpd_update_and_wait",
+                        return_value={"ok": True, "updated": False, "scope": "未整理/春野"}), \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 23751, "updating": True}):
+            with self.assertRaises(MpdError) as caught:
+                output._load_uri_with_retry("未整理/春野/a b.flac", 0.0)
+        message = str(caught.exception)
+        self.assertEqual(
+            message.split("；")[0],
+            mpd_library_state_message({"available": True, "indexed": 23751, "updating": True}),
+        )
+        self.assertLess(message.index("MPD 索引"), message.index(ACK_AT_0))
+        self.assertIn("uri=未整理/春野/a b.flac", message)
+        self.assertIn(ACK_AT_0, message)
+
+    def test_the_queue_message_leads_with_the_finished_index_sentence(self):
+        class QueueService:
+            host = "127.0.0.1"
+            port = 56660
+
+            def __init__(self):
+                self.sync_calls = 0
+
+            def prepare_track_output(self, _item):
+                return {"ok": True}
+
+            def uri_for_path(self, _path):
+                return "新专辑/未命名 1.flac"
+
+            def sync_playback_queue(self, *_args, **_kwargs):
+                self.sync_calls += 1
+                raise MpdError(ACK_AT_1)
+
+        service = QueueService()
+        output = MpdQueueRefreshRoutingTests._output(service)
+        state, track = MpdQueueRefreshRoutingTests._state("/vol2/1000/music/新专辑/未命名 1.flac")
+        with mock.patch("playback.mpd_output.mpd_update_and_wait",
+                        return_value={"ok": True, "updated": True, "scope": "新专辑"}), \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 63546, "updating": False}):
+            result = output.open(track, state, {"item": track.item})
+        message = result["message"]
+        self.assertTrue(
+            message.startswith(
+                "MPD 播放失败：MPD 索引已完成，当前收录 63546 首，"
+                "请确认文件仍存在且位于曲库根目录内"
+            ),
+            message,
+        )
+        # The report the owner pasted started with the protocol sentence.
+        self.assertFalse(message.startswith("MPD 播放失败：ACK"))
+        self.assertIn("已请求 MPD 收录 新专辑 后重试仍失败", message)
+        self.assertLess(message.index("MPD 索引已完成"), message.index(ACK_AT_1))
