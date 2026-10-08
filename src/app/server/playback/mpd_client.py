@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -20,6 +21,20 @@ MAX_MPD_COMMAND_BYTES = 16 * 1024 * 1024
 
 class MpdError(RuntimeError):
     pass
+
+
+class MpdQueueEntryError(MpdError):
+    """An ``addid`` refusal that also names the queue entry MPD blamed.
+
+    ``mpd_replace_queue`` mirrors the whole logical queue in one command list,
+    so the un-indexed file can be any entry and MPD reports which one through
+    the ACK command index.  Losing that index is what made every queue retry
+    refresh the folder of the track the user pressed instead.
+    """
+
+    def __init__(self, message: str, uri: str = ""):
+        super().__init__(message)
+        self.uri = str(uri or "")
 
 
 def mpd_binary() -> str:
@@ -76,6 +91,29 @@ def mpd_update_hint(uri: str) -> str:
     if text.startswith("file://") or "/" not in text:
         return ""
     return text.rsplit("/", 1)[0]
+
+
+MPD_ACK_LINE = re.compile(r"ACK \[(\d+)@(\d+)\] \{([^}]*)\}")
+
+
+def mpd_addid_failure_uri(entries, message: str) -> str:
+    """Return the queue uri an MPD command-list ``ACK`` blames, or "".
+
+    Measured against MPD 0.23.5 on the fnOS host: with ``clear`` sent first,
+    an un-indexed entry at queue position 0 answers ``ACK [50@1] {addid}`` and
+    the position-1 entry answers ``ACK [50@2] {addid}``; a standalone ``addid``
+    answers ``ACK [50@0]``.  So command-list positions start at 1 and only an
+    ``addid`` names a queue entry; anything else leaves the caller its usual
+    fallback instead of a guessed folder.
+    """
+    match = MPD_ACK_LINE.search(str(message or ""))
+    if not match or match.group(3) != "addid":
+        return ""
+    position = int(match.group(2)) - 1
+    listed = list(entries or [])
+    if position < 0 or position >= len(listed):
+        return ""
+    return str(listed[position].get("uri") or "")
 
 
 def mpd_library_state(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, Any]:
@@ -423,7 +461,13 @@ def mpd_replace_queue(
             ("single", (1 if str(repeat or "off").lower() == "one" else 0,)),
             ("consume", (0,)),
         ])
-        responses = mpd.command_list_ok(commands)
+        try:
+            responses = mpd.command_list_ok(commands)
+        except MpdError as exc:
+            failing_uri = mpd_addid_failure_uri(normalized, str(exc))
+            if not failing_uri:
+                raise
+            raise MpdQueueEntryError(str(exc), failing_uri) from exc
         add_responses = responses[1:1 + len(normalized)]
         if len(add_responses) != len(normalized):
             raise MpdError("MPD did not acknowledge the complete queue")
