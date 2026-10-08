@@ -53,6 +53,7 @@ from library_paths import (
 from library_cache_payload import project_legacy_cache
 from scan_control import ScanCancelled, ScanDeadline, ScanTimedOut, check_scan_deadline as _check_scan_deadline
 from scan_reuse_policy import can_reuse_cached_item
+from library_index_handover import find_reuse_items as find_legacy_reuse_items
 from scan_error_policy import append_scan_error, scan_error_text, snapshot_scan_errors
 from metadata_text import artist_title_from_filename, clean_tag, cue_time_seconds, cue_value, display_name, normalize_probe_tags, parse_track_number
 
@@ -644,8 +645,11 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
         ))
     return items
 
-def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0):
-    items = []
+def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0, sink=None):
+    # A caller that passes a sink keeps the tracks this root has already read
+    # even when the walk is cut short by the deadline, so an interrupted scan
+    # is able to publish what it found instead of returning nothing at all.
+    items = [] if sink is None else sink
     signature_parts = []
     scan_started = time.time()
     previous = build_previous_item_index(previous_items)
@@ -730,15 +734,27 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
     signature = digest_signature_parts(signature_parts)
     return items, signature
 
-def scan_libraries(config, previous_items=None, deadline=None):
-    all_items = []
+def scan_libraries(config, previous_items=None, deadline=None, sink=None):
+    shared = sink is not None
+    all_items = sink if shared else []
     signatures = []
     roots = normalize_library_paths(config)
     previous_by_root = partition_previous_items(previous_items, roots, _path_under)
     for index, root in enumerate(roots):
         check_scan_deadline(deadline)
-        items, signature = scan_library(root, previous_by_root[index], config, deadline, len(all_items))
-        all_items.extend(items)
+        # With a shared accumulator the scanner writes straight into it, so the
+        # offset it reports is the total and the per-root result is already in
+        # place; extending again would duplicate every track.
+        items, signature = scan_library(
+            root,
+            previous_by_root[index],
+            config,
+            deadline,
+            0 if shared else len(all_items),
+            all_items if shared else None,
+        )
+        if not shared:
+            all_items.extend(items)
         if signature:
             signatures.append("%s:%s" % (root, signature))
     return finalize_scan_results(all_items, signatures)
@@ -908,6 +924,69 @@ def library_signature(root, deadline=None):
         parts.append(metadata_part)
     return digest_signature_parts(parts)
 
+def legacy_reuse_items_for_scan(config):
+    """Reuse the index an earlier install root left behind, if it matches.
+
+    Changing the install type relocates the configuration directory from
+    ``/vol<N>/@appconf/<app>`` to ``/usr/local/apps/@appconf/<app>`` without
+    moving the library index inside it.  The active cache then looks empty,
+    and a library of tens of thousands of files is re-probed track by track:
+    the scan cannot finish inside ``scan_timeout_seconds``, so it publishes
+    nothing and the interface shows no music at all.  The handover reader is
+    read-only, verifies the root and metadata version it was written for, and
+    refuses an index with a live write-ahead journal, so the old volume stays
+    untouched and a stale or foreign index is never ingested.
+    """
+    try:
+        items, source = find_legacy_reuse_items(
+            config.get("cache_dir") if isinstance(config, dict) else "",
+            library_path=display_library_path(config),
+            metadata_version=METADATA_VERSION,
+            list_root=os.listdir,
+            active_db_path=library_db_path(config),
+        )
+    except Exception:
+        return []
+    if items:
+        print("fnAudio reused legacy library index: %s (%s tracks)"
+              % (source, len(items)), flush=True)
+    return items
+
+
+def publish_partial_library_index(config, items):
+    """Publish an interrupted scan so the library is never left empty.
+
+    A scan that reaches the deadline or is cancelled still knows every track
+    it has already read.  Keeping that work is the difference between a large
+    library showing its first pages immediately and showing nothing until a
+    scan that cannot finish finally gives up.
+
+    The stored signature is deliberately empty.  It marks the index as
+    partial, and because the startup fast path only short-circuits behind a
+    non-empty signature, every later refresh keeps working toward a complete
+    scan; the in-memory filesystem signature is left alone for the same
+    reason.
+    """
+    if not items:
+        return False
+    try:
+        snapshot = list(items)
+    except (TypeError, ValueError):
+        return False
+    if not snapshot:
+        return False
+    try:
+        saved = save_library_cache(config, snapshot, "")
+    except Exception:
+        return False
+    if not saved:
+        return False
+    MUSIC_CACHE["items"] = snapshot
+    MUSIC_CACHE["stamp"] = time.time()
+    print("fnAudio published partial library index: %s tracks" % len(snapshot), flush=True)
+    return True
+
+
 def refresh_library_if_changed(config, force=False, change_monitor=None, _refresh_generation=None):
     # Requested scans wait behind the change monitor instead of disappearing
     # when both notice the same filesystem update at nearly the same time.
@@ -936,6 +1015,7 @@ def refresh_library_if_changed(config, force=False, change_monitor=None, _refres
             SCAN_STATE["result"] = "running"
             SCAN_STATE["cancelled"] = False
             SCAN_STATE["timed_out"] = False
+    partial_scan_items = []
     if cancelled_before_start:
         SCAN_LOCK.release()
         return
@@ -974,8 +1054,10 @@ def refresh_library_if_changed(config, force=False, change_monitor=None, _refres
         if not previous_items:
             cached = load_items_from_sqlite(config)
             previous_items = (cached or {}).get("items", [])
+        if not previous_items:
+            previous_items = legacy_reuse_items_for_scan(config)
         SCAN_STATE["phase"] = "扫描音乐目录"
-        items, signature = scan_libraries(config, previous_items, deadline)
+        items, signature = scan_libraries(config, previous_items, deadline, partial_scan_items)
         check_scan_deadline(deadline)
         if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
             SCAN_STATE["phase"] = "保存音乐库索引"
@@ -994,12 +1076,20 @@ def refresh_library_if_changed(config, force=False, change_monitor=None, _refres
         SCAN_STATE["last_error"] = error_text
         SCAN_STATE["result"] = "timed_out"
         print("fnAudio library scan timed out: %s" % error_text, flush=True)
+        try:
+            publish_partial_library_index(config, partial_scan_items)
+        except Exception as exc:
+            print("fnAudio partial library index failed: %s" % exc.__class__.__name__, flush=True)
     except ScanCancelled as exc:
         SCAN_STATE["cancelled"] = True
         error_text = scan_error_text(exc.args[0] if exc.args else "扫描已取消") or "扫描已取消"
         SCAN_STATE["last_error"] = error_text
         SCAN_STATE["result"] = "cancelled"
         print("fnAudio library scan cancelled: %s" % error_text, flush=True)
+        try:
+            publish_partial_library_index(config, partial_scan_items)
+        except Exception as exc:
+            print("fnAudio partial library index failed: %s" % exc.__class__.__name__, flush=True)
     except Exception as exc:
         error_text = scan_error_text(exc.args[0] if exc.args else "扫描失败") or "扫描失败"
         SCAN_STATE["last_error"] = error_text
