@@ -7,12 +7,15 @@ from .models import PlaybackCommand, PlaybackState, TrackRef
 from .mpd_client import (
     MpdError,
     mpd_control,
+    mpd_library_state,
+    mpd_library_state_message,
     mpd_load_file,
     mpd_load_uri,
     mpd_probe,
     mpd_set_playback_modes,
     mpd_status,
     mpd_update_and_wait,
+    mpd_update_hint,
 )
 from playback_cue_position import project_cue_seek
 from .mpd_errors import classify_mpd_exception, mpd_error
@@ -161,16 +164,20 @@ class MpdOutput(OutputPlugin):
                     # single-track fallback: refresh MPD once, then retry.
                     if not self._is_missing_mpd_library_entry(exc):
                         raise
-                    update = mpd_update_and_wait(**self._connection())
-                    result = self.service.sync_playback_queue(
-                        state.queue,
-                        state.current_track_id,
-                        resolver=resolver,
-                        current_item=item,
-                        start=cue_start,
-                        repeat=state.repeat,
-                        shuffle=state.shuffle,
-                    )
+                    queue_uri = self._entry_uri(path)
+                    update = mpd_update_and_wait(path=mpd_update_hint(queue_uri), **self._connection())
+                    try:
+                        result = self.service.sync_playback_queue(
+                            state.queue,
+                            state.current_track_id,
+                            resolver=resolver,
+                            current_item=item,
+                            start=cue_start,
+                            repeat=state.repeat,
+                            shuffle=state.shuffle,
+                        )
+                    except MpdError as retry_exc:
+                        raise self._missing_entry_error(queue_uri, exc, update, retry_exc) from retry_exc
                     result = {**result, "mpd_update": update}
             elif self.service and hasattr(self.service, "uri_for_path"):
                 result = self._load_uri_with_retry(self.service.uri_for_path(path), cue_start)
@@ -283,12 +290,38 @@ class MpdOutput(OutputPlugin):
             message = str(exc)
             if not self._is_missing_mpd_library_entry(exc):
                 raise
-            update = mpd_update_and_wait(**self._connection())
+            update = mpd_update_and_wait(path=mpd_update_hint(uri), **self._connection())
             try:
                 result = mpd_load_uri(uri, start=cue_start, **self._connection())
                 return {**result, "mpd_update": update}
             except Exception as retry_exc:
-                raise MpdError("%s；已触发 MPD 音乐库更新后重试仍失败：%s；uri=%s" % (message, retry_exc, uri)) from retry_exc
+                raise self._missing_entry_error(uri, exc, update, retry_exc) from retry_exc
+
+    def _entry_uri(self, path: str) -> str:
+        """Resolve the MPD uri for one local path without failing the playback."""
+        if self.service and hasattr(self.service, "uri_for_path"):
+            try:
+                return str(self.service.uri_for_path(path) or "")
+            except Exception:
+                return ""
+        return ""
+
+    def _missing_entry_error(
+        self, uri: str, primary: Exception, update: Dict[str, Any], retry: Exception
+    ) -> MpdError:
+        """Explain why MPD refused a song instead of echoing its ACK line.
+
+        ``No such song`` has three different causes on fnOS: MPD is still
+        building its database, the file sits outside the configured music
+        root, or the file really disappeared.  The bare ``ACK`` sentence
+        carries none of that, so the user cannot tell "wait" from "broken".
+        """
+        scope = str((update or {}).get("scope") or "") or "整个曲库"
+        state = mpd_library_state_message(mpd_library_state(**self._connection()))
+        return MpdError(
+            "%s；已请求 MPD 收录 %s 后重试仍失败：%s；uri=%s；%s"
+            % (primary, scope, retry, uri, state)
+        )
 
 
     @staticmethod

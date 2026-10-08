@@ -119,7 +119,9 @@ class MpdOutputTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(service.sync_calls, 2)
         self.assertEqual(result["mpd_update"], {"ok": True, "updated": True})
-        update.assert_called_once_with(host="127.0.0.1", port=56660)
+        # The fake service has no uri_for_path, so there is no narrower scope
+        # than the whole library and the fallback keeps its "all" behaviour.
+        update.assert_called_once_with(host="127.0.0.1", port=56660, path="")
 
     def test_missing_source_returns_structured_media_error(self):
         output = MpdOutput()

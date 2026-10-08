@@ -331,7 +331,7 @@ class RealDeviceGoalsMovedOutTests(unittest.TestCase):
             "every frozen block has to be followed by one 「%s」 line, because a hardware item without "
             "a stated evidence rule can never be closed on evidence" % EVIDENCE_NOTE
         )
-        for precondition in ("SSH 端口 22", "192.168.100.24", "样本"):
+        for precondition in ("SSH 端口 22", "192.168.5.24", "192.168.100.24", "样本"):
             self.assertIn(precondition, text, "the preconditions section lost 「%s」" % precondition)
 
 
