@@ -249,9 +249,12 @@ R182 修掉的是「MPD 拒绝 uri 时用户看到一句裸 ACK」，但两条�
    但「这台 fnOS 的 MPD 到底能不能解码 DSD/`dff`/`iso`」仍需真机逐格式验证；DSD 转码产物 `*.dsd-96k-24bit.wav`
    目前只出现在 HTTP 分发路径（`server.py` 的 dsd_wav），MPD 队列路径不转码 DSD，这条差异要在真机上确认是否符合预期。
 
-## 第八节 · R184 登记的真机专项（不是代码待办，不计入终止分母）
+## 第八节 · R184 登记的真机专项（R186 已在真机上收口；不是代码待办，不计入终止分母）
 
-R184 把「MPD 拒绝队列条目后重试总是怪错目录」与「拒绝文案把原始 ACK 挤在最前」两处修掉并用真机实测定下 `ACK [50@N]` 的槽位含义；以下两件事只能在真机上收口：
+R184 把「MPD 拒绝队列条目后重试总是怪错目录」与「拒绝文案把原始 ACK 挤在最前」两处修掉并用真机实测定下 `ACK [50@N]` 的槽位含义；以下两件事只能在真机上收口——R186 已在隔离实例 `fnaudio-beta` 上全部收口，生产 `fnaudio` 全程只读观察、未受影响。
 
-1. **升级前的 MPD 库状态迁出 payload**：第七节第 1 条的生命周期风险在「fnOS 原生应用中心 UI 升级」这一路径上同样成立——升级会重建应用目录，`share/mpd` 下的 `db_file`、`state`、`sticker`、`playlists` 一并消失，恢复等价于冷重建数万文件索引。可行验收前提：升级前把这四份文件复制到与 `@appconf` 同生命周期的目录、升级后原样放回，再以 `stats songs` 与 fnAudio `tracks` 计数是否仍相符作为证据；未做这件事之前，任何「升级后重扫很慢」的报障都不能归因于代码。
-2. **升级通道本身的可靠性**：`appcenter-cli install-fpk` 对已安装的 fnaudio 不具备升级能力（只打印「已安装」，`list` 账本仍留旧版本号），目前唯一稳定路径是就地覆盖部署；需要在真机上确认官方升级入口（原生 UI 上传 fpk）是否走得通、以及它与就地覆盖是否会互相打断，并把结论写回本文件。
+1. **升级前的 MPD 库状态迁出 payload**：**成立，已由实证取代推断**。R186 用官方 `appcenter-cli install-local -d <解包目录> -e <INI env>` 把 `fnaudio-beta` 从 0.2.37-beta.1 升到 0.2.37-beta.2：`list` 账本当场跟到新版本，但 `@appcenter/fnaudio-beta` 全部子目录 mtime 重建、预先埋在 `share/mpd/` 的哨兵 `R186CANARY.txt` 消失、`playlists/` 目录被重建，即官方升级确实清空 MPD 的 `db_file`／`state`／`sticker`／`playlists`。与之相对 `@appconf/fnaudio-beta` 与 `@appdata/fnaudio-beta` 存活（`info.log` 保留两次启动记录），但 `config.json` 会被 `install_callback` 按新 env 重写（本轮 server_port 53299→56782）。`cmd/install_init`／`upgrade_init`／`uninstall_init` 全是 19 字节 `exit 0`，**没有任何升级前钩子可以代做迁出**，所以「升级前把这四份文件复制到与 `@appconf` 同生命周期的目录、升级后原样放回」只能由外部流程完成，验收证据仍是 `stats songs` 与 fnAudio `tracks` 计数相符。
+2. **升级通道本身的可靠性**：**已打通并定性**。`install-fpk` 无论同版本还是更高版本一律短路为 `[Info]Application [fnaudio-beta] is installed.`（两条都在真机上证死），且首次安装必须带 `-e` 的 INI env 文件，否则停在 `[Error]Something wrong with environment variables.`；能升级的是 `install-local`。卸载方向：`appcenter-cli uninstall` 不接受任何参数（`-e`／`-a` 均 `unknown shorthand flag`），裸形式只回 `[Info]Uninstall checking` ＋ `[Error]Failed to uninstall fnaudio-beta, please uninstall it from Web UI.`；包内 `cmd/uninstall_callback` 默认 keep，只在 `wizard_uninstall_mode=purge` 或 `FNAUDIO_PURGE=1` 时按 `fnaudio-beta` 白名单删数据 ⇒ 卸载以及「卸载保留什么」只能在 Web UI 侧验证。⇒ 官方生命周期矩阵＝**安装可用（CLI，需 env）／升级可用（仅 CLI `install-local`，代价是重建应用目录）／卸载不可用（仅 Web UI）**；`manual-install` 状态 `enable`。
+3. **转码缓存与库索引同目录**（R186 画像）：`@appconf/fnaudio/transcode/` 里同时住着 `library.sqlite3`（321,339,392 B）与转码产物，「清缓存」会连带打掉库索引。另 `library.py:662`／`:907` 是按目录名 `fnaudio-transcode` 排除索引的，真机证明该排除在生产路径有效；把该目录改名复制，产物就会作为 `.cue-segment` 伪曲目进入索引——因此任何「transcode 污染音乐库」的报障，先确认目录名是否仍是 `fnaudio-transcode` 再谈代码。
+4. **脏检测与重扫的量级**（R186 画像）：新增一个文件后自动判定 dirty 约需 70~80 s（T+70s 仍 count=0，T+80s 全部到位），随后触发的是 75,663 项级别的全量重扫（约 5 分钟）；同一构建在 8 文件小库上走 `/api/library/status?refresh=1` 手动重扫 <1 s 完成。⇒「扫描慢」的体感来自脏检测窗口＋全量重扫规模，不是单文件解析速度。
+5. **真机 API 口径**（R186 修正，防止后续轮次拿错靶心）：`/api/library/count` 不存在（prod 与 beta 均 404），库计数取 `/api/library/status` 的 `count`；`/api/library/groups` 的 `view` 取值是复数（`albums`／`artists`），写成单数只会拿到空数组；回环地址不受 TRUSTED_LAN 放行，beta 必须从 LAN IP 访问；`/api/health` 里 `mpd.error_category:"output_device_missing"` 在 prod 与 beta 同值，是单个 USB DAC 被两个 MPD 争用的常态而非故障。
