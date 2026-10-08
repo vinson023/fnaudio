@@ -839,7 +839,7 @@ class LibraryCacheTests(unittest.TestCase):
     def test_multi_root_scan_reports_monotonic_found_count(self):
         config = {"library_paths": ["/music/a", "/music/b"]}
 
-        def fake_scan(root, previous_items=None, config=None, deadline=None, found_offset=0):
+        def fake_scan(root, previous_items=None, config=None, deadline=None, found_offset=0, sink=None):
             count = 2 if root.endswith("a") else 3
             items = [
                 {"id": "%s-%s" % (root, index), "artist": "", "album": "", "title": str(index)}
