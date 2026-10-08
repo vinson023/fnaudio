@@ -52,8 +52,61 @@ def parse_pairs(lines: Iterable[str]) -> Dict[str, Any]:
 
 
 def local_file_uri(path: str) -> str:
+    """Return the ``file://`` form MPD itself answers for.
+
+    MPD 0.23 resolves ``addid`` against its own database and does *not*
+    percent-decode a ``file://`` uri first, so an encoded path is looked up
+    verbatim and every fnOS library name (spaces, CJK) used to fail with
+    ``No such song``.  The raw absolute path is what MPD accepts.
+    """
     path = os.path.abspath(os.path.expanduser(path or ""))
-    return "file://" + urllib.parse.quote(path)
+    return "file://" + path
+
+
+def mpd_update_hint(uri: str) -> str:
+    """Return the single folder MPD has to rescan for one queue entry uri.
+
+    ``addid`` only knows songs MPD already indexed, so a file that just
+    appeared (a CUE/APE transcode, a fresh album) stays invisible until its
+    folder is scanned.  Asking for that one folder keeps the queue usable
+    while a tens-of-thousands-file library is still being indexed; a uri that
+    is not a database-relative path has no narrower scope and returns "".
+    """
+    text = str(uri or "")
+    if text.startswith("file://") or "/" not in text:
+        return ""
+    return text.rsplit("/", 1)[0]
+
+
+def mpd_library_state(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, Any]:
+    """Report how far MPD's own song database has come.
+
+    ``No such song`` means "MPD cannot resolve the uri", never "fnAudio has no
+    such track", so the caller needs the index counters to tell a cold
+    database apart from a missing or out-of-root file.
+    """
+    state: Dict[str, Any] = {"available": False, "indexed": 0, "updating": False}
+    try:
+        with MpdConnection(host, port) as mpd:
+            status = parse_pairs(mpd.command("status"))
+            stats = parse_pairs(mpd.command("stats"))
+    except Exception:
+        return state
+    state["available"] = True
+    state["indexed"] = safe_int(stats.get("songs"))
+    state["updating"] = bool(str(status.get("updating_db") or "").strip())
+    return state
+
+
+def mpd_library_state_message(state: Dict[str, Any]) -> str:
+    """Render ``mpd_library_state`` as one actionable sentence."""
+    state = state if isinstance(state, dict) else {}
+    if not state.get("available"):
+        return "MPD 索引状态不可读取，请确认 MPD 已启动"
+    indexed = safe_int(state.get("indexed"))
+    if state.get("updating"):
+        return "MPD 索引仍在建立中，当前已收录 %d 首，请等待扫描完成后再播放" % indexed
+    return "MPD 索引已完成，当前收录 %d 首，请确认文件仍存在且位于曲库根目录内" % indexed
 
 
 def _add_response_bytes(total: int, line: str) -> int:
@@ -238,16 +291,35 @@ def mpd_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, 
     }
 
 
-def mpd_update_and_wait(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 8.0) -> Dict[str, Any]:
+def mpd_update_and_wait(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    timeout: float = 8.0,
+    path: str = "",
+) -> Dict[str, Any]:
+    """Ask MPD to index ``path`` (or everything) and wait a bounded time.
+
+    ``path`` is a music-directory-relative file or folder.  Passing it is the
+    difference between one folder and a full re-scan of a 75,769-file library.
+    """
+    scope = str(path or "").strip()
     with MpdConnection(host, port) as mpd:
-        mpd.command("update")
+        if scope:
+            mpd.command("update", scope)
+        else:
+            mpd.command("update")
     deadline = time.monotonic() + max(0.2, safe_float(timeout))
     while time.monotonic() < deadline:
         status = mpd_pairs("status", host=host, port=port)
         if not str(status.get("updating_db") or "").strip():
-            return {"ok": True, "updated": True}
+            return {"ok": True, "updated": True, "scope": scope or "all"}
         time.sleep(0.2)
-    return {"ok": True, "updated": False, "message": "MPD database update is still running"}
+    return {
+        "ok": True,
+        "updated": False,
+        "message": "MPD database update is still running",
+        "scope": scope or "all",
+    }
 
 
 def mpd_probe(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, Any]:

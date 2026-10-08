@@ -712,7 +712,9 @@ class MpdQueueTests(unittest.TestCase):
     def test_ape_queue_entry_is_decoded_to_lossless_flac_before_mpd(self, replace_queue, update, transcode_audio):
         service = self.make_service()
         queue = [TrackRef.from_mapping({"id": "ape", "path": "/music/source.ape", "mime": "audio/ape"})]
-        transcode_audio.return_value = ("/cache/ape.ape-source.flac", "audio/flac")
+        # Real MPD transcodes land inside the music root (see the cache_dir
+        # assertion below), which is what makes a folder-scoped update possible.
+        transcode_audio.return_value = ("/music/fnaudio-transcode/ape.ape-source.flac", "audio/flac")
         replace_queue.return_value = {"ok": True, "song_ids": {"ape": "5"}}
 
         service.sync_playback_queue(queue, "ape")
@@ -721,7 +723,9 @@ class MpdQueueTests(unittest.TestCase):
             queue[0].item, {**service.config, "cache_dir": "/music/fnaudio-transcode"}, "ape_flac"
         )
         self.assertTrue(replace_queue.call_args.args[0][0]["uri"].endswith("ape.ape-source.flac"))
-        update.assert_called_once_with(host=service.host, port=service.port)
+        update.assert_called_once_with(
+            host=service.host, port=service.port, path="fnaudio-transcode"
+        )
 
     @mock.patch("services.mpd_service.transcode_to_audio")
     @mock.patch("services.mpd_service.mpd_update_and_wait")

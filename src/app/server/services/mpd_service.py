@@ -32,6 +32,7 @@ from playback.mpd_client import (
     mpd_set_playback_modes,
     mpd_status,
     mpd_update_and_wait,
+    mpd_update_hint,
 )
 from playback.mpd_errors import (
     classify_mpd_log_errors,
@@ -319,7 +320,10 @@ class MpdService:
                 if len(roots) > 1:
                     return "%s/%s" % (self._root_alias(root_path, index), rel.replace(os.sep, "/"))
                 return rel.replace(os.sep, "/")
-        return "file://" + urllib.parse.quote(full)
+        # MPD 0.23 resolves a file:// uri without percent-decoding it and
+        # refuses anything outside music_directory, so the raw path is the
+        # only form that can ever produce a useful answer here.
+        return "file://" + full
 
     def _mpd_transcode_config(self, source_path: str) -> Dict[str, Any]:
         """Keep MPD playback transcodes inside a configured music root.
@@ -377,6 +381,7 @@ class MpdService:
         has_cue = False
         current_cue_ape = False
         generated_mpd_media = False
+        generated_track_ids = set()
         try:
             queue_iterator = iter(queue)
         except Exception:
@@ -410,6 +415,7 @@ class MpdService:
                     item, self._mpd_transcode_config(path), "cue_flac" if item.get("cue_track") else "ape_flac"
                 )
                 generated_mpd_media = True
+                generated_track_ids.add(track_id)
                 current_cue_ape = current_cue_ape or (
                     track_id == str(current_track_id or "") and bool(item.get("cue_track"))
                 )
@@ -428,7 +434,12 @@ class MpdService:
         if generated_mpd_media:
             # The generated FLAC lives in a regular directory below a music
             # root. Refresh before addid so MPD can resolve its relative URI.
-            mpd_update_and_wait(host=self.host, port=self.port)
+            hint = ""
+            for entry in entries:
+                if entry["track_id"] in generated_track_ids:
+                    hint = mpd_update_hint(entry["uri"])
+                    break
+            mpd_update_and_wait(host=self.host, port=self.port, path=hint)
         fingerprint = tuple((entry["track_id"], entry["uri"]) for entry in entries)
         self._wait_for_recovery_window()
         with self._command_lock, self._queue_lock:
