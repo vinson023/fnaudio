@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from playback.mpd_client import (
     DEFAULT_HOST,
+    MpdError,
     DEFAULT_PORT,
     mpd_binary,
     mpd_control,
@@ -28,6 +29,7 @@ from playback.mpd_client import (
     mpd_library_state,
     mpd_load_uri,
     mpd_play_queue_item,
+    mpd_is_stale_song_id_error,
     mpd_probe,
     mpd_replace_queue,
     mpd_set_playback_modes,
@@ -777,19 +779,36 @@ class MpdService:
             reusable = fingerprint == self._queue_fingerprint and bool(self._queue_song_ids)
             selected_song_id = self._queue_song_ids.get(str(current_track_id or "")) if reusable else ""
             if selected_song_id and play:
-                result = mpd_play_queue_item(
-                    selected_song_id,
-                    start=0.0 if current_cue_ape else start,
-                    repeat=repeat,
-                    shuffle=shuffle,
-                    host=self.host,
-                    port=self.port,
-                )
-                self._queue_current_track_id = str(current_track_id or "")
-                self._last_position = _safe_float(start)
-                self._queue_repeat = str(repeat or "off")
-                self._queue_shuffle = bool(shuffle)
-                return {**result, "queue_reused": True, "queue_count": len(entries), "cue_transcoded": current_cue_ape}
+                try:
+                    result = mpd_play_queue_item(
+                        selected_song_id,
+                        start=0.0 if current_cue_ape else start,
+                        repeat=repeat,
+                        shuffle=shuffle,
+                        host=self.host,
+                        port=self.port,
+                    )
+                except MpdError as exc:
+                    if not mpd_is_stale_song_id_error(exc):
+                        raise
+                    # MPD no longer holds that playlist entry: its own
+                    # ``update`` removes songs that left the database, and a
+                    # restart clears the queue outright.  The logical queue is
+                    # still the one fnAudio owns, so the ids are simply stale -
+                    # forget them and fall through to a full replace.  Letting
+                    # this reach MpdOutput instead made it look like the song
+                    # was missing from MPD and end in a "wait for the index"
+                    # refusal for a file MPD can play.
+                    self._queue_fingerprint = ()
+                    self._queue_song_ids = {}
+                    self._queue_song_tracks = {}
+                    self._queue_current_track_id = ""
+                else:
+                    self._queue_current_track_id = str(current_track_id or "")
+                    self._last_position = _safe_float(start)
+                    self._queue_repeat = str(repeat or "off")
+                    self._queue_shuffle = bool(shuffle)
+                    return {**result, "queue_reused": True, "queue_count": len(entries), "cue_transcoded": current_cue_ape}
             result = mpd_replace_queue(
                 entries,
                 current_track_id=current_track_id,

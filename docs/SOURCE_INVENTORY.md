@@ -1,14 +1,14 @@
 # fnAudio 源码范围清单
 
 > 初次整理日期：2026-08-06  
-> 当前源码版本：`0.2.41`（以 `src/manifest` 的 `version` 为准；本行随发布轮次更新）  
+> 当前源码版本：`0.2.42`（以 `src/manifest` 的 `version` 为准；本行随发布轮次更新）  
 > 来源：`E:\Codex\fnaudio-0.1.7`
 
 ## 1. 已纳入 `src/`
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/manifest` | 当前 FPK manifest，版本 `0.2.41` |
+| `src/manifest` | 当前 FPK manifest，版本 `0.2.42` |
 | `src/app/server/` | Python 后端及 playback、dlna、services 子包 |
 | `src/app/ui/` | HTML、CSS、JavaScript、CGI、图标和 fnOS vendor 脚本 |
 | `src/app/target/bin/` | 私有 MPD 可执行文件 |
