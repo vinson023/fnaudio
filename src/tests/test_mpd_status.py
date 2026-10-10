@@ -37,13 +37,24 @@ class MpdStatusTests(unittest.TestCase):
         self.assertEqual(safe_int(10 ** 10000), 0)
 
     def test_mpd_update_wait_rejects_nonfinite_timeout(self):
+        """A non-finite timeout must bound the wait, not widen the claim.
+
+        The wait used to answer ``updated: True`` here because it read an absent
+        ``updating_db`` as "finished"; the caller then re-issued the same
+        ``addid`` against an index that had not moved.
+        """
         connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 1"]
         with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
-             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1]), \
-             mock.patch("playback.mpd_client.mpd_pairs", return_value={}):
+             mock.patch("playback.mpd_client.mpd_library_state",
+                        return_value={"available": True, "indexed": 1775, "updating": True, "job": "1"}), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2]), \
+             mock.patch("playback.mpd_client.time.sleep"):
             result = mpd_update_and_wait(timeout=float("nan"))
         self.assertTrue(result["ok"])
-        self.assertTrue(result["updated"])
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["indexed_after"], 1775)
 
     def test_invalid_greeting_closes_socket_and_file(self):
         connection = MpdConnection()

@@ -9,7 +9,7 @@ import subprocess
 from process_output import check_output_bounded
 import time
 import urllib.parse
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -93,6 +93,21 @@ def mpd_update_hint(uri: str) -> str:
     return text.rsplit("/", 1)[0]
 
 
+def mpd_update_job_id(reply: Any) -> str:
+    """Return the id of the update job an ``update`` reply queued, or "".
+
+    MPD runs a database update as a background job and answers the command
+    with ``updating_db: <id>``.  That id is the only handle a caller has to
+    tell "this scan finished" apart from "this scan had not started yet";
+    without it a wait on ``status`` is a guess.
+    """
+    try:
+        lines = [str(line) for line in (reply or [])]
+    except TypeError:
+        return ""
+    return str(parse_pairs(lines).get("updating_db") or "").strip()
+
+
 MPD_ACK_LINE = re.compile(r"ACK \[(\d+)@(\d+)\] \{([^}]*)\}")
 
 
@@ -123,7 +138,7 @@ def mpd_library_state(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dic
     such track", so the caller needs the index counters to tell a cold
     database apart from a missing or out-of-root file.
     """
-    state: Dict[str, Any] = {"available": False, "indexed": 0, "updating": False}
+    state: Dict[str, Any] = {"available": False, "indexed": 0, "updating": False, "job": ""}
     try:
         with MpdConnection(host, port) as mpd:
             status = parse_pairs(mpd.command("status"))
@@ -132,18 +147,31 @@ def mpd_library_state(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dic
         return state
     state["available"] = True
     state["indexed"] = safe_int(stats.get("songs"))
-    state["updating"] = bool(str(status.get("updating_db") or "").strip())
+    state["job"] = str(status.get("updating_db") or "").strip()
+    state["updating"] = bool(state["job"])
     return state
 
 
-def mpd_library_state_message(state: Dict[str, Any]) -> str:
-    """Render ``mpd_library_state`` as one actionable sentence."""
+def mpd_library_state_message(state: Dict[str, Any], pending: bool = False) -> str:
+    """Render ``mpd_library_state`` as one actionable sentence.
+
+    ``pending`` means fnAudio has already asked MPD to index the whole library.
+    Without it a database that is merely *behind* has to be reported as
+    "index finished, so the file must be gone": ``auto_update "no"`` keeps MPD
+    from re-scanning by itself, and measured on the fnOS host its own song
+    count sat far below the fnAudio index, so an un-indexed song really was
+    still on disk.  The middle sentence is what makes that retryable.
+    """
     state = state if isinstance(state, dict) else {}
     if not state.get("available"):
         return "MPD 索引状态不可读取，请确认 MPD 已启动"
     indexed = safe_int(state.get("indexed"))
     if state.get("updating"):
+        if pending:
+            return "MPD 索引仍在建立中，当前已收录 %d 首，fnAudio 已请求 MPD 收录整个曲库，请等待收录完成后再播放" % indexed
         return "MPD 索引仍在建立中，当前已收录 %d 首，请等待扫描完成后再播放" % indexed
+    if pending:
+        return "MPD 索引落后于 fnAudio 曲库，当前已收录 %d 首，fnAudio 已请求 MPD 收录整个曲库，请等待收录完成后重试播放" % indexed
     return "MPD 索引已完成，当前收录 %d 首，请确认文件仍存在且位于曲库根目录内" % indexed
 
 
@@ -334,30 +362,80 @@ def mpd_update_and_wait(
     port: int = DEFAULT_PORT,
     timeout: float = 8.0,
     path: str = "",
+    poll: float = 0.2,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
-    """Ask MPD to index ``path`` (or everything) and wait a bounded time.
+    """Ask MPD to index ``path`` (or everything) and wait for *that* job.
 
     ``path`` is a music-directory-relative file or folder.  Passing it is the
     difference between one folder and a full re-scan of a 75,769-file library.
+
+    ``update`` is asynchronous: MPD queues a job and answers with its id.  The
+    first version of this wait polled ``status`` and read an absent
+    ``updating_db`` as "indexing finished", which is also what the database
+    looks like a moment *before* a queued job starts.  Measured on the fnOS
+    host that made a targeted refresh a silent no-op: the folder was never
+    scanned, the retry re-issued the same ``addid`` and failed with the same
+    ``ACK [50@N] {addid} No such song``.  Tracking the job id, and reporting
+    the song count on both sides of the wait, is what lets the caller see that
+    the index did or did not move.
     """
     scope = str(path or "").strip()
+    before = mpd_library_state(host, port)
+    indexed_before = safe_int(before.get("indexed"))
     with MpdConnection(host, port) as mpd:
-        if scope:
-            mpd.command("update", scope)
-        else:
-            mpd.command("update")
+        reply = mpd.command("update", scope) if scope else mpd.command("update")
+    job = mpd_update_job_id(reply)
     deadline = time.monotonic() + max(0.2, safe_float(timeout))
+    step = max(0.05, safe_float(poll))
+    saw_running = bool(job)
+    if job:
+        # Give MPD one poll interval before the first look.  A job that is
+        # queued but not started is absent from ``status`` as well, and reading
+        # "nothing is running" at that moment is exactly the false success this
+        # wait used to report.
+        time.sleep(step)
+    unconfirmed = 0
+    settled = False
+    state: Dict[str, Any] = before
     while time.monotonic() < deadline:
-        status = mpd_pairs("status", host=host, port=port)
-        if not str(status.get("updating_db") or "").strip():
-            return {"ok": True, "updated": True, "scope": scope or "all"}
-        time.sleep(0.2)
-    return {
+        state = mpd_library_state(host, port)
+        if on_progress is not None:
+            try:
+                on_progress(state)
+            except Exception:
+                pass
+        if not state.get("available"):
+            break
+        running = str(state.get("job") or "")
+        if running and job and running != job:
+            # MPD has moved on to a newer job, so ours is done.
+            settled = True
+            break
+        if running:
+            saw_running = True
+        elif saw_running:
+            settled = True
+            break
+        else:
+            # No job id came back, so "nothing is running" is not evidence yet
+            # that our own scan finished; allow one more poll before giving up.
+            unconfirmed += 1
+            if unconfirmed >= 2:
+                break
+        time.sleep(step)
+    result: Dict[str, Any] = {
         "ok": True,
-        "updated": False,
-        "message": "MPD database update is still running",
+        "updated": settled,
         "scope": scope or "all",
+        "timed_out": not settled,
+        "job": job,
+        "indexed_before": indexed_before,
+        "indexed_after": safe_int(state.get("indexed")),
     }
+    if not settled:
+        result["message"] = "MPD database update is still running"
+    return result
 
 
 def mpd_probe(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> Dict[str, Any]:

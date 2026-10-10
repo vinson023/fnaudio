@@ -337,6 +337,31 @@ class MpdOutput(OutputPlugin):
                 return ""
         return ""
 
+    def _request_index_catchup(self) -> bool:
+        """Ask MPD for the whole library because one song proved its index lags.
+
+        A targeted folder refresh already ran and the file still resolved to
+        nothing, which on ``auto_update "no"`` means MPD is behind by thousands
+        of songs, not that the user is missing a file.  Returns True when a
+        catch-up is queued so the failure sentence can promise a retry instead
+        of sending the user to look for a file that is there.
+        """
+        service = self.service
+        if not service or not hasattr(service, "request_index_catchup"):
+            return False
+        try:
+            result = service.request_index_catchup(reason="missing-entry")
+        except Exception:
+            return False
+        if isinstance(result, dict) and result.get("accepted"):
+            return True
+        # A job that is already running is the same promise to the user.
+        try:
+            status = service.index_status() if hasattr(service, "index_status") else {}
+        except Exception:
+            return False
+        return bool((status or {}).get("running"))
+
     def _missing_entry_error(
         self, uri: str, primary: Exception, update: Dict[str, Any], retry: Exception
     ) -> MpdError:
@@ -351,10 +376,16 @@ class MpdOutput(OutputPlugin):
         string says the index is still being built.
         """
         scope = str((update or {}).get("scope") or "") or "整个曲库"
-        state = mpd_library_state_message(mpd_library_state(**self._connection()))
+        refreshed = "已请求 MPD 收录 %s 后重试仍失败" % scope
+        if (update or {}).get("timed_out"):
+            # The refresh we asked for had not finished, so saying it was
+            # "requested and still failed" would hide that MPD is still busy.
+            refreshed = "已请求 MPD 收录 %s（尚未完成）后重试仍失败" % scope
+        pending = self._request_index_catchup()
+        state = mpd_library_state_message(mpd_library_state(**self._connection()), pending)
         return MpdError(
-            "%s；曲目 uri=%s；已请求 MPD 收录 %s 后重试仍失败（原始报错：%s；重试：%s）"
-            % (state, uri, scope, primary, retry)
+            "%s；曲目 uri=%s；%s（原始报错：%s；重试：%s）"
+            % (state, uri, refreshed, primary, retry)
         )
 
 
