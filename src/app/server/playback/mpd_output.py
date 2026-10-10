@@ -297,7 +297,7 @@ class MpdOutput(OutputPlugin):
                     primary = exc
                 if hint in refreshed or len(refreshed) >= self.queue_refresh_folders:
                     raise self._missing_entry_error(uri, primary, update, exc) from exc
-                update = mpd_update_and_wait(path=hint, **self._connection())
+                update = mpd_update_and_wait(path=hint, verify_uri=uri, **self._connection())
                 refreshed = refreshed + (hint,)
                 continue
             if not refreshed:
@@ -321,7 +321,7 @@ class MpdOutput(OutputPlugin):
             message = str(exc)
             if not self._is_missing_mpd_library_entry(exc):
                 raise
-            update = mpd_update_and_wait(path=mpd_update_hint(uri), **self._connection())
+            update = mpd_update_and_wait(path=mpd_update_hint(uri), verify_uri=uri, **self._connection())
             try:
                 result = mpd_load_uri(uri, start=cue_start, **self._connection())
                 return {**result, "mpd_update": update}
@@ -381,6 +381,13 @@ class MpdOutput(OutputPlugin):
             # The refresh we asked for had not finished, so saying it was
             # "requested and still failed" would hide that MPD is still busy.
             refreshed = "已请求 MPD 收录 %s（尚未完成）后重试仍失败" % scope
+        elif (update or {}).get("absent"):
+            # The refresh finished and the song still resolves to nothing: on the
+            # fnOS host that is the measured signature of a folder MPD has never
+            # mounted, where a folder-targeted ``update`` is a no-op and only a
+            # whole-library scan mounts it.  Saying "requested and still failed"
+            # would send the user to look for a file that is there.
+            refreshed = "MPD 收录 %s 已完成但仍未挂载该目录，已升级为全库收录" % scope
         pending = self._request_index_catchup()
         state = mpd_library_state_message(mpd_library_state(**self._connection()), pending)
         return MpdError(

@@ -10,7 +10,11 @@ sys.path.insert(0, "app/server")
 from playback.models import PlaybackState, TrackRef
 from playback.mpd_client import mpd_library_state_message, mpd_update_job_id
 from playback.mpd_output import MpdOutput
-from services.mpd_service import MpdService
+from services.mpd_service import (
+    MPD_INDEX_CATCHUP_POLL_SECONDS,
+    MPD_INDEX_CATCHUP_TIMEOUT_SECONDS,
+    MpdService,
+)
 
 ACK_AT_0 = "ACK [50@0] {addid} No such song"
 
@@ -253,6 +257,28 @@ class MpdIndexCatchupTests(unittest.TestCase):
              mock.patch.object(service, "request_index_catchup") as request:
             service._maybe_converge_mpd_index()
         self.assertEqual(request.call_args.kwargs["reason"], "mpd-start")
+
+    def test_the_catchup_timeout_clears_the_measured_full_scan(self):
+        """A bounded worker whose bound is below the scan it waits for is a lie.
+
+        Measured on the fnOS host: the pathless ``update`` that this worker
+        issues committed 580 seconds after it was issued, and it is the only
+        command that mounts directories MPD has never seen.
+        """
+        self.assertGreaterEqual(MPD_INDEX_CATCHUP_TIMEOUT_SECONDS, 1200.0)
+        self.assertLess(MPD_INDEX_CATCHUP_POLL_SECONDS, MPD_INDEX_CATCHUP_TIMEOUT_SECONDS)
+
+    def test_no_second_convergence_is_queued_while_the_worker_is_running(self):
+        """MPD's own flag is not the guard: a queued job is invisible until it starts."""
+        service = make_service()
+        self.addCleanup(service._cleanup_temp.cleanup)
+        service._index_state["running"] = True
+        with mock.patch("services.mpd_service.mpd_library_state",
+                        return_value={"available": True, "indexed": 0, "updating": False, "job": ""}), \
+             mock.patch.object(service, "request_index_catchup") as request:
+            result = service._maybe_converge_mpd_index("mpd-start")
+        self.assertFalse(request.called)
+        self.assertEqual(result["reason"], "already-running")
 
     def test_status_publishes_the_index_job(self):
         service = make_service()
