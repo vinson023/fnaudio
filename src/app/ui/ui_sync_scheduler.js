@@ -19,7 +19,13 @@
     const visible = () => !doc || doc.visibilityState !== "hidden";
     const every = (milliseconds, callback) => {
       const id = setIntervalSafe(() => {
-        if (visible()) callback();
+        if (!visible()) return;
+        // A library page replacement owns the few HTTP/1.1 connections the browser
+        // keeps to the app gateway, and on fnOS every one of these ticks also starts a
+        // CGI worker. Yielding the background lanes for that window is what turns a
+        // queued half-second-late click into an immediate one.
+        if (check("isInteractionBlocked")) return;
+        callback();
       }, milliseconds);
       if (id !== null && id !== undefined) intervals.push(id);
     };

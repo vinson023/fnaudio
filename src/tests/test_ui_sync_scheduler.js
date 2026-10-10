@@ -97,6 +97,29 @@ assert.deepEqual(idle.fired, [], "With neither state the transport tick must sta
 remoteOnly.stop();
 incomingOnly.stop();
 idle.stop();
+// R198: a library page replacement must be able to pause the background lanes.
+{
+  let blocked = false;
+  const held = arm({
+    isRemoteTarget: () => true,
+    isLibraryScanning: () => true,
+    refreshLibraryStatus: () => held.fired.push("library"),
+    isInteractionBlocked: () => blocked,
+  });
+  blocked = true;
+  held.fire(500);
+  held.fire(1000);
+  held.fire(1500);
+  assert.deepEqual(held.fired, [], "while a page is being replaced no poll may leave the tab");
+  blocked = false;
+  held.fire(1000);
+  assert.deepEqual(held.fired, ["library"], "the same tick resumes the moment the window closes");
+  held.stop();
+  const ungated = arm({ isRemoteTarget: () => true });
+  ungated.fire(500);
+  assert.deepEqual(ungated.fired, ["remote-ui"], "a scheduler without the gate keeps its old cadence");
+  ungated.stop();
+}
 assert.doesNotThrow(() => context.globalThis.fnAudioUiSyncScheduler.create(null, { timerHost }));
 assert.doesNotThrow(() => context.globalThis.fnAudioUiSyncScheduler.create({ timerHost: null }));
 console.log("UI synchronization scheduler regression checks passed.");
