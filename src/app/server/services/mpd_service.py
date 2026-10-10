@@ -25,6 +25,7 @@ from playback.mpd_client import (
     mpd_binary,
     mpd_control,
     mpd_idle,
+    mpd_library_state,
     mpd_load_uri,
     mpd_play_queue_item,
     mpd_probe,
@@ -48,9 +49,28 @@ MAX_MPD_PID_FILE_BYTES = 256
 MAX_MPD_LOG_TAIL_BYTES = 8192
 MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS = 5.0
 MAX_MPD_QUEUE_ENTRIES = 50000
+# MPD indexes a whole library in the background, and a full scan of a
+# tens-of-thousands-file NAS library takes minutes; the worker is bounded so a
+# stalled MPD cannot hold the thread forever.
+MPD_INDEX_CATCHUP_POLL_SECONDS = 2.0
+MPD_INDEX_CATCHUP_TIMEOUT_SECONDS = 900.0
 from .audio_output_lease import AUDIO_OUTPUT_LEASE
 from .dac_profiles import dac_quirk_profile
 from file_permissions import atomic_write_text, secure_directory, secure_file
+
+
+def _safe_index_count(value: Any) -> int:
+    """Convert an MPD song counter without ever losing the index job.
+
+    The catch-up worker clears its single-flight flag before it reports
+    counters, and each counter conversion is guarded here, so a malformed or
+    unexpectedly raising status value degrades to 0 instead of stranding every
+    later catch-up behind a job that has already finished.
+    """
+    try:
+        return nonnegative_int(value)
+    except Exception:
+        return 0
 
 
 def _config_text(value: Any, fallback: str = "", maximum: int = 4096) -> str:
@@ -168,6 +188,26 @@ class MpdService:
         # controls and Renderer loads must therefore be serialized even when
         # they originate from different HTTP/idle/recovery threads.
         self._command_lock = threading.RLock()
+        # fnAudio owns the logical library index, but MPD can only play songs
+        # its *own* database resolved, and ``auto_update "no"`` means MPD never
+        # refreshes itself.  This is the state of that convergence job.
+        self._index_lock = threading.Lock()
+        self._index_stop = threading.Event()
+        self._index_thread: Optional[threading.Thread] = None
+        self._index_state: Dict[str, Any] = {
+            "running": False,
+            "reason": "",
+            "scope": "",
+            "job": "",
+            "indexed_before": 0,
+            "indexed_after": 0,
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "updated": False,
+            "timed_out": False,
+            "error": "",
+            "requests": 0,
+        }
 
         # `select_output` and `test_output` rewrite the ALSA selection around
         # MPD restarts. They must not interleave with each other, and a reader
@@ -349,6 +389,135 @@ class MpdService:
             except ValueError:
                 continue
         return dict(self.config)
+
+    def index_status(self) -> Dict[str, Any]:
+        """Return the last MPD index convergence job for the status endpoint."""
+        with self._index_lock:
+            return dict(self._index_state)
+
+    def _stop_index_catchup(self) -> None:
+        self._index_stop.set()
+        thread = self._index_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def request_index_catchup(self, reason: str = "", path: str = "") -> Dict[str, Any]:
+        """Queue one bounded MPD database update and track it in the background.
+
+        ``No such song`` for a song fnAudio just served from its own index means
+        MPD's database is behind, and on a 60,000-file library only a full
+        ``update`` converges it.  A refresh request cannot block on that scan,
+        so it runs here and leaves counters behind for the status endpoint and
+        the failure toast.  One job at a time: a second full scan queued behind
+        the first only adds disk thrash while the DAC stays silent.
+        """
+        scope = str(path or "").strip()
+        text_reason = str(reason or "")[:64]
+        if not self.supervisor.status("mpd").get("running"):
+            with self._index_lock:
+                return {"accepted": False, "reason": "mpd-not-running", "state": dict(self._index_state)}
+        with self._index_lock:
+            # The state flag, not thread liveness, is the single-flight guard: a
+            # finished Thread object stays referenced, and a request arriving
+            # between "flag set" and "thread started" must still see the job as
+            # taken, or one play failure would queue two full library scans.
+            if self._index_state.get("running"):
+                return {"accepted": False, "reason": "already-running", "state": dict(self._index_state)}
+            self._index_state.update(
+                {
+                    "running": True,
+                    "reason": text_reason,
+                    "scope": scope or "all",
+                    "job": "",
+                    "indexed_before": 0,
+                    "indexed_after": 0,
+                    "started_at": time.time(),
+                    "finished_at": 0.0,
+                    "updated": False,
+                    "timed_out": False,
+                    "error": "",
+                    "requests": min(nonnegative_int(self._index_state.get("requests")) + 1, 10 ** 9),
+                }
+            )
+            snapshot = dict(self._index_state)
+        self._index_stop.clear()
+        try:
+            thread = threading.Thread(
+                target=self._index_loop,
+                args=(text_reason, scope),
+                name="fnaudio-mpd-index",
+                daemon=True,
+            )
+            self._index_thread = thread
+            thread.start()
+        except Exception as exc:
+            with self._index_lock:
+                self._index_thread = None
+                self._index_state.update(
+                    {"running": False, "error": str(exc), "timed_out": True, "finished_at": time.time()}
+                )
+                snapshot = dict(self._index_state)
+            return {"accepted": False, "reason": "thread-start-failed", "state": snapshot}
+        return {"accepted": True, "reason": text_reason, "state": snapshot}
+
+    def _maybe_converge_mpd_index(self, reason: str = "mpd-start") -> Dict[str, Any]:
+        """Ask MPD for a full scan when its database came up empty.
+
+        An empty database that is not being updated means MPD never indexed
+        this music directory, so every ``addid`` would be refused.  A database
+        that already has songs is left alone: re-scanning the whole library on
+        each DAC switch would thrash the disk for no proven gain, and a real
+        lag is detected where it hurts (a refused ``addid``).
+        """
+        state = mpd_library_state(self.host, self.port)
+        if not state.get("available") or state.get("indexed") or state.get("updating"):
+            return {"accepted": False, "reason": "index-not-empty", "state": state}
+        return self.request_index_catchup(reason=reason)
+
+    def _index_loop(self, reason: str, scope: str) -> None:
+        """Track one MPD database update so its progress is observable."""
+        def on_progress(state: Dict[str, Any]) -> None:
+            with self._index_lock:
+                self._index_state["indexed_after"] = nonnegative_int(state.get("indexed"))
+                self._index_state["job"] = str(state.get("job") or "")
+
+        try:
+            result = mpd_update_and_wait(
+                host=self.host,
+                port=self.port,
+                timeout=MPD_INDEX_CATCHUP_TIMEOUT_SECONDS,
+                path=scope,
+                poll=MPD_INDEX_CATCHUP_POLL_SECONDS,
+                on_progress=on_progress,
+            )
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "updated": False,
+                "timed_out": True,
+                "scope": scope or "all",
+                "job": "",
+                "indexed_before": 0,
+                "indexed_after": 0,
+                "message": str(exc),
+            }
+        # The flag is what makes the next request wait for this one, so it is
+        # released in its own locked write, before any counter is formatted:
+        # building the report must not be able to strand every later catch-up
+        # behind a job that is already gone.
+        with self._index_lock:
+            self._index_state.update({"running": False, "finished_at": time.time()})
+        terminal = {
+            "scope": str(result.get("scope") or scope or "all"),
+            "job": str(result.get("job") or ""),
+            "indexed_before": _safe_index_count(result.get("indexed_before")),
+            "indexed_after": _safe_index_count(result.get("indexed_after")),
+            "updated": bool(result.get("updated")),
+            "timed_out": bool(result.get("timed_out")),
+            "error": "" if result.get("ok") else str(result.get("message") or ""),
+        }
+        with self._index_lock:
+            self._index_state.update(terminal)
 
     def refresh_database(self) -> Dict[str, Any]:
         from playback.mpd_client import mpd_request
@@ -753,6 +922,7 @@ class MpdService:
             )
             if startup_delay > 0 and (setup.get("config_changed") or result.get("pid")):
                 time.sleep(startup_delay / 1000.0)
+            self._maybe_converge_mpd_index("mpd-start")
             self.refresh_status()
         except Exception:
             # MPD is already running at this point. Roll back the whole
@@ -779,6 +949,7 @@ class MpdService:
         self._idle_stop.set()
         if self._idle_thread and self._idle_thread.is_alive():
             self._idle_thread.join(timeout=1.0)
+        self._stop_index_catchup()
         result = self.supervisor.stop("mpd")
         AUDIO_OUTPUT_LEASE.release("mpd")
         # A previous app crash may have orphaned an MPD process which is no
@@ -839,6 +1010,7 @@ class MpdService:
             }
         try:
             self._start_idle_listener()
+            self._maybe_converge_mpd_index("mpd-restart")
             self.refresh_status()
         except Exception:
             self.shutdown()
@@ -866,6 +1038,7 @@ class MpdService:
             "data_root": self.data_root,
             "supervisor": supervisor,
             "idle": self.idle_status(),
+            "index_catchup": self.index_status(),
             "output_capabilities": self.output_capabilities(),
             "selected_output": self._selected_alsa_output(),
         }
@@ -1411,6 +1584,7 @@ class MpdService:
         self._idle_stop.set()
         if self._idle_thread and self._idle_thread.is_alive():
             self._idle_thread.join(timeout=1.0)
+        self._stop_index_catchup()
         if recovery_thread and recovery_thread.is_alive() and recovery_thread is not threading.current_thread():
             recovery_thread.join(timeout=1.0)
         self.supervisor.shutdown()

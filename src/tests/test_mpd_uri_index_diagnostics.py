@@ -74,23 +74,158 @@ class MpdUpdateScopeTests(unittest.TestCase):
         self.assertEqual(mpd_update_hint("top.flac"), "")
         self.assertEqual(mpd_update_hint(None), "")
 
-    def test_targeted_update_asks_mpd_for_one_folder_only(self):
+    def test_targeted_update_tracks_the_job_mpd_queued_and_reports_counters(self):
         connection = mock.MagicMock()
-        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), mock.patch(
-            "playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1]
-        ), mock.patch("playback.mpd_client.mpd_pairs", return_value={}):
-            result = mpd_update_and_wait(path="未整理/春野")
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 23483, "updating": False, "job": ""},
+            {"available": True, "indexed": 23483, "updating": True, "job": "7"},
+            {"available": True, "indexed": 62684, "updating": False, "job": ""},
+        ]
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=states), \
+             mock.patch("playback.mpd_client.time.sleep"):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=30.0)
         connection.__enter__.return_value.command.assert_called_once_with("update", "未整理/春野")
         self.assertEqual(result["scope"], "未整理/春野")
+        self.assertEqual(result["job"], "7")
+        self.assertTrue(result["updated"])
+        self.assertFalse(result["timed_out"])
+        self.assertEqual(result["indexed_before"], 23483)
+        self.assertEqual(result["indexed_after"], 62684)
 
     def test_bare_update_still_refreshes_the_whole_library(self):
         connection = mock.MagicMock()
-        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), mock.patch(
-            "playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1]
-        ), mock.patch("playback.mpd_client.mpd_pairs", return_value={}):
-            result = mpd_update_and_wait()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 3"]
+        states = [
+            {"available": True, "indexed": 0, "updating": False, "job": ""},
+            {"available": True, "indexed": 0, "updating": True, "job": "3"},
+            {"available": True, "indexed": 62684, "updating": False, "job": ""},
+        ]
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=states), \
+             mock.patch("playback.mpd_client.time.sleep"):
+            result = mpd_update_and_wait(timeout=30.0)
         connection.__enter__.return_value.command.assert_called_once_with("update")
         self.assertEqual(result["scope"], "all")
+        self.assertTrue(result["updated"])
+
+    def test_a_scan_that_never_shows_a_queued_job_is_not_reported_finished(self):
+        """The old wait called this success, which is what made retries no-ops."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = []
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state",
+                        return_value={"available": True, "indexed": 1775, "updating": False, "job": ""}), \
+             mock.patch("playback.mpd_client.time.sleep"):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=30.0)
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["indexed_after"], 1775)
+        self.assertIn("still running", result["message"])
+
+
+    def test_the_first_status_read_happens_after_the_queue_grace(self):
+        """Status must not be read while the queued job may still be unstarted.
+
+        ``update`` answers with a job id before MPD has begun the scan, and a
+        status read taken in that window shows no ``updating_db`` at all.  The
+        first version of this wait called that "indexing finished", which made
+        the targeted refresh a silent no-op on the fnOS host.
+        """
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 23483, "updating": False, "job": ""},
+            {"available": True, "indexed": 23483, "updating": True, "job": "7"},
+            {"available": True, "indexed": 62684, "updating": False, "job": ""},
+        ]
+        order = []
+
+        def read_state(*_args, **_kwargs):
+            order.append("poll")
+            return states[min(len(order) - 1, len(states) - 1)]
+
+        def nap(*_args, **_kwargs):
+            order.append("sleep")
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.time.sleep", side_effect=nap), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2]):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=30.0, poll=0.2)
+        # A ``poll`` is one status read.  The first one is the pre-update
+        # baseline, so the grace sleep has to land before the read that looks
+        # for our job; without it the very first read is the one that used to
+        # be mistaken for a finished scan.
+        self.assertEqual(order[:2], ["poll", "sleep"])
+        self.assertTrue(result["updated"])
+
+    def test_a_job_that_finished_inside_the_grace_window_counts_as_done(self):
+        """A short scan must not be reported as timed out just because it was fast."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 8"]
+        states = [
+            {"available": True, "indexed": 0, "updating": False, "job": ""},
+            {"available": True, "indexed": 62684, "updating": False, "job": ""},
+        ]
+        reads = []
+
+        def read_state(*_args, **_kwargs):
+            reads.append(len(reads))
+            return states[min(len(reads) - 1, len(states) - 1)]
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.time.sleep"):
+            result = mpd_update_and_wait(timeout=30.0, poll=0.2)
+        self.assertTrue(result["updated"])
+        self.assertFalse(result["timed_out"])
+        self.assertEqual(result["indexed_after"], 62684)
+
+    def test_a_database_that_goes_away_mid_wait_stops_the_wait(self):
+        """A dead MPD must end the wait, not be polled until its timeout."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 1775, "updating": False, "job": ""},
+            {"available": False, "indexed": 0, "updating": False, "job": ""},
+        ]
+        index = []
+
+        def read_state(*_args, **_kwargs):
+            index.append(len(index))
+            return states[min(len(index) - 1, len(states) - 1)]
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.time.sleep"):
+            result = mpd_update_and_wait(timeout=30.0, poll=0.2)
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["timed_out"])
+
+    def test_a_newer_scan_supersedes_the_job_we_queued(self):
+        """Once MPD is busy with somebody else's job, ours can only be finished."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 1775, "updating": True, "job": "4"},
+            {"available": True, "indexed": 1775, "updating": True, "job": "9"},
+        ]
+        index = []
+
+        def read_state(*_args, **_kwargs):
+            index.append(len(index))
+            return states[min(len(index) - 1, len(states) - 1)]
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=0.0, poll=0.2)
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["job"], "7")
+
 
 
 class MpdLibraryStateTests(unittest.TestCase):
@@ -102,7 +237,8 @@ class MpdLibraryStateTests(unittest.TestCase):
         ]
         with mock.patch("playback.mpd_client.MpdConnection", return_value=connection):
             self.assertEqual(
-                mpd_library_state(), {"available": True, "indexed": 23751, "updating": True}
+                mpd_library_state(),
+                {"available": True, "indexed": 23751, "updating": True, "job": "1"},
             )
 
     def test_state_stays_quiet_when_mpd_does_not_answer(self):
@@ -110,7 +246,7 @@ class MpdLibraryStateTests(unittest.TestCase):
         connection.__enter__.return_value.command.side_effect = MpdError("connection closed")
         with mock.patch("playback.mpd_client.MpdConnection", return_value=connection):
             self.assertEqual(
-                mpd_library_state(), {"available": False, "indexed": 0, "updating": False}
+                mpd_library_state(), {"available": False, "indexed": 0, "updating": False, "job": ""}
             )
 
     def test_message_distinguishes_a_cold_database_from_a_missing_file(self):
@@ -120,6 +256,16 @@ class MpdLibraryStateTests(unittest.TestCase):
             {"available": True, "indexed": 62684, "updating": False}))
         self.assertIn("不可读取", mpd_library_state_message({"available": False}))
         self.assertIn("不可读取", mpd_library_state_message(None))
+
+    def test_message_uses_a_third_sentence_while_a_catchup_is_queued(self):
+        """A database that is merely behind must not be reported as "file missing"."""
+        idle = mpd_library_state_message({"available": True, "indexed": 23483, "updating": False}, True)
+        self.assertIn("MPD 索引落后于 fnAudio 曲库，当前已收录 23483 首", idle)
+        self.assertIn("已请求 MPD 收录整个曲库", idle)
+        self.assertNotIn("请确认文件仍存在", idle)
+        busy = mpd_library_state_message({"available": True, "indexed": 1775, "updating": True}, True)
+        self.assertIn("MPD 索引仍在建立中，当前已收录 1775 首", busy)
+        self.assertIn("已请求 MPD 收录整个曲库", busy)
 
 
 class MpdFailureDiagnosticsTests(unittest.TestCase):
@@ -409,6 +555,19 @@ class MpdFailureMessageOrderTests(unittest.TestCase):
         self.assertLess(message.index("MPD 索引"), message.index(ACK_AT_0))
         self.assertIn("uri=未整理/春野/a b.flac", message)
         self.assertIn(ACK_AT_0, message)
+
+    def test_a_finished_refresh_that_timed_out_says_the_scan_is_not_done(self):
+        output = MpdOutput()
+        with mock.patch("playback.mpd_output.mpd_load_uri",
+                        side_effect=[MpdError(ACK_AT_0), MpdError(ACK_AT_0)]), \
+             mock.patch("playback.mpd_output.mpd_update_and_wait",
+                        return_value={"ok": True, "updated": False, "timed_out": True,
+                                      "scope": "未整理/春野"}), \
+             mock.patch("playback.mpd_output.mpd_library_state",
+                        return_value={"available": True, "indexed": 1775, "updating": True}):
+            with self.assertRaises(MpdError) as caught:
+                output._load_uri_with_retry("未整理/春野/a b.flac", 0.0)
+        self.assertIn("已请求 MPD 收录 未整理/春野（尚未完成）后重试仍失败", str(caught.exception))
 
     def test_the_queue_message_leads_with_the_finished_index_sentence(self):
         class QueueService:
