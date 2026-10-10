@@ -214,12 +214,20 @@ def mpd_library_state_message(state: Dict[str, Any], pending: bool = False) -> s
         return "MPD 索引状态不可读取，请确认 MPD 已启动"
     indexed = safe_int(state.get("indexed"))
     if state.get("updating"):
+        # ``stats.songs`` is not a progress bar. Measured twice on the fnOS host:
+        # a whole-library scan of 63,546 songs left the counter frozen at its last
+        # committed value for the entire 980 s window (R191: 23,483 for 580 s), so
+        # reading "当前已收录 N 首" out loud made a healthy rebuild look like a
+        # stalled one, which is exactly what the owner reported as 扫描非常慢.
+        building = (
+            "MPD 索引仍在建立中，上次收录完成时为 %d 首（收录期间该计数不会变化）" % indexed
+        )
         if pending:
             return (
-                "MPD 索引仍在建立中，当前已收录 %d 首，fnAudio 已请求 MPD 收录整个曲库，"
-                "本机实测全库收录约需十分钟，请等待收录完成后重试播放" % indexed
+                building + "，fnAudio 已请求 MPD 收录整个曲库，"
+                "本机实测全库收录约需十分钟，请等待收录完成后重试播放"
             )
-        return "MPD 索引仍在建立中，当前已收录 %d 首，请等待扫描完成后再播放" % indexed
+        return building + "，请等待扫描完成后再播放"
     if pending:
         return (
                 "MPD 索引落后于 fnAudio 曲库，当前已收录 %d 首，fnAudio 已请求 MPD 收录整个曲库，"
