@@ -268,3 +268,16 @@ R193 把「升级清空 MPD 索引」与「冻结计数被当成实时进度」�
 3. **prod 空闲期的 MPD 读数口径**（R193 已部分证伪，仍需真机确认残余）：`/api/mpd/status` 回 `available:true／running:false／[Errno 111] Connection refused`、`supervisor.desired:false`、`restart_count:0` 在 0.2.39 上属于常态而非故障——`MpdOutput` 走按需启动（`mpd_output.py` 调 `MPD_SERVICE.start()` 才注册监督），没有任何播放请求时本来就不该有 MPD 进程。待真机确认的是残余：`fault.state:DEGRADED`／`consecutive_failures:989` 这类因「MPD 按设计未运行」而反复失败的 idle 监听计数，是否会把无关的健康读数一起拖成 DEGRADED 并在 UI 上误导。
 
 4. **0.2.40 的发布与就地升级实证**：`install-local` 是唯一可用升级入口（`install-fpk` 对已装应用短路），升级后须再跑一次第 1 条判据。
+
+
+
+## 第十节 · R195 登记的真机专项（不是代码待办，不计入终止分母）
+
+R195 在代码侧消灭了「本进程把 MPD 的监听号当源端口用掉 ⇒ MPD 永远绑不回来」这条致瘫路径，并在真机 198.51.100.24 上以 0.2.41 取到判别性读数（60 次读压测零自连、`stats songs` 63,995、报障曲目 `addid` 返回 `Id: 6`、15:00 之后 `Failed to bind` 0 条）。以下四件只能在真机上收口。
+
+1. **TEAC UD-301 必须插回才能验收播放**：2026-10-10 第三次实测 `lsusb` 只有 4 个 root hub（无 `0644:804a`）、`/proc/asound/cards` 仅 HDA Intel PCH＋pcsp、`lsmod` 无 `snd_usb_audio`，`mpd.conf` 的 audio_output 因此回落 `device "default"`。载入 DSD 曲目返回「未找到已认证的 USB DAC，已禁止 DSD 转 PCM」且 MPD 不再被拉起；载入非 DSD 曲目返回「MPD 已启动，但没有检测到真实 ALSA 声卡或 USB DAC」。bit-perfect／DSD 端到端验收在设备插回前无法进行；插回后还要确认 `config.json` 里的 `mpd_output_stable_id`（现为 `usb:0644:804a:00160000386ca1d14e45282720120016:dev0`）与 `mpd_output_alsa_id`（现为 `hw:2,0`）是否随重新枚举而变化，必要时在设置页重选设备。
+2. **端口迁移分支仍未在真机上走过一次**：本轮真机读数是「56660 可绑 ⇒ `_ensure_bindable_port()` 不做迁移」（`config.json` 的 `mpd_port` 保持 56660，符合期望），换口路径只由离线测试与仓库外变异证明覆盖。真机口径：先占住 56660，再让 `/api/playback/target` 走 `{"target_id":"mpd"}`，须看到 MPD 起来、`/api/mpd/status` 的 `port` 落在 `ip_local_port_range` 之外，且 `config.json` 的 `mpd_port` 与之一致；同时确认客户端不会因此读到旧端口。
+3. **durable 判据的最后一半：卸载重装**（第九节第 1 条的延伸，本轮已就地升级两次并通过）：`@appconf/fnaudio/mpd/database` 2,228,956 B／`stats songs` 63,995 在两次 `install-local` 重建 `@appcenter` 之后仍在，大库由 R194 人工放回（`/root/r194-backup/database.preseed-143216` 是被替换下来的 9,974 B 残库）。尚未取得的是「Web UI 卸载（非 purge）后重装」同一判据仍成立，以及 `stats songs` 与 fnAudio `/api/library/status` 的 `count`（现 62,684）之间 1,311 首差额的口径归属（MPD 收录 `.dff`／`.ape`／封面等非播放项与 fnAudio 过滤规则的差异，需在真机上按扩展名对齐后才好判定是否为缺陷）。
+4. **没有 USB DAC 时连 PCM 也放不出，属产品口径待裁定**：`playback/alsa_output.py` 的 `alsa_devices()` 在 `/proc/asound` 探测成功时只保留 USB 形态设备，内建 HDA 声卡因此不进候选、`devices` 恒空，最终把「这台机器压根没有 USB DAC」表达成「没有检测到真实 ALSA 声卡或 USB DAC」。DAC 插回后须确认这条筛选没有误伤（例如 DAC 经 USB 声卡桥接、被其他驱动接管、或以非 USB 形态出现时）；若确认误伤，再决定是否放宽为「USB 优先、无 USB 时允许内置输出」。
+
+> 证据口径：本节每一条都以真机读数入账，且必须第二遍独立复测一致才写结论；拿不到读数一律按「不可取证」结案，不在 `TODO.md` 新立代码待办。

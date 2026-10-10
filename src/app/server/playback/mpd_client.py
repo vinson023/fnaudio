@@ -17,6 +17,7 @@ DEFAULT_PORT = 56660
 MAX_MPD_LINE_BYTES = 256 * 1024
 MAX_MPD_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_MPD_COMMAND_BYTES = 16 * 1024 * 1024
+MAX_MPD_LOCAL_PORT_ATTEMPTS = 5
 
 
 class MpdError(RuntimeError):
@@ -243,6 +244,48 @@ def _add_response_bytes(total: int, line: str) -> int:
     return total
 
 
+def _draw_local_port(host: str) -> Optional[int]:
+    """Return a spare source port the kernel will give us, or ``None``.
+
+    A plain ``connect()`` to a loopback service lets the kernel choose our
+    source port, and it happily chooses the port that service listens on.  The
+    result is a connection from this process to itself (measured 2026-10-10:
+    ``127.0.0.1:56660 <-> 127.0.0.1:56660`` held by the app process), which
+    keeps MPD's port claimed after MPD died, so every later start failed with
+    ``Failed to bind to '127.0.0.1:56660'; Address already in use``.  Drawing
+    the number with a bind that is never connected costs no TIME_WAIT.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((host, 0))
+            return int(probe.getsockname()[1])
+    except OSError:
+        return None
+
+
+def _mpd_client_socket(host: str, port: int, timeout: float) -> socket.socket:
+    """Connect to MPD with a source port that is not MPD's own listening port.
+
+    ``socket.create_connection`` stays the only connect path, because the
+    greeting tests patch it; the loop below only adds ``source_address``.  When
+    the kernel cannot hand out a usable number we fall back to the previous
+    plain connect instead of failing a read that used to work.
+    """
+    for _ in range(MAX_MPD_LOCAL_PORT_ATTEMPTS):
+        local_port = _draw_local_port(host)
+        if local_port is None:
+            break
+        if local_port == port:
+            continue
+        try:
+            return socket.create_connection(
+                (host, port), timeout, source_address=(host, local_port)
+            )
+        except OSError:
+            continue
+    return socket.create_connection((host, port), timeout)
+
+
 class MpdConnection:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 2.0):
         self.host = host or DEFAULT_HOST
@@ -253,7 +296,7 @@ class MpdConnection:
 
     def __enter__(self) -> "MpdConnection":
         try:
-            self.sock = socket.create_connection((self.host, self.port), self.timeout)
+            self.sock = _mpd_client_socket(self.host, self.port, self.timeout)
             self.file = self.sock.makefile("rwb", buffering=0)
             greeting = self._readline()
             if not greeting.startswith("OK MPD"):

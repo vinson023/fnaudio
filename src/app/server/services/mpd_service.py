@@ -144,6 +144,16 @@ DURABLE_CONFIG_MARKER = "@appconf"
 LEGACY_DATA_ROOT_PARTS = ("share", "mpd")
 RECLAIMED_INDEX_FILES = ("database", "state", "sticker.sql")
 
+# A loopback MPD client can be handed MPD's own listening port as its source
+# port, and that self-connection keeps the port claimed after MPD dies
+# (measured 2026-10-10: the app process held ``127.0.0.1:56660`` and MPD failed
+# every start with ``Failed to bind ... Address already in use``).  ``bind(0)``
+# picks numbers from the same kernel range, so a fallback port must live
+# outside it or the next restart walks into the same trap.
+EPHEMERAL_RANGE_PATH = "/proc/sys/net/ipv4/ip_local_port_range"
+DEFAULT_EPHEMERAL_RANGE = (32768, 60999)
+MAX_FALLBACK_PORT_CANDIDATES = 4096
+
 
 class MpdService:
     """Owns an app-private MPD instance when an MPD binary is available."""
@@ -344,9 +354,39 @@ class MpdService:
         # payload-rooted layout; anything else is a stranger and gets a fallback port.
         if self._reap_legacy_instances() and _tcp_port_available(self.host, requested):
             return requested
+        return self._select_fallback_port()
+
+    def _select_fallback_port(self) -> int:
+        """Take a free port outside the kernel ephemeral range for MPD.
+
+        Staying inside that range is what let our own client re-claim the
+        number, so a moved MPD gets a port the kernel will never hand to an
+        outbound connect.  If every candidate is somehow taken we keep the old
+        random behaviour rather than refusing to start at all.
+        """
+        for port in _candidate_fallback_ports():
+            if _tcp_port_available(self.host, port):
+                return port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((self.host, 0))
             return int(sock.getsockname()[1])
+
+    def _ensure_bindable_port(self) -> None:
+        """Move MPD off a stolen port before ``mpd.conf`` is written.
+
+        ``_select_port`` only runs once, when the service object is built, so a
+        port taken afterwards used to keep ``start()`` failing for the whole
+        lifetime of the app process.  A legacy payload-rooted MPD is still the
+        first thing we try to displace; only a stranger on the number makes MPD
+        move, and the new port is written back into the config every client
+        reads, so the two sides cannot drift.
+        """
+        if _tcp_port_available(self.host, self.port):
+            return
+        if self._reap_legacy_instances() and _tcp_port_available(self.host, self.port):
+            return
+        self.port = self._select_fallback_port()
+        self.config["mpd_port"] = self.port
 
     def _data_root(self) -> str:
         configured = _config_text(self.config.get("mpd_data_dir"), maximum=1024).strip()
@@ -360,8 +400,9 @@ class MpdService:
     def _durable_app_dir(self) -> str:
         """Return the app-configuration directory that outlives a reinstall, or "".
 
-        Production launches pass ``--config /usr/local/apps/@appconf/fnaudio/config
-        .json`` (read from ``/proc`` on the test host); a relative ``config.json``
+        Production launches pass ``--config /usr/local/apps/<marker>/<app>/config.json``
+        where the marker segment is ``DURABLE_CONFIG_MARKER`` (read from ``/proc`` on the
+        test host); a relative ``config.json``
         used by development runs carries no such marker and keeps the payload
         directory, so no test or checkout layout changes shape.
         """
@@ -981,6 +1022,7 @@ class MpdService:
             return self._start_locked()
 
     def _start_locked(self) -> Dict[str, Any]:
+        self._ensure_bindable_port()
         self._recovery_generation += 1
         self._recovery_active.clear()
         self._service_stop.clear()
@@ -2422,6 +2464,37 @@ def _tcp_port_available(host: str, port: int) -> bool:
             return True
         except OSError:
             return False
+
+
+def _ephemeral_port_range() -> tuple:
+    """Read the kernel ephemeral range, or fall back to the Linux default.
+
+    A missing or malformed ``/proc`` file (Windows development runs, a stripped
+    container) must not decide the fallback port, so anything that fails
+    validation returns the documented default instead of raising.
+    """
+    try:
+        with open(EPHEMERAL_RANGE_PATH, "r", encoding="utf-8") as handle:
+            parts = handle.read().split()
+        low, high = int(parts[0]), int(parts[1])
+    except (OSError, ValueError, IndexError):
+        return DEFAULT_EPHEMERAL_RANGE
+    if not 1024 <= low <= high <= 65535:
+        return DEFAULT_EPHEMERAL_RANGE
+    return low, high
+
+
+def _candidate_fallback_ports() -> List[int]:
+    """Ports outside the ephemeral range, the block above the range first.
+
+    Each block is capped on its own so a crowded upper block can still reach
+    the lower one.  Probing a candidate costs one socket bind, so the cap also
+    bounds the worst case work on the recovery path.
+    """
+    low, high = _ephemeral_port_range()
+    upper = list(range(high + 1, 65536))[:MAX_FALLBACK_PORT_CANDIDATES]
+    lower = list(range(1024, low))[:MAX_FALLBACK_PORT_CANDIDATES]
+    return upper + lower
 
 
 def _safe_float(value: Any) -> float:
