@@ -159,6 +159,38 @@ def mpd_uri_indexed(uri: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT
 MPD_ACK_LINE = re.compile(r"ACK \[(\d+)@(\d+)\] \{([^}]*)\}")
 
 
+# ``No such song`` is one sentence with two unrelated causes, and the command
+# named by the ACK is the only thing that tells them apart.  ``addid``/``add``
+# ask MPD to resolve a *uri*, so a refusal there really does mean its song
+# database is behind the fnAudio library.  ``playid``/``seekid``/``deleteid``/
+# ``songid`` ask it to resolve an id inside the *current playlist*, so a
+# refusal there only proves the queue changed underneath us - MPD answers
+# exactly that after its own ``update`` drops a removed song from the running
+# playlist, which is what the fnOS host measured with
+# ``ACK [50@0] {playid} No such song``.
+MPD_ENTRY_LOOKUP_COMMANDS = frozenset({"addid", "add"})
+MPD_SONG_ID_COMMANDS = frozenset({"playid", "seekid", "deleteid", "songid"})
+
+
+def mpd_ack_command(message: object) -> str:
+    """Return the command an MPD ``ACK`` blames, or "" when it names none."""
+    match = MPD_ACK_LINE.search(str(message or ""))
+    return match.group(3) if match else ""
+
+
+def mpd_is_stale_song_id_error(exc: Exception) -> bool:
+    """True when MPD refused a playlist id it no longer has.
+
+    Such a refusal says nothing about the song database, so it must never reach
+    the folder-refresh / whole-library catch-up path: the caller has to drop its
+    cached ids and mirror the queue again rather than tell the user to wait for
+    an index that already finished.
+    """
+    if "no such song" not in str(exc or "").lower():
+        return False
+    return mpd_ack_command(str(exc)) in MPD_SONG_ID_COMMANDS
+
+
 def mpd_addid_failure_uri(entries, message: str) -> str:
     """Return the queue uri an MPD command-list ``ACK`` blames, or "".
 

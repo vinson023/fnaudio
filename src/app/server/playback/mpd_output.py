@@ -6,6 +6,8 @@ import math
 from .models import PlaybackCommand, PlaybackState, TrackRef
 from .mpd_client import (
     MpdError,
+    MPD_ENTRY_LOOKUP_COMMANDS,
+    mpd_ack_command,
     mpd_control,
     mpd_library_state,
     mpd_library_state_message,
@@ -398,8 +400,25 @@ class MpdOutput(OutputPlugin):
 
     @staticmethod
     def _is_missing_mpd_library_entry(exc: Exception) -> bool:
+        """True only when MPD could not resolve a *uri* against its database.
+
+        ``No such song`` on its own is ambiguous: the same words answer
+        ``addid`` (the song database is behind) and ``playid``/``seekid``
+        (the mirrored queue lost that entry).  Routing the second one here
+        refreshed folders, escalated to a whole-library catch-up, and ended in
+        the permanent "MPD index lags, wait for the scan" refusal while MPD
+        already held the file - the reported 502 for a track that played fine
+        moments earlier.  An ACK that names no command keeps the old behaviour,
+        because those are the annotated library failures this method was
+        written for.
+        """
         message = str(exc).lower()
-        return "no such song" in message or "directory or file not found" in message
+        if "no such song" not in message and "directory or file not found" not in message:
+            return False
+        command = mpd_ack_command(str(exc))
+        if command:
+            return command in MPD_ENTRY_LOOKUP_COMMANDS
+        return True
 
 
 def mpd_output_status(output: Optional[MpdOutput] = None) -> Dict[str, Any]:
