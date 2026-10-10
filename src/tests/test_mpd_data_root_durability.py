@@ -300,3 +300,54 @@ class ReclaimFileListTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ReaperNeverTouchesOurOwnChildTests(unittest.TestCase):
+    """Depth defence for the R197 evidence: never SIGTERM the MPD we supervise.
+
+    ``_pid_matches_mpd`` recognises a command line by our config path, the durable
+    data root and the legacy data root, so a healthy child launched from
+    ``@appconf`` matches its own needle list.  Whatever caller reaches the reaper
+    while that child is running, the pid the supervisor owns must be dropped from
+    the targets before anything is terminated.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.layout = Layout(self.temp.name)
+        self.service = build_service(self.layout)
+
+    def managed(self, pid):
+        return mock.patch.object(
+            self.service.supervisor, "status", return_value={"running": True, "pid": pid}
+        )
+
+    def test_the_managed_pid_is_dropped_from_the_reap_targets(self):
+        legacy_conf = os.path.join(self.service._legacy_data_root(), "mpd.conf")
+        cmdlines = {4242: "/usr/bin/mpd " + legacy_conf, 4343: "/usr/bin/mpd " + legacy_conf}
+        with fake_proc(cmdlines), mock.patch.object(
+            MpdService, "_scan_matching_pids", return_value=[4242, 4343]
+        ), self.managed(4242), mock.patch.object(MpdService, "_terminate_pid") as kill:
+            self.assertTrue(self.service._reap_legacy_instances())
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [4343])
+
+    def test_a_legacy_pid_file_naming_our_own_child_is_not_terminated(self):
+        pid_file = os.path.join(self.service._legacy_data_root(), "mpd.pid")
+        legacy_conf = os.path.join(self.service._legacy_data_root(), "mpd.conf")
+        with io.open(pid_file, "w", encoding="utf-8") as fh:
+            fh.write("4242" + chr(10))
+        with fake_proc({4242: "/usr/bin/mpd " + legacy_conf}), mock.patch.object(
+            MpdService, "_scan_matching_pids", return_value=[]
+        ), self.managed(4242), mock.patch.object(MpdService, "_terminate_pid") as kill:
+            self.assertFalse(self.service._reap_legacy_instances())
+        kill.assert_not_called()
+
+    def test_an_unmanaged_pid_is_still_terminated(self):
+        # The guard may not soften what the reaper is actually for: with no child of
+        # ours running, a legacy holder is still stopped.
+        legacy_conf = os.path.join(self.service._legacy_data_root(), "mpd.conf")
+        with fake_proc({4242: "/usr/bin/mpd " + legacy_conf}), mock.patch.object(
+            MpdService, "_scan_matching_pids", return_value=[4242]
+        ), mock.patch.object(MpdService, "_terminate_pid") as kill:
+            self.assertTrue(self.service._reap_legacy_instances())
+        kill.assert_called_once_with(4242)

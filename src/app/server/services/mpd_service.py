@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from playback.mpd_client import (
     DEFAULT_HOST,
+    MpdConnection,
     MpdError,
     DEFAULT_PORT,
     mpd_binary,
@@ -48,6 +49,10 @@ from .process_supervisor import ProcessSupervisor
 
 MAX_MPD_PROC_CMDLINE_BYTES = 4096
 MAX_MPD_PID_FILE_BYTES = 256
+# Reading the greeting is what proves the holder of the port really is an MPD, so
+# it has to stay far cheaper than the reap it replaces: a stalled stranger must not
+# put a full connect timeout in front of a transport command.
+MAX_MPD_HANDSHAKE_TIMEOUT_SECONDS = 0.35
 MAX_MPD_LOG_TAIL_BYTES = 8192
 MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS = 5.0
 MAX_MPD_QUEUE_ENTRIES = 50000
@@ -373,17 +378,57 @@ class MpdService:
             sock.bind((self.host, 0))
             return int(sock.getsockname()[1])
 
+    def _managed_mpd_pid(self) -> int:
+        """Return the pid of the MPD this process supervises, else 0.
+
+        ``ProcessSupervisor.status`` reports ``unknown process`` before the first
+        ``register`` and ``pid`` 0 once the child exited; both must read here as
+        "nothing of ours is running" rather than raise on a transport path.
+        """
+        try:
+            status = self.supervisor.status("mpd")
+            if not status.get("running"):
+                return 0
+            return int(status.get("pid") or 0)
+        except Exception:
+            return 0
+
+    def _port_held_by_our_mpd(self) -> bool:
+        """Tell our own running MPD apart from a stranger on the MPD port.
+
+        A bind probe cannot: a healthy MPD always fails ``bind`` on the number it
+        is listening on.  Measured on the owner's host on 2026-10-10, reading that
+        failure as "stolen port" made every transport action SIGTERM our own child,
+        wait for it and start a new MPD -- seven controls, seven different MPD pids,
+        1,247 ms mean inside this method alone, and the "half a beat late" the owner
+        felt on the USB DAC.  So both halves must agree: the supervisor owns a live
+        child, and MPD protocol answers on the port.  A child of ours that is up but
+        never bound, and any foreign holder while we have no child, keep the
+        original displacement behaviour untouched.
+        """
+        if self._managed_mpd_pid() <= 0:
+            return False
+        return _mpd_handshake_ok(self.host, self.port)
+
     def _ensure_bindable_port(self) -> None:
         """Move MPD off a stolen port before ``mpd.conf`` is written.
 
         ``_select_port`` only runs once, when the service object is built, so a
         port taken afterwards used to keep ``start()`` failing for the whole
-        lifetime of the app process.  A legacy payload-rooted MPD is still the
-        first thing we try to displace; only a stranger on the number makes MPD
-        move, and the new port is written back into the config every client
-        reads, so the two sides cannot drift.
+        lifetime of the app process.  Before anything is displaced the service asks
+        whether the holder is its own running MPD -- holding the port is what a
+        healthy MPD does, and this method runs on every transport command.  A
+        legacy payload-rooted MPD is still the first thing we try to displace; only
+        a stranger on the number makes MPD move, and the new port is written back
+        into the config every client reads, so the two sides cannot drift.
         """
         if _tcp_port_available(self.host, self.port):
+            return
+        if self._port_held_by_our_mpd():
+            # Normal steady state, not theft: the port belongs to the MPD this very
+            # service supervises.  Displacing it here restarted MPD -- and repaid the
+            # index, the output lease and the startup handshake -- on every
+            # play/pause/next/previous/stop/seek/volume.
             return
         if self._reap_legacy_instances() and _tcp_port_available(self.host, self.port):
             return
@@ -430,6 +475,7 @@ class MpdService:
         legacy = self._legacy_data_root()
         if not legacy:
             return False
+        owned = self._managed_mpd_pid()
         targets = set(self._scan_matching_pids())
         pid_file = os.path.join(legacy, "mpd.pid")
         if os.path.isfile(pid_file):
@@ -441,6 +487,10 @@ class MpdService:
                     targets.add(pid)
             except Exception:
                 pass
+        # Depth defence: ``_pid_matches_mpd`` recognises the command line we
+        # launched ourselves, so the child this process supervises must never be a
+        # reap target, whichever caller reaches this method.
+        targets.discard(owned)
         if not targets:
             return False
         for pid in sorted(targets):
@@ -1040,6 +1090,24 @@ class MpdService:
         with self._lifecycle_lock:
             return self._start_locked()
 
+    def _mpd_is_warm(self, setup: Dict[str, Any]) -> bool:
+        """Whether MPD is already in exactly the state ``start()`` would produce.
+
+        Three things have to hold together, which is why this is not one check: the
+        configuration we would write is already on disk unchanged, our own supervised
+        child is alive and answers MPD protocol on its port, and the priority the
+        supervisor holds matches the config.  A DAC switch, a settings change, a dead
+        child, or a child that never bound, all fall through to the cold sequence,
+        which is also what restarts MPD when the output changes.
+        """
+        if setup.get("config_changed"):
+            return False
+        if not self._port_held_by_our_mpd():
+            return False
+        running_status = self.supervisor.status("mpd")
+        wanted = _config_int(self.config.get("mpd_nice"), 0, -5, 10)
+        return _config_int(running_status.get("nice"), 0, -5, 10) == wanted
+
     def _start_locked(self) -> Dict[str, Any]:
         self._ensure_bindable_port()
         self._recovery_generation += 1
@@ -1051,6 +1119,23 @@ class MpdService:
         lease = AUDIO_OUTPUT_LEASE.acquire("mpd", str((setup.get("output_device") or {}).get("stable_id") or ""))
         if not lease.get("ok"):
             return {**setup, "ok": False, "running": False, "message": lease.get("message")}
+        if self._mpd_is_warm(setup):
+            # The child we supervise already answers on the port, the configuration
+            # it was started with is still what we would write, and its scheduling
+            # priority matches.  That is precisely the state the rest of this method
+            # exists to produce, so replaying it -- process registration, the ready
+            # handshake with its ``mpd --version`` subprocess, the index convergence
+            # and a full status probe -- only puts another ~380 ms in front of the
+            # transport command the user just pressed.  The companion workers stay
+            # admitted here, because a warm start is still the only place a listener
+            # that died since the cold start gets restarted.
+            try:
+                self._start_idle_listener()
+                self._start_device_monitor()
+            except Exception:
+                AUDIO_OUTPUT_LEASE.release("mpd")
+                raise
+            return {**setup, "ok": True, "running": True, "pid": self._managed_mpd_pid(), "warm_start": True}
         if not self.supervisor.status("mpd").get("running"):
             self._cleanup_stale_instances()
         try:
@@ -2483,6 +2568,22 @@ def _tcp_port_available(host: str, port: int) -> bool:
             return True
         except OSError:
             return False
+
+
+def _mpd_handshake_ok(host: str, port: int) -> bool:
+    """Return True when an MPD protocol server greets us on ``host:port``.
+
+    Only the greeting is read.  ``mpd_probe`` would add an ``mpd --version``
+    subprocess to the transport path this exists to shorten, and a bare port scan
+    would confuse MPD with any other listener.  The connect goes through the same
+    source-port guard every other client uses, so asking the port cannot be what
+    steals it.
+    """
+    try:
+        with MpdConnection(host, port, MAX_MPD_HANDSHAKE_TIMEOUT_SECONDS):
+            return True
+    except Exception:
+        return False
 
 
 def _ephemeral_port_range() -> tuple:

@@ -232,7 +232,12 @@ class MpdOutput(OutputPlugin):
     def snapshot(self, state: PlaybackState) -> Dict[str, Any]:
         result = super().snapshot(state)
         try:
-            result["mpd"] = self.status()
+            # A snapshot is taken while the caller holds the playback core
+            # lock, so it must not read the MPD log or classify its errors:
+            # every transport action and every progress poll queues behind that
+            # lock. The response's own ``mpd`` section already comes from a
+            # light probe, and no reader consumes the copy nested here.
+            result["mpd"] = self.status(light=True)
         except Exception as exc:
             result["mpd"] = {"available": False, "message": str(exc)}
         return result
