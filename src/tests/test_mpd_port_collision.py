@@ -281,3 +281,96 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OwnMpdHoldingItsPortIsNotAPortThiefTests(unittest.TestCase):
+    """R197: our own healthy MPD holding its port must never look like a thief.
+
+    Every transport action walks MpdOutput.command() -> MpdService.start() ->
+    _ensure_bindable_port().  Measured on the owner's host with a TEAC UD-301
+    attached: _tcp_port_available is False in the steady state because *our own*
+    MPD holds the listening socket, so the service reaped its own child (SIGTERM
+    plus a 2.5 s wait), restarted MPD and paid the whole handshake again for every
+    click -- 1,247 ms mean inside _ensure_bindable_port alone, 1,920 ms mean per
+    POST /api/playback/control, a fresh MPD pid each time.
+    """
+
+    def setUp(self):
+        self.service = build_service()
+
+    def supervisor_says(self, running, pid=0):
+        return mock.patch.object(
+            self.service.supervisor, "status", return_value={"running": running, "pid": pid}
+        )
+
+    def test_our_running_mpd_that_answers_on_the_port_is_left_alone(self):
+        with mock.patch.object(mpd_module, "_tcp_port_available", return_value=False):
+            with self.supervisor_says(True, 4242):
+                with mock.patch.object(mpd_module, "_mpd_handshake_ok", return_value=True) as hello:
+                    with mock.patch.object(MpdService, "_reap_legacy_instances") as reap:
+                        with mock.patch.object(MpdService, "_select_fallback_port") as pick:
+                            with mock.patch.object(MpdService, "_terminate_pid") as kill:
+                                self.service._ensure_bindable_port()
+        reap.assert_not_called()
+        kill.assert_not_called()
+        pick.assert_not_called()
+        hello.assert_called_once_with(HOST, MPD_PORT)
+        self.assertEqual(self.service.port, MPD_PORT)
+        self.assertEqual(self.service.config["mpd_port"], MPD_PORT)
+
+    def test_a_free_port_costs_no_extra_handshake(self):
+        # The guard must not put a socket round trip on the path that already
+        # answered "bindable", or the fix would trade a reap for a connect.
+        with mock.patch.object(mpd_module, "_tcp_port_available", return_value=True):
+            with self.supervisor_says(True, 4242):
+                with mock.patch.object(mpd_module, "_mpd_handshake_ok") as hello:
+                    with mock.patch.object(MpdService, "_reap_legacy_instances") as reap:
+                        self.service._ensure_bindable_port()
+        hello.assert_not_called()
+        reap.assert_not_called()
+        self.assertEqual(self.service.port, MPD_PORT)
+
+    def test_a_stranger_on_the_port_is_still_reaped_and_moved(self):
+        # Killing the guard outright must not be survivable: with no MPD of ours
+        # running, a contested port still goes through reap -> fallback port.
+        with mock.patch.object(mpd_module, "_tcp_port_available", return_value=False):
+            with self.supervisor_says(False, 0):
+                with mock.patch.object(mpd_module, "_mpd_handshake_ok", return_value=True) as hello:
+                    with mock.patch.object(MpdService, "_reap_legacy_instances", return_value=False) as reap:
+                        with mock.patch.object(MpdService, "_select_fallback_port", return_value=61000) as pick:
+                            self.service._ensure_bindable_port()
+        # Nothing of ours is running, so the guard must not even spend a connect on
+        # asking: the supervisor answer alone decides, and the reap stays first.
+        hello.assert_not_called()
+        reap.assert_called_once_with()
+        pick.assert_called_once_with()
+        self.assertEqual(self.service.port, 61000)
+
+    def test_our_child_that_is_up_but_not_answering_is_not_excused(self):
+        # A supervisor entry alone is not proof of ownership: a child that never
+        # bound (or is still forking) must not freeze the collision handling.
+        with mock.patch.object(mpd_module, "_tcp_port_available", return_value=False):
+            with self.supervisor_says(True, 4242):
+                with mock.patch.object(mpd_module, "_mpd_handshake_ok", return_value=False) as hello:
+                    with mock.patch.object(MpdService, "_reap_legacy_instances", return_value=False) as reap:
+                        with mock.patch.object(MpdService, "_select_fallback_port", return_value=61001):
+                            self.service._ensure_bindable_port()
+        hello.assert_called_once_with(HOST, MPD_PORT)
+        reap.assert_called_once_with()
+        self.assertEqual(self.service.port, 61001)
+
+    def test_the_guard_is_consulted_before_any_process_is_touched(self):
+        body = inspect.getsource(MpdService._ensure_bindable_port)
+        available = body.find("_tcp_port_available(self.host, self.port)")
+        guard = body.find("self._port_held_by_our_mpd()")
+        reap = body.find("_reap_legacy_instances()")
+        self.assertGreaterEqual(available, 0)
+        self.assertGreaterEqual(guard, 0, "_ensure_bindable_port must ask whether the port is our own")
+        self.assertGreaterEqual(reap, 0)
+        self.assertLess(guard, reap, "the ownership check has to come before any reaping")
+        self.assertLess(available, guard, "the cheap bind probe stays the first gate")
+
+    def test_a_supervisor_without_an_mpd_entry_reports_no_owned_pid(self):
+        # The real supervisor answers "unknown process" here, and that must read
+        # as "nothing of ours is running" rather than raising on the transport path.
+        self.assertEqual(self.service._managed_mpd_pid(), 0)
+        self.assertFalse(self.service._port_held_by_our_mpd())

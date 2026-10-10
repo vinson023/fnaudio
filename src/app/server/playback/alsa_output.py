@@ -595,6 +595,29 @@ def _compact_audio_name(value):
     return text or str(value or "")
 
 
+def _proc_line_is_usb_card(card, line, card_info):
+    """Decide USB-ness for an enumeration line without touching the codec dump.
+
+    ``_is_usb_card`` accepts free text and then falls back to the card's sysfs
+    device path and its driver, all of which are already readable from the
+    ``/proc/asound/pcm`` line, the whole ``/proc/asound/cards`` entry and
+    ``cardN/stream*``. Those cover everything the caller can learn without
+    naming the device - naming is what reads ``cardN/codec#*`` - so a line
+    this rejects could not have been returned a few statements later. The
+    card and stream names are read here as well because on a host where the
+    app cannot see ``cardN/device``, the name built from them is the only
+    remaining place a USB card says so.
+    """
+    return _is_usb_card(
+        card,
+        line,
+        _read_card_usb_name(card),
+        card_info.get("name", ""),
+        card_info.get("driver", ""),
+        card_info.get("key", ""),
+    )
+
+
 def alsa_devices_from_proc():
     cards = {}
     try:
@@ -616,7 +639,28 @@ def alsa_devices_from_proc():
                 if not match:
                     continue
                 card, device, pcm_name, dev_name = match.groups()
-                card_info = cards.get(str(int(card)), {})
+                # ``/proc/asound/pcm`` zero-pads both numbers while ``cards``,
+                # ``cardN`` and ``friendly_alsa_device_name`` key everything on
+                # the plain digit, so normalise before asking anything about the
+                # card: a lookup against ``card00`` finds nothing, and a gate
+                # that finds nothing would reject a real USB DAC whose pcm line
+                # happens not to spell "USB".
+                card = str(int(card))
+                device = str(int(device))
+                card_info = cards.get(card, {})
+                if not _proc_line_is_usb_card(card, line, card_info):
+                    # This enumeration publishes USB sound cards only, so an
+                    # on-board HDMI or analog line is dropped a few statements
+                    # later regardless of what it is named. Naming it, though,
+                    # reads every ``cardN/codec#*`` dump, and each read makes
+                    # the HDA driver issue one verb per codec node: measured on
+                    # the fnOS host with a TEAC UD-301 attached, one full
+                    # enumeration cost 362-558 ms and 6 of its 7 codec reads
+                    # belonged to cards the result throws away. ``/api/
+                    # playback/status`` pays this scan three times per poll and
+                    # ``/api/dac/devices`` once, which is the "half a beat late"
+                    # the owner reports for every transport action.
+                    continue
                 alsa_id = "hw:%s,%s" % (int(card), int(device))
                 raw_name = "%s - %s" % (card_info.get("name") or pcm_name.strip(), dev_name.strip())
                 name = friendly_alsa_device_name(card, device, card_info, pcm_name, dev_name, line)

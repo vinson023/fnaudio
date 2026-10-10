@@ -2891,10 +2891,13 @@ def playback_status(payload_or_query):
                     if result.get("ok") is True and output_result.get("ok") is True:
                         probe = MPD_OUTPUT.status()
                         status = probe.get("status") or status
+                        # Only this branch moved the core state, so only here
+                        # is a second snapshot worth its cost.
+                        core_snapshot = PLAYBACK_CORE.snapshot()
         return mpd_response(
             probe,
             status,
-            PLAYBACK_CORE.snapshot(),
+            core_snapshot,
             cue_segment=cue_segment_declaration(current_item),
         ), 200
     device = find_upnp_device(target_id)
