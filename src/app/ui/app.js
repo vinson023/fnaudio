@@ -229,6 +229,12 @@ state.libraryLoading = false;
 // Keep the previous list mounted during navigation to avoid a blank flash,
 // but make that stale projection inert until the replacement page commits.
 state.libraryInteractionBlocked = false;
+// Background polling and the click gate share one bounded window. Every request through
+// the fnOS gateway starts a CGI worker, and the browser keeps only six HTTP/1.1
+// connections to it, so a page replacement has to be able to tell the 0.5s~1.5s ticks
+// to wait. The deadline keeps a request that never settles from starving status.
+const LIBRARY_INTERACTION_HOLD_MS = 4000;
+state.libraryInteractionHoldUntil = 0;
 state.libraryLoaded = 0;
 state.libraryTotal = 0;
 state.page = 1;
@@ -5903,6 +5909,22 @@ function loadPagedLibrary(page = 1, refresh = false) {
   promise.then(clear, clear);
   return promise;
 }
+// Controls that start their own library request. A second click on one of these
+// while a page is being replaced is not a conflicting action: the request sequence
+// and the abort controller already own the race, so it only has to reach its handler.
+const LIBRARY_NAVIGATION_SELECTOR = "[data-group-row],[data-folder-crumb-root],[data-folder-page-step],[data-group-back],[data-creator-root-back],[data-open-creator-all-tracks],[data-page-step]";
+function isLibraryNavigationTarget(target, list = $("trackList")) {
+  const node = target?.closest?.(LIBRARY_NAVIGATION_SELECTOR);
+  return Boolean(node && list?.contains?.(node));
+}
+function libraryInteractionBlockedFor(target, list = $("trackList")) {
+  if (!state.libraryInteractionBlocked) return false;
+  return !isLibraryNavigationTarget(target, list);
+}
+function uiBackgroundWorkBlocked() {
+  if (!state.libraryInteractionBlocked) return false;
+  return Date.now() <= Number(state.libraryInteractionHoldUntil || 0);
+}
 // Fire-and-forget UI entry points already render the bounded error state.
 // Consume their rejection while explicit awaiters retain failure propagation.
 function requestLibraryLoad(page = 1, refresh = false) {
@@ -5915,6 +5937,13 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
   cancelReferencedItemHydrationSchedule();
   cancelMetadataRowRender();
   cancelVisibleMetadataPrefetch({ releaseKeys: true });
+  // The outgoing page can still hold a cover queue of hundreds of images with four
+  // requests in flight. Those bytes belong to rows about to be replaced, so release
+  // the browser connections for the navigation the user actually asked for. A later
+  // hydrate starts a fresh generation, and the failed/aborted paths recover through the
+  // idle-scheduler check in needsVisibleTrackCoverHydration().
+  state.coverLoadScheduler?.stop?.();
+  state.libraryInteractionHoldUntil = Date.now() + LIBRARY_INTERACTION_HOLD_MS;
   state.libraryInteractionBlocked = true;
   if (state.libraryStatusTimer) {
     clearTimeout(state.libraryStatusTimer);
@@ -7130,7 +7159,7 @@ function bindTrackListInteractions() {
   if (!list || list.dataset.trackInteractionsBound === "1") return;
   list.dataset.trackInteractionsBound = "1";
   list.addEventListener("click", event => {
-    if (!state.libraryInteractionBlocked) return;
+    if (!libraryInteractionBlockedFor(event.target, list)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   }, true);
@@ -7172,7 +7201,7 @@ function bindTrackListInteractions() {
     }
   });
   list.addEventListener("contextmenu", event => {
-    if (state.libraryInteractionBlocked) {
+    if (libraryInteractionBlockedFor(event.target, list)) {
       event.preventDefault();
       event.stopImmediatePropagation();
       return;
@@ -7186,7 +7215,7 @@ function bindTrackListInteractions() {
     openTrackMenuForRow(row, event.clientX, event.clientY, mobile);
   });
   list.addEventListener("pointerdown", event => {
-    if (state.libraryInteractionBlocked) {
+    if (libraryInteractionBlockedFor(event.target, list)) {
       cancelTrackLongPress();
       event.preventDefault();
       return;
@@ -8550,6 +8579,7 @@ requestLibraryLoad(1, false);
 loadServerUserState();
 const uiSyncScheduler = globalThis.fnAudioUiSyncScheduler.create({
   document,
+  isInteractionBlocked: uiBackgroundWorkBlocked,
   isLibraryScanning: () => state.libraryStatus?.scanning === true,
   isRemoteTarget,
   isRemoteEventConnected: () => state.remoteEventConnected,

@@ -62,10 +62,14 @@ assert.match(app, /state\.pageTotal = libraryCount\(data\.count\);/, "Authoritat
 assert.match(app, /state\.folderTotal = libraryCount\(folderData\.count\);/, "Folder page counts must reject malformed numeric payloads");
 assert.match(app, /state\.libraryInteractionBlocked = false;/, "Stale library rows need an explicit interaction guard during replacement loads");
 assert.match(app, /state\.libraryInteractionBlocked = true;[\s\S]*?state\.libraryInteractionBlocked = false;/, "Replacement page loads must make the retained old projection inert until commit");
-assert.match(app, /list\.addEventListener\("click", event => \{[\s\S]*?state\.libraryInteractionBlocked[\s\S]*?\}, true\);/, "The retained list must block delegated and direct click handlers while loading");
+const clickListenerBlock = app.match(/list\.addEventListener\("click", event => \{[\s\S]*?\}, true\);/)?.[0] ?? "";
+assert.ok(
+  clickListenerBlock.includes(String.raw`if (!libraryInteractionBlockedFor(event.target, list)) return;`),
+  "The retained list must release folder navigation while it keeps blocking stale rows",
+);
 assert.match(app, /if \(state\.libraryInteractionBlocked && event\.target\.closest\?\.\("#trackList"\)/, "Double-click playback must not bypass the stale-list interaction guard");
-assert.match(app, /list\.addEventListener\("contextmenu", event => \{\s*if \(state\.libraryInteractionBlocked\)[\s\S]*?event\.stopImmediatePropagation\(\);/, "Context menus must not operate on stale rows during replacement loads");
-assert.match(app, /list\.addEventListener\("pointerdown", event => \{\s*if \(state\.libraryInteractionBlocked\)[\s\S]*?cancelTrackLongPress\(\);[\s\S]*?event\.preventDefault\(\);/, "Long-press gestures must not operate on stale rows during replacement loads");
+assert.match(app, /list\.addEventListener\("contextmenu", event => \{\s*if \(libraryInteractionBlockedFor\(event\.target, list\)\)[\s\S]*?event\.stopImmediatePropagation\(\);/, "Context menus must not operate on stale rows during replacement loads");
+assert.match(app, /list\.addEventListener\("pointerdown", event => \{\s*if \(libraryInteractionBlockedFor\(event\.target, list\)\)[\s\S]*?cancelTrackLongPress\(\);[\s\S]*?event\.preventDefault\(\);/, "Long-press gestures must not operate on stale rows during replacement loads");
 assert.match(app, /state\.libraryStatusPromise = null;/, "Library status polling needs explicit in-flight ownership");
 assert.match(app, /state\.libraryStatusRefreshQueued = false;/, "Status polling needs a bounded trailing-refresh flag");
 assert.match(app, /fnAudioLibraryStatusRefreshPolicy\?\.plan\(/, "Status refresh reuse must use the isolated policy");
@@ -1138,6 +1142,95 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
   for (const slice of [validateTargetSource, loadDevicesSource, saveStateSource]) {
     assert.ok(slice.includes("parsedBody(result.bodyStatus)"),
       "each gated function has to carry the gate itself, not inherit it from a helper");
+  }
+
+  // R198: folder navigation must stay responsive, and a new page may not inherit
+  // the outgoing page's cover queue or compete with the background pollers.
+  {
+    const selectorConst = app.match(/const LIBRARY_NAVIGATION_SELECTOR = "([^"]+)";/);
+    assert.ok(selectorConst, "the navigation allow-list must stay one top-level constant");
+    const gateNames = ["isLibraryNavigationTarget", "libraryInteractionBlockedFor", "uiBackgroundWorkBlocked"];
+    const gateSource = selectorConst[0] + ";\n" + gateNames.map(name => {
+      const found = app.match(new RegExp("function " + name + "\\([\\s\\S]*?\\) \\{[\\s\\S]*?\\n\\}"));
+      assert.ok(found, `${name} must stay a top-level function for this check`);
+      return found[0];
+    }).join(";\n");
+    const insideList = [];
+    const list = { contains: node => insideList.includes(node) };
+    const node = (...attributes) => {
+      const element = {
+        attributes,
+        closest(selector) {
+          return selector.split(",").some(wanted => attributes.includes(wanted)) ? element : null;
+        },
+      };
+      insideList.push(element);
+      return element;
+    };
+    const detached = node("[data-group-row]");
+    insideList.length = 0;
+    const folderRow = node("[data-group-row]", "[data-open-folder-path]");
+    const crumb = node("[data-folder-crumb-root]");
+    const folderPagerButton = node("[data-folder-page-step]");
+    const trackRow = node("[data-track-row-key]");
+    let clock = 1000;
+    const gateState = { libraryInteractionBlocked: false, libraryInteractionHoldUntil: 0 };
+    const gateContext = {
+      $: () => list,
+      state: gateState,
+      Number,
+      Boolean,
+      Date: { now: () => clock },
+    };
+    vm.runInNewContext(
+      gateSource
+      + "; globalThis.gate = libraryInteractionBlockedFor;"
+      + " globalThis.navTarget = isLibraryNavigationTarget;"
+      + " globalThis.backgroundBlocked = uiBackgroundWorkBlocked;",
+      gateContext,
+    );
+    gateState.libraryInteractionBlocked = true;
+    gateState.libraryInteractionHoldUntil = 5000;
+    assert.equal(gateContext.navTarget(folderRow, list), true, "a folder row click is navigation");
+    assert.equal(gateContext.navTarget(crumb, list), true, "a breadcrumb click is navigation");
+    assert.equal(gateContext.navTarget(folderPagerButton, list), true, "a folder pager click is navigation");
+    assert.equal(gateContext.gate(folderRow, list), false, "the in-flight gate may not swallow a folder click");
+    assert.equal(gateContext.gate(crumb, list), false, "drilling back out of a folder must stay live too");
+    assert.equal(gateContext.gate(trackRow, list), true, "playing a row of a page that is still being replaced stays suppressed");
+    assert.equal(gateContext.gate(detached, list), true, "a navigation node outside the list is not exempted");
+    assert.equal(gateContext.gate(node("[data-open-folder-path]"), list), true, "only the row itself carries the navigation marker");
+    gateState.libraryInteractionBlocked = false;
+    assert.equal(gateContext.gate(trackRow, list), false, "outside a load nothing may be blocked");
+    gateState.libraryInteractionBlocked = true;
+    assert.equal(gateContext.backgroundBlocked(), true, "the background lanes yield while the page is in flight");
+    clock = 5001;
+    assert.equal(gateContext.backgroundBlocked(), false, "a request that never settles may not starve status forever");
+    gateState.libraryInteractionBlocked = false;
+    clock = 1;
+    assert.equal(gateContext.backgroundBlocked(), false, "an expired hold with no live request blocks nothing");
+    const binder = app.match(/function bindTrackListInteractions\([\s\S]*?\n\}/);
+    assert.ok(binder, "the track list interaction binder must remain one top-level function");
+    assert.equal(countOccurrences(binder[0], "libraryInteractionBlockedFor(event.target, list)"), 3,
+      "click, contextmenu and pointerdown all have to consult the same predicate");
+    assert.equal(binder[0].includes("state.libraryInteractionBlocked"), false,
+      "the binder may not read the flag directly, or navigation would be swallowed again");
+  }
+  {
+    const worker = app.match(/async function loadPagedLibraryWorker\([\s\S]*?\n\}/);
+    assert.ok(worker, "the paged library worker must remain one top-level function");
+    const body = worker[0];
+    const stopAt = body.indexOf("state.coverLoadScheduler?.stop?.()");
+    const holdAt = body.indexOf("state.libraryInteractionHoldUntil = Date.now() + LIBRARY_INTERACTION_HOLD_MS;");
+    const blockedAt = body.indexOf("state.libraryInteractionBlocked = true;");
+    assert.ok(stopAt >= 0, "a new page has to release the previous page's cover requests");
+    assert.ok(holdAt >= 0, "the background lanes need an armed, bounded hold window");
+    assert.ok(blockedAt >= 0, "the worker still marks the page as being replaced");
+    assert.ok(stopAt < blockedAt && holdAt < blockedAt,
+      "both the cover release and the hold must happen before the block is published");
+    assert.match(app, /fnAudioUiSyncScheduler\.create\(\{[\s\S]{0,400}?isInteractionBlocked: uiBackgroundWorkBlocked,/,
+      "the scheduler has to receive the interaction gate it checks on every tick");
+    assert.equal(countOccurrences(app, "const LIBRARY_INTERACTION_HOLD_MS = 4000;"), 1,
+      "the hold window is declared once and bounded");
   }
 
   console.log("Library loading cancellation regression checks passed.");
