@@ -380,7 +380,7 @@ class MpdLibraryStateTests(unittest.TestCase):
             )
 
     def test_message_distinguishes_a_cold_database_from_a_missing_file(self):
-        self.assertIn("MPD 索引仍在建立中，当前已收录 23751 首", mpd_library_state_message(
+        self.assertIn("MPD 索引仍在建立中，上次收录完成时为 23751 首", mpd_library_state_message(
             {"available": True, "indexed": 23751, "updating": True}))
         self.assertIn("MPD 索引已完成，当前收录 62684 首", mpd_library_state_message(
             {"available": True, "indexed": 62684, "updating": False}))
@@ -394,7 +394,7 @@ class MpdLibraryStateTests(unittest.TestCase):
         self.assertIn("已请求 MPD 收录整个曲库", idle)
         self.assertNotIn("请确认文件仍存在", idle)
         busy = mpd_library_state_message({"available": True, "indexed": 1775, "updating": True}, True)
-        self.assertIn("MPD 索引仍在建立中，当前已收录 1775 首", busy)
+        self.assertIn("MPD 索引仍在建立中，上次收录完成时为 1775 首", busy)
         self.assertIn("已请求 MPD 收录整个曲库", busy)
 
     def test_a_queued_catchup_promises_the_measured_wait(self):
@@ -433,7 +433,7 @@ class MpdFailureDiagnosticsTests(unittest.TestCase):
         self.assertIn(MISSING_ACK, message)
         self.assertIn("已请求 MPD 收录 未整理/春野 后重试仍失败", message)
         self.assertIn("uri=未整理/春野/a b.flac", message)
-        self.assertIn("MPD 索引仍在建立中，当前已收录 23751 首", message)
+        self.assertIn("MPD 索引仍在建立中，上次收录完成时为 23751 首", message)
 
     def test_queue_failure_is_wrapped_the_same_way(self):
         class QueueService:
@@ -469,7 +469,7 @@ class MpdFailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(update.call_args.kwargs["path"], "未整理/春野")
         self.assertIn("已请求 MPD 收录 未整理/春野 后重试仍失败", result["message"])
         self.assertIn("uri=未整理/春野/up.flac", result["message"])
-        self.assertIn("当前已收录 23751 首", result["message"])
+        self.assertIn("上次收录完成时为 23751 首", result["message"])
 
     def test_generated_transcode_is_indexed_as_one_folder(self):
         service = make_service(["/music"])
@@ -513,7 +513,36 @@ class MpdFailureDiagnosticsTests(unittest.TestCase):
         message = result["message"]
         self.assertNotIn("index is being rebuilt", message)
         self.assertIn("已请求 MPD 收录 整个曲库 后重试仍失败", message)
-        self.assertIn("MPD 索引仍在建立中，当前已收录 23751 首", message)
+        self.assertIn("MPD 索引仍在建立中，上次收录完成时为 23751 首", message)
+
+
+class MpdFrozenCounterMessageTests(unittest.TestCase):
+    """A building index freezes ``stats.songs``; the sentence must stop lying.
+
+    Measured twice on the fnOS host: a full scan of 63,546 tracks left the counter
+    pinned at its previous value for the whole rebuild (980 s), and the owner read
+    "当前已收录 1775 首" as a scan that had stalled at 1,775 tracks. While MPD says
+    ``updating_db`` the count may only be described as the value the *previous*
+    scan finished at, never as live progress.
+    """
+
+    def test_building_sentences_label_the_count_as_the_previous_finished_value(self):
+        for pending in (False, True):
+            message = mpd_library_state_message(
+                {"available": True, "indexed": 1775, "updating": True}, pending
+            )
+            self.assertIn("上次收录完成时为 1775 首", message)
+            self.assertIn("不会变化", message)
+            self.assertNotIn("当前已收录", message)
+
+    def test_finished_and_behind_sentences_keep_the_live_count(self):
+        """Only while MPD is idle is the count safe to quote as current."""
+        done = mpd_library_state_message({"available": True, "indexed": 62684, "updating": False})
+        self.assertIn("MPD 索引已完成，当前收录 62684 首", done)
+        self.assertNotIn("不会变化", done)
+        behind = mpd_library_state_message({"available": True, "indexed": 23483, "updating": False}, True)
+        self.assertIn("MPD 索引落后于 fnAudio 曲库，当前已收录 23483 首", behind)
+        self.assertNotIn("不会变化", behind)
 
 
 if __name__ == "__main__":

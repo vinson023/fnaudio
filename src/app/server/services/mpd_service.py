@@ -135,6 +135,16 @@ def device_presence_transition(state: Optional[Dict[str, Any]], present: bool, t
     return current, event
 
 
+# fnOS rewrites the whole ``@appcenter/<app>`` payload on every install-local
+# upgrade (measured 2026-10-10: the MPD ``database`` was found truncated to
+# 8,499 bytes minutes after a reinstall, which costs a ~30 minute cold scan).
+# The per-app configuration directory is the only place with a longer lifetime,
+# so from now on the MPD index lives beside the config file when there is one.
+DURABLE_CONFIG_MARKER = "@appconf"
+LEGACY_DATA_ROOT_PARTS = ("share", "mpd")
+RECLAIMED_INDEX_FILES = ("database", "state", "sticker.sql")
+
+
 class MpdService:
     """Owns an app-private MPD instance when an MPD binary is available."""
 
@@ -148,14 +158,19 @@ class MpdService:
         self.app_config_path = os.path.abspath(app_config_path) if app_config_path else ""
         self.app_root = app_root or os.environ.get("TRIM_APPDEST") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         self.host = DEFAULT_HOST
-        self.port = self._select_port(_config_int(config.get("mpd_port"), DEFAULT_PORT, 1024, 65535))
-        self.config["mpd_port"] = self.port
-        self.binary = self._find_binary()
         self.lib_dir = os.path.join(self.app_root, "target", "lib")
+        # The data paths are resolved before the port is chosen: an MPD still
+        # running from the old payload-rooted directory keeps the configured MPD
+        # port, and without reaping it first this instance would drift onto a
+        # random port and never reclaim the index it is about to need.
         self.data_root = self._data_root()
         self.music_root = os.path.join(self.data_root, "music")
         self.config_path = os.path.join(self.data_root, "mpd.conf")
         self.log_path = os.path.join(self.data_root, "mpd.log")
+        self.reclaimed_index_from = ""
+        self.port = self._select_port(_config_int(config.get("mpd_port"), DEFAULT_PORT, 1024, 65535))
+        self.config["mpd_port"] = self.port
+        self.binary = self._find_binary()
         self.supervisor = ProcessSupervisor()
         self._configured = False
         # Process setup, companion-worker admission and shutdown form one
@@ -325,6 +340,10 @@ class MpdService:
         requested = max(1024, min(65535, int(requested or DEFAULT_PORT)))
         if _tcp_port_available(self.host, requested):
             return requested
+        # The only holder we are allowed to displace is an MPD from the previous
+        # payload-rooted layout; anything else is a stranger and gets a fallback port.
+        if self._reap_legacy_instances() and _tcp_port_available(self.host, requested):
+            return requested
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((self.host, 0))
             return int(sock.getsockname()[1])
@@ -333,7 +352,94 @@ class MpdService:
         configured = _config_text(self.config.get("mpd_data_dir"), maximum=1024).strip()
         if configured:
             return os.path.abspath(os.path.expanduser(configured))
-        return os.path.join(self.app_root, "share", "mpd")
+        durable = self._durable_app_dir()
+        if durable:
+            return os.path.join(durable, "mpd")
+        return os.path.join(self.app_root, *LEGACY_DATA_ROOT_PARTS)
+
+    def _durable_app_dir(self) -> str:
+        """Return the app-configuration directory that outlives a reinstall, or "".
+
+        Production launches pass ``--config /usr/local/apps/@appconf/fnaudio/config
+        .json`` (read from ``/proc`` on the test host); a relative ``config.json``
+        used by development runs carries no such marker and keeps the payload
+        directory, so no test or checkout layout changes shape.
+        """
+        if not self.app_config_path:
+            return ""
+        parent = os.path.dirname(os.path.abspath(self.app_config_path))
+        segments = [part.lower() for part in parent.replace("\\", "/").split("/")]
+        if DURABLE_CONFIG_MARKER not in segments:
+            return ""
+        return parent
+
+    def _legacy_data_root(self) -> str:
+        """The payload-rooted data directory, but only once the index moved away."""
+        legacy = os.path.abspath(os.path.join(self.app_root, *LEGACY_DATA_ROOT_PARTS))
+        if legacy == self.data_root:
+            return ""
+        return legacy
+
+    def _reap_legacy_instances(self) -> bool:
+        """Stop an MPD that is still holding resources from the legacy directory."""
+        # No platform guard here: ``_scan_matching_pids`` is already a no-op without
+        # /proc, and the pid file only exists where the legacy layout ever ran.
+        legacy = self._legacy_data_root()
+        if not legacy:
+            return False
+        targets = set(self._scan_matching_pids())
+        pid_file = os.path.join(legacy, "mpd.pid")
+        if os.path.isfile(pid_file):
+            try:
+                with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
+                    pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
+                    pid = int(pid_text.strip().splitlines()[0])
+                if pid > 1 and self._pid_matches_mpd(pid):
+                    targets.add(pid)
+            except Exception:
+                pass
+        if not targets:
+            return False
+        for pid in sorted(targets):
+            self._terminate_pid(pid)
+        return True
+
+    def _reclaim_legacy_index(self) -> str:
+        """Copy the MPD index into the durable directory before an upgrade deletes it.
+
+        A stale index is cheap - MPD's own ``update`` repairs it incrementally. An
+        empty index is not: every track MPD has not resolved yet is refused, and
+        the user is told to wait for a scan that takes about half an hour.
+        """
+        legacy = self._legacy_data_root()
+        if not legacy or not os.path.isdir(legacy):
+            return ""
+        source = os.path.join(legacy, "database")
+        target = os.path.join(self.data_root, "database")
+        if not os.path.isfile(source) or os.path.exists(target):
+            return ""
+        staged = target + ".reclaim"
+        try:
+            shutil.copyfile(source, staged)
+            secure_file(staged)
+            os.replace(staged, target)
+        except Exception:
+            try:
+                os.remove(staged)
+            except Exception:
+                pass
+            return ""
+        for name in RECLAIMED_INDEX_FILES:
+            if name == "database":
+                continue
+            side_source = os.path.join(legacy, name)
+            side_target = os.path.join(self.data_root, name)
+            if os.path.isfile(side_source) and not os.path.exists(side_target):
+                try:
+                    shutil.copyfile(side_source, side_target)
+                except Exception:
+                    pass
+        return legacy
 
     def _library_paths(self) -> List[str]:
         paths = self.config.get("library_paths")
@@ -785,6 +891,7 @@ class MpdService:
         if not self.binary:
             return {"ok": False, "available": False, "message": "MPD is not installed"}
         secure_directory(self.data_root)
+        self.reclaimed_index_from = self._reclaim_legacy_index()
         roots = self._library_paths()
         music_directory = self._prepare_music_directory(roots)
         playlist_directory = os.path.join(self.data_root, "playlists")
@@ -855,6 +962,7 @@ class MpdService:
             "binary": self.binary,
             "config_path": self.config_path,
             "data_root": self.data_root,
+            "reclaimed_index_from": self.reclaimed_index_from,
             "music_directory": music_directory,
             "output_device": output_device,
             "mixer_type": mixer_type,
@@ -1051,6 +1159,7 @@ class MpdService:
             "version": self._binary_version(),
             "config_path": self.config_path,
             "data_root": self.data_root,
+            "reclaimed_index_from": self.reclaimed_index_from,
             "supervisor": supervisor,
             "idle": self.idle_status(),
             "index_catchup": self.index_status(),
@@ -1817,7 +1926,10 @@ class MpdService:
         if not raw:
             return False
         text = raw.lower()
-        return "mpd" in text and (self.config_path.lower() in text or self.data_root.lower() in text)
+        if "mpd" not in text:
+            return False
+        needles = [self.config_path.lower(), self.data_root.lower(), self._legacy_data_root().lower()]
+        return any(needle and needle in text for needle in needles)
 
     def _terminate_pid(self, pid: int) -> None:
         if pid <= 1:
