@@ -49,11 +49,12 @@ MAX_MPD_PID_FILE_BYTES = 256
 MAX_MPD_LOG_TAIL_BYTES = 8192
 MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS = 5.0
 MAX_MPD_QUEUE_ENTRIES = 50000
-# MPD indexes a whole library in the background, and a full scan of a
-# tens-of-thousands-file NAS library takes minutes; the worker is bounded so a
-# stalled MPD cannot hold the thread forever.
+# MPD indexes a whole library in the background.  Measured on the fnOS host, a
+# pathless ``update`` of the 62,684-song library committed 580 seconds after it
+# was issued (``stats.songs`` went 23,483 -> 63,550 in one step), so the worker
+# is bounded well above that while still not holding a thread forever.
 MPD_INDEX_CATCHUP_POLL_SECONDS = 2.0
-MPD_INDEX_CATCHUP_TIMEOUT_SECONDS = 900.0
+MPD_INDEX_CATCHUP_TIMEOUT_SECONDS = 1800.0
 from .audio_output_lease import AUDIO_OUTPUT_LEASE
 from .dac_profiles import dac_quirk_profile
 from file_permissions import atomic_write_text, secure_directory, secure_file
@@ -468,7 +469,14 @@ class MpdService:
         that already has songs is left alone: re-scanning the whole library on
         each DAC switch would thrash the disk for no proven gain, and a real
         lag is detected where it hurts (a refused ``addid``).
+
+        ``updating_db`` is MPD's own liveness flag, and it is not enough on its
+        side of the race: measured on the fnOS host a queued job is absent from
+        ``status`` until it starts, so this worker's own flag is checked first.
         """
+        with self._index_lock:
+            if self._index_state.get("running"):
+                return {"accepted": False, "reason": "already-running", "state": dict(self._index_state)}
         state = mpd_library_state(self.host, self.port)
         if not state.get("available") or state.get("indexed") or state.get("updating"):
             return {"accepted": False, "reason": "index-not-empty", "state": state}
@@ -604,11 +612,18 @@ class MpdService:
             # The generated FLAC lives in a regular directory below a music
             # root. Refresh before addid so MPD can resolve its relative URI.
             hint = ""
+            verify = ""
             for entry in entries:
                 if entry["track_id"] in generated_track_ids:
                     hint = mpd_update_hint(entry["uri"])
+                    verify = str(entry["uri"] or "")
                     break
-            mpd_update_and_wait(host=self.host, port=self.port, path=hint)
+            # The generated FLAC sits in a folder MPD may never have mounted, and
+            # a folder-targeted ``update`` is a silent no-op for exactly those
+            # folders, so the wait is settled by the uri it is about to ``addid``.
+            mpd_update_and_wait(
+                host=self.host, port=self.port, path=hint, verify_uri=verify
+            )
         fingerprint = tuple((entry["track_id"], entry["uri"]) for entry in entries)
         self._wait_for_recovery_window()
         with self._command_lock, self._queue_lock:

@@ -205,11 +205,11 @@ class MpdUpdateScopeTests(unittest.TestCase):
         self.assertTrue(result["timed_out"])
 
     def test_a_newer_scan_supersedes_the_job_we_queued(self):
-        """Once MPD is busy with somebody else's job, ours can only be finished."""
+        """Once MPD is busy with a *later* job, ours can only be finished."""
         connection = mock.MagicMock()
         connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
         states = [
-            {"available": True, "indexed": 1775, "updating": True, "job": "4"},
+            {"available": True, "indexed": 1775, "updating": True, "job": "7"},
             {"available": True, "indexed": 1775, "updating": True, "job": "9"},
         ]
         index = []
@@ -222,10 +222,140 @@ class MpdUpdateScopeTests(unittest.TestCase):
              mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
              mock.patch("playback.mpd_client.time.sleep"), \
              mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]):
-            result = mpd_update_and_wait(path="未整理/春野", timeout=0.0, poll=0.2)
+            result = mpd_update_and_wait(path="未整理/春野", timeout=30.0, poll=0.2)
         self.assertTrue(result["updated"])
         self.assertEqual(result["job"], "7")
 
+    def test_an_older_running_job_is_not_mistaken_for_our_finished_job(self):
+        """The measured failure: MPD answers "7", but status still shows job "4".
+
+        R189 compared the ids as text and called ``4 != 7`` proof that the scan
+        it had just queued was over.  Measured on the fnOS host the two numbers
+        are MPD's own queue positions, so job 4 means an *older* scan still owns
+        MPD and ours has not started -- the ten-minute convergence was reported
+        as finished inside two seconds, and the retry re-issued the same
+        ``addid`` that failed.
+        """
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        idle = {"available": True, "indexed": 23483, "updating": True, "job": "4"}
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", return_value=idle), \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4]):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=0.3, poll=0.2)
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["timed_out"])
+        self.assertFalse(result["absent"])
+        self.assertEqual(result["job"], "7")
+        self.assertIn("still running", result["message"])
+
+
+    def test_an_older_running_job_is_not_credited_as_our_own_scan(self):
+        """Seeing *some* scan is not evidence that ours began.
+
+        Measured on the fnOS host: ``update`` answered job "7" while an older job
+        "4" still owned the database.  If that sighting is stored as "our scan
+        ran", the very next idle read settles the wait and the ten-minute
+        convergence is called finished in seconds -- the R189 mistake again.
+        """
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 23483, "updating": True, "job": "4"},
+            {"available": True, "indexed": 23483, "updating": True, "job": "4"},
+            {"available": True, "indexed": 23483, "updating": False, "job": ""},
+            {"available": True, "indexed": 23483, "updating": False, "job": ""},
+        ]
+        reads = []
+
+        def read_state(*_args, **_kwargs):
+            reads.append(len(reads))
+            return states[min(len(reads) - 1, len(states) - 1)]
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic",
+                        side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]):
+            result = mpd_update_and_wait(path="未整理/春野", timeout=30.0, poll=0.2)
+        # ``reads[0]`` is the baseline taken before ``update``.  Settling on the
+        # first idle read means the older job was credited as ours, so the wait
+        # has to survive to the second consecutive idle read.
+        self.assertGreaterEqual(len(reads), 4)
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["job"], "7")
+
+
+
+    def test_the_song_resolving_is_what_settles_a_verified_wait(self):
+        """``verify_uri`` is answered by MPD's own resolver, not by counters."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        busy = {"available": True, "indexed": 23483, "updating": True, "job": "7"}
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", return_value=busy), \
+             mock.patch("playback.mpd_client.mpd_uri_indexed", side_effect=[False, True]) as indexed, \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]):
+            result = mpd_update_and_wait(
+                path="未整理/春野", timeout=30.0, poll=0.2, verify_uri="未整理/春野/a b.flac"
+            )
+        self.assertTrue(result["updated"])
+        self.assertTrue(result["resolved"])
+        self.assertFalse(result["absent"])
+        self.assertFalse(result["timed_out"])
+        indexed.assert_called_with("未整理/春野/a b.flac", "127.0.0.1", 56660)
+
+    def test_a_folder_refresh_that_leaves_the_song_unresolved_reports_absent(self):
+        """The measured no-op: the folder update finished and the song is still gone.
+
+        A directory MPD has never mounted answers ``updating_db`` and then does
+        nothing, so "our job is past" plus "still unresolvable" must not be
+        reported as a refresh that worked -- it is the signal to converge the
+        whole library.
+        """
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        states = [
+            {"available": True, "indexed": 23483, "updating": True, "job": "7"},
+            {"available": True, "indexed": 23483, "updating": True, "job": ""},
+        ]
+        index = []
+
+        def read_state(*_args, **_kwargs):
+            index.append(len(index))
+            return states[min(len(index) - 1, len(states) - 1)]
+
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", side_effect=read_state), \
+             mock.patch("playback.mpd_client.mpd_uri_indexed", return_value=False), \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]):
+            result = mpd_update_and_wait(
+                path="未整理/新专辑", timeout=30.0, poll=0.2, verify_uri="未整理/新专辑/a.flac"
+            )
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["absent"])
+        self.assertFalse(result["timed_out"])
+        self.assertIn("cannot resolve", result["message"])
+
+    def test_a_verified_wait_that_never_clears_still_reports_a_timeout(self):
+        """``absent`` is only for a refresh that proved over, never for a wait cut short."""
+        connection = mock.MagicMock()
+        connection.__enter__.return_value.command.return_value = ["updating_db: 7"]
+        busy = {"available": True, "indexed": 23483, "updating": True, "job": "7"}
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection), \
+             mock.patch("playback.mpd_client.mpd_library_state", return_value=busy), \
+             mock.patch("playback.mpd_client.mpd_uri_indexed", return_value=False), \
+             mock.patch("playback.mpd_client.time.sleep"), \
+             mock.patch("playback.mpd_client.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3, 0.4]):
+            result = mpd_update_and_wait(
+                path="未整理/新专辑", timeout=0.3, poll=0.2, verify_uri="未整理/新专辑/a.flac"
+            )
+        self.assertFalse(result["updated"])
+        self.assertTrue(result["timed_out"])
+        self.assertFalse(result["absent"])
 
 
 class MpdLibraryStateTests(unittest.TestCase):
@@ -266,6 +396,26 @@ class MpdLibraryStateTests(unittest.TestCase):
         busy = mpd_library_state_message({"available": True, "indexed": 1775, "updating": True}, True)
         self.assertIn("MPD 索引仍在建立中，当前已收录 1775 首", busy)
         self.assertIn("已请求 MPD 收录整个曲库", busy)
+
+    def test_a_queued_catchup_promises_the_measured_wait(self):
+        """The owner waited on "please wait for the scan" with no end in sight.
+
+        Measured on the fnOS host the whole-library scan this sentence promises
+        commits in 580 seconds, so the pending sentences say that out loud.
+        """
+        pending_idle = mpd_library_state_message(
+            {"available": True, "indexed": 23483, "updating": False}, True
+        )
+        pending_busy = mpd_library_state_message(
+            {"available": True, "indexed": 1775, "updating": True}, True
+        )
+        for sentence in (pending_idle, pending_busy):
+            self.assertIn("本机实测全库收录约需十分钟", sentence)
+            self.assertIn("请等待收录完成后重试播放", sentence)
+        # An unprompted scan is not ours to promise a duration for.
+        self.assertNotIn(
+            "十分钟", mpd_library_state_message({"available": True, "indexed": 1775, "updating": True})
+        )
 
 
 class MpdFailureDiagnosticsTests(unittest.TestCase):
@@ -607,3 +757,77 @@ class MpdFailureMessageOrderTests(unittest.TestCase):
         self.assertFalse(message.startswith("MPD 播放失败：ACK"))
         self.assertIn("已请求 MPD 收录 新专辑 后重试仍失败", message)
         self.assertLess(message.index("MPD 索引已完成"), message.index(ACK_AT_1))
+
+
+class MpdUriIndexProbeTests(unittest.TestCase):
+    """``mpd_uri_indexed`` asks MPD the one question playback cares about."""
+
+    RELATIVE = "未整理/HIRES/索尼精选HIRES/DSD/自然/【SONY·DSD】天地的回声(2.8MHz DSD)/A201911231818249.dsf"
+
+    def _probe(self, reply=None, error=None):
+        from playback.mpd_client import mpd_uri_indexed
+
+        connection = mock.MagicMock()
+        handle = connection.__enter__.return_value
+        if error is not None:
+            handle.command.side_effect = error
+        else:
+            handle.command.return_value = reply
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection):
+            return mpd_uri_indexed(self.RELATIVE), handle
+
+    def test_the_exact_uri_and_a_listed_entry_both_count_as_indexed(self):
+        # MPD 0.23.5 lists the very file it will resolve for ``addid``.
+        hit, handle = self._probe(reply=["file: " + self.RELATIVE])
+        self.assertTrue(hit)
+        self.assertEqual(handle.command.call_args.args[0], "listall")
+        self.assertEqual(
+            handle.command.call_args.args[1], self.RELATIVE.rsplit("/", 1)[0]
+        )
+        # An entry named by the same file name is the same fact for this caller.
+        hit2, _ = self._probe(reply=["file: 未整理/HIRES/其他/A201911231818249.dsf"])
+        self.assertTrue(hit2)
+
+    def test_a_folder_mpd_has_never_mounted_is_reported_as_absent(self):
+        """``No such directory`` is the measured reply for the album in the report."""
+        miss, _ = self._probe(reply=["ACK [50@0] {listall} No such directory"])
+        self.assertFalse(miss)
+        other, _ = self._probe(reply=["file: 未整理/HIRES/别的曲目.flac"])
+        self.assertFalse(other)
+
+    def test_a_socket_that_does_not_answer_is_not_indexed(self):
+        broken, _ = self._probe(error=MpdError("connection closed"))
+        self.assertFalse(broken)
+
+    def test_a_uri_mpd_cannot_be_asked_about_is_refused_without_a_command(self):
+        from playback.mpd_client import mpd_uri_indexed
+
+        connection = mock.MagicMock()
+        with mock.patch("playback.mpd_client.MpdConnection", return_value=connection):
+            self.assertFalse(mpd_uri_indexed("file:///vol2/1000/music/a.flac"))
+            self.assertFalse(mpd_uri_indexed("a.flac"))
+            self.assertFalse(mpd_uri_indexed(""))
+        connection.__enter__.assert_not_called()
+
+
+class MpdIndexVerificationWiringTests(unittest.TestCase):
+    """Every refresh that precedes an ``addid`` has to verify the song it needs."""
+
+    def _source(self, relative):
+        import io
+        import os
+
+        path = os.path.join(os.path.dirname(__file__), "..", "app", "server", relative)
+        with io.open(path, encoding="utf-8-sig") as handle:
+            return handle.read()
+
+    def test_both_playback_refreshes_verify_the_blamed_uri(self):
+        source = self._source("playback/mpd_output.py")
+        self.assertEqual(source.count("update = mpd_update_and_wait("), 2)
+        self.assertEqual(source.count("verify_uri=uri"), 2)
+
+    def test_the_generated_transcode_refresh_verifies_the_generated_uri(self):
+        source = self._source("services/mpd_service.py")
+        self.assertIn("path=hint, verify_uri=verify", source)
+
+

@@ -723,8 +723,12 @@ class MpdQueueTests(unittest.TestCase):
             queue[0].item, {**service.config, "cache_dir": "/music/fnaudio-transcode"}, "ape_flac"
         )
         self.assertTrue(replace_queue.call_args.args[0][0]["uri"].endswith("ape.ape-source.flac"))
+        # A folder-scoped update is a silent no-op for a folder MPD has never
+        # mounted, so the refresh has to be settled by the generated uri it is
+        # about to hand to ``addid``.
         update.assert_called_once_with(
-            host=service.host, port=service.port, path="fnaudio-transcode"
+            host=service.host, port=service.port, path="fnaudio-transcode",
+            verify_uri="fnaudio-transcode/ape.ape-source.flac",
         )
 
     @mock.patch("services.mpd_service.transcode_to_audio")
