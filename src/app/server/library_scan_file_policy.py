@@ -2,10 +2,14 @@
 
 import os
 
+import library_self_write
+
 
 def classify_filename(filename, supported):
     """Return ``cue``, ``audio`` or ``ignore`` without coercing input."""
     if not isinstance(filename, str) or not isinstance(supported, dict):
+        return "ignore"
+    if library_self_write.is_self_write_artifact(filename):
         return "ignore"
     try:
         extension = os.path.splitext(filename)[1].lower()

@@ -13,6 +13,17 @@ class LibraryScanFilePolicyTests(unittest.TestCase):
         self.assertEqual(classify_filename("song.FLAC", supported), "audio")
         self.assertEqual(classify_filename("cover.jpg", supported), "ignore")
 
+    def test_self_write_staging_files_are_never_tracks(self):
+        supported = {".flac": "audio/flac", ".mp3": "audio/mpeg", ".cue": "application/x-cue"}
+        self.assertEqual(
+            classify_filename("song.flac.fnaudio-tagging.flac", supported), "ignore"
+        )
+        self.assertEqual(
+            classify_filename("Song.Flac.FNAUDIO-TAGGING.Flac", supported), "ignore"
+        )
+        self.assertEqual(classify_filename("song.flac", supported), "audio")
+        self.assertEqual(classify_filename("album.cue", supported), "cue")
+
     def test_rejects_untrusted_inputs_without_coercion(self):
         class Explosive:
             def __str__(self):
