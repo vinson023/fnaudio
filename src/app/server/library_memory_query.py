@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 import heapq
 
+from library_folder_scope import folder_in_subtree
+
 MAX_MEMORY_ITEMS = 200000
 MAX_MEMORY_ROOTS = 64
 MAX_MEMORY_SEARCH_TEXT = 4096
@@ -243,7 +245,7 @@ def iter_filtered_memory_items(items, page_query, roots, unclassified, path_unde
             if root:
                 matches = memory_item_root(item, roots, path_under) == root
             if matches and folder:
-                matches = memory_text(memory_field(item, "folder")) == folder
+                matches = folder_in_subtree(memory_text(memory_field(item, "folder")), folder)
         if matches and view in ("artists", "composers") and group and album:
             matches = (memory_text(memory_field(item, "album")) or unclassified) == album
         if matches and not memory_matches_search(item, search):

@@ -64,7 +64,17 @@ class MetadataServiceTests(unittest.TestCase):
     def test_background_reconcile_windows_use_monotonic_clock(self):
         with open(os.path.join("app", "server", "metadata_service.py"), encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn("due = force or time.monotonic() - self._last_reconcile_monotonic > 15", source)
+        # R201 (F5): the window is still monotonic; only its length moved into
+        # metadata_queue_backlog_policy so a saturated queue can back off.
+        self.assertIn(
+            "due = metadata_queue_backlog_policy.should_run_reconcile(\n"
+            "                        time.monotonic() - self._last_reconcile_monotonic,\n"
+            "                        force=force,\n"
+            "                        backlogged=self._queue_is_backlogged(),\n"
+            "                    )",
+            source,
+        )
+        self.assertNotIn("self._last_reconcile_monotonic > 15", source)
         self.assertIn("if time.monotonic() - self._last_cleanup_monotonic > 3600:", source)
         self.assertIn("self.last_reconcile = time.time()", source)
         self.assertIn("self._last_reconcile_monotonic = time.monotonic()", source)

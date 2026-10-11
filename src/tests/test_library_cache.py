@@ -601,8 +601,9 @@ class LibraryCacheTests(unittest.TestCase):
         monitor = library.LibraryChangeMonitor(["/music"])
         monitor._fd = 7
         monitor._libc = mock.Mock()
+        monitor._watch_budget = 64
         with monitor._lock:
-            monitor._watches = {index: "/music/%d" % index for index in range(library.MAX_LIBRARY_INOTIFY_WATCHES)}
+            monitor._watches = {index: "/music/%d" % index for index in range(64)}
         with self.assertRaises(OSError):
             monitor._watch_path("/music/too-many")
         monitor._libc.inotify_add_watch.assert_not_called()
@@ -788,7 +789,10 @@ class LibraryCacheTests(unittest.TestCase):
                 library.MUSIC_CACHE["items"] = old_items
                 library.FS_CACHE["signature"] = old_signature
 
-    def test_failed_scan_persistence_keeps_the_last_published_snapshot(self):
+    def test_failed_scan_persistence_still_publishes_the_finished_scan(self):
+        # R201: a write that lost the lock is a durability problem, not a scan
+        # failure. Throwing the snapshot away kept the library empty and made the
+        # next watcher tick walk the same 60,000-file tree again.
         with tempfile.TemporaryDirectory() as root:
             config = {"cache_dir": root, "library_paths": [os.path.join(root, "music")]}
             os.makedirs(config["library_paths"][0])
@@ -798,11 +802,12 @@ class LibraryCacheTests(unittest.TestCase):
                 library.MUSIC_CACHE["items"] = [{"id": "existing"}]
                 library.FS_CACHE["signature"] = "existing-signature"
                 with patch.object(library, "scan_libraries", return_value=([{"id": "new"}], "new-signature")), \
-                     patch.object(library, "save_library_cache", return_value=False):
+                     patch.object(library, "save_library_cache", return_value=False) as save_cache:
                     library.refresh_library_if_changed(config, force=True)
-                self.assertEqual(library.MUSIC_CACHE["items"], [{"id": "existing"}])
-                self.assertEqual(library.FS_CACHE["signature"], "existing-signature")
-                self.assertEqual(library.SCAN_STATE["result"], "error")
+                self.assertEqual(save_cache.call_count, 1)
+                self.assertEqual(library.MUSIC_CACHE["items"], [{"id": "new"}])
+                self.assertEqual(library.FS_CACHE["signature"], "new-signature")
+                self.assertEqual(library.SCAN_STATE["result"], "completed")
             finally:
                 library.MUSIC_CACHE["items"] = old_items
                 library.FS_CACHE["signature"] = old_signature

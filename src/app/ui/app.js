@@ -234,6 +234,12 @@ state.libraryInteractionBlocked = false;
 // connections to it, so a page replacement has to be able to tell the 0.5s~1.5s ticks
 // to wait. The deadline keeps a request that never settles from starving status.
 const LIBRARY_INTERACTION_HOLD_MS = 4000;
+// The metadata projection is background telemetry, not page content. During a
+// scan the status loop polls once per second, and every poll used to add a
+// /api/metadata/status request that the fnOS CGI gateway served in ~0.9 s, so a
+// folder click queued behind requests nobody was waiting for. Three seconds is
+// far shorter than a scan takes and still catches metadata revisions promptly.
+const METADATA_PROJECTION_MIN_INTERVAL_MS = 3000;
 state.libraryInteractionHoldUntil = 0;
 state.libraryLoaded = 0;
 state.libraryTotal = 0;
@@ -265,6 +271,7 @@ state.accessProfileTimer = 0;
 // Pending-job churn must not redraw the list; only committed metadata counts
 // (or an observable terminal error) invalidate the response LRU.
 state.metadataProjectionSignature = "";
+state.metadataProjectionLastFetchAt = 0;
 state.libraryRequestSeq = 0;
 state.libraryAbortController = null;
 state.libraryLoadKey = "";
@@ -7853,6 +7860,11 @@ function deletePlaylist(playlistId) {
   }
   render();
 }
+function metadataProjectionIsDue(force = false) {
+  if (force === true) return true;
+  const last = Number(state.metadataProjectionLastFetchAt) || 0;
+  return Date.now() - last >= METADATA_PROJECTION_MIN_INTERVAL_MS;
+}
 async function fetchMetadataProjectionStatus(externalSignal = undefined) {
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   let removeExternalAbort = null;
@@ -7912,7 +7924,11 @@ async function refreshLibraryStatus(refresh = false) {
       cache: "no-store",
       ...(controller ? { signal: controller.signal } : {}),
     });
-    const metadataPromise = fetchMetadataProjectionStatus(controller?.signal);
+    const metadataProjectionDue = metadataProjectionIsDue(Boolean(refresh));
+    if (metadataProjectionDue) state.metadataProjectionLastFetchAt = Date.now();
+    const metadataPromise = metadataProjectionDue
+      ? fetchMetadataProjectionStatus(controller?.signal)
+      : Promise.resolve(null);
     const result = await globalThis.fnAudioResponseJsonLoader.read({
       request: responsePromise,
       timeoutMs: 6000,

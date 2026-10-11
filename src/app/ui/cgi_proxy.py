@@ -25,6 +25,24 @@ MAX_PROXY_ROUTE_CHARS = 4096
 CGI_ENTRY_MARKER = "/index.cgi"
 API_SCOPES = "library.read,playback.read,playback.control,state.read,state.write,settings.read,settings.write,files.read,files.manage"
 ROUTE_QUERY_PARAMETER = "__fnaudio_path"
+
+# Request headers this CGI may forward to the loopback service.  The two
+# conditional headers are deliberately part of the whitelist: without them a
+# browser revalidation (``no-cache`` static assets send ``If-None-Match`` on
+# every load) is stripped at the gateway, the service can only answer a full
+# 200 body, and every page reload re-transfers 423 KB of app.js plus 167 KB of
+# app.css through a per-request CGI process.
+PROXY_REQUEST_HEADERS = (
+    ("CONTENT_TYPE", "Content-Type"),
+    ("HTTP_RANGE", "Range"),
+    ("HTTP_ACCEPT", "Accept"),
+    ("HTTP_IF_NONE_MATCH", "If-None-Match"),
+    ("HTTP_IF_MODIFIED_SINCE", "If-Modified-Since"),
+    ("HTTP_HOST", "X-Forwarded-Host"),
+    ("HTTP_X_FORWARDED_PROTO", "X-Forwarded-Proto"),
+    ("REMOTE_ADDR", "X-Forwarded-For"),
+)
+CONDITIONAL_REQUEST_HEADERS = ("If-None-Match", "If-Modified-Since")
 ALLOWED_PROXY_METHODS = frozenset(("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"))
 _RESPONSE_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
@@ -456,14 +474,7 @@ def main():
         sys.stdout.write("Status: 413 Request Entity Too Large\r\nContent-Length: 0\r\n\r\n")
         return
     request_headers = {}
-    for env_name, http_name in (
-        ("CONTENT_TYPE", "Content-Type"),
-        ("HTTP_RANGE", "Range"),
-        ("HTTP_ACCEPT", "Accept"),
-        ("HTTP_HOST", "X-Forwarded-Host"),
-        ("HTTP_X_FORWARDED_PROTO", "X-Forwarded-Proto"),
-        ("REMOTE_ADDR", "X-Forwarded-For"),
-    ):
+    for env_name, http_name in PROXY_REQUEST_HEADERS:
         value = proxy_request_header_value(header(env_name))
         if value:
             request_headers[http_name] = value

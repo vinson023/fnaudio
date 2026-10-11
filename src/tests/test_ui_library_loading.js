@@ -462,7 +462,7 @@ assert.match(metadataProjection, /global\.fnAudioMetadataProjectionPolicy = \{ s
 assert.doesNotMatch(metadataProjection, /safeCount\(source\.metadata_updated_at\)/, "Terminal-job timestamps must not independently invalidate the visible list");
 assert.match(app, /async function fetchMetadataProjectionStatus\(externalSignal = undefined\)/, "Metadata projection status must have an isolated bounded request");
 assert.match(app, /setTimeout\(\(\) => \{[\s\S]*controller\?\.abort\(\)/, "Metadata status observation must not block library status indefinitely");
-assert.match(app, /const responsePromise = fetch\(`api\/library\/status\$\{refresh \? \"\?refresh=1\" : \"\"\}`, \{[\s\S]*?\}\);\s*const metadataPromise = fetchMetadataProjectionStatus\(controller\?\.signal\);\s*const result = await globalThis\.fnAudioResponseJsonLoader\.read\(/, "Library and metadata status requests must start before the shared response-body timeout");
+assert.match(app, /const responsePromise = fetch\(`api\/library\/status\$\{refresh \? \"\?refresh=1\" : \"\"\}`, \{[\s\S]*?\}\);\s*const metadataProjectionDue = metadataProjectionIsDue\(Boolean\(refresh\)\);\s*if \(metadataProjectionDue\) state\.metadataProjectionLastFetchAt = Date\.now\(\);\s*const metadataPromise = metadataProjectionDue\s*\?\s*fetchMetadataProjectionStatus\(controller\?\.signal\)\s*:\s*Promise\.resolve\(null\);\s*const result = await globalThis\.fnAudioResponseJsonLoader\.read\(/, "Library status plus the throttled metadata projection must both start before the shared response-body timeout");
 assert.match(app, /const result = await globalThis\.fnAudioResponseJsonLoader\.read\([\s\S]*?const response = result\.response;[\s\S]*?if \(token !== state\.libraryStatusRequestToken \|\| state\.libraryStatusController !== controller\) return;[\s\S]*?const payload = response\?\.ok \? result\.data : null;[\s\S]*?unwrapTransport\(payload, 4\)[\s\S]*?if \(!data\) return;[\s\S]*?state\.libraryStatus = data;[\s\S]*?updateLibraryStatusDecorations\(\);[\s\S]*?const metadata = await metadataPromise;/, "Library status must commit valid host envelopes before metadata status completes and preserve existing state on a failed response");
 assert.match(app, /removeDeletedTracksFromClientState\(ids\);[\s\S]*?refreshLibraryStatus\(true\);/, "Post-delete status refresh must use the shared request boundary");
 assert.match(app, /const queuedRefresh = state\.libraryStatusRefreshQueued;[\s\S]*?state\.libraryStatusRefreshQueued = false;[\s\S]*?if \(queuedRefresh\) refreshLibraryStatus\(true\);/, "A forced status refresh arriving during a poll must run once after the active request");
@@ -1231,6 +1231,60 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       "the scheduler has to receive the interaction gate it checks on every tick");
     assert.equal(countOccurrences(app, "const LIBRARY_INTERACTION_HOLD_MS = 4000;"), 1,
       "the hold window is declared once and bounded");
+  }
+
+  // R201 (F4) - /api/metadata/status is background telemetry, not page content.
+  // While a scan runs, ui_sync_scheduler asks for a status refresh about once a
+  // second and every refresh used to add a metadata projection request that the
+  // fnOS CGI gateway served in ~0.9 s, so the folder click queued behind
+  // requests nobody had asked for. The projection now has its own floor.
+  {
+    const found = app.match(/function metadataProjectionIsDue\([\s\S]*?\) \{[\s\S]*?\n\}/);
+    assert.ok(found, "metadataProjectionIsDue must stay a top-level function for this check");
+    let nowMs = 1_000_000;
+    const throttleState = { metadataProjectionLastFetchAt: 0 };
+    const throttleContext = {
+      state: throttleState,
+      METADATA_PROJECTION_MIN_INTERVAL_MS: 3000,
+      Date: { now: () => nowMs },
+      Number,
+    };
+    vm.runInNewContext(
+      found[0] + "; globalThis.due = metadataProjectionIsDue;",
+      throttleContext,
+    );
+
+    assert.equal(throttleContext.due(false), true, "the first projection request must go out");
+    throttleState.metadataProjectionLastFetchAt = nowMs;
+    assert.equal(throttleContext.due(false), false, "a poll inside the window must be suppressed");
+    nowMs += 2999;
+    assert.equal(throttleContext.due(false), false, "the window is measured against its own bound");
+    nowMs += 1;
+    assert.equal(throttleContext.due(false), true, "once the window passes, the projection refreshes again");
+    throttleState.metadataProjectionLastFetchAt = nowMs;
+    assert.equal(throttleContext.due(true), true, "an explicit refresh always bypasses the floor");
+    throttleState.metadataProjectionLastFetchAt = "not a number";
+    nowMs += 10_000;
+    assert.equal(throttleContext.due(false), true, "a corrupted stamp must fail toward refreshing");
+  }
+  {
+    const statusFn = app.match(/async function refreshLibraryStatus\([\s\S]*?\n\}/);
+    assert.ok(statusFn, "refreshLibraryStatus must remain one top-level function");
+    const body = statusFn[0];
+    assert.ok(body.includes("const metadataProjectionDue = metadataProjectionIsDue(Boolean(refresh));"),
+      "the projection fetch has to be gated inside the status refresh");
+    assert.ok(body.includes("if (metadataProjectionDue) state.metadataProjectionLastFetchAt = Date.now();"),
+      "the window must be armed from the same decision that suppressed the request");
+    assert.ok(body.includes("? fetchMetadataProjectionStatus(controller?.signal)"),
+      "a due projection still uses the abortable loader");
+    assert.ok(body.includes(": Promise.resolve(null);"),
+      "a suppressed projection resolves null so the existing merge guard still skips it");
+    assert.ok(body.includes("if (metadata) {"),
+      "the merge path must keep treating a null projection as no observed change");
+    assert.equal(countOccurrences(app, "const METADATA_PROJECTION_MIN_INTERVAL_MS = 3000;"), 1,
+      "the projection floor is declared exactly once");
+    assert.equal(countOccurrences(app, "state.metadataProjectionLastFetchAt = 0;"), 1,
+      "the throttle stamp is initialised exactly once");
   }
 
   console.log("Library loading cancellation regression checks passed.");

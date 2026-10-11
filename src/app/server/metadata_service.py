@@ -22,13 +22,22 @@ from collections import OrderedDict
 from version import APP_USER_AGENT
 from contextlib import contextmanager
 
-from library import find_ffprobe, id3_tag, library_db_path, read_cover, read_id3_cover
+from library import (
+    find_ffprobe,
+    id3_tag,
+    library_db_path,
+    library_scan_is_running,
+    read_cover,
+    read_id3_cover,
+)
 from cover_media_type import SNIFF_PREFIX_BYTES, safe_image_media_type
 from id3_parser import iter_id3_frames
 from library_rows import decode_item_payload
 from metadata_text import parse_track_number
 from resource_limits import ResourceLimitError, bounded_int, disk_has_reserve
 from metadata_queue_policy import project_queue_state, saturating_counter
+import library_self_write
+import metadata_queue_backlog_policy
 from metadata_provider_failure_policy import provider_activity_snapshot, provider_failure_snapshot
 from metadata_provider_availability_policy import provider_is_available
 from summary_values import nonnegative_int
@@ -1925,6 +1934,10 @@ class MetadataService:
         self.force_reconcile = False
         self.last_reconcile = 0
         self._last_reconcile_monotonic = 0.0
+        # (pending, limit) as last actually observed by this service.  Unknown
+        # starts as (0, 0), which every policy helper reads as "no backlog" so
+        # the historical cadence keeps running until real numbers arrive.
+        self._observed_queue_pressure = (0, 0)
         self.library_signature = ""
         self.last_cleanup = 0
         self._last_cleanup_monotonic = 0.0
@@ -2757,7 +2770,11 @@ class MetadataService:
                 force = False
                 with self.lock:
                     force = self.force_reconcile
-                    due = force or time.monotonic() - self._last_reconcile_monotonic > 15
+                    due = metadata_queue_backlog_policy.should_run_reconcile(
+                        time.monotonic() - self._last_reconcile_monotonic,
+                        force=force,
+                        backlogged=self._queue_is_backlogged(),
+                    )
                     if due:
                         # Reconciliation is whole-library work. Claim the time
                         # slot before releasing the lock so only one worker runs it.
@@ -2785,6 +2802,14 @@ class MetadataService:
             if not self.config.get("metadata_tag_write_enabled", False):
                 self.tag_wake_event.wait(10)
                 self.tag_wake_event.clear()
+                continue
+            if library_scan_is_running():
+                # Writing tags during a walk makes files appear and vanish
+                # under the scanner: the staging copy is a ghost track, the
+                # rename is a delete, and the fresh mtime is a new signature.
+                # One scan already costs minutes on this library, so the writer
+                # waits for it rather than forcing the next one.
+                self.stop_event.wait(2.0)
                 continue
             try:
                 # Do not claim a job until its pacing delay has elapsed.  A
@@ -2848,7 +2873,11 @@ class MetadataService:
             signature_row = conn.execute("SELECT value FROM library_meta WHERE key='signature'").fetchone()
             signature = str(signature_row["value"] or "") if signature_row else ""
             if not force and signature and signature == self.library_signature:
-                self._requeue_expired(conn, now)
+                # On a saturated queue the expired re-queue is pure self-harm:
+                # it flips thousands of terminal jobs back to pending, only for
+                # the same number to be dropped again six hours later.
+                if metadata_queue_backlog_policy.requeue_allowed(*self._queue_pressure()):
+                    self._requeue_expired(conn, now)
                 if time.monotonic() - self._last_cleanup_monotonic > 3600:
                     self._cleanup_orphans(conn, now)
                     self._prune_artwork_cache(conn)
@@ -2869,6 +2898,7 @@ class MetadataService:
                     "SELECT COUNT(*) FROM metadata_jobs WHERE status IN ('pending','retry')"
                 ).fetchone()[0]),
             }
+            self._note_queue_pressure(queue_state["pending"], queue_state["limit"])
             # Entity cleanup uses the same SQLite-owned active set as tracks.
             # Do not accumulate every album/artist/composer key in Python
             # before the orphan pass on a large library.
@@ -2938,6 +2968,30 @@ class MetadataService:
         self.last_reconcile = time.time()
         self._last_reconcile_monotonic = time.monotonic()
 
+    def _note_queue_pressure(self, pending, limit):
+        """Remember occupancy already in hand instead of counting again."""
+        try:
+            bounded_pending = int(pending)
+            bounded_limit = int(limit)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if bounded_pending < 0 or bounded_limit <= 0:
+            return
+        cap = metadata_queue_backlog_policy.MAX_QUEUE_COUNTER
+        self._observed_queue_pressure = (min(bounded_pending, cap), bounded_limit)
+
+    def _queue_pressure(self):
+        """Last observed (pending, limit).  Callers may unpack it directly."""
+        try:
+            pending, limit = self._observed_queue_pressure
+        except (TypeError, ValueError):
+            return (0, 0)
+        return (pending, limit)
+
+    def _queue_is_backlogged(self):
+        pending, limit = self._queue_pressure()
+        return metadata_queue_backlog_policy.queue_is_backlogged(pending, limit)
+
     def _mark_cleanup(self):
         self.last_cleanup = time.time()
         self._last_cleanup_monotonic = time.monotonic()
@@ -2989,6 +3043,7 @@ class MetadataService:
                         conn.execute("SELECT COUNT(*) FROM metadata_jobs WHERE status IN ('pending','retry')").fetchone()[0]
                     )
             if pending >= queue_limit:
+                self._note_queue_pressure(pending, queue_limit)
                 evicted = None
                 if int(priority) <= 2:
                     evicted = conn.execute(
@@ -3878,6 +3933,22 @@ class MetadataService:
                     data["artwork_mime"] = track_artwork["mime"]
             return data
 
+    def _note_self_write(self, source):
+        """Tell the library scanner that this revision came from us.
+
+        The tag writer rewrites the user's own files on a 250 ms timer.  Those
+        rewrites bump ``st_mtime_ns``, which used to make the library signature
+        change on every pass, so the whole collection rescanned forever and the
+        server never had spare CPU for interactive folder requests.  Recording
+        the revision we just produced lets the scanner collapse it.
+        """
+        if not source:
+            return False
+        try:
+            return library_self_write.record_from_stat(source, os.stat(source))
+        except OSError:
+            return False
+
     def _write_track_tags(self, track_id):
         # Final mutation boundary for worker and direct-call paths.
         if not self.config.get("metadata_tag_write_enabled", False):
@@ -3915,6 +3986,7 @@ class MetadataService:
             except OSError:
                 pass
         if extension in (".mp3", ".flac") and not data.get("artwork_path") and self._write_track_tags_native(source, extension, data):
+            self._note_self_write(source)
             self.tag_written = saturating_counter(self.tag_written)
             return True
         temporary = source + ".fnaudio-tagging" + extension
@@ -3933,6 +4005,7 @@ class MetadataService:
                 raise RuntimeError("source changed during metadata write")
             preserve_owner_and_mode(source, temporary)
             os.replace(temporary, source)
+            self._note_self_write(source)
             self.tag_written = saturating_counter(self.tag_written)
             return True
         finally:

@@ -27,7 +27,8 @@ from config import DEFAULT_PORT
 from library_connection_pool import LibraryConnectionPool
 from library_query_cache import LibraryQueryCache
 from library_query_cache_key import MAX_CACHE_KEY_VALUES
-from library_cache_failure_policy import increment_failure, project_failures
+from library_cache_failure_policy import describe_failure, increment_failure, project_failures
+from library_persist_retry import PersistRetrySlot, is_transient_lock
 from library_query_spec import LIBRARY_ITEM_ID_LIMIT, first_param, normalize_library_item_id, normalize_library_item_sequence, parse_library_folder_query, parse_library_group_query, parse_library_page_query, parse_library_root_search
 from library_pagination import counted_page_rows, paged_rows_with_total
 from library_track_filter_policy import build_track_filters
@@ -112,6 +113,7 @@ from library_scan_file_policy import classify_filename
 from summary_values import strict_bool
 from library_browse_rows import materialize_browse_rows
 from cue_item_presentation import build_cue_item
+import library_self_write
 from cue_numeric_policy import cue_segment_end
 from scan_numeric_policy import safe_counter, safe_float, safe_int
 from metadata_tag_resolution import resolve_metadata_tags
@@ -163,7 +165,15 @@ LIBRARY_SUMMARY_INFLIGHT = {}
 # silently swallowed.  The counters are operational metadata only; paths and
 # exception text are never exposed through the public status payload.
 LIBRARY_CACHE_FAILURES = {"load": 0, "save": 0}
+# The counters say how often persistence failed; these say in what way.
+LIBRARY_CACHE_FAILURE_DETAILS: "dict[str, str]" = {"load": "", "save": ""}
 LIBRARY_CACHE_FAILURES_LOCK = threading.Lock()
+# R201: index-snapshot writers serialize on one mutex, so a scan and a retry can never
+# lock each other out; LIBRARY_PERSIST_RETRY parks a snapshot whose write lost the race
+# against a metadata writer for the watcher to replay.
+LIBRARY_PERSIST_SAVE_LOCK = threading.Lock()
+LIBRARY_PERSIST_RETRY = PersistRetrySlot()
+LIBRARY_PERSIST_RETRY_LOCK = threading.Lock()
 # Map the stable cache path to the filesystem identity of the SQLite main
 # file.  A path-only set is unsafe when a cleanup tool deletes and recreates
 # the index while fnAudio is still running.
@@ -206,7 +216,16 @@ LIBRARY_JSON_CACHE_LIMIT = 5000
 # or unexpectedly large cache cannot be materialized wholesale.
 LIBRARY_JSON_CACHE_MAX_BYTES = 32 * 1024 * 1024
 LIBRARY_WRITE_BATCH_SIZE = 500
-MAX_LIBRARY_INOTIFY_WATCHES = 4096
+# A real library on the device is 7,387 directories, so a fixed ceiling of
+# 4,096 made ``start()`` fail outright: every watch was dropped, change
+# detection fell back to polling, and each tick re-walked 75,769 files while the
+# browser was trying to answer a folder click.  The ceiling is now only a hard
+# upper bound; the real budget comes from the kernel quota below.
+MAX_LIBRARY_INOTIFY_WATCHES = 262_144
+INOTIFY_KERNEL_WATCHES_DEFAULT = 8_192
+INOTIFY_WATCH_RESERVE_MINIMUM = 1_024
+INOTIFY_WATCH_RESERVE_DIVISOR = 4
+INOTIFY_KERNEL_WATCH_FILE = "/proc/sys/fs/inotify/max_user_watches"
 
 
 def _bounded_database_state_put(entries, database, value, limit):
@@ -215,6 +234,38 @@ def _bounded_database_state_put(entries, database, value, limit):
     while len(entries) >= limit:
         entries.pop(next(iter(entries)), None)
     entries[database] = value
+
+
+def read_kernel_inotify_watches(path=INOTIFY_KERNEL_WATCH_FILE):
+    """The per-user inotify watch quota, or 0 when this system does not say."""
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            return max(0, int(handle.read().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def inotify_watch_budget(kernel_watches=0, ceiling=None):
+    """Directories this process may watch without starving the rest of the box.
+
+    ``max_user_watches`` is shared by every process of the user, so claiming the
+    whole quota makes MPD and the fnOS agents fail their own add-watch call.
+    A quarter of it, and never fewer than 1,024, stays free, and the hard
+    ceiling still applies.  An unreadable quota falls back to the old fixed
+    default, which is now only conservative rather than fatal: exceeding the
+    budget degrades to a partial watch instead of disabling the monitor.
+    """
+    hard = MAX_LIBRARY_INOTIFY_WATCHES if ceiling is None else ceiling
+    if isinstance(hard, bool) or not isinstance(hard, int) or hard <= 0:
+        hard = MAX_LIBRARY_INOTIFY_WATCHES
+    kernel = kernel_watches if isinstance(kernel_watches, int) and not isinstance(kernel_watches, bool) else 0
+    if kernel <= 0:
+        return min(hard, INOTIFY_KERNEL_WATCHES_DEFAULT)
+    reserve = max(INOTIFY_WATCH_RESERVE_MINIMUM, kernel // INOTIFY_WATCH_RESERVE_DIVISOR)
+    usable = kernel - reserve
+    if usable <= 0:
+        return 0
+    return min(hard, usable)
 
 
 class LibraryChangeMonitor:
@@ -242,6 +293,8 @@ class LibraryChangeMonitor:
         self.available = False
         self._dirty = True
         self._overflowed = False
+        self._partial = False
+        self._watch_budget = inotify_watch_budget(read_kernel_inotify_watches())
         self._generation = 0
         self._fd = -1
         self._libc = None
@@ -315,7 +368,7 @@ class LibraryChangeMonitor:
 
     def needs_scan(self):
         with self._lock:
-            return not self.available or self._dirty or self._overflowed
+            return not self.available or self._dirty or self._overflowed or self._partial
 
     def generation(self):
         with self._lock:
@@ -336,13 +389,15 @@ class LibraryChangeMonitor:
                 "watched_directories": len(self._watches),
                 "dirty": bool(self._dirty),
                 "overflowed": bool(self._overflowed),
+                "partial": bool(self._partial),
+                "watch_budget": int(self._watch_budget),
             }
 
     def _watch_path(self, path):
         if self._fd < 0 or self._libc is None:
             return
         with self._lock:
-            if len(self._watches) >= MAX_LIBRARY_INOTIFY_WATCHES:
+            if len(self._watches) >= self._watch_budget:
                 raise OSError(errno.ENOSPC, "library inotify watch limit reached", path)
         wd = self._libc.inotify_add_watch(self._fd, os.fsencode(path), self.WATCH_MASK)
         if wd < 0:
@@ -353,8 +408,46 @@ class LibraryChangeMonitor:
 
     def _add_tree(self, root):
         for base, directories, _ in os.walk(root):
-            self._watch_path(base)
+            try:
+                self._watch_path(base)
+            except OSError as error:
+                if error.errno != errno.ENOSPC:
+                    raise
+                # Out of watches is no longer a reason to lose change detection
+                # for the directories already covered. Keep those, mark the tree
+                # partial so the periodic signature check stays the safety net,
+                # and stop adding.
+                self._mark_partial()
+                return
             directories[:] = [name for name in directories if not os.path.islink(os.path.join(base, name))]
+
+    @staticmethod
+    def _is_own_write_event(path, name):
+        """True for a file event caused by fnAudio writing tags itself.
+
+        The writer stages ``song.flac.fnaudio-tagging.flac`` beside the track
+        and renames it over the original, so one written tag is a create, a
+        delete and a fresh mtime for the monitor as well as for the scanner.
+        Without this the monitor turned every writeback into a full walk of the
+        collection - about two minutes per pass on the device - so the process
+        spent 93 per cent of its time scanning and never had room for the
+        request behind a folder click.
+        """
+        if library_self_write.is_self_write_artifact(name):
+            return True
+        if not path or not name:
+            return False
+        try:
+            stat_result = os.stat(path)
+        except OSError:
+            return False
+        return library_self_write.matches_stat(path, stat_result)
+
+    def _mark_partial(self):
+        """The tree is bigger than the watch budget; keep the periodic check."""
+        with self._lock:
+            self._partial = True
+        self._mark_dirty()
 
     def _mark_dirty(self, overflowed=False):
         with self._lock:
@@ -385,18 +478,23 @@ class LibraryChangeMonitor:
                 if mask & (self.IN_CREATE | self.IN_MOVED_TO) and path:
                     try:
                         self._add_tree(path)
-                    except OSError:
-                        self._mark_dirty(True)
+                    except OSError as error:
                         # A directory tree beyond the local watch ceiling is
-                        # no longer fully observable. Fall back to the
-                        # periodic signature check instead of clearing this
-                        # dirty bit after one scan and silently missing later
-                        # changes below the unwatchable subtree.
-                        with self._lock:
-                            self.available = False
+                        # no longer fully observable. Fall back to the periodic
+                        # signature check instead of clearing this dirty bit
+                        # after one scan and silently missing later changes
+                        # below the unwatchable subtree - and instead of
+                        # throwing away every watch that does fit.
+                        if error.errno == errno.ENOSPC:
+                            self._mark_partial()
+                        else:
+                            self._mark_dirty(True)
+                            with self._lock:
+                                self.available = False
                 continue
             if not name or os.path.splitext(name)[1].lower() in SUPPORTED:
-                self._mark_dirty()
+                if not self._is_own_write_event(path, name):
+                    self._mark_dirty()
 
     def _run(self):
         # Keep this worker on the fd generation it was started with.  Reading
@@ -645,6 +743,26 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
         ))
     return items
 
+SELF_WRITE_MARKER = "sw"
+
+
+def signature_token_for_stat(path, stat_result):
+    """Build the library signature token for one file on disk.
+
+    fnAudio writes tags back into the user's own audio files on a timer, and
+    every one of those rewrites bumps ``st_mtime_ns``.  If the raw revision
+    went into the signature the library would never look unchanged again, so
+    the whole index would rescan forever and starve every other request.
+    Revisions this process recorded therefore collapse to a stable marker in
+    the mtime slot while the real size stays in the token, which keeps an
+    external rewrite of the same file detectable through mtime and an
+    external size change detectable through size.
+    """
+    if library_self_write.matches_stat(path, stat_result):
+        return "%s:%s:%s" % (path, SELF_WRITE_MARKER, stat_result.st_size)
+    return "%s:%s:%s" % (path, stat_result.st_mtime_ns, stat_result.st_size)
+
+
 def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0, sink=None):
     # A caller that passes a sink keeps the tracks this root has already read
     # even when the walk is cut short by the deadline, so an interrupted scan
@@ -676,7 +794,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
             SCAN_STATE["found"] = found_offset + len(items)
             try:
                 stat = os.stat(full)
-                signature_parts.append("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
+                signature_parts.append(signature_token_for_stat(full, stat))
             except OSError:
                 record_scan_error(full, "无法读取 CUE 文件状态")
                 pass
@@ -686,7 +804,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
                     continue
                 try:
                     stat = os.stat(audio_path)
-                    signature_parts.append("%s:%s:%s" % (audio_path, stat.st_mtime_ns, stat.st_size))
+                    signature_parts.append(signature_token_for_stat(audio_path, stat))
                 except OSError:
                     record_scan_error(audio_path, "无法读取 CUE 音频文件状态")
                     pass
@@ -711,7 +829,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
             except OSError:
                 record_scan_error(full, "无法读取文件状态")
                 continue
-            signature_parts.append("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
+            signature_parts.append(signature_token_for_stat(full, stat))
             cached = previous.get(full)
             if can_reuse_cached_item(cached, stat.st_size, stat.st_mtime_ns, METADATA_VERSION):
                 items.append(cached)
@@ -786,15 +904,101 @@ def _scan_state_bool(key):
         return False
 
 
-def _record_library_cache_failure(kind):
+def library_scan_is_running():
+    """True while a library scan owns this process' file and database writes.
+
+    Tag writeback is the one background job that deliberately rewrites the
+    user's own audio files.  Running it mid-scan feeds the walker files that
+    appear and disappear underneath it, which costs a ghost track, a scan error
+    and a signature that never converges, so the writer idles until the walk is
+    over.
+    """
+    return _scan_state_bool("running")
+
+
+def _record_library_cache_failure(kind, detail=""):
     if kind not in ("load", "save"):
         return
+    safe_detail = describe_failure(detail)
     try:
         with LIBRARY_CACHE_FAILURES_LOCK:
             updated = increment_failure(LIBRARY_CACHE_FAILURES, kind)
             LIBRARY_CACHE_FAILURES.update(updated)
+            LIBRARY_CACHE_FAILURE_DETAILS[kind] = safe_detail
     except Exception:
         return
+
+
+def library_cache_failure_detail(kind):
+    """Return the bounded, path-free reason recorded for one failure kind."""
+    if kind not in ("load", "save"):
+        return ""
+    try:
+        with LIBRARY_CACHE_FAILURES_LOCK:
+            return LIBRARY_CACHE_FAILURE_DETAILS.get(kind, "")
+    except Exception:
+        return ""
+
+
+def library_persistence_failure_message(detail=None):
+    """One line naming why the library index could not be persisted.
+
+    A bare "library index persistence failed" repeated a hundred times on a
+    real device left no way to tell a lock timeout from a permissions error,
+    so the sanitized exception rides along with the raise.
+    """
+    base = "library index persistence failed"
+    text = library_cache_failure_detail("save") if detail is None else describe_failure(detail)
+    return "%s: %s" % (base, text) if text else base
+
+
+def _stage_library_persist_retry(exc, items, signature):
+    """Park a snapshot only when waiting for the other writer can actually help.
+
+    A permission error or a full disk is not a lock: retrying it would keep a
+    60,000-row snapshot alive in memory for a write that can never succeed.
+    """
+    if not is_transient_lock(describe_failure(exc)):
+        return False
+    with LIBRARY_PERSIST_RETRY_LOCK:
+        return LIBRARY_PERSIST_RETRY.stage(items, signature, time.time())
+
+
+def library_persist_retry_status():
+    with LIBRARY_PERSIST_RETRY_LOCK:
+        return LIBRARY_PERSIST_RETRY.status(time.time())
+
+
+def retry_pending_library_persist(config):
+    """Replay the parked snapshot once the write lock is free.
+
+    Only the watcher calls this. Waiting inside the scan thread instead would keep
+    ``scanning`` true and the first page empty, which is exactly the behaviour a
+    owner of a large library noticed as "nothing shows until it finishes".
+    """
+    now = time.time()
+    with LIBRARY_PERSIST_RETRY_LOCK:
+        if not LIBRARY_PERSIST_RETRY.due(now):
+            return False
+        pending = LIBRARY_PERSIST_RETRY.snapshot()
+    if pending is None:
+        return False
+    items, signature = pending
+    if _scan_state_bool("running"):
+        # A scan in flight owns the snapshot now; it publishes a newer one itself.
+        return False
+    if signature != FS_CACHE["signature"]:
+        with LIBRARY_PERSIST_RETRY_LOCK:
+            LIBRARY_PERSIST_RETRY.clear()
+        return False
+    if save_library_cache(config, items, signature):
+        with LIBRARY_PERSIST_RETRY_LOCK:
+            LIBRARY_PERSIST_RETRY.note_success(time.time())
+        print("fnAudio library index persisted on retry", flush=True)
+        return True
+    with LIBRARY_PERSIST_RETRY_LOCK:
+        LIBRARY_PERSIST_RETRY.note_failure(time.time())
+    return False
 
 
 def library_cache_failure_status():
@@ -835,6 +1039,7 @@ def library_status(config):
         "found": safe_counter(_scan_state_value("found", 0)),
         "errors": snapshot_scan_errors(_scan_state_value("errors")),
         "cache_failures": library_cache_failure_status(),
+        "index_persist": library_persist_retry_status(),
         "storage": library_storage_status(config),
         "change_detection": (
             LIBRARY_CHANGE_MONITOR.status()
@@ -919,7 +1124,7 @@ def library_signature(root, deadline=None):
                 stat = os.stat(full)
             except OSError:
                 continue
-            append_signature_part("%s:%s:%s" % (full, stat.st_mtime_ns, stat.st_size))
+            append_signature_part(signature_token_for_stat(full, stat))
     if MAX_LIBRARY_SIGNATURE_PARTS > 0 and MAX_LIBRARY_SIGNATURE_BYTES >= len(metadata_part):
         parts.append(metadata_part)
     return digest_signature_parts(parts)
@@ -1062,7 +1267,14 @@ def refresh_library_if_changed(config, force=False, change_monitor=None, _refres
         if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
             SCAN_STATE["phase"] = "保存音乐库索引"
             if not save_library_cache(config, items, signature):
-                raise OSError("library index persistence failed")
+                # The snapshot is parked above and the watcher replays it. Throwing it
+                # away instead discarded a finished scan, left the library empty, and
+                # made the next tick walk the same tree all over again.
+                print(
+                    "fnAudio library index will be retried: %s"
+                    % library_persistence_failure_message(),
+                    flush=True,
+                )
         MUSIC_CACHE["items"] = items
         MUSIC_CACHE["stamp"] = time.time()
         FS_CACHE["signature"] = signature
@@ -1347,6 +1559,23 @@ def _browse_cursor_rows(conn, prefix, joiner, order_by, base_args, cursor, kind,
     return rows
 
 
+def _library_index_is_empty(conn):
+    """True only when the ``tracks`` table holds no row at all.
+
+    A filtered page legitimately answers zero rows for an empty scope, and the
+    folder browser hit exactly that on every container holding only
+    subdirectories.  Such a page must not be handed to the Python fallback,
+    which filters and sorts every cached item and took seconds on a 60,000-track
+    library; only a genuinely empty index justifies that rescue.  An unreadable
+    table is treated as empty so the historical recovery stays available.
+    """
+    try:
+        row = conn.execute("SELECT EXISTS(SELECT 1 FROM tracks LIMIT 1)").fetchone()
+    except sqlite3.Error:
+        return True
+    return not bool(row and row[0])
+
+
 def query_library_page(config, params):
     if not os.path.isfile(library_db_path(config)):
         return _query_memory_library_page(config, params)
@@ -1401,7 +1630,7 @@ def query_library_page(config, params):
                     if cursor
                     else conn.execute(page_sql, args + [limit + 1, offset])
                 )
-            if count == 0 and MUSIC_CACHE["items"] and not cursor:
+            if count == 0 and MUSIC_CACHE["items"] and _library_index_is_empty(conn) and not cursor:
                 return _query_memory_library_page(config, params)
             if cursor:
                 items, anchor, has_more = _decode_track_cursor_page_rows(rows, limit)
@@ -1428,7 +1657,7 @@ def query_library_page(config, params):
             count = _saved_library_meta_count(conn, "track_count") if not where_sql else None
             if count is None:
                 count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
-            if count == 0 and MUSIC_CACHE["items"]:
+            if count == 0 and MUSIC_CACHE["items"] and _library_index_is_empty(conn):
                 return _query_memory_library_page(config, params)
             # `ORDER BY RANDOM()` scans and sorts every row, which is
             # disproportionately expensive for the unfiltered 100-track view
@@ -1489,6 +1718,9 @@ def query_library_page(config, params):
         use_fts=use_fts,
     )
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    # A folder page is scoped to a subtree, so its total is read beside the
+    # page instead of through a window over the whole subtree.
+    folder_subtree_page = view == "folders"
     with library_db_connect(config) as conn:
         # The unfiltered library view is the hottest pagination path.  Scans
         # already commit an exact track count alongside the index metadata,
@@ -1505,6 +1737,11 @@ def query_library_page(config, params):
             if cursor:
                 count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
                 rows = _cursor_page_rows(conn, where, args, page_query, cursor, limit)
+            elif folder_subtree_page:
+                # ``COUNT(*) OVER()`` has to visit every subtree row to attach its
+                # total, which cancels the index seek the page itself just made;
+                # two statements keep the same isolation and the same answer.
+                rows, count = counted_page_rows(conn, page_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args)
             else:
                 rows, count = paged_rows_with_total(conn, window_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args, page_sql, args + [limit + 1, offset])
         else:
@@ -1513,7 +1750,7 @@ def query_library_page(config, params):
                 if cursor
                 else conn.execute(page_sql, args + [limit + 1, offset])
             )
-        if count == 0 and MUSIC_CACHE["items"] and not cursor:
+        if count == 0 and MUSIC_CACHE["items"] and _library_index_is_empty(conn) and not cursor:
             return _query_memory_library_page(config, params)
         if cursor:
             items, anchor, has_more = _decode_track_cursor_page_rows(rows, limit)
@@ -2547,6 +2784,14 @@ def library_db_writer(config):
     failed = False
     try:
         _prepare_library_connection(config, conn, db_path)
+        # Ask for the write lock before the first statement.  A deferred
+        # transaction reads first and upgrades on its first write, and SQLite
+        # refuses that upgrade with SQLITE_BUSY without ever running the busy
+        # handler - so ``busy_timeout=15000`` protected nothing, and the
+        # metadata writer sharing this exact file could throw away a scan that
+        # had already taken minutes.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     except BaseException:
@@ -3087,14 +3332,26 @@ def load_library_cache(config):
         _record_library_cache_failure("load")
 
 def save_library_cache(config, items=None, signature=None):
+    """Persist a scan snapshot, one writer at a time inside this process.
+
+    WAL allows a single writer. Two snapshot writers in the same process therefore do
+    not race the disk, they race each other, and the loser used to throw a finished
+    multi-minute scan away. Serializing here removes that self-inflicted failure.
+    """
+    with LIBRARY_PERSIST_SAVE_LOCK:
+        return _save_library_cache_locked(config, items, signature)
+
+
+def _save_library_cache_locked(config, items=None, signature=None):
     """Persist a scan snapshot before publishing it to in-memory readers."""
     snapshot_items = MUSIC_CACHE["items"] if items is None else items
     snapshot_signature = FS_CACHE["signature"] if signature is None else signature
     try:
         secure_directory(config["cache_dir"])
         save_items_to_sqlite(config, snapshot_items, snapshot_signature)
-    except (OSError, sqlite3.Error):
-        _record_library_cache_failure("save")
+    except (OSError, sqlite3.Error) as exc:
+        _record_library_cache_failure("save", exc)
+        _stage_library_persist_retry(exc, snapshot_items, snapshot_signature)
         return False
     try:
         # SQLite is the authoritative index. Keep the legacy JSON fallback
@@ -3172,6 +3429,11 @@ def watch_library(config, _stop_event=None):
                 monitor.start()
                 LIBRARY_CHANGE_MONITOR = monitor
             try:
+                # Replay the parked snapshot before starting a walk that can
+                # take minutes.  The retry window is 60 s, so refreshing first
+                # always spent it inside the scan and the parked index was
+                # dropped with attempts still at zero.
+                retry_pending_library_persist(config)
                 refresh_library_if_changed(config, change_monitor=monitor)
                 cleanup_transcode_cache_if_due(config)
             except Exception:
