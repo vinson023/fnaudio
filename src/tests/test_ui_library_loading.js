@@ -275,7 +275,7 @@ assert.match(app, /cancelVisibleMetadataPrefetch\(\{ releaseKeys: true \}\)/, "V
 assert.match(app, /scheduleVisibleMetadataPrefetch\(state\.pageItems, state\.libraryRequestSeq\)/, "Returning to the foreground must resume visible metadata prefetch");
 assert.match(app, /state\.libraryRequestSeq \+= 1;[\s\S]*?cancelVisibleMetadataPrefetch\(\{ releaseKeys: true \}\)/, "Leaving a library view must release cancelled metadata keys");
 assert.match(app, /if \(!rememberVisibleMetadataPrefetchKey\(key, 256\)\) continue;/, "Visible metadata prefetch should use the FIFO deduplication policy");
-assert.match(app, /const releaseStatus = String\(data\.status \|\| \"\"\)\.toLowerCase\(\);[\s\S]*?shouldReleaseKey\(data\)/, "Retryable visible metadata projections must release their page dedupe key");
+  assert.match(app, /const terminalRelease = data\.retryable === true[\s\S]*?releaseCompletedKey\?\.\(key, data, scheduleVisibleMetadataPrefetchCooldown, decision\)[\s\S]*?state\.visibleMetadataPrefetchKeys\.delete\(key\);/, "A retryable or terminal visible projection may only release its page dedupe key through the cooldown verdict");
 assert.match(app, /scheduleVisibleMetadataPrefetch\(state\.pageItems, seq\);/, "Authoritative first-page paint should seed visible metadata prefetch");
 assert.match(app, /render\(\);\s*\/\/ Persist the enriched visible page during idle time\.[\s\S]*?scheduleLibraryPageSnapshot\(state\.page\);/, "Metadata row commits should refresh the bounded startup snapshot");
 assert.match(app, /patchTrackRowNode\(existing, node\);/, "Keyed row patches must update the existing live row instead of replacing it");
@@ -1287,6 +1287,564 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       "the throttle stamp is initialised exactly once");
   }
 
+  // R205 (F1/F2): the measured pointerdown->pointerup hold of a deliberate
+  // folder click on the real device is 137-139 ms while one paged navigation
+  // costs ~116 ms, so the entire round trip used to happen after the user had
+  // already decided the control was dead. The press now activates the control
+  // and the row is acknowledged in the same frame.
+  {
+    const sliceStart = app.indexOf("const LIBRARY_NAVIGATION_SELECTOR =");
+    const sliceEnd = app.indexOf("// Fire-and-forget UI entry points already render the bounded error state.");
+    assert.ok(sliceStart > 0 && sliceEnd > sliceStart,
+      "the navigation gate and the press-time speculation must stay one contiguous top-level block");
+    const navSource = app.slice(sliceStart, sliceEnd);
+    for (const name of ["armLibraryNavigationSpeculation", "clearLibraryNavigationSpeculation",
+      "libraryNavigationSpeculationPending", "speculateLibraryNavigation", "isConsumedNavigationClick"]) {
+      assert.ok(navSource.includes("function " + name + "("), name + " must live in that block");
+    }
+    const inside = [];
+    const element = (...attributes) => {
+      const node = {
+        attributes,
+        clicks: 0,
+        closest(selector) {
+          return selector.split(",").some(wanted => attributes.includes(wanted)) ? node : null;
+        },
+      };
+      node.onclick = () => { node.clicks += 1; };
+      inside.push(node);
+      return node;
+    };
+    const list = { contains: node => inside.includes(node) };
+    let clock = 10000;
+    const navState = { libraryInteractionBlocked: false, libraryInteractionHoldUntil: 0, libraryNavigationSpeculation: null };
+    const navContext = {
+      $: () => list, state: navState, Boolean, Number, Math,
+      Date: { now: () => clock },
+    };
+    vm.runInNewContext(navSource + `
+      ; globalThis.press = speculateLibraryNavigation;
+      ; globalThis.consumed = isConsumedNavigationClick;
+      ; globalThis.pending = libraryNavigationSpeculationPending;`, navContext);
+    const folderRow = element("[data-group-row]");
+    const crumb = element("[data-folder-crumb-root]");
+    const trackRow = element("[data-track-row-key]");
+    const detached = element("[data-group-row]");
+    inside.length = 0;
+    inside.push(folderRow, crumb, trackRow);
+    const press = (node, options = {}) => navContext.press(
+      Object.assign({ target: node, pointerType: "mouse", button: 0, isPrimary: true }, options), list);
+    assert.equal(press(folderRow), true, "a mouse press on a folder row activates it immediately");
+    assert.equal(folderRow.clicks, 1, "the press ran the row's own handler exactly once");
+    assert.equal(navContext.pending(), true, "the follow-up click is now owned by the press");
+    assert.equal(press(folderRow), true, "a second press is a second activation");
+    assert.equal(folderRow.clicks, 2, "each deliberate press activates once, never twice");
+    assert.equal(press(crumb), true, "breadcrumbs and pagers use the same press path");
+    assert.equal(press(trackRow), false, "a track row is not a navigation speculation");
+    assert.equal(press(folderRow, { pointerType: "touch" }), false,
+      "touch may not speculate: a scroll gesture starts with pointerdown too");
+    assert.equal(press(folderRow, { pointerType: "pen" }), true, "a pen press is as deliberate as a mouse press");
+    assert.equal(press(folderRow, { button: 2 }), false, "a right press belongs to the context menu, not navigation");
+    assert.equal(press(folderRow, { isPrimary: false }), false, "secondary pointers may not navigate");
+    assert.equal(press(detached), false, "a navigation node outside the list is not activated");
+    assert.equal(navContext.consumed({ target: crumb }, list), true,
+      "the click after a pressed control is swallowed");
+    assert.equal(navContext.pending(), false, "the swallow token is single-use");
+    assert.equal(navContext.consumed({ target: crumb }, list), false,
+      "a later click on the same kind of control is live again");
+    assert.equal(press(folderRow), true, "arm once more");
+    assert.equal(navContext.consumed({ target: trackRow }, list), false,
+      "a click that lands on a track row after the page changed may never be swallowed");
+    assert.equal(navContext.pending(), false, "and the spent press is still consumed either way");
+    clock = 12000;
+    assert.equal(press(folderRow), true, "arm a press, then let the window lapse");
+    clock = 12000 + 1501;
+    assert.equal(navContext.pending(), false, "the swallow may not outlive its window");
+    assert.equal(navContext.consumed({ target: crumb }, list), false, "an expired press cannot swallow a click");
+    const hostile = element("[data-group-row]");
+    inside.push(hostile);
+    hostile.onclick = () => { throw new Error("handler"); };
+    assert.equal(press(hostile), false, "a failing handler may not leave a swallow token armed");
+    assert.equal(navContext.pending(), false, "and the token is cleared on that failure");
+    navState.libraryInteractionBlocked = true;
+    assert.equal(press(trackRow), false, "the in-flight gate still owns non-navigation presses");
+    assert.equal(press(crumb), true, "but a folder press during a load is still honoured");
+  }
+  // R205 (F1/F2): the binder must wire the press, the single-use swallow and the
+  // row acknowledgement, and the acknowledgement must reach the stylesheet.
+  {
+    const binder = app.match(/function bindTrackListInteractions\([\s\S]*?\n\}/);
+    assert.ok(binder, "the track list interaction binder must remain one top-level function");
+    assert.ok(binder[0].includes("speculateLibraryNavigation(event, list)"),
+      "the binder has to activate navigation controls on pointerdown");
+    assert.ok(binder[0].includes("isConsumedNavigationClick(event, list)"),
+      "the binder has to discard the click the press already served");
+    const swallowAt = binder[0].indexOf("isConsumedNavigationClick(event, list)");
+    const captureAt = binder[0].indexOf("}, true);", swallowAt);
+    assert.ok(swallowAt >= 0 && captureAt > swallowAt,
+      "the swallow must run in the capture phase, before the row handler can fire again");
+    assert.ok(binder[0].includes('list.addEventListener("pointercancel", () => clearLibraryNavigationSpeculation())'),
+      "an abandoned press must drop its swallow token");
+    const opener = app.match(/function openGroupRow\(row\) \{[\s\S]*?\n\}/);
+    assert.ok(opener, "openGroupRow must stay one top-level function for this check");
+    const addAt = opener[0].indexOf('row?.classList?.add?.("is-opening")');
+    const loadAt = opener[0].indexOf("requestLibraryLoad(1, false)");
+    const removeAt = opener[0].indexOf('row?.classList?.remove?.("is-opening")');
+    assert.ok(addAt >= 0 && loadAt > addAt,
+      "the acknowledgement must be painted in the same frame, before the request");
+    assert.ok(removeAt > loadAt, "and it is cleared on the settled page, not the press");
+    assert.ok(css.includes(".group-row.is-opening"), "the acknowledgement needs a visible style");
+    assert.ok(css.includes("fnAudioOpeningPulse"), "the pulse must be defined, not just referenced");
+    assert.equal(countOccurrences(app, "const NAVIGATION_SPECULATION_WINDOW_MS = 1500;"), 1,
+      "the swallow window is declared once and bounded");
+  }
+  // R205 (F4 + F4b): a completed visible lookup that gained nothing holds its page
+  // dedupe key on one page-owned, escalating cooldown instead of handing the key
+  // straight back to the lane in the same tick. The exemption is information gain,
+  // not payload shape: on the real device the ping-pong rows all carried a
+  // filename-derived projection, which is why a shape test alone never stopped it.
+  {
+    const coolSource = app.match(/function scheduleVisibleMetadataPrefetchCooldown\([\s\S]*?\n\}/);
+    assert.ok(coolSource, "the cooldown scheduler must stay one top-level function");
+    const peekSource = app.match(/function nextVisibleMetadataPrefetchCooldownExpiry\([\s\S]*?\n\}/);
+    assert.ok(peekSource, "the earliest expiry needs its own readable step");
+    const armSource = app.match(/function armVisibleMetadataPrefetchCooldownTimer\([\s\S]*?\n\}/);
+    assert.ok(armSource, "the cooldown timer needs its own arming step");
+    const flushSource = app.match(/function flushVisibleMetadataPrefetchCooldowns\([\s\S]*?\n\}/);
+    assert.ok(flushSource, "and its own flush step");
+    let now = 1000;
+    let nextId = 1;
+    const armed = new Map();
+    const delays = [];
+    const coolState = {
+      visibleMetadataPrefetchCooldownTimer: 0,
+      visibleMetadataPrefetchCooldownKeys: new Map(),
+      visibleMetadataPrefetchCooldownStreaks: new Map(),
+      visibleMetadataPrefetchCooldownSeq: 0,
+      visibleMetadataPrefetchKeys: new Set(["a:1", "a:2", "other"]),
+      libraryRequestSeq: 7,
+    };
+    const coolContext = {
+      state: coolState, Math, Number,
+      Date: { now: () => now },
+      setTimeout: (fn, ms) => { const id = nextId++; armed.set(id, fn); delays.push(ms); return id; },
+      clearTimeout: (id) => { armed.delete(id); },
+    };
+    vm.runInNewContext(
+      visibleMetadataPolicy + "\n" + coolSource[0] + "\n" + peekSource[0] + "\n" + armSource[0] + "\n" + flushSource[0]
+      + "\nglobalThis.cool = scheduleVisibleMetadataPrefetchCooldown;"
+      + "\nglobalThis.flush = flushVisibleMetadataPrefetchCooldowns;",
+      coolContext,
+    );
+    const fireLatest = () => {
+      const fn = armed.get(nextId - 1);
+      if (!fn) return false;
+      armed.delete(nextId - 1);
+      fn();
+      return true;
+    };
+    assert.equal(coolContext.cool("", 30000), false, "a keyless row is nothing to cool");
+    assert.equal(armed.size, 0, "and it must not arm a timer");
+    assert.equal(coolContext.cool("a:1", 30000), true, "a terminal row is taken over by the cooldown lane");
+    assert.equal(coolState.visibleMetadataPrefetchKeys.has("a:1"), true,
+      "the page key stays held, so the next lane pass skips the row");
+    assert.equal(delays[0], 30000, "the first window is the default thirty seconds");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownStreaks.get("a:1"), 1,
+      "the row starts at its first nothing-gained streak");
+    now = 25000;
+    assert.equal(coolContext.cool("a:2", 30000), true, "a second cooled row joins the same lane");
+    assert.equal(armed.size, 1, "and the page still owns exactly one live cooldown timer");
+    assert.equal(delays[delays.length - 1], 6000,
+      "the live timer is re-armed for the earliest expiry, never a blind shared window");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.get("a:2"), 55000,
+      "while the later row keeps its own full window");
+    now = 31000;
+    assert.equal(fireLatest(), true, "the page timer fires once for the whole cohort");
+    assert.equal(coolState.visibleMetadataPrefetchKeys.has("a:1"), false, "the cooled row is released");
+    assert.equal(coolState.visibleMetadataPrefetchKeys.has("a:2"), true,
+      "a row cooled later is not released early just because it shares the timer");
+    assert.equal(delays[delays.length - 1], 24000, "and the lane re-arms for the next expiry");
+    coolContext.cool("a:1", 30000);
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.get("a:1"), now + 60000,
+      "the same row judged unhelpful again doubles its window");
+    for (let index = 0; index < 9; index++) coolContext.cool("a:1", 30000);
+    assert.equal(coolState.visibleMetadataPrefetchCooldownStreaks.get("a:1"), 10,
+      "the streak stops counting up at ten");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.get("a:1"), now + 300000,
+      "so an unmatchable row settles at one request pair per five minutes");
+    assert.equal(coolContext.cool("a:9", 0), false,
+      "a zero window is the product off-switch, not a one second cooldown");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.has("a:9"), false,
+      "and the row is left to the immediate release");
+    assert.equal(coolContext.cool("z:1", 50), true, "a bogus delay still cools");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.get("z:1"), now + 1000,
+      "but it clamps to the one second floor");
+    assert.equal(delays[delays.length - 1], 1000,
+      "the shared timer re-arms for the earliest expiry even when that row cooled last");
+    assert.equal(armed.size, 1, "and the page still owns exactly one cooldown timer");
+    coolContext.cool("z:2", 999999);
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.get("z:2"), now + 300000,
+      "and stays bounded at five minutes");
+    coolState.visibleMetadataPrefetchKeys.add("z:1");
+    coolState.libraryRequestSeq = 8;
+    now += 2000;
+    assert.equal(fireLatest(), true, "a queued release still runs after the page settles");
+    assert.equal(coolState.visibleMetadataPrefetchKeys.has("z:1"), true,
+      "but a settled page may not release keys that now belong to the next page");
+    assert.equal(coolState.visibleMetadataPrefetchCooldownKeys.has("z:1"), false,
+      "and the stale cohort itself is always dropped");
+    const cancel = app.match(/function cancelVisibleMetadataPrefetch\(options = \{\}\) \{[\s\S]*?\n\}/);
+    assert.ok(cancel, "cancelVisibleMetadataPrefetch must stay one top-level function");
+    assert.ok(cancel[0].includes("state.visibleMetadataPrefetchCooldownTimer) clearTimeout(state.visibleMetadataPrefetchCooldownTimer"),
+      "cancelling the re-arms has to cancel the cooldown timer too");
+    assert.ok(cancel[0].includes("state.visibleMetadataPrefetchCooldownKeys?.clear()"),
+      "and drop the retained keys with them");
+    assert.ok(cancel[0].includes("state.visibleMetadataPrefetchCooldownStreaks?.clear()"),
+      "and start the escalation over for the new view");
+    assert.ok(app.includes("informative: changed === true"),
+      "the release verdict is owned by whether the row actually gained anything");
+    assert.match(app, /if \(!rearmPending && \(terminalRelease\n\s*\|\| \(decision\.recoverable && state\.uiMetrics\.metadataPrefetchFailures < 1000000\)\)/,
+      "only a terminal or recoverable verdict may even reach the cooldown lane");
+    assert.ok(app.includes("if (decision.informative) state.visibleMetadataPrefetchCooldownStreaks?.delete(key);"),
+      "a row that finally gained fields restarts its escalation");
+    assert.ok(app.includes("{ informative: false, recoverable: false }"),
+      "a projection-less negative is cooled at the bare lane as well");
+    assert.ok(app.includes("?.releaseCompletedKey?.(key, data, scheduleVisibleMetadataPrefetchCooldown, decision)"),
+      "and the projection-bearing lane routes through the same policy verdict");
+    assert.equal(app.includes("?.shouldReleaseKey(data)"), false,
+      "the old shape-based immediate release must not come back at either site");
+  }
+
+  // R206: dwelling a pointer on a folder row now issues, before the click, exactly the
+  // pair of requests that click is going to issue. Three things have to hold or the
+  // cache hit silently disappears: one builder for both paths, byte-identical URLs,
+  // and a dwell that never outlives the row it was waiting for.
+  {
+    const navBlock = appSlice(
+      "const LIBRARY_NAVIGATION_SELECTOR =",
+      "// Fire-and-forget UI entry points already render the bounded error state.",
+      "the folder navigation block",
+    );
+    for (const name of ["folderNavigationUrls", "navigationHoverCandidate",
+      "libraryNavigationPrefetchUrls", "cancelLibraryNavigationHoverDwell",
+      "prefetchLibraryNavigation", "armLibraryNavigationHover"]) {
+      assert.ok(navBlock.includes("function " + name + "("),
+        name + " must live inside the sliceable navigation block");
+    }
+    assert.equal(countOccurrences(app, "const folderParams = new URLSearchParams();"), 1,
+      "only the shared pair builder may construct folder params, or a speculative URL can drift from the navigation URL");
+    assert.ok(app.includes("const [foldersUrl, tracksUrl] = folderNavigationUrls("),
+      "the folder branch of the loader has to take its URLs from the shared builder, not a second copy");
+    assert.equal(countOccurrences(app, "return libraryQueryParamsFor(state.folderRoot, state.folderPath, state.page);"), 1,
+      "currentQueryParams stays a projection of the one builder");
+    assert.ok(app.includes('fetchLibraryResponse(foldersUrl, '),
+      "the folder half of the navigation must fetch the builder's first URL");
+    assert.ok(app.includes('${tracksUrl}${refresh ? "&refresh=1" : ""}'),
+      "only the track half carries the refresh marker, and it is appended to the builder's second URL");
+
+    const hoverRoot = "/vol2/1000/music";
+    const hoverPath = "未整理";
+    const expectedFolders = "api/library/folders?root=%2Fvol2%2F1000%2Fmusic&parent=%E6%9C%AA%E6%95%B4%E7%90%86&dir=asc&paged=1&limit=100&offset=0";
+    const expectedTracks = "api/library?paged=1&limit=96&offset=0&view=folders&sort=title&dir=asc&root=%2Fvol2%2F1000%2Fmusic&folder=%E6%9C%AA%E6%95%B4%E7%90%86";
+
+    const hoverInside = [];
+    function hoverRow(attributes, dataset = {}) {
+      const node = {
+        dataset,
+        closest(selector) {
+          return selector.split(",").some(wanted => attributes.includes(wanted)) ? node : null;
+        },
+      };
+      node.onclick = () => {};
+      hoverInside.push(node);
+      return node;
+    }
+    const hoverList = { contains: node => hoverInside.includes(node) };
+    const searchInput = { value: "" };
+    const cacheKeys = new Set();
+    const hoverState = {
+      view: "folders",
+      page: 1,
+      pageSize: 96,
+      folderPage: 1,
+      folderPageSize: 100,
+      sortKey: "title",
+      sortDir: "asc",
+      folderRoot: hoverRoot,
+      folderPath: "",
+      groupName: "",
+      libraryInteractionBlocked: false,
+      libraryInteractionHoldUntil: 0,
+      libraryNavigationSpeculation: null,
+      libraryNavigationHoverTimer: 0,
+      libraryNavigationHoverNode: null,
+      libraryNavigationPrefetch: null,
+      libraryResponseCache: { has: url => cacheKeys.has(url) },
+    };
+    const hoverRequests = [];
+    const hoverSettlers = [];
+    const hoverTimers = new Map();
+    let hoverTimerId = 0;
+    let hoverClock = 5000;
+    const hoverContext = {
+      $: id => (id === "searchInput" ? searchInput : hoverList),
+      state: hoverState,
+      URLSearchParams, encodeURIComponent, decodeURIComponent,
+      Math, Number, String, Boolean, Array, Object, Promise, Error, RegExp, Set,
+      Date: { now: () => hoverClock },
+      browseCursorForPage: () => "",
+      isCreatorView: () => false,
+      currentCreatorName: () => "",
+      isPlaylistView: () => false,
+      groupViews: { albums: "album", artists: "artist", composers: "composer", genres: "genre" },
+      setTimeout: (fn, ms) => { hoverTimerId += 1; hoverTimers.set(hoverTimerId, { fn, ms }); return hoverTimerId; },
+      clearTimeout: id => { hoverTimers.delete(id); },
+      fetchLibraryResponse: (url, message, refresh, signal) => {
+        hoverRequests.push({ url, message, refresh, signal });
+        return new Promise(resolve => {
+          hoverSettlers.push(() => resolve({ items: [], folders: [], count: 0 }));
+        });
+      },
+    };
+    const queryParamsSource = fs.readFileSync("app/ui/library_query_params.js", "utf8");
+    const builderSource = app.match(/function libraryQueryParamsFor\(folderRoot, folderPath, page\) \{[\s\S]*?\n\}/);
+    assert.ok(builderSource, "libraryQueryParamsFor must stay one top-level function");
+    const queryTextSource = app.match(/function currentQueryText\(\) \{[\s\S]*?\n\}/);
+    assert.ok(queryTextSource, "currentQueryText must stay one top-level function");
+    vm.runInNewContext(
+      queryParamsSource + NL + queryTextSource[0] + NL + builderSource[0] + NL + navBlock + NL
+      + "globalThis.pair = folderNavigationUrls;"
+      + NL + "globalThis.urlsFor = libraryNavigationPrefetchUrls;"
+      + NL + "globalThis.arm = armLibraryNavigationHover;"
+      + NL + "globalThis.cancelDwell = cancelLibraryNavigationHoverDwell;"
+      + NL + "globalThis.prefetch = prefetchLibraryNavigation;",
+      hoverContext,
+    );
+    const drain = async () => {
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+    };
+    const settleAll = async () => {
+      while (hoverSettlers.length) hoverSettlers.shift()();
+      await drain();
+    };
+    const fireDwell = () => {
+      const timer = hoverTimers.get(hoverState.libraryNavigationHoverTimer);
+      assert.ok(timer, "the dwell timer must still be armed when it fires");
+      hoverTimers.delete(hoverState.libraryNavigationHoverTimer);
+      timer.fn();
+    };
+    const hover = (node, options = {}) => hoverContext.arm(
+      Object.assign({ target: node, pointerType: "mouse", buttons: 0 }, options), hoverList);
+    const folderRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent(hoverPath),
+    });
+
+    // The pair is built once, from the row's own coordinates, and is byte-stable.
+    assert.deepEqual(Array.from(hoverContext.pair(hoverRoot, hoverPath, 1, 1)), [expectedFolders, expectedTracks],
+      "the speculative pair must be the exact bytes a folder click is going to request");
+    assert.ok(expectedFolders.includes("parent=") && !expectedFolders.includes("folder=")
+      && expectedTracks.includes("folder=") && !expectedTracks.includes("parent="),
+      "the folder half addresses parent= while the track half addresses folder=");
+    assert.deepEqual(Array.from(hoverContext.urlsFor(folderRow)), [expectedFolders, expectedTracks],
+      "a folder row's own declared coordinates reproduce that pair without mutating state");
+
+    // Dwell, then fire.
+    assert.equal(hover(folderRow), true, "a mouse resting on a folder row arms a dwell");
+    assert.equal(hoverTimers.size, 1, "one dwell per pointer, not one per mouse-move event");
+    assert.equal(hoverTimers.get(hoverState.libraryNavigationHoverTimer).ms, 40,
+      "the dwell is short enough to beat a deliberate click and long enough to skip a sweep");
+    assert.equal(hoverRequests.length, 0, "nothing leaves the page before the dwell expires");
+    const dwellTimerId = hoverState.libraryNavigationHoverTimer;
+    hover(folderRow);
+    assert.equal(hoverTimers.size, 1, "moving inside the same row may not restart the dwell window");
+    assert.equal(hoverState.libraryNavigationHoverTimer, dwellTimerId, "and may not replace its timer");
+    fireDwell();
+    assert.equal(hoverRequests.length, 2, "the dwell asks for exactly the two requests the click needs");
+    assert.deepEqual(hoverRequests.map(request => request.url), [expectedFolders, expectedTracks],
+      "with no reordering between the halves");
+    assert.deepEqual(hoverRequests.map(request => request.message), ["", ""],
+      "a speculative request owns no user-visible error text: the click renders failures");
+    assert.deepEqual(hoverRequests.map(request => request.refresh), [false, false],
+      "speculation never forces a refresh, which would clear the cache it is filling");
+    assert.deepEqual(hoverRequests.map(request => request.signal), [undefined, undefined],
+      "and carries no abort signal, so a later navigation cannot kill its own cache fill");
+    assert.equal(hoverState.libraryNavigationPrefetch.inFlight.size, 2,
+      "both halves of the issued pair are marked in flight");
+    assert.equal(hoverState.libraryNavigationPrefetch.issued, 1,
+      "and one issued pair costs exactly one unit of the budget");
+    assert.equal(hoverState.libraryNavigationHoverTimer, 0, "a fired dwell leaves no timer behind");
+
+    // A bounded budget, not a single slot. The pointer sweeps past a row on its way to the
+    // row it actually clicks: refusing everything after the first pair starved exactly the
+    // hover this feature exists for (measured on the device), while an unbounded lane would
+    // put the R198 connection congestion straight back.
+    const secondRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("DSD"),
+    });
+    assert.equal(hover(secondRow), true, "hovering a second row still arms");
+    fireDwell();
+    assert.equal(hoverRequests.length, 4, "a second pair is issued while the first is still in flight");
+    assert.equal(hover(secondRow), true, "re-entering the same row arms again");
+    fireDwell();
+    assert.equal(hoverRequests.length, 4, "but its own in-flight pair is never requested twice");
+    assert.equal(hoverState.libraryNavigationPrefetch.issued, 2,
+      "and a refusal caused by in-flight dedup still spends its budget unit");
+    const thirdRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("NEW"),
+    });
+    hover(thirdRow);
+    fireDwell();
+    assert.equal(hoverRequests.length, 6, "three pairs per window is what the budget buys");
+    const fourthRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("DLP"),
+    });
+    assert.equal(hover(fourthRow), true, "a fourth hover still arms its dwell");
+    fireDwell();
+    assert.equal(hoverRequests.length, 6, "and the fourth pair inside the same window is refused");
+    await settleAll();
+    assert.equal(hoverState.libraryNavigationPrefetch.inFlight.size, 0,
+      "a settled half leaves the in-flight set");
+    assert.equal(hoverState.libraryNavigationPrefetch.issued, 3,
+      "but settling early may not refund the window: the bound is a rate, not a slot count");
+    const fifthRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("SACD"),
+    });
+    hover(fifthRow);
+    fireDwell();
+    assert.equal(hoverRequests.length, 6, "inside an exhausted window the fifth row gets nothing");
+    hoverClock += 2001;
+    hover(fifthRow);
+    fireDwell();
+    assert.equal(hoverRequests.length, 8, "a rolled window serves the same hover again");
+    assert.equal(hoverState.libraryNavigationPrefetch.issued, 1, "and rebuilds the budget from zero");
+    await settleAll();
+    hoverRequests.length = 0;
+    hoverClock += 2001;
+
+    // A dwell never outlives its row, its page, or the pointer.
+    const leavingRow = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("Hi-Res"),
+    });
+    hover(leavingRow);
+    hoverInside.splice(hoverInside.indexOf(leavingRow), 1);
+    fireDwell();
+    assert.equal(hoverRequests.length, 0, "a row removed while the pointer dwells may never be fetched");
+    hover(leavingRow);
+    hoverContext.cancelDwell();
+    assert.equal(hoverTimers.size, 0, "the pointer leaving the list cancels the dwell");
+    assert.equal(hoverState.libraryNavigationHoverNode, null, "and drops the row it was watching");
+    assert.equal(hoverRequests.length, 0, "a cancelled dwell never fires late");
+    hoverState.libraryInteractionBlocked = true;
+    hoverState.libraryInteractionHoldUntil = hoverClock + 1000;
+    assert.equal(hover(folderRow), false,
+      "a hover during a page replacement may not spend the connections on rows that are about to be destroyed");
+    assert.equal(hoverTimers.size, 0, "and no dwell is armed for it");
+    hoverState.libraryInteractionHoldUntil = 0;
+    assert.equal(hover(folderRow), true, "outside the hold window the same hover arms again");
+    hoverTimers.clear();
+    hoverState.libraryNavigationHoverTimer = 0;
+    hoverState.libraryNavigationHoverNode = null;
+    hoverState.libraryInteractionBlocked = false;
+
+    // Cache hits cost nothing, and a non-folder target costs nothing.
+    cacheKeys.add(expectedFolders);
+    cacheKeys.add(expectedTracks);
+    assert.equal(hover(folderRow), true, "an already-warm row still arms a dwell");
+    fireDwell();
+    assert.equal(hoverRequests.length, 0, "a fully cached pair issues zero requests");
+    assert.equal(hoverState.libraryNavigationPrefetch.issued, 0,
+      "a fully cached pair may not spend the budget either");
+    hoverRequests.length = 0;
+    cacheKeys.clear();
+
+    assert.equal(hover(hoverRow(["[data-group-row]"], {
+      groupType: "album",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("album"),
+    })), false, "only folder rows are prefetched: their dataset already names the pair");
+    assert.equal(hoverTimers.size, 0, "an album row arms nothing");
+    const detachedOnclick = hoverRow(["[data-group-row]"], {
+      groupType: "folder",
+      groupRoot: encodeURIComponent(hoverRoot),
+      groupPath: encodeURIComponent("LP转录"),
+    });
+    detachedOnclick.onclick = undefined;
+    assert.equal(hover(detachedOnclick), false,
+      "a row without its own click handler cannot be hovered into a navigation");
+    assert.equal(hoverTimers.size, 0, "and it arms nothing");
+    detachedOnclick.onclick = () => {};
+    assert.equal(hover(detachedOnclick, { pointerType: "touch" }), false,
+      "a touch sweep may not spend a folder pair the user never meant to open");
+    assert.equal(hoverTimers.size, 0, "a touch arms nothing either");
+    assert.equal(hover(detachedOnclick, { pointerType: "pen" }), true, "a pen is a hover like a mouse");
+    assert.equal(hoverTimers.size, 1, "and arms exactly one dwell");
+    hoverTimers.clear();
+    hoverState.libraryNavigationHoverTimer = 0;
+    assert.equal(hover(detachedOnclick, { buttons: 1 }), false,
+      "a held button is a drag or a selection, not a hover");
+    assert.equal(hoverTimers.size, 0, "and it arms nothing");
+    detachedOnclick.onclick = () => {};
+    hoverState.view = "albums";
+    assert.equal(hoverContext.urlsFor(detachedOnclick).length, 0,
+      "outside the folder view a row dataset does not describe the request that is about to happen");
+    assert.equal(hover(detachedOnclick), false, "so hovering there is inert");
+    hoverState.view = "folders";
+
+    // The active filter is part of the pair: lose it and the click misses the cache.
+    searchInput.value = "周杰伦";
+    const filtered = hoverContext.pair(hoverRoot, hoverPath, 1, 1);
+    assert.ok(filtered[0].includes("search=%E5%91%A8%E6%9D%B0%E4%BC%A6")
+      && filtered[1].includes("search=%E5%91%A8%E6%9D%B0%E4%BC%A6"),
+      "the speculative pair carries the same search text the click will send");
+    assert.notEqual(filtered[0], expectedFolders, "and therefore keys a different cache entry, never a false hit");
+    hoverRequests.length = 0;
+    hoverClock += 2001;
+    assert.equal(hoverContext.prefetch(folderRow), true,
+      "a prefetch with no cached half issues its own pair through the same builder");
+    assert.deepEqual(hoverRequests.map(request => request.url), Array.from(filtered),
+      "and issues both halves of it, search included, in the builder's order");
+    searchInput.value = "";
+    await settleAll();
+
+    // Wiring: the dwell has to be fed by the pointer and dropped by the page.
+    const hoverBinder = app.match(/function bindTrackListInteractions\([\s\S]*?\n\}/);
+    assert.ok(hoverBinder, "the track list interaction binder must remain one top-level function");
+    assert.ok(hoverBinder[0].includes('list.addEventListener("pointermove", event => { armLibraryNavigationHover(event, list); })'),
+      "the binder has to watch the pointer resting inside the list");
+    assert.ok(hoverBinder[0].includes('list.addEventListener("pointerleave", () => cancelLibraryNavigationHoverDwell())'),
+      "and has to cancel the dwell when the pointer leaves it");
+    const moveAt = hoverBinder[0].indexOf('armLibraryNavigationHover(event, list)');
+    assert.ok(moveAt > hoverBinder[0].indexOf("speculateLibraryNavigation(event, list)"),
+      "hover speculation is armed after the press path, so a press is never preceded by its own dwell");
+    const workerHead = app.match(/async function loadPagedLibraryWorker\(page = 1, refresh = false\) \{[\s\S]*?\n\}\n/);
+    assert.ok(workerHead, "the navigation worker must stay one top-level function");
+    const cancelAt = workerHead[0].indexOf("cancelLibraryNavigationHoverDwell();");
+    const gateAt = workerHead[0].indexOf("state.libraryInteractionBlocked = true;");
+    assert.ok(cancelAt >= 0 && (gateAt < 0 || cancelAt < gateAt),
+      "a new page drops the dwell that pointed at rows it is about to destroy");
+    assert.equal(countOccurrences(app, "const NAVIGATION_HOVER_DWELL_MS = 40;"), 1,
+      "the dwell is declared once and bounded");
+    assert.equal(countOccurrences(app, "const NAVIGATION_PREFETCH_BUDGET = 3;"), 1,
+      "the hover budget is declared once and bounded");
+    assert.equal(countOccurrences(app, "const NAVIGATION_PREFETCH_WINDOW_MS = 2000;"), 1,
+      "and so is the window that budget rolls inside");
+    assert.equal(app.includes("if (state.libraryNavigationPrefetch) return false;"), false,
+      "the single-slot gate must not come back: it starved the hover this feature exists for");
+    assert.ok(navBlock.includes("budget.inFlight.delete(url)"),
+      "a settled half frees its own URL only, never the whole lane");
+  }
   console.log("Library loading cancellation regression checks passed.");
 })().catch(error => {
   console.error(error);

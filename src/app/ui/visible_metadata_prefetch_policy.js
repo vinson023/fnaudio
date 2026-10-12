@@ -185,8 +185,90 @@
     return Boolean(trackId && trackId === activeTrackId && (controller || timer));
   }
 
+  // A terminal provider verdict is authoritative for this row for a while.
+  // Releasing the page dedupe key in the same tick let a settling status
+  // refresh re-queue the identical visible row roughly every 780 ms, and the
+  // very same ping-pong happens for rows that DO return a projection: once the
+  // row is filled, every later lookup returns a byte-for-byte identical answer,
+  // so it is permanent background traffic for tracks that are never going to
+  // match anything new.  The exemption is therefore information gain, not
+  // payload shape.  A lookup that actually filled a field or a cover stays
+  // immediately eligible so the row can still collect the rest of its metadata;
+  // every completed lookup that gained nothing is cooled down.
+  const DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS = 30000;
+  const MAX_TERMINAL_NEGATIVE_COOLDOWN_MS = 300000;
+  const DEFAULT_MAX_NEGATIVE_COOLDOWN_STREAK = 10;
+
+  function cooldownDecision(decision) {
+    const value = decision && typeof decision === "object" ? decision : {};
+    let informative = false;
+    let recoverable = false;
+    try { informative = value.informative === true; } catch (_) {}
+    try { recoverable = value.recoverable === true; } catch (_) {}
+    return { informative: informative, recoverable: recoverable };
+  }
+
+  function terminalNegativeCooldownMs(payload, cooldownMs = DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS, decision = null) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+    const resolved = cooldownDecision(decision);
+    if (resolved.informative) return 0;
+    let status = "";
+    let retryable = false;
+    try {
+      status = typeof payload.status === "string" ? payload.status.toLowerCase() : "";
+      retryable = payload.retryable === true;
+    } catch (_) {
+      return 0;
+    }
+    // A retryable verdict says "ask again, but not now", and a filename-only
+    // projection may gain an album or artwork later.  Neither justifies an
+    // immediate re-request inside the same settle cycle.
+    if (status !== "no_match" && status !== "failed" && !retryable && !resolved.recoverable) return 0;
+    try {
+      const numeric = Number(cooldownMs);
+      if (!Number.isFinite(numeric)) return DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS;
+      return Math.max(0, Math.min(MAX_TERMINAL_NEGATIVE_COOLDOWN_MS, Math.floor(numeric)));
+    } catch (_) {
+      return DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS;
+    }
+  }
+
+  // Nothing-gained verdicts for the same row escalate 30s, 60s, 90s up to the
+  // 300s cap, so a library that can never match settles to roughly one request
+  // pair per row per five minutes instead of keeping a poller alive forever.
+  function escalatedCooldownMs(cooldownMs, streak, maxStreak = DEFAULT_MAX_NEGATIVE_COOLDOWN_STREAK) {
+    const numeric = Number(cooldownMs);
+    const base = Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    if (!base) return 0;
+    const count = Number(streak);
+    const limit = Number(maxStreak);
+    let multiplier = 1;
+    if (Number.isFinite(count) && count > 1) {
+      multiplier = Math.floor(count);
+      if (Number.isFinite(limit) && limit > 1) multiplier = Math.min(multiplier, Math.floor(limit));
+    }
+    return Math.min(MAX_TERMINAL_NEGATIVE_COOLDOWN_MS, base * multiplier);
+  }
+
+  // Single owner of the completed-lookup verdict: true means "the cooldown lane
+  // now owns this key, the caller must not release it", and false keeps every
+  // other release the immediate delete it always was.
+  function releaseCompletedKey(key, payload, cooldownSink, decision = null) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const resolved = cooldownDecision(decision);
+    if (resolved.informative) return false;
+    const cooldownMs = terminalNegativeCooldownMs(payload, DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS, resolved);
+    if (cooldownMs > 0 && typeof cooldownSink === "function" && cooldownSink(key, cooldownMs) === true) {
+      return true;
+    }
+    return false;
+  }
+
   global.fnAudioVisibleMetadataPrefetchPolicy = {
     DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_REARMS, needsMetadata, selectCandidates, shouldRetry,
     shouldReleaseKey, shouldRearmPending, pendingRearmDelayMs, shouldReuseActiveLane, ownsCurrentTrackLane,
+    DEFAULT_TERMINAL_NEGATIVE_COOLDOWN_MS, MAX_TERMINAL_NEGATIVE_COOLDOWN_MS,
+    DEFAULT_MAX_NEGATIVE_COOLDOWN_STREAK, terminalNegativeCooldownMs, escalatedCooldownMs,
+    releaseCompletedKey,
   };
 })(typeof window !== "undefined" ? window : globalThis);
