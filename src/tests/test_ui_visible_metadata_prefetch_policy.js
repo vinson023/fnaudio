@@ -118,4 +118,73 @@ assert.equal(policy.selectCandidates(needy(14), { valueOf() { throw new Error("l
 assert.equal(policy.shouldRetry(null, 0, "12"), true, "A numeric string attempt budget is honoured");
 assert.equal(policy.shouldRetry(null, 0, ""), true, "A blank max-attempt value keeps the bounded retry window");
 assert.equal(policy.shouldRetry(null, 0, 0), false, "An explicit zero attempt budget is respected");
+// R205: a terminal provider verdict must not hand the page dedupe key straight
+// back. On the real device the same visible no_match row was re-queued about
+// every 780 ms for as long as the page stayed up, which is permanent background
+// traffic for a row that is never going to match.
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match" }), 30000,
+  "A terminal no_match gets the default cooldown");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "FAILED" }), 30000,
+  "A terminal failure is case-insensitive and cooled the same way");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "pending" }), 0,
+  "Pending work keeps the immediate release: the poll window still owns it");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match", best: { id: 1 } }), 30000,
+  "A terminal verdict with a stale projection is still cooled: the projection shape is not the exemption");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match", image_url: "x" }), 30000,
+  "Cover-only results are cooled too, the cover is already on the row");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "failed", candidates: [] }), 30000,
+  "An empty candidate array is a verdict, not a reason to hammer the endpoint");
+assert.equal(policy.terminalNegativeCooldownMs({ retryable: true }, 30000, { informative: false }), 30000,
+  "A retryable verdict means ask again later, not ask again now");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "success", best: { id: 1 } }, 30000, { recoverable: true }), 30000,
+  "A filename fallback that may gain an album later is cooled instead of re-requested at once");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match", best: { id: 1 } }, 30000, { informative: true }), 0,
+  "A lookup that actually filled the row stays immediately eligible");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match" }, 30000, null), 30000,
+  "A missing decision falls back to the conservative cooldown");
+assert.equal(policy.terminalNegativeCooldownMs(null), 0, "No payload releases immediately");
+assert.equal(policy.terminalNegativeCooldownMs([]), 0, "An array payload is not a verdict");
+assert.equal(policy.terminalNegativeCooldownMs({ get status() { throw new Error("status"); } }), 0,
+  "A hostile status accessor cannot claim a cooldown");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match" }, 999999), 300000,
+  "A configured cooldown stays bounded");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match" }, 0), 0,
+  "An explicit zero switches the cooldown off, restoring immediate release");
+assert.equal(policy.terminalNegativeCooldownMs({ status: "no_match" }, "abc"), 30000,
+  "A non-numeric override falls back to the default instead of disabling it");
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match" }, () => true), true,
+  "A cooled terminal key is retained and reported as handled");
+assert.equal(policy.releaseCompletedKey("k", { status: "pending" }, () => true), false,
+  "A pending result is not taken over by the cooldown lane");
+let sunk = null;
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match" }, (key, ms) => { sunk = [key, ms]; return true; }), true,
+  "The sink is the single place that learns the cooldown length");
+assert.deepEqual(sunk, ["k", 30000], "The sink receives the key and the default cooldown");
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match" }, () => false), false,
+  "A sink that refuses the key falls back to the immediate release");
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match" }, undefined), false,
+  "Without a cooldown sink nothing may be retained");
+assert.equal(policy.releaseCompletedKey("k", { best: { id: 1 } }, () => true), false,
+  "A successful row is never cooled");
+// Escalation: repeated nothing-gained verdicts for one row go quiet on their own.
+assert.equal(policy.escalatedCooldownMs(30000, 0), 30000, "The first streak is the base window");
+assert.equal(policy.escalatedCooldownMs(30000, 1), 30000, "and a streak of one is the same base window");
+assert.equal(policy.escalatedCooldownMs(30000, 2), 60000, "the second nothing-gained verdict doubles it");
+assert.equal(policy.escalatedCooldownMs(30000, 10), 300000, "ten streaks reach the five minute cap");
+assert.equal(policy.escalatedCooldownMs(30000, 99), 300000, "and it never grows past the cap");
+assert.equal(policy.escalatedCooldownMs(30000, "abc"), 30000, "a bogus streak falls back to one window");
+  assert.equal(policy.escalatedCooldownMs(100000, 99), 300000, "an oversized base is still capped");
+assert.equal(policy.escalatedCooldownMs(0, 5), 0, "a zero window stays off whatever the streak is");
+// releaseCompletedKey owns the verdict, including the information-gain exemption.
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match", best: { id: 1 } }, () => true, { informative: false }), true,
+  "A projection-bearing negative is handed to the cooldown lane");
+assert.equal(policy.releaseCompletedKey("k", { status: "no_match", best: { id: 1 } }, () => true, { informative: true }), false,
+  "but a lookup that filled the row is released for the next missing field");
+let sunkRecoverable = null;
+assert.equal(policy.releaseCompletedKey("k", { status: "success", best: { id: 1 } },
+  (key, ms) => { sunkRecoverable = [key, ms]; return true; }, { recoverable: true }), true,
+  "A recoverable filename verdict travels through the same sink");
+assert.deepEqual(sunkRecoverable, ["k", 30000], "and the sink learns the window, not a payload-shape guess");
+assert.equal(policy.releaseCompletedKey("k", { status: "success", best: { id: 1 } }, () => true, {}), false,
+  "An authoritative match that is not marked recoverable is left to the caller");
 console.log("Visible metadata prefetch policy regression checks passed.");

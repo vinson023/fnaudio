@@ -191,7 +191,19 @@ state.visibleMetadataPrefetchItems = null;
 state.visibleMetadataPrefetchRearmTimer = 0;
 state.visibleMetadataPrefetchRearmKeys = new Map();
 state.visibleMetadataPrefetchRearmSeq = 0;
-state.renderedNavigationView = "";
+// A terminal no_match / failed releases its page dedupe key only after a
+// cooldown. Without this a settling status refresh re-queued the very same
+// visible row about every 780 ms for the rest of the page's life.
+state.visibleMetadataPrefetchCooldownTimer = 0;
+state.visibleMetadataPrefetchCooldownKeys = new Map();
+state.visibleMetadataPrefetchCooldownSeq = 0;
+state.visibleMetadataPrefetchCooldownStreaks = new Map();
+// One armed press-and-activate token per list; consumed by the first click.
+state.libraryNavigationSpeculation = null;
+// One hover dwell timer plus at most one speculative request pair.
+state.libraryNavigationHoverTimer = 0;
+state.libraryNavigationHoverNode = null;
+state.libraryNavigationPrefetch = null;
 state.groupName = "";
 state.artistName = "";
 state.artistAllTracks = false;
@@ -1815,22 +1827,29 @@ function libraryPageStep(value, fallback = 0) {
     return fallback;
   }
 }
-function currentQueryParams() {
+// The track-page query is built from explicit folder coordinates so a request
+// issued before a navigation (hover speculation) and the request that navigation
+// itself issues cannot drift apart. `currentQueryParams()` stays the state-fed
+// projection of the same builder.
+function libraryQueryParamsFor(folderRoot, folderPath, page) {
   return fnAudioLibraryQueryParams.buildLibraryQueryParams({
-    page: state.page,
+    page,
     pageSize: state.pageSize,
     view: state.view,
     sortKey: state.sortKey,
     sortDir: state.sortDir,
     search: currentQueryText(),
-    folderRoot: state.folderRoot,
-    folderPath: state.folderPath,
+    folderRoot,
+    folderPath,
     creatorView: isCreatorView(),
     creatorName: currentCreatorName(),
     groupView: Boolean(groupViews[state.view]),
     groupName: state.groupName,
     playlistView: isPlaylistView(),
   });
+}
+function currentQueryParams() {
+  return libraryQueryParamsFor(state.folderRoot, state.folderPath, state.page);
 }
 function folderDisplayName(path) {
   return globalThis.fnAudioFolderLabelPolicy.display(path);
@@ -4149,7 +4168,14 @@ function openGroupRow(row) {
   state.page = 1;
   state.pageItems = [];
   resetLibraryScrollPosition();
-  requestLibraryLoad(1, false).finally(() => requestAnimationFrame(resetLibraryScrollPosition));
+  // Paint an acknowledgement in the same frame as the press. The list nodes are
+  // only replaced once the page arrives (~116 ms of gateway round trip on the
+  // real device), and until then the row the user just activated gave nothing
+  // back, which is exactly the reported "half a beat late" feeling.
+  row?.classList?.add?.("is-opening");
+  requestLibraryLoad(1, false)
+    .finally(() => row?.classList?.remove?.("is-opening"))
+    .finally(() => requestAnimationFrame(resetLibraryScrollPosition));
 }
 async function resolveSelectedGroupTracks(groupKey = "") {
   const groups = selectedGroupDescriptors(groupKey);
@@ -5619,6 +5645,11 @@ function cancelVisibleMetadataPrefetch(options = {}) {
     state.visibleMetadataPrefetchRearmTimer = 0;
     state.visibleMetadataPrefetchRearmKeys?.clear();
     state.visibleMetadataPrefetchRearmSeq = 0;
+    if (state.visibleMetadataPrefetchCooldownTimer) clearTimeout(state.visibleMetadataPrefetchCooldownTimer);
+    state.visibleMetadataPrefetchCooldownTimer = 0;
+    state.visibleMetadataPrefetchCooldownKeys?.clear();
+    state.visibleMetadataPrefetchCooldownStreaks?.clear();
+    state.visibleMetadataPrefetchCooldownSeq = 0;
   }
   // A visibility cancellation aborts requests that may have claimed a key
   // before receiving a result. Release those page hints so returning to the
@@ -5657,6 +5688,72 @@ function scheduleVisibleMetadataPrefetchRearm(key, data, attempts, generation, r
   }, delay);
   return true;
 }
+// Hold the page dedupe key of a row whose completed lookup gained nothing, then
+// release cooled rows together on one page-owned timer. Mirroring the re-arm
+// lane is deliberate: one timer per track would simply recreate the background
+// poller this replaces. Nothing-gained verdicts for the same row escalate so a
+// library that can never match goes quiet instead of polling forever.
+function scheduleVisibleMetadataPrefetchCooldown(key, delayMs, nowMs = Date.now()) {
+  const value = typeof key === "string" ? key : "";
+  if (!value) return false;
+  const streaks = state.visibleMetadataPrefetchCooldownStreaks instanceof Map
+    ? state.visibleMetadataPrefetchCooldownStreaks
+    : (state.visibleMetadataPrefetchCooldownStreaks = new Map());
+  const streak = Math.min(10, (Number(streaks.get(value)) || 0) + 1);
+  streaks.set(value, streak);
+  const policy = globalThis.fnAudioVisibleMetadataPrefetchPolicy;
+  const escalated = typeof policy?.escalatedCooldownMs === "function"
+    ? policy.escalatedCooldownMs(delayMs, streak)
+    : Number(delayMs) || 0;
+  // A zero window is the product switch that turns the cooldown lane off again,
+  // so it must never be silently raised to the one second floor.
+  if (!escalated) return false;
+  const bounded = Math.min(300000, Math.max(1000, Math.floor(escalated)));
+  const keys = state.visibleMetadataPrefetchCooldownKeys instanceof Map
+    ? state.visibleMetadataPrefetchCooldownKeys
+    : (state.visibleMetadataPrefetchCooldownKeys = new Map());
+  keys.set(value, Number(nowMs) + bounded);
+  armVisibleMetadataPrefetchCooldownTimer(Number(nowMs));
+  return true;
+}
+// The page owns exactly one cooldown timer, armed for the earliest expiry, so a
+// row cooled while that timer is already running still gets its own full window.
+function nextVisibleMetadataPrefetchCooldownExpiry() {
+  let earliest = 0;
+  state.visibleMetadataPrefetchCooldownKeys?.forEach((expiry) => {
+    const value = Number(expiry);
+    if (!Number.isFinite(value)) return;
+    if (!earliest || value < earliest) earliest = value;
+  });
+  return earliest;
+}
+function armVisibleMetadataPrefetchCooldownTimer(nowMs = Date.now()) {
+  if (state.visibleMetadataPrefetchCooldownTimer) clearTimeout(state.visibleMetadataPrefetchCooldownTimer);
+  state.visibleMetadataPrefetchCooldownTimer = 0;
+  const earliest = nextVisibleMetadataPrefetchCooldownExpiry();
+  if (!earliest) return false;
+  state.visibleMetadataPrefetchCooldownSeq = state.libraryRequestSeq;
+  state.visibleMetadataPrefetchCooldownTimer = setTimeout(() => {
+    state.visibleMetadataPrefetchCooldownTimer = 0;
+    flushVisibleMetadataPrefetchCooldowns(Date.now());
+    armVisibleMetadataPrefetchCooldownTimer(Date.now());
+  }, Math.max(250, earliest - Number(nowMs)));
+  return true;
+}
+function flushVisibleMetadataPrefetchCooldowns(nowMs = Date.now()) {
+  const keys = state.visibleMetadataPrefetchCooldownKeys;
+  if (!(keys instanceof Map)) return 0;
+  const expired = [];
+  keys.forEach((expiry, key) => { if (Number(expiry) <= Number(nowMs)) expired.push(key); });
+  for (const cooledKey of expired) keys.delete(cooledKey);
+  if (!expired.length) return 0;
+  // A verdict cooled for another page generation must not release keys that a
+  // fresh library request now owns.
+  if (state.visibleMetadataPrefetchCooldownSeq !== state.libraryRequestSeq) return 0;
+  for (const cooledKey of expired) state.visibleMetadataPrefetchKeys.delete(cooledKey);
+  return expired.length;
+}
+
 function scheduleVisibleMetadataPrefetch(items = [], requestSeq = state.libraryRequestSeq) {
   const policy = globalThis.fnAudioVisibleMetadataPrefetchPolicy;
   const hasPendingWork = Boolean(
@@ -5793,7 +5890,11 @@ function scheduleVisibleMetadataPrefetch(items = [], requestSeq = state.libraryR
               state.uiMetrics.metadataPrefetchFailures = Math.min(1000000, state.uiMetrics.metadataPrefetchFailures + 1);
             }
             const rearmPending = scheduleVisibleMetadataPrefetchRearm(key, data, attempts, generation, requestSeq);
-            if (!rearmPending && globalThis.fnAudioVisibleMetadataPrefetchPolicy?.shouldReleaseKey(data)) {
+            // A cooled terminal negative keeps its page key, so the next lane
+            // pass skips the row instead of re-requesting the same no_match.
+            if (!rearmPending && !globalThis.fnAudioVisibleMetadataPrefetchPolicy
+              ?.releaseCompletedKey?.(key, data, scheduleVisibleMetadataPrefetchCooldown,
+                { informative: false, recoverable: false })) {
               state.visibleMetadataPrefetchKeys.delete(key);
             }
             continue;
@@ -5833,17 +5934,25 @@ function scheduleVisibleMetadataPrefetch(items = [], requestSeq = state.libraryR
           // eligible for another bounded lookup (for example to obtain the
           // missing album or artwork).
           const releaseStatus = String(data.status || "").toLowerCase();
+          const terminalRelease = data.retryable === true || releaseStatus === "failed"
+            || releaseStatus === "no_match";
+          const decision = {
+            informative: changed === true,
+            recoverable: !terminalRelease && isRecoverableFilenameMetadata(data, best),
+          };
+          // A row that finally gained fields starts its negative streak over.
+          if (decision.informative) state.visibleMetadataPrefetchCooldownStreaks?.delete(key);
           const rearmPending = scheduleVisibleMetadataPrefetchRearm(key, data, attempts, generation, requestSeq);
-          if (!rearmPending && (data.retryable === true || releaseStatus === "failed" || releaseStatus === "no_match")
-            && globalThis.fnAudioVisibleMetadataPrefetchPolicy?.shouldReleaseKey(data)) {
-            state.visibleMetadataPrefetchKeys.delete(key);
-          }
-          if (!rearmPending && isRecoverableFilenameMetadata(data, best)
-            && state.visibleMetadataPrefetchSeq === generation
-            && state.uiMetrics.metadataPrefetchFailures < 1000000) {
-            // Leave the lightweight visible lane eligible for one future
-            // retry; the scheduler remains bounded by the per-item key and
-            // server-side retry policy.
+          // A completed lookup that filled nothing on the row must not release
+          // its page dedupe key in the same tick: the next lane pass would
+          // re-queue the byte-for-byte identical request, which is exactly how
+          // untagged rows became permanent background traffic. The policy owns
+          // that verdict and hands the key back only when there is nothing to
+          // cool down, so the old immediate release still covers those shapes.
+          if (!rearmPending && (terminalRelease
+            || (decision.recoverable && state.uiMetrics.metadataPrefetchFailures < 1000000))
+            && !globalThis.fnAudioVisibleMetadataPrefetchPolicy
+              ?.releaseCompletedKey?.(key, data, scheduleVisibleMetadataPrefetchCooldown, decision)) {
             state.visibleMetadataPrefetchKeys.delete(key);
           }
         } catch (error) {
@@ -5932,6 +6041,167 @@ function uiBackgroundWorkBlocked() {
   if (!state.libraryInteractionBlocked) return false;
   return Date.now() <= Number(state.libraryInteractionHoldUntil || 0);
 }
+// A real device measured the pointerdown->pointerup hold of a deliberate folder
+// click at 137-139 ms, while one paged navigation costs ~116 ms of gateway round
+// trip. Running the control's own handler at press time therefore moves that
+// whole round trip inside the hold, so the page is committed by the time the
+// pointer lifts. Mouse and pen only: a touch scroll gesture also starts with
+// pointerdown. The click that follows must then be swallowed exactly once,
+// because the folder/page pager handlers advance a step per invocation and are
+// not idempotent.
+const NAVIGATION_SPECULATION_WINDOW_MS = 1500;
+function armLibraryNavigationSpeculation(node) {
+  state.libraryNavigationSpeculation = { node, at: Date.now() };
+}
+function clearLibraryNavigationSpeculation() {
+  state.libraryNavigationSpeculation = null;
+}
+function libraryNavigationSpeculationPending() {
+  const pending = state.libraryNavigationSpeculation;
+  if (!pending) return false;
+  if (Date.now() - Number(pending.at || 0) > NAVIGATION_SPECULATION_WINDOW_MS) {
+    clearLibraryNavigationSpeculation();
+    return false;
+  }
+  return true;
+}
+function speculateLibraryNavigation(event, list = $("trackList")) {
+  if (!event) return false;
+  if (event.pointerType !== "mouse" && event.pointerType !== "pen") return false;
+  if (event.button || event.isPrimary === false) return false;
+  if (libraryInteractionBlockedFor(event.target, list)) return false;
+  const node = event.target?.closest?.(LIBRARY_NAVIGATION_SELECTOR);
+  if (!node || !list?.contains?.(node)) return false;
+  if (typeof node.onclick !== "function") return false;
+  armLibraryNavigationSpeculation(node);
+  try {
+    node.onclick(event);
+  } catch (_) {
+    clearLibraryNavigationSpeculation();
+    return false;
+  }
+  return true;
+}
+// A pressed control already ran, so its click may only be discarded when the
+// click itself lands on another navigation control (the list can be replaced
+// while the pointer is still down). A click on a track row is never swallowed.
+function isConsumedNavigationClick(event, list = $("trackList")) {
+  if (!libraryNavigationSpeculationPending()) return false;
+  clearLibraryNavigationSpeculation();
+  const node = event?.target?.closest?.(LIBRARY_NAVIGATION_SELECTOR);
+  return Boolean(node && list?.contains?.(node));
+}
+// A paged folder navigation costs 72-124 ms of gateway round trip for its pair of
+// requests on the real device, and press-time speculation can only hide that cost
+// inside the pointer hold (measured 139-150 ms). A pointer is on a control for far
+// longer than it is held, so dwelling on one now asks for exactly the pair the
+// click is going to issue: the press then finds those two keys already in the page
+// response cache and commits in the same frame without touching the network.
+const NAVIGATION_HOVER_DWELL_MS = 40;
+// One place builds the pair, so a speculative request can never drift from the
+// request the control is going to issue, which is the only reason the cache hits.
+function folderNavigationUrls(root, path, folderPage = 1, trackPage = 1) {
+  const folderParams = new URLSearchParams();
+  if (root) folderParams.set("root", root);
+  if (path) folderParams.set("parent", path);
+  if (currentQueryText()) folderParams.set("search", currentQueryText());
+  folderParams.set("dir", state.sortDir || "asc");
+  folderParams.set("paged", "1");
+  folderParams.set("limit", String(state.folderPageSize));
+  const folderContinuation = browseCursorForPage("folder", folderPage);
+  folderParams.set("offset", folderContinuation ? "0" : String(Math.max(0, (folderPage - 1) * state.folderPageSize)));
+  if (folderContinuation) folderParams.set("cursor", folderContinuation);
+  return [
+    `api/library/folders?${folderParams.toString()}`,
+    `api/library?${libraryQueryParamsFor(root, path, trackPage).toString()}`,
+  ];
+}
+function navigationHoverCandidate(event, list = $("trackList")) {
+  if (!event) return null;
+  if (event.pointerType !== "mouse" && event.pointerType !== "pen") return null;
+  // A held button is a drag or a selection gesture, not a hover.
+  if (event.buttons) return null;
+  const node = event.target?.closest?.(LIBRARY_NAVIGATION_SELECTOR);
+  if (!node || !list?.contains?.(node)) return null;
+  if (typeof node.onclick !== "function") return null;
+  return node;
+}
+// Only folder rows are prefetched: a row already declares the root and path its
+// click assigns, so its pair can be built without mutating anything. Album,
+// creator and pager controls still take the press path.
+function libraryNavigationPrefetchUrls(node) {
+  if (state.view !== "folders") return [];
+  if (String(node?.dataset?.groupType || "") !== "folder") return [];
+  const decode = value => { try { return decodeURIComponent(value || ""); } catch (error) { return value || ""; } };
+  const root = decode(node?.dataset?.groupRoot);
+  const path = decode(node?.dataset?.groupPath);
+  if (!root && !path) return [];
+  return folderNavigationUrls(root, path, 1, 1);
+}
+function cancelLibraryNavigationHoverDwell() {
+  if (state.libraryNavigationHoverTimer) clearTimeout(state.libraryNavigationHoverTimer);
+  state.libraryNavigationHoverTimer = 0;
+  state.libraryNavigationHoverNode = null;
+}
+// A request that already left is never retracted: the click adopts it through the
+// loader's in-flight dedupe, so aborting it here would reject the navigation the
+// user actually asked for. The lane is a bounded budget rather than one slot: on the
+// real device a pointer that rested 92 ms on the row it was leaving consumed a single
+// in-flight slot and the click it finally made on the next row still paid the whole
+// round trip. Refusing everything after the first pair therefore starved exactly the
+// hover this feature exists for, while an unbounded lane would put the R198 congestion
+// back. Three pairs per two seconds is the bound, and an in-flight pair only ever
+// suppresses its own URLs.
+const NAVIGATION_PREFETCH_WINDOW_MS = 2000;
+const NAVIGATION_PREFETCH_BUDGET = 3;
+function navigationPrefetchBudget(nowMs) {
+  const budget = state.libraryNavigationPrefetch;
+  if (budget && nowMs - Number(budget.windowStart || 0) <= NAVIGATION_PREFETCH_WINDOW_MS) return budget;
+  const fresh = { windowStart: nowMs, issued: 0, inFlight: new Set() };
+  state.libraryNavigationPrefetch = fresh;
+  return fresh;
+}
+function prefetchLibraryNavigation(node) {
+  const urls = libraryNavigationPrefetchUrls(node);
+  if (!urls.length) return false;
+  const budget = navigationPrefetchBudget(Date.now());
+  const waiting = urls.filter(url => !budget.inFlight.has(url)
+    && !Boolean(state.libraryResponseCache?.has?.(url)));
+  if (!waiting.length) return false;
+  if (budget.issued >= NAVIGATION_PREFETCH_BUDGET) return false;
+  budget.issued += 1;
+  waiting.forEach(url => budget.inFlight.add(url));
+  const release = url => () => budget.inFlight.delete(url);
+  waiting.forEach(url => {
+    let request = null;
+    try { request = fetchLibraryResponse(url, "", false, undefined); } catch (error) { request = null; }
+    Promise.resolve(request).then(release(url), release(url));
+  });
+  return true;
+}
+function armLibraryNavigationHover(event, list = $("trackList")) {
+  const node = navigationHoverCandidate(event, list);
+  if (!node) {
+    cancelLibraryNavigationHoverDwell();
+    return false;
+  }
+  // Continuing to move inside the same row must not restart the dwell window.
+  if (state.libraryNavigationHoverNode === node) return true;
+  cancelLibraryNavigationHoverDwell();
+  if (!libraryNavigationPrefetchUrls(node).length) return false;
+  // Rows of a page that is being replaced describe a list the user is about to
+  // leave, so hovering during a load may not spend the connections on them.
+  if (uiBackgroundWorkBlocked()) return false;
+  state.libraryNavigationHoverNode = node;
+  state.libraryNavigationHoverTimer = setTimeout(() => {
+    state.libraryNavigationHoverTimer = 0;
+    const dwelling = state.libraryNavigationHoverNode;
+    state.libraryNavigationHoverNode = null;
+    if (!dwelling || !isLibraryNavigationTarget(dwelling, list)) return;
+    prefetchLibraryNavigation(dwelling);
+  }, NAVIGATION_HOVER_DWELL_MS);
+  return true;
+}
 // Fire-and-forget UI entry points already render the bounded error state.
 // Consume their rejection while explicit awaiters retain failure propagation.
 function requestLibraryLoad(page = 1, refresh = false) {
@@ -5944,6 +6214,7 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
   cancelReferencedItemHydrationSchedule();
   cancelMetadataRowRender();
   cancelVisibleMetadataPrefetch({ releaseKeys: true });
+  cancelLibraryNavigationHoverDwell();
   // The outgoing page can still hold a cover queue of hundreds of images with four
   // requests in flight. Those bytes belong to rows about to be replaced, so release
   // the browser connections for the navigation the user actually asked for. A later
@@ -6021,20 +6292,13 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
     state.items = [];
     state.pageTotal = state.folderRootRows.length;
   } else if (state.view === "folders" && (state.folderRoot || state.folderPath)) {
-    const folderParams = new URLSearchParams();
-    if (state.folderRoot) folderParams.set("root", state.folderRoot);
-    if (state.folderPath) folderParams.set("parent", state.folderPath);
-    if (currentQueryText()) folderParams.set("search", currentQueryText());
-    folderParams.set("dir", state.sortDir || "asc");
-    folderParams.set("paged", "1");
-    folderParams.set("limit", String(state.folderPageSize));
-    const folderContinuation = browseCursorForPage("folder", state.folderPage);
-    folderParams.set("offset", folderContinuation ? "0" : String(Math.max(0, (state.folderPage - 1) * state.folderPageSize)));
-    if (folderContinuation) folderParams.set("cursor", folderContinuation);
+    const [foldersUrl, tracksUrl] = folderNavigationUrls(
+      state.folderRoot, state.folderPath, state.folderPage, state.page,
+    );
     const [folderData, data] = await Promise.all([
-      fetchLibraryResponse(`api/library/folders?${folderParams.toString()}`, "读取文件夹失败", refresh, requestSignal),
+      fetchLibraryResponse(foldersUrl, "读取文件夹失败", refresh, requestSignal),
       fetchLibraryResponse(
-        `api/library?${currentQueryParams().toString()}${refresh ? "&refresh=1" : ""}`,
+        `${tracksUrl}${refresh ? "&refresh=1" : ""}`,
         "读取歌曲列表失败",
         refresh,
         requestSignal,
@@ -7230,6 +7494,16 @@ function bindTrackListInteractions() {
     const row = trackRowFromTarget(event.target, list);
     if (row) startTrackLongPress(row, event);
   });
+  list.addEventListener("pointerdown", event => { speculateLibraryNavigation(event, list); });
+  list.addEventListener("pointermove", event => { armLibraryNavigationHover(event, list); });
+  list.addEventListener("pointerleave", () => cancelLibraryNavigationHoverDwell());
+  list.addEventListener("click", event => {
+    if (isConsumedNavigationClick(event, list)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  list.addEventListener("pointercancel", () => clearLibraryNavigationSpeculation());
   list.addEventListener("pointermove", moveTrackLongPress);
   list.addEventListener("pointerup", finishTrackLongPress);
   list.addEventListener("pointercancel", finishTrackLongPress);
