@@ -100,6 +100,21 @@ retryImage.finish();
 assert.equal(retryScheduler.snapshot().inFlight, 0);
 assert.deepEqual(retryEvents, ["request", "error", "retry", "request", "load"]);
 
+// A stale/missing artwork URL can still reach the scheduler after metadata has
+// been cached.  Once its bounded retry is exhausted, the image must disappear
+// so the row's music glyph is visible instead of the browser's broken-image
+// indicator.
+const terminalImage = image("terminal-missing");
+terminalImage.dataset.coverRetryCount = "1";
+const terminalScheduler = retryContext.globalThis.fnAudioCoverLoadScheduler.create({
+  window: retryContext.window,
+  getImageRoot: () => ({ querySelectorAll: () => [terminalImage] }),
+  maxConcurrent: 1,
+});
+terminalScheduler.hydrate();
+terminalImage.fail();
+assert.equal(terminalImage.hidden, true, "a terminal cover error must hide the broken image");
+
 // A second list commit against the same root must reconcile incrementally:
 // existing requests stay alive and only a newly inserted cover is queued.
 const incrementalFirst = image("incremental-one");

@@ -115,13 +115,11 @@ FROZEN_GOAL_DIGESTS = {
     "G11": "28c9b9c4b615b54394b3db2f81e8a108f2fd783867ecb2ef62335a5a9ddb47ff",
 }
 
-# The two register-only items that survived the split, frozen the same way: an
-# offline performance-regression entry and a server resource-ceiling entry.  Their
-# digests are pinned so the next round cannot quietly turn one of them into a
-# hardware item, edit its wording, or add a third without naming it here.
+# The register-only items that survived the split were the offline performance-
+# regression entry and the server resource-ceiling entry. Both are now closed in
+# TODO.md, so the live bucket is intentionally empty; keeping the expected set
+# explicit prevents a future round from quietly reintroducing or changing one.
 PINNED_KEPT_DIGESTS = {
-    "86b628ae7e6dee3a56285999f07f905ceed4c143735a2ce8c361d218e09c4433",
-    "9bcaecab0ac2898bc1c90d7eb54cece2555cfad987941609a14664561999ac5e",
 }
 
 
@@ -267,13 +265,13 @@ class RealDeviceGoalsMovedOutTests(unittest.TestCase):
             "the pointers must cover every moved id once: %s" % sorted(seen)
         )
 
-    def test_the_two_observations_that_stay_are_the_pinned_offline_ones(self):
+    def test_the_observation_bucket_matches_the_current_pinned_offline_set(self):
         blocks = self._open_items_below_declaration()
         measured = sorted(digest(block) for _number, block in blocks)
         self.assertEqual(
             measured, sorted(PINNED_KEPT_DIGESTS),
-            "the offline observation bucket now holds %d items whose text differs from the two "
-            "pinned here; retune this table only together with a stated reason" % len(blocks)
+            "the offline observation bucket now holds %d items outside the explicitly pinned "
+            "current set; retune this table only together with a stated reason" % len(blocks)
         )
 
     def test_the_declaration_defers_hardware_work_to_the_future_list(self):

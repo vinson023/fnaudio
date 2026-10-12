@@ -1068,7 +1068,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     "library_query_params.js", "library_reference_items.js",
                     "track_search_text.js", "device_target_presentation.js", "device_caps_presentation.js",
                     "cover_load_scheduler.js", "shuffle_policy.js", "host_playback_session.js",
-                    "library_response_loader.js", "response_json_loader.js", "library_status_refresh_policy.js",
+                    "library_response_loader.js", "response_json_loader.js", "metadata_request_loader.js", "library_status_refresh_policy.js",
                     "visible_metadata_prefetch_policy.js", "ui_metrics_policy.js",
                     "library_metadata_merge_policy.js", "library_empty_response_policy.js",
                     "metadata_projection_policy.js", "metadata_candidate_presentation_policy.js",
