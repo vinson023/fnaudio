@@ -134,6 +134,10 @@
               enqueue(image, true);
             }, 450);
           } else if (event?.type === "error") {
+            // Keep the row's music-glyph fallback visible after the bounded
+            // retry is exhausted. Leaving a failed <img> displayed exposes
+            // the browser's broken-image indicator for stale/missing artwork.
+            image.hidden = true;
             emit("error");
           }
           pump();

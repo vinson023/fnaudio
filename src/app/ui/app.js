@@ -158,6 +158,7 @@ state.metadataPrefetchLyricsToken = 0;
 state.metadataPrefetchLyricsAttempts = 0;
 state.metadataPrefetchLyricsTimer = 0;
 state.metadataPrefetchController = null;
+state.metadataRequestLoader = globalThis.fnAudioMetadataRequestLoader?.create?.() || null;
 state.metadataPrefetchLyricsController = null;
 state.metadataRowRenderTimer = 0;
 state.metadataRowRenderUsesFrame = false;
@@ -204,6 +205,11 @@ state.libraryNavigationSpeculation = null;
 state.libraryNavigationHoverTimer = 0;
 state.libraryNavigationHoverNode = null;
 state.libraryNavigationPrefetch = null;
+// The left-hand folder category has no row to hover. Keep one delayed, cached
+// entry probe so the first category click can adopt the same response pair as
+// a folder-row click instead of paying the gateway round trip after the press.
+state.folderNavigationPrefetchTimer = 0;
+state.folderNavigationPrefetchKey = "";
 state.groupName = "";
 state.artistName = "";
 state.artistAllTracks = false;
@@ -1831,21 +1837,23 @@ function libraryPageStep(value, fallback = 0) {
 // issued before a navigation (hover speculation) and the request that navigation
 // itself issues cannot drift apart. `currentQueryParams()` stays the state-fed
 // projection of the same builder.
-function libraryQueryParamsFor(folderRoot, folderPath, page) {
+function libraryQueryParamsFor(folderRoot, folderPath, page, view = state.view) {
+  const queryView = String(view || state.view || "all");
+  const folderView = queryView === "folders";
   return fnAudioLibraryQueryParams.buildLibraryQueryParams({
     page,
     pageSize: state.pageSize,
-    view: state.view,
+    view: queryView,
     sortKey: state.sortKey,
     sortDir: state.sortDir,
     search: currentQueryText(),
     folderRoot,
     folderPath,
-    creatorView: isCreatorView(),
-    creatorName: currentCreatorName(),
-    groupView: Boolean(groupViews[state.view]),
-    groupName: state.groupName,
-    playlistView: isPlaylistView(),
+    creatorView: !folderView && isCreatorView(),
+    creatorName: folderView ? "" : currentCreatorName(),
+    groupView: !folderView && Boolean(groupViews[queryView]),
+    groupName: folderView ? "" : state.groupName,
+    playlistView: !folderView && isPlaylistView(),
   });
 }
 function currentQueryParams() {
@@ -4065,11 +4073,18 @@ function updateNavigationActiveState() {
   state.renderedNavigationView = view;
 }
 function setView(view) {
+  const nextView = String(view || "all");
+  if (nextView === "folders") {
+    cancelFolderNavigationPrefetch();
+    // Start before state.view changes: the existing paged worker is scheduled
+    // on the next microtask, so it adopts these exact URL/cache entries.
+    prefetchFolderNavigationEntry();
+  }
   if (state.searchTimer) {
     clearTimeout(state.searchTimer);
     state.searchTimer = null;
   }
-  state.view = view || "all";
+  state.view = nextView;
   if (!isPagedLibraryView()) invalidateLibraryLoad();
   state.selectedTrackRowKeys.clear();
   state.selectedGroupKeys.clear();
@@ -5002,34 +5017,23 @@ function cancelLyricsRequest() {
   state.lyricsRequestController = null;
 }
 function fetchMetadataRequest(url, timeoutMs = 10000, externalSignal = undefined) {
-  // Provider work is bounded on the server, but a stalled proxy/WebView
-  // connection can otherwise keep the current-track retry slot occupied
-  // forever. Abort only this request; the caller's existing retry/token
-  // policy decides whether and when to try again.
-  const controller = typeof AbortController === "function" ? new AbortController() : null;
-  let removeExternalAbort = null;
-  if (controller && externalSignal && typeof externalSignal.addEventListener === "function") {
-    const abortFromOwner = () => { try { controller.abort(); } catch (_) {} };
-    if (externalSignal.aborted) abortFromOwner();
-    else {
-      externalSignal.addEventListener("abort", abortFromOwner, { once: true });
-      removeExternalAbort = () => {
-        try { externalSignal.removeEventListener("abort", abortFromOwner); } catch (_) {}
-      };
-    }
-  }
-  const request = fetch(url, {
-    cache: "no-store",
-    ...(controller ? { signal: controller.signal } : {}),
-  });
-  return globalThis.fnAudioResponseJsonLoader.read({
-    request,
-    timeoutMs: Math.max(1000, Math.min(30000, Number(timeoutMs) || 10000)),
-    onTimeout: () => { try { controller?.abort(); } catch (_) {} },
-    fallback: null,
-  }).finally(() => {
-    if (removeExternalAbort) removeExternalAbort();
-  });
+  const run = ({ signal, abort }) => {
+    // The shared loader owns the transport so one caller cancelling cannot
+    // cancel another caller waiting on the same URL. A hard timeout still
+    // aborts the shared request and all of its subscribers together.
+    const request = fetch(url, {
+      cache: "no-store",
+      ...(signal ? { signal } : {}),
+    });
+    return globalThis.fnAudioResponseJsonLoader.read({
+      request,
+      timeoutMs: Math.max(1000, Math.min(30000, Number(timeoutMs) || 10000)),
+      onTimeout: abort,
+      fallback: null,
+    });
+  };
+  if (state.metadataRequestLoader?.load) return state.metadataRequestLoader.load(url, run, externalSignal);
+  return run({ signal: externalSignal, abort: () => {} });
 }
 function unwrapMetadataResponsePayload(value) {
   // Keep this in step with the policy's bounded bridge support.  Some
@@ -5478,6 +5482,7 @@ function invalidateLibraryLoad() {
   state.libraryLoadPromise = null;
   state.libraryLoading = false;
   state.libraryInteractionBlocked = false;
+  cancelFolderNavigationPrefetch();
   cancelReferencedItemHydrationSchedule();
   cancelMetadataRowRender();
   cancelVisibleMetadataPrefetch({ releaseKeys: true });
@@ -5488,6 +5493,7 @@ function libraryResponseWeight(data) {
 function clearLibraryResponseCaches() {
   state.libraryResponseEpoch += 1;
   state.libraryResponseCache.clear();
+  state.folderNavigationPrefetchKey = "";
   // Clearing the map detaches stale requests from future callers. Cancel them
   // without releasing their slots early; the loader releases each slot only
   // after the underlying promise settles, keeping the hard concurrency cap
@@ -6152,7 +6158,7 @@ function isConsumedNavigationClick(event, list = $("trackList")) {
 const NAVIGATION_HOVER_DWELL_MS = 40;
 // One place builds the pair, so a speculative request can never drift from the
 // request the control is going to issue, which is the only reason the cache hits.
-function folderNavigationUrls(root, path, folderPage = 1, trackPage = 1) {
+function folderNavigationUrls(root, path, folderPage = 1, trackPage = 1, view = state.view) {
   const folderParams = new URLSearchParams();
   if (root) folderParams.set("root", root);
   if (path) folderParams.set("parent", path);
@@ -6165,7 +6171,7 @@ function folderNavigationUrls(root, path, folderPage = 1, trackPage = 1) {
   if (folderContinuation) folderParams.set("cursor", folderContinuation);
   return [
     `api/library/folders?${folderParams.toString()}`,
-    `api/library?${libraryQueryParamsFor(root, path, trackPage).toString()}`,
+    `api/library?${libraryQueryParamsFor(root, path, trackPage, view).toString()}`,
   ];
 }
 function navigationHoverCandidate(event, list = $("trackList")) {
@@ -6252,6 +6258,55 @@ function armLibraryNavigationHover(event, list = $("trackList")) {
     if (!dwelling || !isLibraryNavigationTarget(dwelling, list)) return;
     prefetchLibraryNavigation(dwelling);
   }, NAVIGATION_HOVER_DWELL_MS);
+  return true;
+}
+const FOLDER_ENTRY_PREFETCH_DELAY_MS = 40;
+function cancelFolderNavigationPrefetch() {
+  if (state.folderNavigationPrefetchTimer) clearTimeout(state.folderNavigationPrefetchTimer);
+  state.folderNavigationPrefetchTimer = 0;
+}
+function folderEntryRootUrl() {
+  const params = new URLSearchParams();
+  if (currentQueryText()) params.set("search", currentQueryText());
+  return `api/library/roots${params.toString() ? `?${params.toString()}` : ""}`;
+}
+function folderNavigationPrefetchKey() {
+  return JSON.stringify([
+    configuredLibraryRoots(), currentQueryText(), state.sortKey || "title", state.sortDir || "asc",
+    state.pageSize, state.folderPageSize,
+  ]);
+}
+function prefetchFolderNavigationEntry() {
+  if (state.view === "folders" || state.libraryStatus?.scanning === true || document.hidden === true) return false;
+  const key = folderNavigationPrefetchKey();
+  if (state.folderNavigationPrefetchKey === key) return false;
+  state.folderNavigationPrefetchKey = key;
+  cancelFolderNavigationPrefetch();
+  const resetAfterFailure = error => {
+    if (state.folderNavigationPrefetchKey === key) state.folderNavigationPrefetchKey = "";
+    throw error;
+  };
+  const prefetchPair = root => Promise.all(folderNavigationUrls(root, "", 1, 1, "folders")
+    .map(url => fetchLibraryResponse(url, "", false)));
+  const roots = configuredLibraryRoots();
+  const request = roots.length === 1
+    ? prefetchPair(roots[0])
+    : fetchLibraryResponse(folderEntryRootUrl(), "", false).then(data => {
+      const discovered = Array.isArray(data?.roots)
+        ? data.roots.map(row => String(row?.root || row?.path || "").trim()).filter(Boolean)
+        : [];
+      return discovered.length === 1 ? prefetchPair(discovered[0]) : data;
+    });
+  Promise.resolve(request).catch(resetAfterFailure).catch(() => {});
+  return true;
+}
+function scheduleFolderNavigationPrefetch() {
+  if (state.view === "folders" || state.libraryStatus?.scanning === true || document.hidden === true) return false;
+  cancelFolderNavigationPrefetch();
+  state.folderNavigationPrefetchTimer = setTimeout(() => {
+    state.folderNavigationPrefetchTimer = 0;
+    prefetchFolderNavigationEntry();
+  }, FOLDER_ENTRY_PREFETCH_DELAY_MS);
   return true;
 }
 // Fire-and-forget UI entry points already render the bounded error state.
@@ -8551,9 +8606,19 @@ async function pushToDevice(deviceId, item = currentItem()) {
     }
   }
 }
-document.querySelectorAll(".nav-item[data-view]").forEach(button => button.onclick = () => {
-  if (button.dataset.view === "queue") openCurrentQueue();
-  else setView(button.dataset.view);
+document.querySelectorAll(".nav-item[data-view]").forEach(button => {
+  button.onclick = () => {
+    if (button.dataset.view === "queue") openCurrentQueue();
+    else setView(button.dataset.view);
+  };
+  if (button.dataset.view === "folders") {
+    button.addEventListener("pointerenter", scheduleFolderNavigationPrefetch);
+    button.addEventListener("pointerleave", cancelFolderNavigationPrefetch);
+    button.addEventListener("pointerdown", () => {
+      cancelFolderNavigationPrefetch();
+      prefetchFolderNavigationEntry();
+    });
+  }
 });
 function setMobileNavigation(open) {
   const sidebar = document.querySelector(".sidebar");

@@ -5,6 +5,7 @@ const vm = require("node:vm");
 const app = fs.readFileSync("app/ui/app.js", "utf8");
 const css = fs.readFileSync("app/ui/app.css", "utf8");
 const loader = fs.readFileSync("app/ui/library_response_loader.js", "utf8");
+const metadataRequestLoader = fs.readFileSync("app/ui/metadata_request_loader.js", "utf8");
 const loadKey = fs.readFileSync("app/ui/library_load_key.js", "utf8");
 const index = fs.readFileSync("app/ui/index.html", "utf8");
 const itemLoader = fs.readFileSync("app/ui/library_item_request_loader.js", "utf8");
@@ -109,7 +110,7 @@ assert.match(app, /state\.libraryLoadKey = "";/);
 assert.match(app, /state\.libraryLoadPromise = null;/);
 assert.match(app, /function invalidateLibraryLoad\(\)[\s\S]*?state\.libraryStatusRequestToken \+= 1;[\s\S]*?state\.libraryStatusController = null;[\s\S]*?state\.libraryStatusPromise = null;[\s\S]*?state\.libraryStatusRefreshQueued = false;/, "Switching views must invalidate stale library status polling");
 assert.match(app, /function invalidateLibraryLoad\(\) \{[\s\S]*?state\.libraryRequestSeq \+= 1;[\s\S]*?state\.libraryAbortController\.abort\(\);[\s\S]*?cancelVisibleMetadataPrefetch\(\{ releaseKeys: true \}\);/, "Switching to a non-paged view must invalidate stale paged work and release cancelled metadata keys");
-assert.match(app, /state\.view = view \|\| "all";\s*if \(!isPagedLibraryView\(\)\) invalidateLibraryLoad\(\);/, "Non-paged view switches must cancel the previous library request before rendering");
+assert.match(app, /function setView\(view\) \{[\s\S]*?state\.view = nextView;\s*if \(!isPagedLibraryView\(\)\) invalidateLibraryLoad\(\);/, "Non-paged view switches must cancel the previous library request before rendering");
 assert.match(app, /function deletePlaylist\(playlistId\) \{[\s\S]*?if \(state\.view === `playlist:\$\{playlistId\}`\) \{\s*setView\("all"\);\s*return;/, "Deleting the active playlist must reload the paged all-tracks view instead of rendering its stale rows");
 assert.match(app, /state\.renderedTrackListHtml = null;/, "Initial row markup cache must have an explicit empty state");
 assert.match(app, /state\.trackRowsMarkupCache = typeof WeakMap === "function" \? new WeakMap\(\) : null;/, "Stable page rows need a bounded identity cache");
@@ -375,10 +376,12 @@ assert.match(app, /cache\.signature\.every\(\(value, index\) => value === signat
 assert.match(app, /function invalidateTrackRowsMarkup\(items = state\.pageItems\)[\s\S]*?state\.filteredTracksCache = \{ signature: null, tracks: \[\] \};/, "In-place metadata backfill must invalidate filtered track memo");
 assert.match(app, /function retryCurrentTrackMetadataAfterRecovery\(metadata\)/, "Recovered metadata workers must re-arm an exhausted current-track prefetch");
 assert.match(app, /function fetchMetadataRequest\(url, timeoutMs = 10000, externalSignal = undefined\)/, "Metadata requests should accept an owning cancellation signal");
+assert.match(app, /state\.metadataRequestLoader\?\.load\) return state\.metadataRequestLoader\.load\(url, run, externalSignal\)/,
+  "current-track, visible-row and candidate callers must use one shared URL single-flight boundary");
 assert.match(app, /async function fetchJsonResponseBounded\(input, init = \{\}, timeoutMs = 15000\)/, "Interactive JSON API reads must have a shared timeout and cancellation boundary");
 assert.match(app, /function fetchLibraryItemsByIds\([\s\S]*?fetchJsonResponseBounded\(/, "Referenced item hydration must use the bounded JSON response loader");
 assert.match(app, /async function resolveTrackLocation\([\s\S]*?fetchJsonResponseBounded\(/, "Track location lookup must use the bounded JSON response loader");
-assert.match(app, /function fetchMetadataRequest\(url, timeoutMs = 10000, externalSignal = undefined\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?onTimeout: \(\) => \{ try \{ controller\?\.abort\(\);/, "Metadata requests must time out response-body parsing and abort their owning request");
+assert.match(app, /function fetchMetadataRequest\(url, timeoutMs = 10000, externalSignal = undefined\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?onTimeout: abort,/, "Metadata request timeouts must abort the shared underlying request");
 assert.match(app, /function cancelCurrentTrackMetadataPrefetch\(\)/, "Current-track metadata should expose an explicit cancellation boundary");
 assert.match(app, /state\.metadataPrefetchController\?\.abort\(\)/, "Switching tracks must abort the current metadata request");
 assert.match(app, /state\.metadataPrefetchLyricsController\?\.abort\(\)/, "Switching tracks must abort the current lyrics request");
@@ -555,6 +558,11 @@ assert.match(app, /const requestSignal = controller\?\.signal;/);
 assert.match(app, /const releaseController = \(\) => \{\s*if \(state\.libraryAbortController === controller\) state\.libraryAbortController = null;\s*\};/, "Settled page requests must release only their own abort controller");
 assert.match(app, /\} finally \{\s*releaseController\(\);\s*\}/, "Library request cleanup must run for success, failure, and cancellation");
 assert.match(app, /state\.folderRootRows\.length === 1[\s\S]*?return loadPagedLibraryWorker\(page, refresh\);/, "A single configured library root must continue in the same worker chain rather than await its own deduplicated promise");
+assert.match(app, /function prefetchFolderNavigationEntry\(\)[\s\S]*?fetchLibraryResponse\([\s\S]*?folderNavigationUrls\(/, "The first folder-category click must have a cached entry path built by the same URL helper");
+assert.match(app, /function scheduleFolderNavigationPrefetch\(\)[\s\S]*?state\.libraryStatus\?\.scanning === true[\s\S]*?document\.hidden === true/, "Folder entry prefetch must stay off while scanning or when the document is hidden");
+assert.match(app, /function setView\(view\) \{[\s\S]*?prefetchFolderNavigationEntry\(\);[\s\S]*?state\.view = nextView;/, "Entering the folder category must start the prefetch before the paged worker runs");
+assert.match(app, /button\.dataset\.view === "folders"[\s\S]*?addEventListener\("pointerdown"[\s\S]*?prefetchFolderNavigationEntry\(\);/, "Pressing the folder category must start the same prefetch immediately");
+assert.match(app, /function clearLibraryResponseCaches\(\)[\s\S]*?state\.folderNavigationPrefetchKey = \"\";/, "A library refresh must allow the folder entry cache to be warmed again");
 assert.doesNotMatch(app, /state\.folderRootRows\.length === 1[\s\S]{0,700}?return loadPagedLibrary\(page, refresh\);/, "Single-root auto-entry must not create a self-referential public load promise");
 assert.match(app, /libraryStatus\?\.library_paths[\s\S]*?state\.folderRootRows/, "Folder cold navigation must reuse the already-hydrated library roots before requesting the roots endpoint");
 assert.match(app, /const rootParams = new URLSearchParams\(\);[\s\S]*?api\/library\/roots/, "The roots endpoint must remain the fallback when the status has no usable configured roots");
@@ -586,6 +594,14 @@ assert.match(app, /typeof value === "string" \? value\.trim\(\)\.slice\(0, 4096\
 assert.match(app, /globalThis\.fnAudioLibraryLoadKey\.buildLibraryLoadKey\(/, "Request keys must use the shared pure policy");
 assert.ok(index.indexOf('src="library_response_loader.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'), "Response loader must load before app.js");
 assert.ok(index.indexOf('src="library_load_key.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'), "Load-key policy must load before app.js");
+assert.ok(index.indexOf('src="metadata_request_loader.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'), "Metadata request loader must load before app.js");
+assert.match(metadataRequestLoader, /const DEFAULT_TTL_MS = 750;/, "Metadata single-flight must retain a short TTL");
+assert.match(metadataRequestLoader, /const inflight = new Map\(\);/, "Metadata single-flight must track pending URLs");
+assert.match(metadataRequestLoader, /if \(entry\?\.controller\?\.signal\?\.aborted === true\)/, "Aborted shared entries must not capture replacement callers");
+assert.match(metadataRequestLoader, /if \(entry\.epoch === epoch\) cache\.set\(url,/, "Cleared metadata requests must not repopulate the cache late");
+assert.ok(index.indexOf('src="metadata_request_loader.js?v=__FNAUDIO_ASSET_BUILD__"') >= 0
+  && index.indexOf('src="metadata_request_loader.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'),
+"Metadata single-flight policy must load before app.js");
 assert.match(loadKey, /function safeNumber\(value, fallback = 0\)/);
 assert.match(loadKey, /const numericPage = safePage\(page, 1\);/);
 assert.match(loadKey, /return JSON\.stringify\(key\);/);
@@ -1658,7 +1674,7 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       },
     };
     const queryParamsSource = fs.readFileSync("app/ui/library_query_params.js", "utf8");
-    const builderSource = app.match(/function libraryQueryParamsFor\(folderRoot, folderPath, page\) \{[\s\S]*?\n\}/);
+    const builderSource = app.match(/function libraryQueryParamsFor\(folderRoot, folderPath, page, view = state\.view\) \{[\s\S]*?\n\}/);
     assert.ok(builderSource, "libraryQueryParamsFor must stay one top-level function");
     const queryTextSource = app.match(/function currentQueryText\(\) \{[\s\S]*?\n\}/);
     assert.ok(queryTextSource, "currentQueryText must stay one top-level function");

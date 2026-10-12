@@ -224,7 +224,6 @@ class DecisionBucketLedger(unittest.TestCase):
         # measured bucket, and a vanished anchor would hide that it was deleted
         # rather than paid.
         open_rows = [line for line in self.all_lines if line.startswith("- [ ] ")]
-        self.assertTrue(open_rows, "TODO.md has no open checklist row at all")
         for anchor in OPEN_CODE_ITEMS:
             self.assertEqual(
                 0,

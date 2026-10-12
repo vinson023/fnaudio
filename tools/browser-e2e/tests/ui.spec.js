@@ -81,7 +81,7 @@ test("warm library snapshot hands off to an equivalent authoritative page withou
       { id: "fixture-4", title: "Already Covered", artist: "Lab Artist", album: "Native DSD", track_no: 4, duration: 201, format: "flac", mime: "audio/flac", is_dsd: false, modified: 4, cover_url: "fixture-cover.svg", url: "media/fixture-4" },
     ];
     localStorage.setItem("fnaudio.libraryPageSnapshot.v1", JSON.stringify({
-      key: JSON.stringify({ view: "all", page: 1, search: "", sort: "title", dir: "asc", pageSize: 96 }),
+      key: JSON.stringify({ view: "all", page: 1, pageSize: 96, folderRoot: "", folderPath: "", folderPage: 1, folderPageSize: 100, groupName: "", creator: "", creatorAllTracks: false, sortKey: "title", sortDir: "asc", search: "" }),
       savedAt: Date.now(),
       total: items.length,
       items,

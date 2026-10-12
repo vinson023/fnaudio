@@ -85,6 +85,17 @@ const trackRenderContext = {
 };
 vm.runInNewContext(`${sourceBetween("function trackRowSelectionKey", "function renderGroups")}; this.track = { renderTrack };`, trackRenderContext);
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
+assert.doesNotMatch(
+  trackRenderContext.track.renderTrack({ id: "two", title: "Two" }),
+  /<img\b/,
+  "Rows without a cover must render only the fallback glyph, never an image element",
+);
+trackRenderContext.coverUrl = () => "";
+assert.doesNotMatch(
+  trackRenderContext.track.renderTrack({ id: "two", title: "Two", cover_url: "" }),
+  /<img\b/,
+  "An explicitly empty cover URL must not become a broken image element",
+);
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: true }), /◈/);
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: "true" }), /class="[^"]*dsd/);
 trackRenderContext.coverUrl = () => "https://example.test/cover.jpg";
