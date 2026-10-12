@@ -5754,6 +5754,21 @@ function flushVisibleMetadataPrefetchCooldowns(nowMs = Date.now()) {
   return expired.length;
 }
 
+// One parked lane per page. The hold deadline is the only thing that can end the window,
+// so the retry is scheduled exactly at its expiry plus one frame, and capped by the same
+// bound so a clock jump can never defer the row metadata chrome indefinitely.
+function parkVisibleMetadataPrefetch(items, requestSeq, nowMs = Date.now()) {
+  if (state.visibleMetadataPrefetchTimer) return false;
+  const delay = Math.min(LIBRARY_INTERACTION_HOLD_MS + 500,
+    Math.max(0, Number(state.libraryInteractionHoldUntil || 0) - nowMs) + 60);
+  state.visibleMetadataPrefetchUsesIdle = false;
+  state.visibleMetadataPrefetchTimer = setTimeout(() => {
+    state.visibleMetadataPrefetchTimer = 0;
+    if (requestSeq !== state.libraryRequestSeq) return;
+    scheduleVisibleMetadataPrefetch(items, requestSeq);
+  }, delay);
+  return true;
+}
 function scheduleVisibleMetadataPrefetch(items = [], requestSeq = state.libraryRequestSeq) {
   const policy = globalThis.fnAudioVisibleMetadataPrefetchPolicy;
   const hasPendingWork = Boolean(
@@ -5767,6 +5782,14 @@ function scheduleVisibleMetadataPrefetch(items = [], requestSeq = state.libraryR
     items === state.visibleMetadataPrefetchItems,
     hasPendingWork,
   )) return;
+  // While a navigation owns the connections this lane waits. It is optional chrome, and a
+  // dozen concurrent row lookups per page change is what made the next click land behind a
+  // queue. The parked lane resumes itself once, on the timer below, and a new page cancels
+  // that timer, so it can be neither dropped nor run twice.
+  if (uiBackgroundWorkBlocked()) {
+    parkVisibleMetadataPrefetch(items, requestSeq);
+    return;
+  }
   // A status/projection refresh may reschedule the active lane. Preserve a
   // pending re-arm in that case; page changes and hidden documents still use
   // the default cancellation path and clear it completely.
@@ -6037,9 +6060,22 @@ function libraryInteractionBlockedFor(target, list = $("trackList")) {
   if (!state.libraryInteractionBlocked) return false;
   return !isLibraryNavigationTarget(target, list);
 }
-function uiBackgroundWorkBlocked() {
-  if (!state.libraryInteractionBlocked) return false;
-  return Date.now() <= Number(state.libraryInteractionHoldUntil || 0);
+// The deadline, not the in-flight flag, is what parks the background lanes. The hold used
+// to be published only from the paged worker and AND-ed with that flag, so a folder click
+// that landed on a prefetched pair - which commits in the same frame and never enters that
+// worker - released every lane the instant it painted. Re-measured on the device with
+// 0.2.50: the first click of a session issued 12 /api/metadata/track calls inside the
+// 268 ms before the list committed, and 13-14 within the following 5 s, all of them
+// competing for the gateway's six HTTP/1.1 connections with the click the user was about
+// to make. A deadline is also the only thing a press can arm before its request leaves,
+// and it stays bounded, so no background lane can be starved by it.
+function armLibraryInteractionHold(nowMs = Date.now()) {
+  const until = nowMs + LIBRARY_INTERACTION_HOLD_MS;
+  state.libraryInteractionHoldUntil = Math.max(Number(state.libraryInteractionHoldUntil || 0), until);
+  return state.libraryInteractionHoldUntil;
+}
+function uiBackgroundWorkBlocked(nowMs = Date.now()) {
+  return nowMs <= Number(state.libraryInteractionHoldUntil || 0);
 }
 // A real device measured the pointerdown->pointerup hold of a deliberate folder
 // click at 137-139 ms, while one paged navigation costs ~116 ms of gateway round
@@ -6073,6 +6109,18 @@ function speculateLibraryNavigation(event, list = $("trackList")) {
   const node = event.target?.closest?.(LIBRARY_NAVIGATION_SELECTOR);
   if (!node || !list?.contains?.(node)) return false;
   if (typeof node.onclick !== "function") return false;
+  // Pressing a navigation control owns the connections for the round trip it is about to
+  // make even when the pair is already cached and the worker above never runs.
+  armLibraryInteractionHold();
+  // Reclaim what is already on the wire at pointerdown instead of waiting for the click
+  // to reach the worker: the outgoing page's row-metadata polls hold 1-6 of the gateway's
+  // six HTTP/1.1 connections for up to 8 s each, and the measured gap between a folder
+  // press and its own navigation request leaving was 69 ms of queueing behind exactly
+  // that stale work. Completed dedupe keys stay (cancelRearms false), so the parked lane
+  // does not re-ask for chrome the rows already have; the cover queue belongs to rows
+  // about to be replaced and recovers through the idle hydrate.
+  cancelVisibleMetadataPrefetch({ cancelRearms: false });
+  state.coverLoadScheduler?.stop?.();
   armLibraryNavigationSpeculation(node);
   try {
     node.onclick(event);
@@ -6221,7 +6269,7 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
   // hydrate starts a fresh generation, and the failed/aborted paths recover through the
   // idle-scheduler check in needsVisibleTrackCoverHydration().
   state.coverLoadScheduler?.stop?.();
-  state.libraryInteractionHoldUntil = Date.now() + LIBRARY_INTERACTION_HOLD_MS;
+  armLibraryInteractionHold();
   state.libraryInteractionBlocked = true;
   if (state.libraryStatusTimer) {
     clearTimeout(state.libraryStatusTimer);
