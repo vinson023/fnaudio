@@ -556,6 +556,23 @@ assert.match(app, /const releaseController = \(\) => \{\s*if \(state\.libraryAbo
 assert.match(app, /\} finally \{\s*releaseController\(\);\s*\}/, "Library request cleanup must run for success, failure, and cancellation");
 assert.match(app, /state\.folderRootRows\.length === 1[\s\S]*?return loadPagedLibraryWorker\(page, refresh\);/, "A single configured library root must continue in the same worker chain rather than await its own deduplicated promise");
 assert.doesNotMatch(app, /state\.folderRootRows\.length === 1[\s\S]{0,700}?return loadPagedLibrary\(page, refresh\);/, "Single-root auto-entry must not create a self-referential public load promise");
+assert.match(app, /libraryStatus\?\.library_paths[\s\S]*?state\.folderRootRows/, "Folder cold navigation must reuse the already-hydrated library roots before requesting the roots endpoint");
+assert.match(app, /const rootParams = new URLSearchParams\(\);[\s\S]*?api\/library\/roots/, "The roots endpoint must remain the fallback when the status has no usable configured roots");
+{
+  const rootHelper = app.match(/function configuredLibraryRoots\(status = state\.libraryStatus\) \{[\s\S]*?\n\}/);
+  assert.ok(rootHelper, "configured library roots must have a testable projection boundary");
+  const rootContext = { Array, state: { libraryStatus: null } };
+  vm.runInNewContext(`${rootHelper[0]}; globalThis.projectRoots = configuredLibraryRoots;`, rootContext);
+  assert.deepEqual(Array.from(rootContext.projectRoots({ library_paths: [" /music ", "", null, 7, "  /archive  "] })), [" /music ", "  /archive  "],
+    "the fast path accepts only non-empty configured path strings and leaves their exact values intact");
+  assert.deepEqual(Array.from(rootContext.projectRoots({ library_path: "/legacy" })), [],
+    "a legacy or missing multi-root projection must fall back to the authoritative roots endpoint");
+  const worker = app.match(/async function loadPagedLibraryWorker\(page = 1, refresh = false\) \{[\s\S]*?\n\}\n/)[0];
+  const fastPath = worker.slice(worker.indexOf("const configuredRoots = configuredLibraryRoots();"), worker.indexOf("const rootParams = new URLSearchParams();"));
+  assert.ok(fastPath.includes("configuredRoots.length === 1") && fastPath.includes("state.folderRoot = root;")
+    && fastPath.includes("return loadPagedLibraryWorker(page, refresh);"),
+  "one known configured root must enter the folders+tracks pair directly instead of paying for /roots first");
+}
 assert.match(app, /if \(error\?\.name === "AbortError"\) return;/);
 assert.match(app, /if \(seq !== state\.libraryRequestSeq\) return;[\s\S]*?state\.libraryLoading = false;\s*state\.libraryLoaded = state\.pageItems\.length;/, "Obsolete page responses must not clear the active loading guard");
 assert.match(app, /if \(error\?\.name === "AbortError" && error\?\.code !== "RESPONSE_BODY_TIMEOUT"\) \{[\s\S]*?state\.libraryInteractionBlocked = false;[\s\S]*?return;[\s\S]*?\}\s*state\.libraryLoading = false;[\s\S]*?state\.libraryInteractionBlocked = false;[\s\S]*?render\(\);/, "A current library response-body timeout must leave loading state and render an error instead of spinning forever");

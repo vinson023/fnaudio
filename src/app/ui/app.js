@@ -6033,6 +6033,10 @@ function libraryLoadRequestKey(page = 1) {
     state, page, currentCreatorName, isCreatorAllTracksView, currentQueryText,
   );
 }
+function configuredLibraryRoots(status = state.libraryStatus) {
+  if (!Array.isArray(status?.library_paths)) return [];
+  return status.library_paths.filter(root => typeof root === "string" && root.trim());
+}
 function loadPagedLibrary(page = 1, refresh = false) {
   const key = refresh ? "" : libraryLoadRequestKey(page);
   if (key && state.libraryLoadKey === key && state.libraryLoadPromise) return state.libraryLoadPromise;
@@ -6315,6 +6319,25 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
   }
   try {
   if (state.view === "folders" && !state.folderRoot && !state.folderPath) {
+    const configuredRoots = configuredLibraryRoots();
+    // A single-root library is already identified by the status response. Avoid
+    // a serial /roots round trip before the folders + tracks pair; this is the
+    // cold category-entry path and every gateway request adds a fixed CGI cost.
+    if (configuredRoots.length === 1) {
+      const root = configuredRoots[0].trim();
+      const existing = (state.folderRootRows || []).find(row => String(row.root || row.path || "") === root);
+      state.folderRootRows = [existing || {
+        path: root,
+        root,
+        parent: "",
+        name: root.split(/[\\/]/).filter(Boolean).pop() || root,
+        track_count: libraryCount(state.libraryStatus?.count),
+        cover_track_id: "",
+      }];
+      state.folderRoot = root;
+      state.folderPath = "";
+      return loadPagedLibraryWorker(page, refresh);
+    }
     const rootParams = new URLSearchParams();
     if (currentQueryText()) rootParams.set("search", currentQueryText());
     const data = await fetchLibraryResponse(
