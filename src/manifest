@@ -1,5 +1,5 @@
 appname=fnaudio
-version=0.2.50
+version=0.2.51
 display_name=fnAudio
 desc=本地音乐播放器，支持高解析音乐库、歌词封面补全、USB DAC、DLNA 推送及 Android 锁屏控制。
 platform=x86

@@ -1149,7 +1149,8 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
   {
     const selectorConst = app.match(/const LIBRARY_NAVIGATION_SELECTOR = "([^"]+)";/);
     assert.ok(selectorConst, "the navigation allow-list must stay one top-level constant");
-    const gateNames = ["isLibraryNavigationTarget", "libraryInteractionBlockedFor", "uiBackgroundWorkBlocked"];
+    const gateNames = ["isLibraryNavigationTarget", "libraryInteractionBlockedFor",
+      "armLibraryInteractionHold", "uiBackgroundWorkBlocked"];
     const gateSource = selectorConst[0] + ";\n" + gateNames.map(name => {
       const found = app.match(new RegExp("function " + name + "\\([\\s\\S]*?\\) \\{[\\s\\S]*?\\n\\}"));
       assert.ok(found, `${name} must stay a top-level function for this check`);
@@ -1180,13 +1181,17 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       state: gateState,
       Number,
       Boolean,
+      Math,
+      LIBRARY_INTERACTION_HOLD_MS: 4000,
       Date: { now: () => clock },
     };
     vm.runInNewContext(
       gateSource
       + "; globalThis.gate = libraryInteractionBlockedFor;"
       + " globalThis.navTarget = isLibraryNavigationTarget;"
-      + " globalThis.backgroundBlocked = uiBackgroundWorkBlocked;",
+      + " globalThis.armHold = armLibraryInteractionHold;"
+      + " globalThis.backgroundBlocked = uiBackgroundWorkBlocked;"
+      + " globalThis.holdConstant = LIBRARY_INTERACTION_HOLD_MS;",
       gateContext,
     );
     gateState.libraryInteractionBlocked = true;
@@ -1207,7 +1212,14 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.equal(gateContext.backgroundBlocked(), false, "a request that never settles may not starve status forever");
     gateState.libraryInteractionBlocked = false;
     clock = 1;
-    assert.equal(gateContext.backgroundBlocked(), false, "an expired hold with no live request blocks nothing");
+    assert.equal(gateContext.backgroundBlocked(), true,
+      "the hold outlives the flag: a folder click served from the prefetch cache commits in the same frame and must still hand the connections to the navigation the user is about to make");
+    assert.equal(gateContext.holdConstant, 4000, "and the hold stays the one bounded window");
+    assert.equal(gateContext.armHold(), 5000, "a press inside an armed window may not shorten it");
+    clock = 5000;
+    assert.equal(gateContext.armHold(), 9000, "a press at the deadline extends it by exactly one bounded window");
+    gateState.libraryInteractionHoldUntil = 0;
+    assert.equal(gateContext.backgroundBlocked(), false, "the deadline is the only thing that releases it");
     const binder = app.match(/function bindTrackListInteractions\([\s\S]*?\n\}/);
     assert.ok(binder, "the track list interaction binder must remain one top-level function");
     assert.equal(countOccurrences(binder[0], "libraryInteractionBlockedFor(event.target, list)"), 3,
@@ -1220,7 +1232,7 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.ok(worker, "the paged library worker must remain one top-level function");
     const body = worker[0];
     const stopAt = body.indexOf("state.coverLoadScheduler?.stop?.()");
-    const holdAt = body.indexOf("state.libraryInteractionHoldUntil = Date.now() + LIBRARY_INTERACTION_HOLD_MS;");
+    const holdAt = body.indexOf("armLibraryInteractionHold();");
     const blockedAt = body.indexOf("state.libraryInteractionBlocked = true;");
     assert.ok(stopAt >= 0, "a new page has to release the previous page's cover requests");
     assert.ok(holdAt >= 0, "the background lanes need an armed, bounded hold window");
@@ -1317,9 +1329,22 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     };
     const list = { contains: node => inside.includes(node) };
     let clock = 10000;
-    const navState = { libraryInteractionBlocked: false, libraryInteractionHoldUntil: 0, libraryNavigationSpeculation: null };
+    let navLaneCancels = 0;
+    let navCancelOptions = [];
+    let navCoverStops = 0;
+    const navState = {
+      libraryInteractionBlocked: false,
+      libraryInteractionHoldUntil: 0,
+      libraryNavigationSpeculation: null,
+      coverLoadScheduler: { stop: () => { navCoverStops += 1; } },
+    };
     const navContext = {
       $: () => list, state: navState, Boolean, Number, Math,
+      LIBRARY_INTERACTION_HOLD_MS: 4000,
+      cancelVisibleMetadataPrefetch: (options) => {
+        navLaneCancels += 1;
+        navCancelOptions.push(String(options && options.cancelRearms));
+      },
       Date: { now: () => clock },
     };
     vm.runInNewContext(navSource + `
@@ -1337,6 +1362,11 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.equal(press(folderRow), true, "a mouse press on a folder row activates it immediately");
     assert.equal(folderRow.clicks, 1, "the press ran the row's own handler exactly once");
     assert.equal(navContext.pending(), true, "the follow-up click is now owned by the press");
+    assert.equal(navState.libraryInteractionHoldUntil, clock + 4000,
+      "the press also arms the bounded background-work hold for the round trip it just started");
+    assert.equal(navLaneCancels, 1, "and the press aborts the row-metadata polls that are already on the wire");
+    assert.deepEqual(navCancelOptions, ["false"], "it keeps the completed dedupe keys, so the parked lane does not re-ask for chrome the rows already have");
+    assert.equal(navCoverStops, 1, "the outgoing page cover queue is released at pointerdown too");
     assert.equal(press(folderRow), true, "a second press is a second activation");
     assert.equal(folderRow.clicks, 2, "each deliberate press activates once, never twice");
     assert.equal(press(crumb), true, "breadcrumbs and pagers use the same press path");
@@ -1347,6 +1377,10 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.equal(press(folderRow, { button: 2 }), false, "a right press belongs to the context menu, not navigation");
     assert.equal(press(folderRow, { isPrimary: false }), false, "secondary pointers may not navigate");
     assert.equal(press(detached), false, "a navigation node outside the list is not activated");
+    assert.equal(navState.libraryInteractionHoldUntil, clock + 4000,
+      "a touch, right-button, secondary-pointer or out-of-list press may not park the background lanes");
+    assert.equal(navLaneCancels, 4, "only the accepted presses of that stretch reclaimed the lane: track rows, touch, right button and detached nodes reclaim nothing");
+    assert.equal(navCoverStops, 4, "and a refused press may not tear down the cover queue of the page still on screen");
     assert.equal(navContext.consumed({ target: crumb }, list), true,
       "the click after a pressed control is swallowed");
     assert.equal(navContext.pending(), false, "the swallow token is single-use");
@@ -1844,6 +1878,104 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       "the single-slot gate must not come back: it starved the hover this feature exists for");
     assert.ok(navBlock.includes("budget.inFlight.delete(url)"),
       "a settled half frees its own URL only, never the whole lane");
+  }
+  // R207: a folder click that lands on a prefetched pair never enters the paged worker, so
+  // nothing armed the interaction hold, and the row-metadata lane kept competing with the
+  // next click. Measured on 198.51.100.24 with 0.2.50 and a 4x CPU throttle: the click that
+  // opens the folders view issued 12 /api/metadata/track requests inside the 268 ms before
+  // the list committed, and 13-14 more within the following 5 s.
+  {
+    const parkNames = ["parkVisibleMetadataPrefetch", "scheduleVisibleMetadataPrefetch", "uiBackgroundWorkBlocked"];
+    const laneSource = parkNames.map(name => {
+      const found = app.match(new RegExp("function " + name + "\\([\\s\\S]*?\\) \\{[\\s\\S]*?\\n\\}"));
+      assert.ok(found, `${name} must stay a top-level function for this check`);
+      return found[0];
+    }).join(";\n");
+    let laneClock = 1000;
+    let laneTimer = null;
+    let laneCancels = 0;
+    const laneCalls = [];
+    const laneState = {
+      libraryRequestSeq: 7,
+      libraryInteractionHoldUntil: 0,
+      visibleMetadataPrefetchTimer: 0,
+      visibleMetadataPrefetchUsesIdle: false,
+      visibleMetadataPrefetchRequestSeq: 0,
+      visibleMetadataPrefetchItems: null,
+      visibleMetadataPrefetchSeq: 0,
+      metadataPrefetchTrackId: "",
+      metadataPrefetchController: null,
+      pageItems: [],
+    };
+    const laneContext = {
+      state: laneState,
+      String, Number, Math, Boolean, Array, Object, Map, Set,
+      Date: { now: () => laneClock },
+      setTimeout: (fn, ms) => { laneTimer = { fn, ms }; return 1; },
+      clearTimeout: () => { laneTimer = null; },
+      cancelVisibleMetadataPrefetch: () => { laneCancels += 1; },
+      currentItem: () => ({ id: "current-track" }),
+      LIBRARY_INTERACTION_HOLD_MS: 4000,
+      fnAudioVisibleMetadataPrefetchPolicy: {
+        shouldReuseActiveLane: () => false,
+        ownsCurrentTrackLane: () => false,
+        selectCandidates: (items, cap, excluded) => { laneCalls.push({ items, cap, excluded }); return []; },
+      },
+    };
+    vm.runInNewContext(laneSource + "\n"
+      + "globalThis.schedule = scheduleVisibleMetadataPrefetch;"
+      + "globalThis.park = parkVisibleMetadataPrefetch;", laneContext);
+    const laneItems = [{ id: "one" }, { id: "two" }];
+
+    laneState.libraryInteractionHoldUntil = laneClock + 4000;
+    assert.equal(laneContext.schedule(laneItems, 7), undefined, "a parked lane reports nothing");
+    assert.equal(laneCalls.length, 0, "while a navigation owns the connections no row may be looked up");
+    assert.equal(laneCancels, 0, "and the park happens before the running lane is torn down");
+    assert.ok(laneTimer, "the parked lane keeps one page-owned retry timer");
+    assert.equal(laneTimer.ms, 4060, "which is scheduled on the hold deadline, not on a new poller cadence");
+    assert.equal(laneContext.schedule(laneItems, 7), undefined, "a second schedule request cannot stack a timer");
+    assert.equal(laneTimer.ms, 4060, "and cannot retime the one that is already armed");
+    assert.equal(laneContext.park(laneItems, 7, laneClock), false, "parking an already parked lane is refused");
+
+    laneClock += 4060;
+    laneState.libraryInteractionHoldUntil = 0;
+    const armed = laneTimer;
+    laneTimer = null;
+    armed.fn();
+    assert.equal(laneCalls.length, 1, "the parked lane resumes itself exactly once on the deadline");
+    assert.equal(laneCalls[0].items, laneItems, "for the page that asked for it");
+    assert.equal(laneCalls[0].cap, 6, "with the bounded row cap");
+    assert.equal(laneTimer, null, "and it leaves no timer behind");
+
+    laneState.libraryInteractionHoldUntil = laneClock + 4000;
+    laneState.libraryRequestSeq = 9;
+    assert.equal(laneContext.schedule(laneItems, 7), undefined, "a stale page still parks");
+    const stale = laneTimer;
+    laneTimer = null;
+    laneState.libraryInteractionHoldUntil = 0;
+    stale.fn();
+    assert.equal(laneCalls.length, 1, "a lane whose page moved on may not restart");
+    assert.equal(laneCancels, 1, "and the resume that does run releases the previous generation once");
+
+    laneState.libraryRequestSeq = 7;
+    laneState.libraryInteractionHoldUntil = 0;
+    laneContext.schedule(laneItems, 7);
+    assert.equal(laneCalls.length, 2, "outside the hold window the same call looks the rows up at once");
+  }
+  {
+    const speculation = app.match(/function speculateLibraryNavigation\([\s\S]*?\n\}/);
+    assert.ok(speculation, "the press-time speculation must stay one top-level function");
+    const body = speculation[0];
+    const armAt = body.indexOf("armLibraryInteractionHold();");
+    const clickAt = body.indexOf("node.onclick(event)");
+    assert.ok(armAt >= 0 && clickAt > armAt,
+      "the press arms the hold before it runs the control's own handler, so a cached navigation still parks the lanes");
+    const laneAt = body.indexOf("cancelVisibleMetadataPrefetch({ cancelRearms: false });");
+    const coverAt = body.indexOf("state.coverLoadScheduler?.stop?.();");
+    assert.ok(armAt >= 0 && armAt < laneAt && laneAt < coverAt && coverAt < clickAt,
+      "the press arms the hold first, then aborts the stale row lane and cover queue, and only then runs the control handler");
+    assert.ok(body.indexOf('if (event.button || event.isPrimary === false) return false;') < armAt,
+      "and only for a real primary press: a right button or a secondary pointer arms nothing");
   }
   console.log("Library loading cancellation regression checks passed.");
 })().catch(error => {
