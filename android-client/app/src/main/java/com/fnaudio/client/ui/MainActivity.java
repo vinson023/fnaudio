@@ -120,7 +120,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private TextView errorMessage;
     private ConnectionProfile profile;
     private OkHttpClient webResourceClient;
-    private final Map<String, Call> nativeHttpCalls = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Call> nativeHttpCalls = new ConcurrentHashMap<>();
     private AuthenticatedCoverCache coverCache;
     private FnConnectResolver fnConnectResolver;
     private final FnOsAuthClient authClient = new FnOsAuthClient();

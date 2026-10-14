@@ -3,6 +3,7 @@ import json
 import io
 import gzip
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import urllib.error
 import urllib.parse
 import unittest
 import zlib
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, "app/server")
@@ -1167,6 +1169,22 @@ class MetadataServiceTests(unittest.TestCase):
             self.assertEqual(row["status"], "pending")
             self.assertEqual(row["priority"], 0)
 
+    def test_lyrics_request_does_not_enqueue_database_writes_during_library_scan(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            music = config["library_paths"][0]
+            save_items_to_sqlite(config, [self._item("one", os.path.join(music, "one.flac"), "One", 1)], "first")
+            service = MetadataService(config)
+            with patch("metadata_service.library_scan_is_running", return_value=True), \
+                 patch.object(service, "_read_local_lyrics_cached", return_value=""):
+                result = service.lyrics("one")
+            self.assertEqual(result["status"], "scan_busy")
+            with service._connect() as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM metadata_jobs WHERE job_key='lyrics:one'").fetchone()[0],
+                    0,
+                )
+
     def test_lyrics_pending_projection_drops_invalid_artwork_reference(self):
         with tempfile.TemporaryDirectory() as root:
             config = self._config(root)
@@ -1354,6 +1372,37 @@ class MetadataServiceTests(unittest.TestCase):
                 service.shutdown()
             self.assertLess(elapsed, 1.0, "a first lookup must not pay a busy_timeout")
             self.assertTrue(requests.called, "the pool did not actually start")
+
+    def test_metadata_write_lanes_pause_while_library_scan_holds_database(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            with patch("metadata_service.library_scan_is_running", return_value=True):
+                self.assertTrue(service._metadata_writes_paused())
+
+    def test_job_state_write_retries_a_transient_sqlite_lock(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            with service._connect() as conn:
+                service._upsert_job(conn, "track:locked", "track", "locked", {}, 1)
+            original_connect = service._connect
+            attempts = {"count": 0}
+
+            @contextmanager
+            def flaky_connect():
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                with original_connect() as conn:
+                    yield conn
+
+            with patch.object(service, "_connect", flaky_connect):
+                service._finish_job("track:locked", "done", "")
+            self.assertEqual(attempts["count"], 2)
+            with service._connect() as conn:
+                self.assertEqual(
+                    conn.execute("SELECT status FROM metadata_jobs WHERE job_key='track:locked'").fetchone()[0],
+                    "done",
+                )
 
     def test_a_lane_requested_inside_a_transaction_starts_after_the_commit(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2161,6 +2210,20 @@ class MetadataServiceTests(unittest.TestCase):
 
             self.assertEqual(rows, {"album:one": 10, "lyrics:current": 0})
             self.assertEqual(service.dropped_jobs, 2)
+
+    def test_track_artwork_priority_can_evict_lower_priority_entity_backfill(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            with patch("metadata_service.bounded_int", return_value=2):
+                with service._connect() as conn:
+                    self.assertTrue(service._upsert_job(conn, "album:one", "album", "one", {}, 10))
+                    self.assertTrue(service._upsert_job(conn, "composer:two", "composer", "two", {}, 30))
+                    self.assertTrue(service._upsert_job(conn, "track:cover", "track", "cover", {}, 25))
+                    rows = {
+                        row["job_key"]: row["priority"]
+                        for row in conn.execute("SELECT job_key,priority FROM metadata_jobs")
+                    }
+            self.assertEqual(rows, {"album:one": 10, "track:cover": 25})
 
     def test_running_metadata_job_is_never_evicted(self):
         with tempfile.TemporaryDirectory() as root:
@@ -3219,6 +3282,27 @@ class MetadataServiceTests(unittest.TestCase):
             self.assertEqual(rows["tag:pending"][0], "pending")
             self.assertEqual(rows["lyrics:failed"][0], "failed")
 
+    def test_disabled_tag_writeback_does_not_leave_or_enqueue_jobs(self):
+        with tempfile.TemporaryDirectory() as root:
+            enabled_config = self._config(root)
+            service = MetadataService(enabled_config)
+            with service._connect() as conn:
+                service._upsert_job(conn, "tag:old", "tag_write", "old", {}, 200)
+                conn.execute("UPDATE metadata_jobs SET status='failed' WHERE job_key='tag:old'")
+
+            disabled_config = {**enabled_config, "metadata_tag_write_enabled": False}
+            disabled = MetadataService(disabled_config)
+            with disabled._connect() as conn:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM metadata_jobs WHERE job_type='tag_write'").fetchone()[0],
+                    0,
+                )
+                self.assertFalse(disabled._queue_tag_write(conn, "new"))
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM metadata_jobs WHERE job_type='tag_write'").fetchone()[0],
+                    0,
+                )
+
     def test_status_exposes_tag_job_without_media_path(self):
         with tempfile.TemporaryDirectory() as root:
             config = self._config(root)
@@ -3420,7 +3504,7 @@ class MetadataServiceTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM metadata_tracks").fetchone()[0], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM metadata_jobs").fetchone()[0], 0)
 
-    def test_artwork_pressure_clears_reference_and_allows_refetch(self):
+    def test_artwork_pressure_preserves_referenced_asset(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))
             os.makedirs(service.artwork_dir, exist_ok=True)
@@ -3447,7 +3531,7 @@ class MetadataServiceTests(unittest.TestCase):
                 with patch("metadata_service.bounded_int", side_effect=lambda _c, key, *_a: 1 if key == "metadata_cache_max_bytes" else 0), patch(
                     "metadata_service.disk_has_reserve", return_value=True
                 ):
-                    self.assertEqual(service._prune_artwork_cache(conn, incoming_bytes=1), 1)
+                    self.assertEqual(service._prune_artwork_cache(conn, incoming_bytes=1), 0)
                 entity = conn.execute(
                     "SELECT artwork_id,expires_at FROM metadata_entities WHERE entity_key='album-key'"
                 ).fetchone()
@@ -3455,11 +3539,11 @@ class MetadataServiceTests(unittest.TestCase):
                     "SELECT artwork_id,expires_at FROM metadata_tracks WHERE track_id='track-1'"
                 ).fetchone()
 
-            self.assertFalse(os.path.exists(asset_path))
-            self.assertEqual(entity["artwork_id"], "")
-            self.assertEqual(entity["expires_at"], 0)
-            self.assertEqual(track["artwork_id"], "")
-            self.assertEqual(track["expires_at"], 0)
+            self.assertTrue(os.path.exists(asset_path))
+            self.assertEqual(entity["artwork_id"], asset_id)
+            self.assertEqual(entity["expires_at"], now + 3600)
+            self.assertEqual(track["artwork_id"], asset_id)
+            self.assertEqual(track["expires_at"], now + 3600)
 
 
     def test_artwork_prune_consumes_large_asset_sets_in_bounded_batches(self):

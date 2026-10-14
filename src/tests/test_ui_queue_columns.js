@@ -100,9 +100,11 @@ assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Tw
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: "true" }), /class="[^"]*dsd/);
 trackRenderContext.coverUrl = () => "https://example.test/cover.jpg";
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
-assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden[^>]*>♫/, "Eager artwork keeps the fallback visible until image decode succeeds");
-assert.match(source, /onload="this\.hidden=false;[^"]*const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=true"/, "Loaded covers must restore the image and hide the fallback");
-assert.match(source, /onerror="this\.hidden=true;const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=false;const retry=Number\(this\.dataset\.coverRetryCount\|\|0\);/, "Failed covers must retain the fallback and use a bounded eager retry");
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /<img[^>]*style="visibility:hidden"/, "Artwork images must stay hidden until decoding succeeds");
+assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /<img[^>]*\ssrc="/, "Artwork requests must be started by the shared scheduler, not by inline markup");
+assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden[^>]*>♫/, "The fallback glyph must remain visible until image decode succeeds");
+assert.match(source, /onload="this\.hidden=false;this\.style\.visibility='visible';[^"]*const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=true"/, "Loaded covers must restore the image and hide the fallback");
+assert.match(source, /onerror="this\.hidden=true;this\.style\.visibility='hidden';const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=false;const retry=Number\(this\.dataset\.coverRetryCount\|\|0\);/, "Failed covers must retain the fallback and use a bounded eager retry");
 assert.doesNotMatch(source, /this\.src='';this\.src=source/, "Eager cover retry must not create an intermediate empty src");
 assert.match(source, /function coverUrl\(item, size = 160\)/, "Track covers must default to list thumbnails");
 assert.match(source, /artwork: coverUrl\(item, 512\)/, "Android media artwork must keep the larger cover size");

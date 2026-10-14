@@ -8,11 +8,11 @@ import android.os.Looper;
 import android.util.Log;
 
 import org.json.JSONObject;
+import org.json.JSONException;
 
 import java.net.ServerSocket;
 import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -44,7 +44,7 @@ final class TppsTunnel {
     private final Handler main = new Handler(Looper.getMainLooper());
     // Start/cancel commands supersede older work. Keep only one queued action
     // behind the in-flight native call so rapid connection switches stay bounded.
-    private final ExecutorService worker = new ThreadPoolExecutor(
+    private final ThreadPoolExecutor worker = new ThreadPoolExecutor(
             1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1),
             new ThreadPoolExecutor.DiscardOldestPolicy());
     private int activePort;
@@ -67,7 +67,7 @@ final class TppsTunnel {
         final JSONObject configSnapshot;
         try {
             configSnapshot = config == null ? new JSONObject() : new JSONObject(config.toString());
-        } catch (RuntimeException error) {
+        } catch (JSONException | RuntimeException error) {
             deliverError(requestGeneration, callback, "FN Connect 配置无法读取");
             return;
         }

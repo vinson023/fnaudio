@@ -217,6 +217,7 @@ ARTWORK_PRUNE_BATCH_SIZE = 64
 ORPHAN_CLEANUP_BATCH_SIZE = 64
 MAX_APE_TAG_BYTES = 16 * 1024 * 1024
 MAX_TAG_WRITE_STDERR_BYTES = 64 * 1024
+SQLITE_LOCK_RETRY_DELAYS = (0.05, 0.15, 0.45)
 MAX_ENTITY_RAW_JSON_BYTES = 64 * 1024
 TAG_WRITABLE_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ape", ".wav", ".dsf"}
 RUNNING_JOB_STALE_SECONDS = 15 * 60
@@ -2224,7 +2225,10 @@ class MetadataService:
             conn.execute("PRAGMA journal_mode=WAL")
             secure_sqlite_files(path)
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=5000")
+            # Library scans acquire BEGIN IMMEDIATE for their persistence window.
+            # Match that writer's wait budget so a short scan does not turn a
+            # metadata state update into a false provider failure.
+            conn.execute("PRAGMA busy_timeout=15000")
             # From here on this thread holds a database scope, and any write below
             # or on the borrowed connection stays uncommitted until the scope exits.
             _lane_release.depth += 1
@@ -2377,15 +2381,21 @@ class MetadataService:
             conn.execute("UPDATE metadata_entities SET artwork_id='' WHERE artwork_id<>'' AND (" + invalid_sql + ")")
             conn.execute("UPDATE metadata_tracks SET artwork_id='' WHERE artwork_id<>'' AND (" + invalid_sql + ")")
             conn.execute("INSERT OR REPLACE INTO metadata_state(key,value) VALUES ('artwork_id_sanitize_version',?)", (ARTWORK_ID_SANITIZE_VERSION,))
-        tag_backfill = conn.execute(
-            "SELECT value FROM metadata_state WHERE key='tag_write_backfill_version'"
-        ).fetchone()
-        if not tag_backfill or str(tag_backfill["value"] or "") != TAG_WRITE_BACKFILL_VERSION:
-            self._backfill_album_tag_writes(conn)
-            conn.execute(
-                "INSERT OR REPLACE INTO metadata_state(key,value) VALUES ('tag_write_backfill_version',?)",
-                (TAG_WRITE_BACKFILL_VERSION,),
-            )
+        if self.config.get("metadata_tag_write_enabled", False):
+            tag_backfill = conn.execute(
+                "SELECT value FROM metadata_state WHERE key='tag_write_backfill_version'"
+            ).fetchone()
+            if not tag_backfill or str(tag_backfill["value"] or "") != TAG_WRITE_BACKFILL_VERSION:
+                self._backfill_album_tag_writes(conn)
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata_state(key,value) VALUES ('tag_write_backfill_version',?)",
+                    (TAG_WRITE_BACKFILL_VERSION,),
+                )
+        else:
+            # Tag writeback is opt-in. A previous opt-in session may have left
+            # durable jobs behind; with the feature disabled they can never be
+            # claimed, so remove them at the schema/config boundary.
+            conn.execute("DELETE FROM metadata_jobs WHERE job_type='tag_write'")
 
     def start(self):
         with self._lifecycle_lock:
@@ -2736,6 +2746,10 @@ class MetadataService:
 
     def _run(self):
         while not self.stop_event.is_set():
+            if self._metadata_writes_paused():
+                self.fetch_wake_event.wait(1)
+                self.fetch_wake_event.clear()
+                continue
             if not self.config.get("metadata_enabled", False):
                 # A candidate dialog is an explicit per-track request. Allow
                 # only that bounded priority lane while keeping whole-library
@@ -2850,6 +2864,10 @@ class MetadataService:
         was disabled (the default).
         """
         while not self.stop_event.is_set():
+            if self._metadata_writes_paused():
+                self.priority_wake_event.wait(1)
+                self.priority_wake_event.clear()
+                continue
             try:
                 job = self._claim_job(priority_max=0, lyrics_only=True)
                 if job:
@@ -2938,7 +2956,7 @@ class MetadataService:
                     self._upsert_job(conn, "lyrics:" + track_id, "lyrics", track_id, dict(row), 100, force, queue_state)
                 if self._needs_track_enrichment(row):
                     if force or bounded_epoch(row["match_expires_at"]) <= now:
-                        self._upsert_job(conn, "track:" + track_id, "track", track_id, dict(row), 80, force, queue_state)
+                        self._upsert_job(conn, "track:" + track_id, "track", track_id, dict(row), 25, force, queue_state)
 
             conn.execute("UPDATE metadata_entities SET orphaned_at=0 WHERE EXISTS (SELECT 1 FROM active_metadata_entities a WHERE a.entity_type=metadata_entities.entity_type AND a.entity_key=metadata_entities.entity_key)")
             conn.execute("UPDATE metadata_entities SET orphaned_at=? WHERE orphaned_at=0 AND NOT EXISTS (SELECT 1 FROM active_metadata_entities a WHERE a.entity_type=metadata_entities.entity_type AND a.entity_key=metadata_entities.entity_key)", (now,))
@@ -3045,7 +3063,7 @@ class MetadataService:
             if pending >= queue_limit:
                 self._note_queue_pressure(pending, queue_limit)
                 evicted = None
-                if int(priority) <= 2:
+                if int(priority) < 100:
                     evicted = conn.execute(
                         """SELECT job_key FROM metadata_jobs
                            WHERE status IN ('pending','retry') AND priority>?
@@ -3158,6 +3176,28 @@ class MetadataService:
     def _active_job_snapshot(self):
         with self._active_jobs_lock:
             return next(iter(self._active_jobs), "")
+
+    @staticmethod
+    def _is_transient_sqlite_lock(exc):
+        detail = str(exc or "").lower()
+        return isinstance(exc, sqlite3.OperationalError) and any(
+            marker in detail for marker in ("database is locked", "database table is locked", "busy")
+        )
+
+    def _metadata_writes_paused(self):
+        """Keep metadata writers out of the scanner's long write transaction."""
+        return bool(library_scan_is_running())
+
+    def _run_database_write_with_retry(self, operation):
+        """Retry only short-lived SQLite lock failures at a metadata write boundary."""
+        for index, delay in enumerate((0.0,) + SQLITE_LOCK_RETRY_DELAYS):
+            if delay:
+                self.stop_event.wait(delay)
+            try:
+                return operation()
+            except sqlite3.OperationalError as exc:
+                if not self._is_transient_sqlite_lock(exc) or index == len(SQLITE_LOCK_RETRY_DELAYS):
+                    raise
 
     def _process_job(self, job):
         job_key = job.get("job_key") or ""
@@ -3815,6 +3855,8 @@ class MetadataService:
         # and lyric data, so the original file is not repeatedly rewritten.
         # Non-current tracks get a short debounce window: album artwork and
         # lyrics frequently arrive a few seconds apart during a full scan.
+        if not self.config.get("metadata_tag_write_enabled", False):
+            return False
         priority = 2 if str(track_id) == self.current_track_id else 200
         self._upsert_job(conn, "tag:" + track_id, "tag_write", track_id, {}, priority)
         self.tag_wake_event.set()
@@ -4164,6 +4206,13 @@ class MetadataService:
         )
         with self._connect() as conn:
             self._prune_artwork_cache(conn, incoming_bytes=len(body))
+            current = conn.execute("SELECT COALESCE(SUM(size),0) FROM metadata_assets").fetchone()[0]
+            maximum = bounded_int(
+                self.config, "metadata_cache_max_bytes", 512 * 1024 * 1024,
+                16 * 1024 * 1024, 8 * 1024 * 1024 * 1024,
+            )
+            if int(current or 0) + len(body) > maximum:
+                raise ResourceLimitError("metadata artwork cache is full of referenced assets")
         if not disk_has_reserve(self.artwork_dir, minimum_free, len(body)):
             raise ResourceLimitError("metadata cache disk reserve reached")
         path = os.path.join(self.artwork_dir, asset_id + extension)
@@ -4227,7 +4276,17 @@ class MetadataService:
             total = 0
         removed = 0
         assets = conn.execute(
-            "SELECT id,path,size FROM metadata_assets ORDER BY last_accessed ASC,fetched_at ASC"
+            """SELECT a.id,a.path,a.size
+               FROM metadata_assets a
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM metadata_entities e
+                   WHERE e.artwork_id=a.id AND e.orphaned_at=0
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM metadata_tracks t
+                   WHERE t.artwork_id=a.id AND t.orphaned_at=0
+               )
+               ORDER BY a.last_accessed ASC,a.fetched_at ASC"""
         )
         while True:
             batch = assets.fetchmany(ARTWORK_PRUNE_BATCH_SIZE)
@@ -4268,11 +4327,13 @@ class MetadataService:
         if expected_attempts is not None:
             where += " AND status='running' AND attempts=?"
             values.append(nonnegative_int(expected_attempts))
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE metadata_jobs SET status=?,updated_at=?,last_error=? WHERE " + where,
-                values,
-            )
+        def write():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE metadata_jobs SET status=?,updated_at=?,last_error=? WHERE " + where,
+                    values,
+                )
+        self._run_database_write_with_retry(write)
         self._invalidate_status_cache()
 
     def _retry_job(self, job_key, attempts, error, expected_attempts=None):
@@ -4282,11 +4343,13 @@ class MetadataService:
         if expected_attempts is not None:
             where += " AND status='running' AND attempts=?"
             values.append(nonnegative_int(expected_attempts))
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE metadata_jobs SET status='retry',next_attempt_at=?,updated_at=?,last_error=? WHERE " + where,
-                values,
-            )
+        def write():
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE metadata_jobs SET status='retry',next_attempt_at=?,updated_at=?,last_error=? WHERE " + where,
+                    values,
+                )
+        self._run_database_write_with_retry(write)
         self._invalidate_status_cache()
 
     def _cleanup_orphans(self, conn, now):
@@ -4624,7 +4687,8 @@ class MetadataService:
                 # artwork/album enrichment for a coverless track.  Lyrics
                 # pages are an explicit metadata request even when the LRC is
                 # embedded, so queue the bounded track lane before returning.
-                if self._needs_track_enrichment(track) or (not has_local_artwork(track) and not cached_artwork_id):
+                if (not self._metadata_writes_paused()
+                        and (self._needs_track_enrichment(track) or (not has_local_artwork(track) and not cached_artwork_id))):
                     self._upsert_job(conn, "track:" + track_id, "track", track_id, dict(track), 1, True)
                     self.fetch_wake_event.set()
                     if self.fetch_threads or self.priority_thread or self.tag_thread:
@@ -4640,7 +4704,9 @@ class MetadataService:
                 "SELECT status,attempts,last_error,updated_at FROM metadata_jobs WHERE job_key=?",
                 ("lyrics:" + str(track_id),),
             ).fetchone()
-            if job and str(job["status"] or "") in ("failed", "no_match") and not retry_failed and should_auto_retry_failed(job["status"], job["updated_at"], now):
+            writes_paused = self._metadata_writes_paused()
+            if (not writes_paused and job and str(job["status"] or "") in ("failed", "no_match")
+                    and not retry_failed and should_auto_retry_failed(job["status"], job["updated_at"], now)):
                 conn.execute(
                     "UPDATE metadata_jobs SET status='pending',attempts=0,next_attempt_at=0,updated_at=?,last_error='' WHERE job_key=? AND status IN ('failed','no_match')",
                     (now, "lyrics:" + str(track_id)),
@@ -4649,7 +4715,7 @@ class MetadataService:
                 if self.fetch_threads or self.priority_thread or self.tag_thread:
                     self.ensure_workers("lyrics")
                 job = None
-            if job and str(job["status"] or "") in ("failed", "no_match"):
+            if job and str(job["status"] or "") in ("failed", "no_match") and not writes_paused:
                 # The automatic poll has a bounded retry budget, but an
                 # explicit user retry must be able to recover after a provider
                 # outage or a corrected metadata query. Do not turn ordinary
@@ -4683,7 +4749,7 @@ class MetadataService:
                 ("lyrics:" + track_id,),
             ).fetchone()
             existing_lyrics_status = str(existing_lyrics_job["status"] or "") if existing_lyrics_job else ""
-            if existing_lyrics_status not in ("pending", "retry", "running"):
+            if not writes_paused and existing_lyrics_status not in ("pending", "retry", "running"):
                 self._upsert_job(conn, "lyrics:" + track_id, "lyrics", track_id, dict(track), 0, True)
                 if self.fetch_threads or self.priority_thread or self.tag_thread:
                     self.ensure_workers("lyrics")
@@ -4697,7 +4763,8 @@ class MetadataService:
             # the bounded candidate lookup in that case as well; otherwise
             # the UI remains stuck on the fallback glyph even though the
             # user has just asked for metadata.
-            if self._needs_track_enrichment(track) or (not has_local_artwork(track) and not cached_artwork_id):
+            if (not writes_paused
+                    and (self._needs_track_enrichment(track) or (not has_local_artwork(track) and not cached_artwork_id))):
                 self._upsert_job(conn, "track:" + track_id, "track", track_id, dict(track), 1, True)
                 if self.fetch_threads or self.priority_thread or self.tag_thread:
                     self.ensure_workers("fetch")
@@ -4708,6 +4775,7 @@ class MetadataService:
             "source": "后台匹配中",
             "image_url": artwork_url(cached_artwork_id),
             "pending": True,
+            "status": "scan_busy" if writes_paused else "pending",
         }
 
     def artwork(self, asset_id):

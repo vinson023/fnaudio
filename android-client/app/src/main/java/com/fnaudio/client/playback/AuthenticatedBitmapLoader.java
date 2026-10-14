@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -61,7 +62,8 @@ public final class AuthenticatedBitmapLoader implements BitmapLoader {
             new ThreadPoolExecutor.AbortPolicy());
     private final File cacheDirectory;
     private final Object lifecycleLock = new Object();
-    private final Set<SettableFuture<Bitmap>> pendingFutures = ConcurrentHashMap.newKeySet();
+    private final Set<SettableFuture<Bitmap>> pendingFutures = Collections.newSetFromMap(
+            new ConcurrentHashMap<SettableFuture<Bitmap>, Boolean>());
     private final ConcurrentHashMap<SettableFuture<Bitmap>, Call> activeCalls = new ConcurrentHashMap<>();
     private boolean shutdown;
 

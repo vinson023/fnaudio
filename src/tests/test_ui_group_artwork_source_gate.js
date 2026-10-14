@@ -287,7 +287,7 @@ assert.match(renderLane, /loadGroupArtwork\(\);\s*\n\s*hydrateVisibleTrackCovers
   "render() must attach the group fallback handlers immediately before the shared scheduler");
 const groupIconStart = source.indexOf("function groupIcon(");
 const groupIconLane = source.slice(groupIconStart, source.indexOf("function applyGroupArtwork(", groupIconStart));
-assert.ok(/<img data-cover-src="\$\{escapeHtml\(image\)\}" alt="">/.test(groupIconLane),
+assert.ok(/<img style="visibility:hidden" data-cover-src="\$\{escapeHtml\(image\)\}" alt="">/.test(groupIconLane),
   "group covers must keep shipping as deferred <img> without a src attribute");
 
 // --- 14. the shared scheduler treats "has a source" as the started marker ------

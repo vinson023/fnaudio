@@ -8,9 +8,9 @@ const groupIcon = app.slice(app.indexOf("function groupIcon("), app.indexOf("fun
 const albumDetail = app.slice(app.indexOf("function renderAlbumDetail("), app.indexOf("function trackRowSelectionKey("));
 const render = app.slice(app.indexOf("function render()"), app.indexOf("function renderPlaylistNav("));
 
-assert.match(groupIcon, /<img data-cover-src="\$\{escapeHtml\(image\)\}" alt="">/);
+assert.match(groupIcon, /<img style="visibility:hidden" data-cover-src="\$\{escapeHtml\(image\)\}" alt="">/);
 assert.doesNotMatch(groupIcon, /loading="lazy"/);
-assert.match(albumDetail, /<img data-cover-src="\$\{escapeHtml\(cover\)\}" alt="">/);
+assert.match(albumDetail, /<img style="visibility:hidden" data-cover-src="\$\{escapeHtml\(cover\)\}" alt="">/);
 assert.match(render, /loadGroupArtwork\(\);\s*hydrateVisibleTrackCovers\(\);/, "Group fallback listeners must bind before shared source scheduling");
 assert.match(app.slice(app.indexOf("function loadGroupArtwork("), app.indexOf("function activeTrackColumns(")), /const root = \$\("trackList"\) \|\| document;/, "Group artwork lookup should stay scoped to the rendered track list");
 assert.match(app.slice(app.indexOf("function loadGroupArtwork("), app.indexOf("function activeTrackColumns(")), /new Set\(\[/, "Group artwork nodes should be de-duplicated before binding listeners");
