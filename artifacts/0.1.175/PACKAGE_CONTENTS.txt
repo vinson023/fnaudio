@@ -1,5 +1,0 @@
-正式发布物：
-- fnaudio-0.1.175.fpk（fnOS x86）
-- fnaudio-android-0.1.175-debug.apk（Android Debug）
-
-FPK 校验：外层 21 项，app.tgz 内层 110 项；不包含 .pyc 或 __pycache__。

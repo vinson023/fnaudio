@@ -142,7 +142,12 @@ final class AuthenticatedCoverCache {
             total += length;
         }
         File[] ordered = entries.toArray(new File[0]);
-        Arrays.sort(ordered, Comparator.comparingLong(File::lastModified));
+        Arrays.sort(ordered, new Comparator<File>() {
+            @Override
+            public int compare(File left, File right) {
+                return Long.compare(left.lastModified(), right.lastModified());
+            }
+        });
         int remaining = ordered.length;
         for (File file : ordered) {
             if (total <= MAX_BYTES && remaining <= MAX_ENTRIES) break;

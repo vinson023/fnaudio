@@ -118,7 +118,9 @@
           if (event?.type === "load") {
             emit("load");
             image.removeAttribute?.("data-cover-retry-count");
+            image.removeAttribute?.("hidden");
             image.hidden = false;
+            if (image.style) image.style.visibility = "visible";
           } else if (event?.type === "error" && image.isConnected
             && source && Number(image.dataset?.coverRetryCount || 0) < maxErrorRetries) {
             emit("error");
@@ -128,6 +130,7 @@
             image.dataset.coverSrc = source;
             image.removeAttribute("src");
             image.hidden = false;
+            if (image.style) image.style.visibility = "hidden";
             scheduleRetry(() => {
               if (!isActive() || !image.isConnected || image.dataset?.coverSrc !== source) return;
               image.dataset.coverQueued = "";
@@ -138,6 +141,7 @@
             // retry is exhausted. Leaving a failed <img> displayed exposes
             // the browser's broken-image indicator for stale/missing artwork.
             image.hidden = true;
+            if (image.style) image.style.visibility = "hidden";
             emit("error");
           }
           pump();

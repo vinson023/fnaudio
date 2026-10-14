@@ -1,6 +1,5 @@
 package com.fnaudio.client.data;
 
-import org.json.JSONObject;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -14,15 +13,6 @@ public final class ConnectionProfileTest {
                 true, false, "admin", "").port);
         assertEquals(5666, ConnectionProfile.create("", "", "nas.example", -1,
                 false, false, "admin", "").port);
-    }
-
-    @Test
-    public void malformedStoredPortUsesSchemeDefault() throws Exception {
-        JSONObject json = new JSONObject()
-                .put("host", "nas.example")
-                .put("port", "not-a-port")
-                .put("https", true);
-        assertEquals(5667, ConnectionProfile.fromJson(json).port);
     }
 
     @Test

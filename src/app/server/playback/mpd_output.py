@@ -155,8 +155,11 @@ class MpdOutput(OutputPlugin):
                 result = self._load_uri_with_retry(self.service.uri_for_path(path), cue_start)
             else:
                 result = mpd_load_file(path, start=cue_start, **self._connection())
-            if self.service and hasattr(self.service, "refresh_status"):
-                self.service.refresh_status()
+            # MPD's idle listener observes the player event and refreshes the
+            # authoritative status asynchronously. Waiting for a second
+            # status/currentsong round-trip here makes every load pay the
+            # device latency twice before the UI can receive the optimistic
+            # command result.
             return {
                 **result,
                 "target_id": state.target_id,
@@ -214,8 +217,8 @@ class MpdOutput(OutputPlugin):
                 else command.position
             )
             result = self.service.control(command.action, requested_position) if self.service else mpd_control(command.action, requested_position, **self._connection())
-            if self.service and hasattr(self.service, "refresh_status"):
-                self.service.refresh_status()
+            # The idle listener is the single status-refresh owner for MPD
+            # player changes; transport commands should return immediately.
             return {**result, "target_id": state.target_id}
         except Exception as exc:
             return self._failure("MPD 控制失败：%s" % exc, state.target_id)

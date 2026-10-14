@@ -266,6 +266,18 @@ def metadata_service_available(service, lane="fetch"):
     return False
 
 
+def sync_metadata_workers(service, config):
+    """Keep provider workers off unless a metadata feature is enabled."""
+    if config.get("metadata_enabled", False) or config.get("metadata_tag_write_enabled", False):
+        starter = getattr(service, "start", None)
+        if callable(starter):
+            starter()
+    else:
+        stopper = getattr(service, "shutdown", None)
+        if callable(stopper):
+            stopper()
+
+
 def playback_command_cache_status():
     with PLAYBACK_COMMAND_LOCK:
         snapshot = cache_snapshot(PLAYBACK_COMMAND_RESULTS, PLAYBACK_COMMAND_RESULT_LIMIT)
@@ -1542,6 +1554,7 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 return self.send_json({"ok": False, "message": "保存元数据设置失败"}, 500)
             if METADATA_SERVICE:
+                sync_metadata_workers(METADATA_SERVICE, self.server.config)
                 METADATA_SERVICE.wake(force=refresh)
             return self.send_json({"ok": True, "status": METADATA_SERVICE.status() if METADATA_SERVICE else {}})
         if parsed.path == "/api/metadata/refresh":
@@ -3459,7 +3472,7 @@ def main():
         startup_items = []
     prewarm_library_thumbnails(startup_items[:STARTUP_THUMBNAIL_PREWARM_LIMIT], config, cached_cover_for_item)
     METADATA_SERVICE = MetadataService(config)
-    METADATA_SERVICE.start()
+    sync_metadata_workers(METADATA_SERVICE, config)
     enable_playback_restore_retry()
     restore_playback_session(config)
     web_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ui"))

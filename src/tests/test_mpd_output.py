@@ -45,6 +45,9 @@ class RecordingMpdService:
         self.controls.append((action, position))
         return {"ok": True}
 
+    def refresh_status(self):
+        raise AssertionError("transport commands must not synchronously refresh MPD status")
+
 
 # 100s into a 210s source file, this segment is 30s long.  MPD is driven in
 # source seconds, so a client seek of 30s must reach it as 130s.
@@ -146,6 +149,15 @@ class MpdOutputTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_category"], "output_device_busy")
         self.assertTrue(result["error"]["retryable"])
+
+    def test_control_returns_without_a_second_status_round_trip(self):
+        service = RecordingMpdService()
+        output = MpdOutput(service)
+        state = PlaybackState(target_id="mpd", target_kind="mpd")
+        with mock.patch.object(output, "start_service", return_value={"ok": True, "running": True}):
+            result = output.command(PlaybackCommand(action="play"), state)
+        self.assertTrue(result["ok"])
+        self.assertEqual(service.controls, [("play", None)])
 
     def test_fixed_volume_output_does_not_advertise_or_accept_volume(self):
         output = MpdOutput(FixedVolumeService())

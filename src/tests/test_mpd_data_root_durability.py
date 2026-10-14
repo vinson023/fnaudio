@@ -136,6 +136,13 @@ class DurableDataRootTests(TempServiceTests):
 
 
 class LegacyProcessRecognitionTests(TempServiceTests):
+    def test_an_old_durable_mount_is_recognised_as_legacy(self):
+        old_root = os.path.join(self.temp.name, "old", "@appconf", "fnaudio", "mpd")
+        os.makedirs(old_root)
+        with mock.patch.object(mpd_module.glob, "glob", return_value=[old_root]):
+            roots = self.service._legacy_data_roots()
+        self.assertIn(os.path.abspath(old_root), roots)
+
     def test_a_legacy_command_line_is_still_recognised_as_ours(self):
         legacy_conf = os.path.join(self.service._legacy_data_root(), "mpd.conf")
         with fake_proc({4242: "/usr/bin/mpd " + legacy_conf}):
@@ -220,6 +227,17 @@ class LegacyIndexReclaimTests(TempServiceTests):
         durable = os.path.join(self.service.data_root, "database")
         self.assertEqual(read_bytes(durable), payload)
         self.assertEqual(read_bytes(os.path.join(self.service.data_root, "sticker.sql")), b"stickers")
+
+    def test_an_old_durable_mount_is_reclaimed_when_payload_data_is_absent(self):
+        self.seed_legacy(b"")
+        os.remove(os.path.join(self.layout.payload_data, "database"))
+        old_root = os.path.join(self.temp.name, "old", "@appconf", "fnaudio", "mpd")
+        os.makedirs(old_root)
+        with io.open(os.path.join(old_root, "database"), "wb") as fh:
+            fh.write(b"old-durable-index")
+        with mock.patch.object(mpd_module.glob, "glob", return_value=[old_root]):
+            self.assertEqual(self.service._reclaim_legacy_index(), old_root)
+        self.assertEqual(read_bytes(os.path.join(self.service.data_root, "database")), b"old-durable-index")
 
     def test_the_legacy_copy_is_left_in_place(self):
         # The payload dies with the next reinstall anyway, but deleting it while the

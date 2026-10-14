@@ -22,6 +22,23 @@ class _Closable:
 
 
 class ServerLifecycleTests(unittest.TestCase):
+    def test_metadata_workers_follow_background_switch(self):
+        class Service:
+            def __init__(self):
+                self.calls = []
+
+            def start(self):
+                self.calls.append("start")
+
+            def shutdown(self):
+                self.calls.append("shutdown")
+
+        service = Service()
+        server.sync_metadata_workers(service, {"metadata_enabled": False, "metadata_tag_write_enabled": False})
+        self.assertEqual(service.calls, ["shutdown"])
+        server.sync_metadata_workers(service, {"metadata_enabled": True, "metadata_tag_write_enabled": False})
+        self.assertEqual(service.calls, ["shutdown", "start"])
+
     def test_airplay_http_success_requires_explicit_boolean_ok(self):
         with open("app/server/server.py", encoding="utf-8") as source_file:
             source = source_file.read()

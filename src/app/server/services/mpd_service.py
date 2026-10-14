@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import math
 import os
 import posixpath
@@ -468,25 +469,46 @@ class MpdService:
             return ""
         return legacy
 
+    def _legacy_data_roots(self) -> List[str]:
+        """Return every pre-durable MPD directory this install may have left behind."""
+        roots = []
+        payload = self._legacy_data_root()
+        if payload:
+            roots.append(payload)
+        durable = self._durable_app_dir()
+        if not durable:
+            return roots
+        app_name = os.path.basename(os.path.dirname(durable))
+        for pattern in (
+            os.path.join(os.path.sep, "*", DURABLE_CONFIG_MARKER, app_name, "mpd"),
+            os.path.join(os.path.sep, "*", "*", DURABLE_CONFIG_MARKER, app_name, "mpd"),
+        ):
+            for candidate in glob.glob(pattern):
+                candidate = os.path.abspath(candidate)
+                if candidate != os.path.abspath(self.data_root) and candidate not in roots:
+                    roots.append(candidate)
+        return roots
+
     def _reap_legacy_instances(self) -> bool:
         """Stop an MPD that is still holding resources from the legacy directory."""
         # No platform guard here: ``_scan_matching_pids`` is already a no-op without
         # /proc, and the pid file only exists where the legacy layout ever ran.
-        legacy = self._legacy_data_root()
-        if not legacy:
+        legacy_roots = self._legacy_data_roots()
+        if not legacy_roots:
             return False
         owned = self._managed_mpd_pid()
         targets = set(self._scan_matching_pids())
-        pid_file = os.path.join(legacy, "mpd.pid")
-        if os.path.isfile(pid_file):
-            try:
-                with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
-                    pid = int(pid_text.strip().splitlines()[0])
-                if pid > 1 and self._pid_matches_mpd(pid):
-                    targets.add(pid)
-            except Exception:
-                pass
+        for legacy in legacy_roots:
+            pid_file = os.path.join(legacy, "mpd.pid")
+            if os.path.isfile(pid_file):
+                try:
+                    with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
+                        pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
+                        pid = int(pid_text.strip().splitlines()[0])
+                    if pid > 1 and self._pid_matches_mpd(pid):
+                        targets.add(pid)
+                except Exception:
+                    pass
         # Depth defence: ``_pid_matches_mpd`` recognises the command line we
         # launched ourselves, so the child this process supervises must never be a
         # reap target, whichever caller reaches this method.
@@ -504,13 +526,16 @@ class MpdService:
         empty index is not: every track MPD has not resolved yet is refused, and
         the user is told to wait for a scan that takes about half an hour.
         """
-        legacy = self._legacy_data_root()
-        if not legacy or not os.path.isdir(legacy):
+        target = os.path.join(self.data_root, "database")
+        if os.path.exists(target):
+            return ""
+        legacy = next(
+            (root for root in self._legacy_data_roots() if os.path.isfile(os.path.join(root, "database"))),
+            "",
+        )
+        if not legacy:
             return ""
         source = os.path.join(legacy, "database")
-        target = os.path.join(self.data_root, "database")
-        if not os.path.isfile(source) or os.path.exists(target):
-            return ""
         staged = target + ".reclaim"
         try:
             shutil.copyfile(source, staged)
@@ -2028,16 +2053,17 @@ class MpdService:
         if os.name == "nt":
             return
         stale_pids = set()
-        pid_file = os.path.join(self.data_root, "mpd.pid")
-        if os.path.isfile(pid_file):
-            try:
-                with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
-                    pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
-                    pid = int(pid_text.strip().splitlines()[0])
-                if pid > 1 and self._pid_matches_mpd(pid):
-                    stale_pids.add(pid)
-            except Exception:
-                pass
+        for root in [self.data_root, *self._legacy_data_roots()]:
+            pid_file = os.path.join(root, "mpd.pid")
+            if os.path.isfile(pid_file):
+                try:
+                    with open(pid_file, "r", encoding="utf-8", errors="ignore") as fh:
+                        pid_text = fh.read(MAX_MPD_PID_FILE_BYTES + 1)[:MAX_MPD_PID_FILE_BYTES]
+                        pid = int(pid_text.strip().splitlines()[0])
+                    if pid > 1 and self._pid_matches_mpd(pid):
+                        stale_pids.add(pid)
+                except Exception:
+                    pass
         stale_pids.update(self._scan_matching_pids())
         for pid in sorted(stale_pids):
             self._terminate_pid(pid)
@@ -2074,7 +2100,8 @@ class MpdService:
         text = raw.lower()
         if "mpd" not in text:
             return False
-        needles = [self.config_path.lower(), self.data_root.lower(), self._legacy_data_root().lower()]
+        needles = [self.config_path.lower(), self.data_root.lower()]
+        needles.extend(root.lower() for root in self._legacy_data_roots())
         return any(needle and needle in text for needle in needles)
 
     def _terminate_pid(self, pid: int) -> None:

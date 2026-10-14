@@ -2965,7 +2965,7 @@ function groupIcon(view, items = [], coverTrackId = "", explicitName = "", metad
   // Native lazy loading is not consistently honored by older Android WebViews.
   // Use the shared bounded scheduler so a large album/group page does not begin
   // every artwork request at the same time.
-  return `<div class="group-icon" ${attributes}>${groupFallbackIcon(view)}${image ? `<img data-cover-src="${escapeHtml(image)}" alt="">` : ""}</div>`;
+  return `<div class="group-icon" ${attributes}>${groupFallbackIcon(view)}${image ? `<img style="visibility:hidden" data-cover-src="${escapeHtml(image)}" alt="">` : ""}</div>`;
 }
 function applyGroupArtwork(node, imageUrl) {
   if (!node?.isConnected || !imageUrl) return;
@@ -3222,7 +3222,7 @@ function renderAlbumDetail(list) {
   const onlineCover = usableCoverSource(metadata.image_url);
   const cover = localCover || onlineCover;
   const coverAttributes = localCover && onlineCover ? `data-artwork-local="1" data-metadata-image="${escapeHtml(onlineCover)}"` : "";
-  const coverMarkup = `${groupFallbackIcon("albums")}${cover ? `<img data-cover-src="${escapeHtml(cover)}" alt="">` : ""}`;
+  const coverMarkup = `${groupFallbackIcon("albums")}${cover ? `<img style="visibility:hidden" data-cover-src="${escapeHtml(cover)}" alt="">` : ""}`;
   return `<div class="album-detail-layout">
     <aside class="album-detail-sidebar">
       <div class="album-detail-cover" ${coverAttributes}>${coverMarkup}</div>
@@ -3276,7 +3276,7 @@ function renderTrack(item, index = 0, columns = activeTrackColumns()) {
   // covered by a decoded image and is removed only by its `onload` handler;
   // on failure it remains the same stable music-symbol presentation.
   const coverImage = localCover
-      ? `<img data-cover-src="${escapeHtml(localCover)}"${index < 8 ? ` src="${escapeHtml(localCover)}"` : ""} loading="${index < 8 ? "eager" : "lazy"}" decoding="async" fetchpriority="${index < 8 ? "high" : "low"}" alt="" onload="this.hidden=false;this.removeAttribute('data-cover-retry-count');const fallback=this.parentElement?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=true" onerror="this.hidden=true;const fallback=this.parentElement?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=false;const retry=Number(this.dataset.coverRetryCount||0);const source=this.dataset.coverSrc||this.src;if(!this.dataset.coverSchedulerOwned&&source&&retry<1){this.dataset.coverRetryCount=String(retry+1);setTimeout(()=>{if(this.isConnected){this.hidden=false;this.src=source}},450)}">`
+      ? `<img style="visibility:hidden" data-cover-src="${escapeHtml(localCover)}" loading="${index < 8 ? "eager" : "lazy"}" decoding="async" fetchpriority="${index < 8 ? "high" : "low"}" alt="" onload="this.hidden=false;this.style.visibility='visible';this.removeAttribute('data-cover-retry-count');const fallback=this.parentElement?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=true" onerror="this.hidden=true;this.style.visibility='hidden';const fallback=this.parentElement?.querySelector('.track-cover-fallback');if(fallback)fallback.hidden=false;const retry=Number(this.dataset.coverRetryCount||0);const source=this.dataset.coverSrc||this.src;if(!this.dataset.coverSchedulerOwned&&source&&retry<1){this.dataset.coverRetryCount=String(retry+1);setTimeout(()=>{if(this.isConnected){this.hidden=false;this.style.visibility='hidden';this.src=source}},450)}">`
     : "";
   // Lazy rows have not started decoding yet; keep the glyph visible until the
   // scheduler attaches/loads the image. Hiding it for every row created a
@@ -3977,11 +3977,22 @@ function render() {
           toggleGroupSelection(row.dataset.groupKey);
           return;
         }
+        if (row.dataset.groupType === "folder") {
+          event.preventDefault();
+          if (!window.matchMedia("(max-width: 760px)").matches) setGroupSelection([row.dataset.groupKey]);
+          return;
+        }
         if (!window.matchMedia("(max-width: 760px)").matches && state.selectedGroupKeys.size) {
           event.preventDefault();
           setGroupSelection([]);
           return;
         }
+        openGroupRow(row);
+      };
+      row.ondblclick = event => {
+        if (event.target.closest("button")) return;
+        if (row.dataset.groupType !== "folder") return;
+        event.preventDefault();
         openGroupRow(row);
       };
       row.oncontextmenu = event => {
@@ -4074,6 +4085,7 @@ function updateNavigationActiveState() {
 }
 function setView(view) {
   const nextView = String(view || "all");
+  resetLibraryScrollPosition();
   if (nextView === "folders") {
     cancelFolderNavigationPrefetch();
     // Start before state.view changes: the existing paged worker is scheduled
@@ -4097,8 +4109,12 @@ function setView(view) {
   state.pageItems = [];
   state.librarySnapshotEmptyGuardUsed = false;
   updateNavigationActiveState();
-  if (isPagedLibraryView()) requestLibraryLoad(1, false);
-  else render();
+  if (isPagedLibraryView()) {
+    requestLibraryLoad(1, false).finally(() => requestAnimationFrame(resetLibraryScrollPosition));
+  } else {
+    render();
+    requestAnimationFrame(resetLibraryScrollPosition);
+  }
 }
 function sameTrackSelection(left, right) {
   if (left.size !== right.size) return false;

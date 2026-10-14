@@ -18,6 +18,7 @@ function image(source) {
   return {
     isConnected: true,
     hidden: false,
+    style: {},
     dataset: { coverSrc: source },
     attributes: new Set(),
     addEventListener(name, callback) { listeners[name] = callback; },
@@ -30,6 +31,7 @@ function image(source) {
       if (name === "data-cover-src") delete this.dataset.coverSrc;
       if (name === "data-cover-loaded-src") delete this.dataset.coverLoadedSrc;
       if (name === "data-cover-retry-count") delete this.dataset.coverRetryCount;
+      if (name === "hidden") this.hiddenAttributeRemoved = true;
       this.attributes.delete(name);
     },
     set src(value) { this.loaded = value; this.attributes.add("src"); },
@@ -80,6 +82,18 @@ assert.equal(events.filter(event => event === "load").length, 1);
 // glyph fallback. The retry must not make the scheduler's in-flight count
 // negative or require a complete list rebuild.
 const retryImage = image("retry-one");
+const revealImage = image("reveal-one");
+revealImage.hidden = true;
+const revealScheduler = context.globalThis.fnAudioCoverLoadScheduler.create({
+  window: context.window,
+  getImageRoot: () => ({ querySelectorAll: () => [revealImage] }),
+  maxConcurrent: 1,
+});
+revealScheduler.hydrate();
+revealImage.finish();
+assert.equal(revealImage.hidden, false, "a successful cover load must reveal an image that started hidden");
+assert.equal(revealImage.hiddenAttributeRemoved, true, "a successful cover load must explicitly remove the hidden attribute for WebView compatibility");
+assert.equal(revealImage.style.visibility, "visible", "a successful cover load must reveal the image without relying on hidden-attribute behavior");
 const retryRoot = { querySelectorAll: () => [retryImage] };
 const retryContext = vm.createContext({ globalThis: {}, window: {} });
 vm.runInContext(source, retryContext);
