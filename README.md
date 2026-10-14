@@ -78,9 +78,8 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 - 根目录文档描述当前状态，是后续开发的权威来源。
 - `docs/history/` 保留原始阶段记录，不应直接当作当前 TODO。
-- 每次 AI 修改都要更新 `PROJECT_CONTEXT.md`、`TODO.md` 和 `CHANGELOG_AI.md` 中受影响的部分。
+- 每次修改都要更新 `PROJECT_CONTEXT.md`、`TODO.md` 和 `CHANGELOG_AI.md` 中受影响的部分。
 - 每次源码修改后重新生成 `SOURCE_MANIFEST.sha256`，并记录测试结果。
-- 不从 `E:\Codex\builds`、旧 FPK 解包目录或旧版本目录直接覆盖当前源码。
 
 ## 发布说明
 
