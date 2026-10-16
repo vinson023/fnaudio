@@ -20,6 +20,8 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
 项目根目录已初始化为 Git 仓库，当前基线位于 `main` 分支；`0.2.61` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+<img width="1451" height="711" alt="image" src="https://github.com/user-attachments/assets/59466282-df30-4450-873a-2ebc4568d5e0" />
+
 
 ## 接手顺序
 
