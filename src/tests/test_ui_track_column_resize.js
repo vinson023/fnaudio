@@ -245,10 +245,10 @@ function harness(options = {}) {
 // --- 1. the in-drag width must respect the column's own band, not a flat 900 ----
 const first = harness();
 first.render();
-assert.deepEqual(first.widths(), [420, 72], "the committed template must start from the column definitions");
+assert.deepEqual(first.widths(), [280, 72], "the committed template must start from the compact column definitions");
 first.startDrag("duration", 500);
 first.fire("pointermove", { clientX: 540 });
-assert.deepEqual(first.widths(), [420, 96],
+assert.deepEqual(first.widths(), [280, 96],
   "V1: dragging must clamp duration at its 96px maximum instead of the flat 900px band");
 assert.equal(first.attached("pointermove"), 1, "an in-flight drag must listen for pointermove");
 
@@ -267,7 +267,7 @@ assert.equal(first.applied(), dragTemplate,
 // --- 3. a legacy out-of-band width must converge, and must not jump on grab ----
 const legacy = harness({ preferences: { duration: 372 } });
 const legacyCommitted = legacy.render();
-assert.deepEqual(legacy.widths(), [420, 96], "V3: the committed template clamps a stored 372px duration");
+assert.deepEqual(legacy.widths(), [280, 96], "V3: the committed template clamps a stored 372px duration");
 assert.equal(legacy.api.currentTrackColumnWidths().duration, 96,
   "V3: reading stored widths must converge them to the shared per-column band");
 legacy.startDrag("duration", 600);
@@ -275,7 +275,7 @@ legacy.fire("pointermove", { clientX: 600 });
 assert.equal(legacy.applied(), legacyCommitted,
   "V4: grabbing a column must not jump it to a width the grid never displayed");
 legacy.fire("pointermove", { clientX: 640 });
-assert.deepEqual(legacy.widths(), [420, 96], "V4: a legacy width may not be dragged past its own maximum");
+assert.deepEqual(legacy.widths(), [280, 96], "V4: a legacy width may not be dragged past its own maximum");
 legacy.fire("pointerup", { clientX: 640 });
 assert.equal(legacy.stored("duration"), 96, "V4: releasing a legacy-width drag must store the honoured width");
 
@@ -284,7 +284,7 @@ const cancelled = harness();
 const preDragTemplate = cancelled.render();
 cancelled.startDrag("duration", 500);
 cancelled.fire("pointermove", { clientX: 540 });
-assert.deepEqual(cancelled.widths(), [420, 96], "the drag itself must work before testing how it ends");
+assert.deepEqual(cancelled.widths(), [280, 96], "the drag itself must work before testing how it ends");
 assert.equal(cancelled.attached("pointermove"), 1, "precondition: the drag registered pointermove");
 cancelled.fire("pointercancel", {});
 assert.equal(cancelled.attached("pointermove"), 0,
@@ -336,7 +336,7 @@ assert.equal(fallback.api.currentTrackColumnWidths().duration, 96,
   "V9: the in-file limits table must agree with the shared module when the module is absent");
 fallback.startDrag("duration", 500);
 fallback.fire("pointermove", { clientX: 560 });
-assert.deepEqual(fallback.widths(), [420, 96], "V9: the fallback path must clamp the drag the same way");
+assert.deepEqual(fallback.widths(), [280, 96], "V9: the fallback path must clamp the drag the same way");
 
 // --- 10. source wiring: one regime, one teardown, no private band -------------
 const dragBlock = sourceSlice(

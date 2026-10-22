@@ -64,12 +64,8 @@ public final class RemotePlaybackPlayerInstrumentedTest {
         });
         assertEquals(2, mediaCount[0]);
         assertEquals("track-2", currentMediaId[0]);
-        assertTrue("commands=" + commands, commands.contains("play:"));
-        assertTrue("commands=" + commands, commands.contains("seek:4500"));
-        assertTrue("commands=" + commands, commands.contains("load:0:track-2"));
-        assertTrue("commands=" + commands, commands.contains("repeat:"));
-        assertTrue("commands=" + commands, commands.contains("shuffle:"));
-        assertTrue("commands=" + commands, commands.contains("pause:"));
+        assertEquals(Arrays.asList("play::", "seek:4500:", "load:0:track-2",
+                "repeat::", "shuffle::", "pause::"), commands);
     }
 
     @Test

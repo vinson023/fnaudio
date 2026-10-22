@@ -174,7 +174,8 @@ public final class MainActivityWebViewInstrumentedTest {
 
     private static void grantNotificationPermission() {
         try (ParcelFileDescriptor ignored = InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                .executeShellCommand("pm grant com.fnaudio.client " + Manifest.permission.POST_NOTIFICATIONS)) {
+                .executeShellCommand("pm grant " + InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName()
+                        + " " + Manifest.permission.POST_NOTIFICATIONS)) {
             // Android 13+ notification prompt must not obscure the navigation assertion.
         } catch (Exception ignored) {
         }

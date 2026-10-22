@@ -162,8 +162,6 @@ const groupMenuFunctions = sourceBetween("function groupActionButtons", "functio
 assert.doesNotMatch(groupMenuFunctions, /groupActionButton\("播放"|groupActionButton\("插播所选项目"/);
 assert.match(source, /openTrackActionDialog\(trackId\)[\s\S]*?trackActionButtons\(trackId\)/);
 assert.match(source, /openTrackContextMenu\(id, x, y, mobile\)/);
-assert.match(source, /sdk\.openFileManager\(folder\)/);
-assert.doesNotMatch(sourceBetween("async function openContainingFolder", "function externalShareDateValue"), /sdk\.openFileManager\(path\)/);
 assert.match(source, /function bindTrackListInteractions\(\)/);
 assert.match(source, /list\.dataset\.trackInteractionsBound === "1"/);
 assert.match(source, /list\.addEventListener\("pointerdown", event => \{[\s\S]*?startTrackLongPress\(row, event\)/);
@@ -182,3 +180,42 @@ assert.match(source, /api\/library\/items\?ids=\$\{encodeURIComponent\(batch\.jo
 assert.match(source, /const hydrated = queueIds\.map\(id => byId\.get\(id\) \|\| previousById\.get\(id\)\)\.filter\(Boolean\)/);
 
 console.log("UI queue and album-column regression checks passed.");
+
+(async () => {
+  const helper = source.match(/^async function runTrimHostAction\([^]*?^}/m)?.[0];
+  const openFolder = source.match(/^async function openContainingFolder\([^]*?^}/m)?.[0];
+  assert.ok(helper, "file manager behavior must execute the real host helper");
+  assert.ok(openFolder, "file manager behavior must execute the real folder action");
+  let ready = false, locationCalls = 0;
+  const opened = [], alerts = [];
+  const location = {path: "/vol1/music/album/song.flac", folder: "/vol1/music/album"};
+  const sdk = {isStandaloneWeb: false,
+    async ready() { ready = true; },
+    async openFileManager(folder) {
+      assert.equal(ready, true, "SDK must be ready before invoking file manager");
+      assert.equal(folder, location.folder, "host must receive the containing directory");
+      assert.notEqual(folder, location.path, "full song path must not be opened as a file");
+      opened.push(folder);
+    },
+  };
+  const context = {getTrimSdk: async () => sdk, setTimeout, clearTimeout,
+    resolveTrackLocation: async id => {
+      assert.equal(id, "selected-track"); locationCalls++; return location;
+    }, alert: message => alerts.push(message), console: {warn() {}},
+  };
+  vm.createContext(context);
+  vm.runInContext(`${helper}\n${openFolder}`, context);
+  assert.equal(await context.openContainingFolder("selected-track"), true);
+  assert.equal(locationCalls, 1);
+  assert.deepEqual(opened, [location.folder]);
+  assert.equal(alerts.length, 0);
+  sdk.isStandaloneWeb = true;
+  assert.equal(await context.openContainingFolder("selected-track"), false);
+  assert.equal(opened.length, 1, "standalone pages must not call the host file manager");
+  assert.match(alerts.pop(), /飞牛桌面或飞牛 App/);
+  sdk.isStandaloneWeb = false;
+  sdk.openFileManager = async () => { throw new Error("宿主拒绝打开"); };
+  assert.equal(await context.openContainingFolder("selected-track"), false);
+  assert.equal(alerts.pop(), "宿主拒绝打开", "host handoff failure must be reported");
+  console.log("Containing-folder path, host readiness, standalone and rejection behavior passed.");
+})().catch(error => { console.error(error); process.exitCode = 1; });

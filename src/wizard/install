@@ -1,20 +1,7 @@
 [
   {
-    "stepTitle": "音乐库设置",
+    "stepTitle": "运行设置",
     "items": [
-      {
-        "type": "text",
-        "field": "wizard_library_path",
-        "label": "音乐目录",
-        "initValue": "/vol1/1000/music",
-        "helpText": "必填。安装时先填写一个目录；更多目录可安装后在 fnAudio 应用内设置中添加。",
-        "rules": [
-          {
-            "required": true,
-            "message": "请输入音乐目录"
-          }
-        ]
-      },
       {
         "type": "text",
         "field": "wizard_server_port",

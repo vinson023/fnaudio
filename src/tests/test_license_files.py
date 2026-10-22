@@ -66,10 +66,11 @@ class LicenseFileTests(unittest.TestCase):
         for name in ("LICENSE", "AUTHORS", "NOTICE"):
             self.assertIn(f"`{name}`", self.readme)
 
-    def test_repository_is_still_unhosted(self):
-        # 裁定是「开源，暂不托管」：托管状态由 remote 列表证明，而不是由文档声明证明。
+    def test_repository_hosting_matches_the_public_release_ruling(self):
+        # 项目已按后续裁定发布到 GitHub；托管状态由 remote 列表证明。
         remotes = (REPO_ROOT / ".git" / "config").read_text(encoding="utf-8")
-        self.assertNotIn("[remote ", remotes, "暂不托管：.git/config 里不应出现 remote 段")
+        self.assertIn('[remote "origin"]', remotes)
+        self.assertIn("https://github.com/vinson023/fnaudio.git", remotes)
 
 
 if __name__ == "__main__":

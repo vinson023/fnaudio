@@ -54,6 +54,10 @@ class SsdpService:
             if self._thread is thread and (thread is None or not thread.is_alive()):
                 self._thread = None
 
+    def announce_alive(self) -> None:
+        """Refresh controller caches after mutable device metadata changes."""
+        self._announce("ssdp:alive")
+
     def _targets(self, role: str):
         device = "urn:schemas-upnp-org:device:Media%s:1" % ("Renderer" if role == "renderer" else "Server")
         yield "upnp:rootdevice"

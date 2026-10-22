@@ -108,7 +108,8 @@ for index in $(seq 1 20); do
     library_path="$(printf '%s\n%s\n' "${library_path}" "${value}")"
   fi
 done
-library_path="${library_path:-${TRIM_APPDEST}/share/music}"
+# A fresh install starts unconfigured; directory selection belongs to settings.
+# Existing configured roots are restored below during upgrades.
 server_port="${wizard_server_port:-${existing_server_port:-53199}}"
 case "${server_port}" in
   ''|*[!0-9]*)

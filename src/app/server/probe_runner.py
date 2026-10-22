@@ -114,6 +114,20 @@ def _probe_succeeded(result):
     return getattr(result, "returncode", 0) == 0
 
 
+def _prefer_native_container_facts(path, audio_info, native_info):
+    """Prefer DSD container facts over ffprobe's DSD transport fields."""
+    try:
+        ext = os.path.splitext(os.fspath(path))[1].lower()
+    except TypeError:
+        ext = ""
+    if ext not in (".dsf", ".dff"):
+        return audio_info
+    for key in ("sample_rate", "bit_depth", "bit_rate", "duration"):
+        if native_info.get(key):
+            audio_info[key] = native_info[key]
+    return audio_info
+
+
 def read_probe_metadata(path, config, *, ffprobe_resolver, native_reader, payload_normalizer):
     """Run ffprobe with bounded output and merge a native container fallback."""
     ffprobe = _safe_ffprobe(ffprobe_resolver, config)
@@ -139,6 +153,7 @@ def read_probe_metadata(path, config, *, ffprobe_resolver, native_reader, payloa
     except Exception:
         return {}, _safe_native(native_reader, path)
     native_info = _safe_native(native_reader, path)
+    _prefer_native_container_facts(path, audio_info, native_info)
     for key, value in native_info.items():
         if not audio_info.get(key):
             audio_info[key] = value
@@ -179,6 +194,7 @@ def read_audio_info(path, config, *, ffprobe_resolver, native_reader):
         # other probe failures and keep the fallback path available.
         return _safe_native(native_reader, path)
     native_info = _safe_native(native_reader, path)
+    _prefer_native_container_facts(path, result_info, native_info)
     for key, value in native_info.items():
         if not result_info.get(key):
             result_info[key] = value

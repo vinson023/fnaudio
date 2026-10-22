@@ -131,7 +131,8 @@ SUPPORTED = {
     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav", ".aiff": "audio/aiff",
     ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".ape": "audio/ape", ".dsf": "audio/x-dsf", ".dff": "audio/x-dff", ".cue": "application/x-cue",
 }
-METADATA_VERSION = 16
+# Re-probe cached DSD transport rates using authoritative DSF/DFF headers.
+METADATA_VERSION = 17
 MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"
@@ -1011,7 +1012,7 @@ def library_cache_failure_status():
 
 def library_status(config):
     roots = normalize_library_paths(config)
-    root = roots[0] if roots else canonical_library_path(".")
+    root = roots[0] if roots else ""
     db_summary = library_summary_from_sqlite(config)
     count = safe_counter(db_summary.get("count", len(MUSIC_CACHE["items"])))
     dsd_count = safe_counter(db_summary.get("dsd_count", sum(1 for item in MUSIC_CACHE["items"] if item.get("is_dsd"))))

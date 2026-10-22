@@ -23,6 +23,7 @@ public final class ConnectionProfile {
     public final boolean webSession;
     public final boolean fnConnectRelay;
     public final String fnConnectMode;
+    public final String accessCode;
     public final long updatedAt;
 
     public ConnectionProfile(
@@ -82,6 +83,15 @@ public final class ConnectionProfile {
             String fnConnectMode,
             long updatedAt
     ) {
+        this(id, name, host, port, https, trustSelfSigned, certificatePinSha256, username,
+                password, token, longToken, webSession, fnConnectRelay, fnConnectMode, "", updatedAt);
+    }
+
+    public ConnectionProfile(
+            String id, String name, String host, int port, boolean https, boolean trustSelfSigned,
+            String certificatePinSha256, String username, String password, String token, String longToken,
+            boolean webSession, boolean fnConnectRelay, String fnConnectMode, String accessCode, long updatedAt
+    ) {
         this.id = clean(id).isEmpty() ? UUID.randomUUID().toString() : clean(id);
         this.host = normalizeHost(host);
         this.https = https;
@@ -95,6 +105,7 @@ public final class ConnectionProfile {
         this.webSession = webSession;
         this.fnConnectRelay = fnConnectRelay;
         this.fnConnectMode = normalizeFnConnectMode(fnConnectMode, fnConnectRelay);
+        this.accessCode = clean(accessCode);
         this.updatedAt = updatedAt > 0 ? updatedAt : System.currentTimeMillis();
         String defaultName = this.host + (this.port > 0 ? ":" + this.port : "");
         this.name = clean(name).isEmpty() ? defaultName : clean(name);
@@ -151,6 +162,7 @@ public final class ConnectionProfile {
                 webSession,
                 fnConnectRelay,
                 fnConnectMode,
+                accessCode,
                 System.currentTimeMillis()
         );
     }
@@ -159,7 +171,7 @@ public final class ConnectionProfile {
     public ConnectionProfile withEndpoint(String nextHost, int nextPort, boolean nextHttps) {
         return new ConnectionProfile(
                 id, name, nextHost, nextPort, nextHttps, false, "", username, password,
-                token, longToken, false, fnConnectRelay, fnConnectMode, System.currentTimeMillis());
+                token, longToken, false, fnConnectRelay, fnConnectMode, accessCode, System.currentTimeMillis());
     }
 
     public ConnectionProfile withCertificatePin(String nextCertificatePinSha256) {
@@ -178,6 +190,7 @@ public final class ConnectionProfile {
                 webSession,
                 fnConnectRelay,
                 fnConnectMode,
+                accessCode,
                 System.currentTimeMillis()
         );
     }
@@ -185,20 +198,27 @@ public final class ConnectionProfile {
     public ConnectionProfile asWebSession() {
         return new ConnectionProfile(id, name, host, port, https, trustSelfSigned,
                 certificatePinSha256, username, password, token, longToken, true, fnConnectRelay, fnConnectMode,
+                accessCode,
                 System.currentTimeMillis());
     }
 
     public ConnectionProfile withFnConnectRelay(boolean enabled) {
         return new ConnectionProfile(id, name, host, port, https, trustSelfSigned,
                 certificatePinSha256, username, password, token, longToken, webSession,
-                enabled, enabled ? "relay" : "public", System.currentTimeMillis());
+                enabled, enabled ? "relay" : "public", accessCode, System.currentTimeMillis());
     }
 
     public ConnectionProfile withFnConnectMode(String mode) {
         String normalized = normalizeFnConnectMode(mode, false);
         return new ConnectionProfile(id, name, host, port, https, trustSelfSigned,
                 certificatePinSha256, username, password, token, longToken, webSession,
-                "relay".equals(normalized), normalized, System.currentTimeMillis());
+                "relay".equals(normalized), normalized, accessCode, System.currentTimeMillis());
+    }
+
+    public ConnectionProfile withAccessCode(String nextAccessCode) {
+        return new ConnectionProfile(id, name, host, port, https, trustSelfSigned,
+                certificatePinSha256, username, password, token, longToken, webSession,
+                fnConnectRelay, fnConnectMode, nextAccessCode, System.currentTimeMillis());
     }
 
     public boolean matchesConnection(String candidateHost, int candidatePort, boolean candidateHttps, String candidateUsername) {
@@ -242,6 +262,7 @@ public final class ConnectionProfile {
         json.put("webSession", webSession);
         json.put("fnConnectRelay", fnConnectRelay);
         json.put("fnConnectMode", fnConnectMode);
+        json.put("accessCode", accessCode);
         json.put("updatedAt", updatedAt);
         return json;
     }
@@ -271,6 +292,7 @@ public final class ConnectionProfile {
                 storedWebSession,
                 booleanField(json, "fnConnectRelay", false),
                 stringField(json, "fnConnectMode"),
+                stringField(json, "accessCode"),
                 longField(json, "updatedAt", 0L)
         );
     }

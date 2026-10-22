@@ -417,7 +417,7 @@ try {
     }
 
     $wizardRequirements = @{
-        "install" = @("wizard_library_path", "wizard_server_port")
+        "install" = @("wizard_server_port")
         "config" = @("wizard_server_port")
         "uninstall" = @("wizard_uninstall_mode")
     }
@@ -428,6 +428,9 @@ try {
             throw "Packaged '$wizardName' wizard has no steps."
         }
         $wizardFields = @($wizard | ForEach-Object { $_.items } | ForEach-Object { $_.field })
+        if ($wizardName -eq "install" -and $wizardFields -contains "wizard_library_path") {
+            throw "Packaged install wizard must configure music directories after installation."
+        }
         foreach ($requiredField in $wizardRequirements[$wizardName]) {
             if ($wizardFields -notcontains $requiredField) {
                 throw "Packaged '$wizardName' wizard is missing field '$requiredField'."

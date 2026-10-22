@@ -72,6 +72,9 @@ class LibraryPathTests(unittest.TestCase):
     def test_normalization_rejects_non_mapping_config(self):
         self.assertEqual(normalize_library_paths(None), [canonical_library_path(".")])
 
+    def test_an_empty_application_config_has_no_implicit_music_root(self):
+        self.assertEqual(normalize_library_paths({"library_path": "", "library_paths": []}), [])
+
     def test_apply_rejects_non_mapping_config(self):
         apply_library_paths(None, ["/vol1/music"])
 

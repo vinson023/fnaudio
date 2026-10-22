@@ -7,6 +7,7 @@ from typing import Any, Dict
 from file_permissions import PUBLIC_FILE_MODE, atomic_write_json, atomic_write_text, secure_file
 from library_paths import MAX_LIBRARY_PATHS, MAX_LIBRARY_PATH_TEXT
 from services.dac_profiles import bounded_custom_profiles
+from metadata_provider_config import default_metadata_provider_config, normalize_metadata_provider_config
 
 
 # The internal HTTP service defaults to this high port. Installation and App
@@ -20,14 +21,17 @@ MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024
 # Only a real JSON boolean can turn it off, and turning it off releases the idle
 # handles it already parked (library.apply_library_connection_pool_config).
 DEFAULT_LIBRARY_CONNECTION_POOL = True
+DEFAULT_RENDERER_NAME = "fnAudio Renderer"
+MAX_RENDERER_NAME_CHARS = 128
 
 
 def load_config(path: str) -> Dict[str, Any]:
     config: Dict[str, Any] = {
-        "library_path": os.environ.get("FNAUDIO_LIBRARY", "."),
+        "library_path": os.environ.get("FNAUDIO_LIBRARY", ""),
         "library_paths": [],
         "library_connection_pool": DEFAULT_LIBRARY_CONNECTION_POOL,
         "server_name": "fnAudio",
+        "renderer_name": DEFAULT_RENDERER_NAME,
         "server_port": DEFAULT_PORT,
         "mpd_port": DEFAULT_MPD_PORT,
         "mpd_output_alsa_id": "",
@@ -51,6 +55,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "metadata_fpcalc_path": "",
         "metadata_tag_idle_interval_ms": 250,
         "metadata_tag_playing_interval_ms": 2000,
+        "metadata_providers": default_metadata_provider_config(),
         "transcode_queue_max_jobs": 64,
         "transcode_cache_max_bytes": 2 * 1024 * 1024 * 1024,
         "cache_min_free_bytes": 512 * 1024 * 1024,
@@ -98,6 +103,7 @@ def load_config(path: str) -> Dict[str, Any]:
     config["metadata_enabled"] = _strict_bool(config.get("metadata_enabled"), False)
     config["metadata_fingerprint_enabled"] = _strict_bool(config.get("metadata_fingerprint_enabled"), False)
     config["metadata_tag_write_enabled"] = _strict_bool(config.get("metadata_tag_write_enabled"), False)
+    config["metadata_providers"] = normalize_metadata_provider_config(config.get("metadata_providers"))
     config["metadata_fpcalc_path"] = _bounded_text(config.get("metadata_fpcalc_path"), 512)
     config["mpd_output_alsa_id"] = _bounded_text(config.get("mpd_output_alsa_id"), 512)
     config["mpd_output_stable_id"] = _bounded_text(config.get("mpd_output_stable_id"), 512)
@@ -114,6 +120,7 @@ def load_config(path: str) -> Dict[str, Any]:
     config["airplay_log"] = _bounded_text(config.get("airplay_log"), 512)
     config["dac_profiles"] = bounded_custom_profiles(config.get("dac_profiles"))
     config["server_name"] = _bounded_text(config.get("server_name"), 128) or "fnAudio"
+    config["renderer_name"] = normalize_renderer_name(config.get("renderer_name"))
 
     if config.get("library_path") == "/var/apps/share/music" and os.path.isdir("/var/apps/fnaudio/share/music"):
         config["library_path"] = "/var/apps/fnaudio/share/music"
@@ -156,6 +163,7 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
             config.get("library_connection_pool"), DEFAULT_LIBRARY_CONNECTION_POOL
         ),
         "server_name": _bounded_text(config.get("server_name"), 128) or "fnAudio",
+        "renderer_name": normalize_renderer_name(config.get("renderer_name")),
         "server_port": _bounded_int(config.get("server_port"), DEFAULT_PORT, 1024, 65535),
         "mpd_port": _bounded_int(config.get("mpd_port"), DEFAULT_MPD_PORT, 1024, 65535),
         "mpd_output_alsa_id": _bounded_text(config.get("mpd_output_alsa_id"), 512),
@@ -179,6 +187,7 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         "metadata_fpcalc_path": _bounded_text(config.get("metadata_fpcalc_path"), 512),
         "metadata_tag_idle_interval_ms": _bounded_int(config.get("metadata_tag_idle_interval_ms"), 250, 50, 5000),
         "metadata_tag_playing_interval_ms": _bounded_int(config.get("metadata_tag_playing_interval_ms"), 2000, 250, 10000),
+        "metadata_providers": normalize_metadata_provider_config(config.get("metadata_providers")),
         "transcode_queue_max_jobs": _bounded_int(config.get("transcode_queue_max_jobs"), 64, 1, 1000),
         "transcode_cache_max_bytes": _bounded_int(config.get("transcode_cache_max_bytes"), 2 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 64 * 1024 * 1024 * 1024),
         "cache_min_free_bytes": _bounded_int(config.get("cache_min_free_bytes"), 512 * 1024 * 1024, 64 * 1024 * 1024, 16 * 1024 * 1024 * 1024),
@@ -243,6 +252,31 @@ def _bounded_text(value, maximum: int) -> str:
     return value.strip()[:maximum]
 
 
+def renderer_name_is_valid(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    for character in text:
+        codepoint = ord(character)
+        if (
+            codepoint < 0x20
+            or 0x7F <= codepoint <= 0x9F
+            or 0xD800 <= codepoint <= 0xDFFF
+            or codepoint in (0xFFFE, 0xFFFF)
+        ):
+            return False
+    return True
+
+
+def normalize_renderer_name(value) -> str:
+    if not isinstance(value, str):
+        return DEFAULT_RENDERER_NAME
+    text = value.strip()[:MAX_RENDERER_NAME_CHARS]
+    return text if renderer_name_is_valid(text) else DEFAULT_RENDERER_NAME
+
+
 def _bounded_text_list(value, maximum_items: int, maximum_text: int):
     if not isinstance(value, (list, tuple)):
         return []
@@ -264,4 +298,4 @@ def _normalized_mixer_type(value) -> str:
     return mixer_type if mixer_type in ("none", "software", "hardware") else "none"
 
 
-__all__ = ["load_config", "save_config", "save_proxy_port"]
+__all__ = ["load_config", "save_config", "save_proxy_port", "normalize_renderer_name", "renderer_name_is_valid"]

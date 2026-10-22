@@ -35,7 +35,7 @@ assert.match(source, /if \(response\.ok\) data = unwrapMetadataResponsePayload\(
 assert.match(source, /const data = unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\);[\s\S]*?const candidates = Array\.isArray\(data\.candidates\)/, "Metadata candidate dialog must normalize bridge-wrapped responses");
 assert.match(source, /async function loadLyricsForCurrentTrack[\s\S]*?data = unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)/, "Lyrics requests must normalize bridge-wrapped responses");
 assert.match(source, /async function loadMetadataStatus\(\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?unwrapMetadataResponsePayload\(result\.data/, "Metadata status must use the bounded loader and normalize bridge-wrapped responses");
-assert.match(source, /async function saveMetadataSettings[\s\S]*?unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\)/, "Metadata settings save must normalize bridge-wrapped responses");
+assert.match(source, /async function saveMetadataOverviewSettings[\s\S]*?unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\)/, "Metadata overview save must normalize bridge-wrapped responses");
 assert.match(source, /async function retryFailedTagWrites[\s\S]*?unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\)/, "Tag-write retry status must normalize bridge-wrapped responses");
 assert.match(source, /fnAudioMetadataResponsePolicy\?\.unwrap\(value, 4\)/, "Metadata envelope unwrapping must remain bounded and support four host envelopes");
 assert.match(source, /terminal = \["failed", "no_match"\]\.includes\(status\)/, "Terminal lyric misses must remain bounded-retryable");
@@ -76,8 +76,9 @@ assert.match(source, /if \(!error\?\.metadataUnavailable\) scheduleLyricsPoll\(t
 assert.match(source, /歌词加载失败：\$\{detail\}/, "The lyrics view should distinguish service failures from an ordinary empty lyric");
 assert.match(source, /const lyricArtwork = usableCoverSource\(data\.image_url\);[\s\S]*?lyricArtwork && !item\.cover_url && !item\.cover_thumbnail_url/, "Resolved lyric artwork should validate and fill only missing local artwork");
 assert.match(source, /const lyricArtwork = usableCoverSource\(data\.image_url\);[\s\S]*?if \(data\.pending === true\)/, "Cached artwork returned with pending lyrics must be applied before the pending branch");
-assert.match(source, /if \(\$\("metadataEnabledInput"\) && !\$\("metadataEnabledInput"\)\.checked\) \{[\s\S]*?\$\("metadataEnabledInput"\)\.checked = true;/, "Manual metadata refresh must release the disabled-worker gate");
-assert.match(source, /已开启后台元数据补全并加入队列/, "Manual metadata refresh should report that fetching is enabled");
+assert.match(source, /async function refreshMetadataLibrary\(\)[\s\S]*?apiFetch\("api\/metadata\/refresh", \{ method: "POST" \}\)/, "Manual metadata refresh must use its independent refresh endpoint");
+assert.doesNotMatch(source.slice(source.indexOf("async function refreshMetadataLibrary("), source.indexOf("async function refreshMetadataLibrary(") + 900), /metadataEnabledInput|metadataTagWriteEnabledInput/, "Manual refresh must not change persistent metadata or Tag-write settings");
+assert.match(source, /已请求后台元数据补全并加入队列/, "Manual metadata refresh should report the request without claiming persistent enablement");
 assert.match(source, /prefetchCurrentTrackMetadata\(currentItem\(\)\)/, "Restored sessions must re-enter the current-track metadata lane");
 
 console.log("Lyrics priority UI regression checks passed.");

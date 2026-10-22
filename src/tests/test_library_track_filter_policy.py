@@ -67,6 +67,11 @@ class LibraryTrackFilterPolicyTests(unittest.TestCase):
         self.assertEqual(where, ["album = ?"])
         self.assertEqual(args, ["Record"])
 
+    def test_dsd_view_keeps_the_dsd_predicate_in_the_common_paged_path(self):
+        where, args = _filters(SimpleNamespace(view="dsd", group="", album="", folder="", root="", search=""))
+        self.assertEqual(where, ["is_dsd = 1"])
+        self.assertEqual(args, [])
+
     def test_folder_root_and_invalid_shape_are_safe(self):
         self.assertEqual(_filters(None), ([], []))
 

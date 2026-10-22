@@ -68,7 +68,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
-import java.net.URLEncoder;
+import com.fnaudio.client.network.SessionCookies;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -428,7 +428,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private void installSessionCookies(CookieManager cookies, Runnable onComplete) {
         String encoded = encodeCookie(profile.token);
         String flags = "; Path=/; SameSite=Lax" + (profile.https ? "; Secure" : "");
-        String[] names = {"fnaudio_trim_token", "trim_token", "token"};
+        String[] names = {"fnaudio_trim_token", "trim_token", "token", "fnos-token"};
         AtomicInteger remaining = new AtomicInteger(names.length);
         for (String name : names) {
             cookies.setCookie(profile.httpOrigin(), name + "=" + encoded + flags, ignored -> {
@@ -657,8 +657,23 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private static String authenticatedCookie(ConnectionProfile requestProfile, @Nullable String existing) {
         String value = existing == null ? "" : existing.trim();
         String encoded = encodeCookie(requestProfile.token);
-        String auth = "fnaudio_trim_token=" + encoded + "; trim_token=" + encoded + "; token=" + encoded;
-        return value.isEmpty() ? auth : value + "; " + auth;
+        String auth = "fnaudio_trim_token=" + encoded + "; trim_token=" + encoded + "; token=" + encoded + "; fnos-token=" + encoded;
+        String access = accessCodeCookie(requestProfile);
+        String combined = value.isEmpty() ? auth : value + "; " + auth;
+        return access.isEmpty() ? combined : combined + "; " + access;
+    }
+
+    private static String accessCodeCookie(ConnectionProfile requestProfile) {
+        if (requestProfile == null) return "";
+        String cookies = CookieManager.getInstance().getCookie(requestProfile.httpOrigin());
+        if (cookies == null || cookies.trim().isEmpty()) return "";
+        for (String cookie : cookies.split(";")) {
+            String pair = cookie.trim();
+            if (pair.startsWith("os-access-code=") && pair.length() > "os-access-code=".length()) {
+                return pair;
+            }
+        }
+        return "";
     }
 
     @Override
@@ -798,7 +813,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                             : readBoundedText(responseBody, MAX_NATIVE_HTTP_RESPONSE_BYTES);
                     JSONObject payload = new JSONObject();
                     payload.put("requestId", safeRequestId);
-                    payload.put("status", closeable.code());
+                    payload.put("status", SessionCookies.responseStatus(closeable.code(), responseText));
                     payload.put("statusText", closeable.message());
                     payload.put("url", closeable.request().url().toString());
                     payload.put("body", responseText);
@@ -1321,11 +1336,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private static String encodeCookie(String value) {
-        try {
-            return URLEncoder.encode(value, "UTF-8");
-        } catch (Exception ignored) {
-            return value;
-        }
+        return SessionCookies.encodeToken(value);
     }
 
     @Nullable

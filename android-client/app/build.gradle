@@ -11,13 +11,14 @@ def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAl
 android {
     namespace "com.fnaudio.client"
     compileSdk 36
+    testBuildType project.findProperty("fnaudioTestBuildType") ?: "debug"
 
     defaultConfig {
         applicationId "com.fnaudio.client"
         minSdk 23
         targetSdk 36
-        versionCode 329
-        versionName "0.2.61"
+        versionCode 365
+        versionName "0.2.100"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -33,6 +34,23 @@ android {
 
     sourceSets {
         main.assets.srcDirs += ["../../src/app/ui"]
+    }
+
+    tasks.register("verifyFnaudioUiSource") {
+        doLast {
+            def uiRoot = file("../../src/app/ui")
+            def indexFile = file("../../src/app/ui/index.html")
+            if (!uiRoot.isDirectory() || !indexFile.isFile()) {
+                throw new GradleException("fnAudio UI source tree is missing: ${uiRoot}")
+            }
+            def indexText = indexFile.getText("UTF-8")
+            def requiredAssets = ["app.css", "app.js", "view_presentation.js", "library_render_policy.js"]
+            requiredAssets.each { asset ->
+                if (!new File(uiRoot, asset).isFile() || !indexText.contains(asset)) {
+                    throw new GradleException("fnAudio UI asset is missing or not referenced: ${asset}")
+                }
+            }
+        }
     }
 
     compileOptions {
@@ -65,6 +83,13 @@ android {
             }
             minifyEnabled false
         }
+        // LAN/API/WebView QA on x86_64; ARM64 FN Connect relay is excluded.
+        emulator {
+            initWith debug
+            applicationIdSuffix ".emulator"
+            versionNameSuffix "-emulator"
+            matchingFallbacks = ["debug"]
+        }
         // Isolated build for validating the public fnOS MediaBrowser/MediaSession.
         // It has a different application id and can be installed beside normal fnAudio.
         mediaSession {
@@ -74,6 +99,12 @@ android {
             debuggable true
             buildConfigField "boolean", "FNOS_MEDIA_SESSION_TEST", "true"
         }
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("emulator")) { variant ->
+        variant.packaging.jniLibs.excludes.add("**/libgojni.so")
     }
 }
 
@@ -92,6 +123,9 @@ tasks.configureEach {
     if (name == "preReleaseBuild") {
         dependsOn(tasks.named("verifyReleaseSigning"))
     }
+}
+tasks.named("preBuild").configure {
+    dependsOn(tasks.named("verifyFnaudioUiSource"))
 }
 
 dependencies {

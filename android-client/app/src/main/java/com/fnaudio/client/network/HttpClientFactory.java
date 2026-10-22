@@ -1,6 +1,7 @@
 package com.fnaudio.client.network;
 
 import android.content.Context;
+import android.webkit.CookieManager;
 
 import androidx.annotation.Nullable;
 
@@ -77,7 +78,11 @@ public final class HttpClientFactory {
                     scoped.header("Authorization", "Bearer " + profile.token)
                             .header("X-Fnaudio-Trim-Token", profile.token)
                             .header("Cookie", "fnaudio_trim_token=" + encodedToken
-                                    + "; trim_token=" + encodedToken + "; token=" + encodedToken);
+                                    + "; trim_token=" + encodedToken + "; token=" + encodedToken
+                                    + "; fnos-token=" + encodedToken
+                                    + accessCodeCookie(context, profile));
+                    String accessCode = SessionCookies.accessCodeHeader(profile.accessCode);
+                    if (!accessCode.isEmpty()) scoped.header("X-Access-Code", accessCode);
                 }
                 return chain.proceed(scoped.build());
             });
@@ -96,11 +101,20 @@ public final class HttpClientFactory {
     }
 
     private static String encodeCookie(String value) {
-        try {
-            return java.net.URLEncoder.encode(value, "UTF-8");
-        } catch (Exception ignored) {
-            return value;
+        return SessionCookies.encodeToken(value);
+    }
+
+    private static String accessCodeCookie(@Nullable Context context, ConnectionProfile profile) {
+        if (context == null || profile == null) return "";
+        String cookies = CookieManager.getInstance().getCookie(profile.httpOrigin());
+        if (cookies == null || cookies.trim().isEmpty()) return "";
+        for (String cookie : cookies.split(";")) {
+            String pair = cookie.trim();
+            if (pair.startsWith("os-access-code=") && pair.length() > "os-access-code=".length()) {
+                return "; " + pair;
+            }
         }
+        return "";
     }
 
     private static void trustPinnedSelfSigned(OkHttpClient.Builder builder, String expectedPin) {

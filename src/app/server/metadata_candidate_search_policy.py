@@ -118,4 +118,47 @@ def prefer_track_candidate(candidate, current):
     return candidate_confidence > current_confidence
 
 
-__all__ = ["MAX_DISPLAY_CANDIDATES", "MIN_COMPLETE_CONFIDENCE", "finalize_track_candidates", "prefer_track_candidate", "should_stop_track_candidate_search"]
+def best_track_candidate(candidates, *, minimum_confidence=0.55):
+    """Return the strongest usable candidate without trusting provider order."""
+    if not isinstance(candidates, (list, tuple)):
+        return None
+    try:
+        threshold = float(minimum_confidence)
+    except (TypeError, ValueError, OverflowError):
+        threshold = 0.55
+    if not math.isfinite(threshold):
+        threshold = 0.55
+
+    best = None
+    best_confidence = None
+    best_completeness = -1
+
+    def completeness(candidate):
+        return sum(
+            1
+            for field in ("title", "artist", "album", "album_artist", "image_url")
+            if isinstance(candidate.get(field), str) and candidate.get(field).strip()
+        )
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        confidence = _confidence(candidate.get("confidence"))
+        if confidence is None or confidence < threshold:
+            continue
+        candidate_completeness = completeness(candidate)
+        if (
+            best is None
+            or confidence > best_confidence
+            or (
+                confidence == best_confidence
+                and candidate_completeness > best_completeness
+            )
+        ):
+            best = candidate
+            best_confidence = confidence
+            best_completeness = candidate_completeness
+    return best
+
+
+__all__ = ["MAX_DISPLAY_CANDIDATES", "MIN_COMPLETE_CONFIDENCE", "best_track_candidate", "finalize_track_candidates", "prefer_track_candidate", "should_stop_track_candidate_search"]

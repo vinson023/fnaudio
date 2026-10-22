@@ -167,7 +167,8 @@ public final class SecureProfileStoreInstrumentedTest {
             store.upsert(oversized, false);
             throw new AssertionError("oversized state should be rejected before encryption");
         } catch (IllegalStateException expected) {
-            assertTrue(expected.getMessage().contains("大小限制"));
+            assertNotNull(expected.getCause());
+            assertTrue(expected.getCause().getMessage().contains("大小限制"));
         }
 
         assertEquals(originalPayload, preferences.getString(PAYLOAD, ""));

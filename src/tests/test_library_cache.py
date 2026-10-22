@@ -402,6 +402,25 @@ class LibraryCacheTests(unittest.TestCase):
         status = library.library_status({"cache_dir": ".", "server_port": object()})
         self.assertEqual(status["server_port"], 53199)
 
+    def test_unconfigured_library_status_never_exposes_working_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            status = library.library_status({"cache_dir": root, "library_path": "", "library_paths": []})
+        self.assertEqual(status["library_path"], "")
+        self.assertEqual(status["library_paths"], [])
+        self.assertFalse(status["exists"])
+        self.assertIn("选择音乐目录", status["message"])
+
+    def test_unconfigured_library_never_walks_or_reads_working_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {"cache_dir": root, "library_path": "", "library_paths": []}
+            with patch.object(library, "scan_library", side_effect=AssertionError("unexpected audio scan")) as scan, patch.object(library, "library_signature", side_effect=AssertionError("unexpected signature walk")) as signature:
+                items, _ = library.scan_libraries(config)
+                self.assertEqual(items, [])
+                library.library_signature_for_config(config)
+                self.assertEqual(library.query_library_root_folders(config), [])
+                scan.assert_not_called()
+                signature.assert_not_called()
+
     def test_library_status_handles_missing_scan_state_fields(self):
         original = library.SCAN_STATE
         try:

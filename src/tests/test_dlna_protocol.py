@@ -264,6 +264,30 @@ class DlnaProtocolTests(unittest.TestCase):
         self.assertIn("http-get:*:audio/L24;rate=192000;channels=2:*", profiles)
         self.assertIn("http-get:*:audio/x-dsf:*", profiles)
 
+    def test_renderer_description_uses_configured_friendly_name_and_xml_escapes_it(self):
+        service = DlnaProtocolService(
+            lambda: "http://198.51.100.24:18080",
+            self.renderer,
+            lambda params: {"items": [], "count": 0},
+            lambda view, **query: [],
+            lambda item: "audio/mpeg",
+            renderer_name='客厅 <DAC> & "主机"',
+        )
+        root = ET.fromstring(service.description("renderer"))
+        friendly_name = root.find("{urn:schemas-upnp-org:device-1-0}device/{urn:schemas-upnp-org:device-1-0}friendlyName")
+        self.assertEqual(friendly_name.text, '客厅 <DAC> & "主机"')
+
+    def test_renderer_name_update_reports_only_changes_and_leaves_server_name_alone(self):
+        self.assertTrue(self.service.set_renderer_name("客厅播放器"))
+        self.assertFalse(self.service.set_renderer_name("客厅播放器"))
+
+        renderer_root = ET.fromstring(self.service.description("renderer"))
+        server_root = ET.fromstring(self.service.description("server"))
+        renderer_name = renderer_root.find("{urn:schemas-upnp-org:device-1-0}device/{urn:schemas-upnp-org:device-1-0}friendlyName")
+        server_name = server_root.find("{urn:schemas-upnp-org:device-1-0}device/{urn:schemas-upnp-org:device-1-0}friendlyName")
+        self.assertEqual(renderer_name.text, "客厅播放器")
+        self.assertEqual(server_name.text, "fnAudio Music Library")
+
     def test_renderer_does_not_advertise_a_rate_the_driver_never_reported(self):
         # End to end on purpose. A driver stream file that lists formats but no
         # rates used to be turned into a fabricated single 192 kHz capability by

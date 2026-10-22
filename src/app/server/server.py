@@ -21,7 +21,7 @@ import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 
-from config import load_config, save_config, save_proxy_port
+from config import load_config, normalize_renderer_name, renderer_name_is_valid, save_config, save_proxy_port
 from library import (
     FS_CACHE,
     MUSIC_CACHE,
@@ -123,7 +123,12 @@ from services.airplay_service import AirplayService, airplay_probe
 from state_store import StateConflict, load_user_state, save_playback_session, save_user_state
 from state_projection import playback_queue_ids
 from playback_session_projection import project_playback_session
-from metadata_service import MAX_ARTWORK_BYTES, MetadataService
+from metadata_service import MAX_ARTWORK_BYTES, MetadataProviders, MetadataService
+from metadata_provider_config import (
+    default_metadata_provider_config,
+    normalize_metadata_provider_config,
+    provider_definitions,
+)
 from metadata_numeric_policy import strict_nonnegative_int
 # The lyric cache budget is named and bounded in one place. `metadata_service`
 # already reads it through `bytes_limit_from_config`, so the HTTP layer imports
@@ -273,9 +278,21 @@ def sync_metadata_workers(service, config):
         if callable(starter):
             starter()
     else:
-        stopper = getattr(service, "shutdown", None)
-        if callable(stopper):
-            stopper()
+        # A fresh MetadataService has no workers yet. Calling shutdown() here
+        # would set its stop event and make the later explicit candidate-dialog
+        # request unable to lazily start the bounded fetch lane. Only stop a
+        # generation that is actually alive; leave an unused service reusable.
+        has_live_workers = getattr(service, "_has_live_workers", None)
+        live = False
+        if callable(has_live_workers):
+            try:
+                live = bool(has_live_workers())
+            except Exception:
+                live = True
+        if live:
+            stopper = getattr(service, "shutdown", None)
+            if callable(stopper):
+                stopper()
 
 
 def playback_command_cache_status():
@@ -637,6 +654,31 @@ def commit_config_update(server, update):
         return True
 
 
+def metadata_provider_settings_payload(config):
+    """Project the validated provider chain for the settings pane."""
+    raw = config.get("metadata_providers") if isinstance(config, dict) else None
+    normalized = normalize_metadata_provider_config(raw)
+    definitions = {item["id"]: item for item in provider_definitions()}
+    providers = []
+    for order, entry in enumerate(normalized):
+        definition = definitions.get(entry["id"], {})
+        providers.append({
+            "id": entry["id"],
+            "name": definition.get("name", entry["id"]),
+            "enabled": entry["enabled"] is True,
+            "capabilities": list(definition.get("capabilities", ())),
+            "fixed_last": definition.get("fixed_last") is True,
+            "order": order,
+        })
+    repaired = raw != normalized
+    return {
+        "providers": providers,
+        "config": {"metadata_providers": normalized},
+        "recommended": default_metadata_provider_config(),
+        "providers_repaired": repaired,
+    }
+
+
 def payload_bytes_limit(payload, key, default=None):
     """Read an optional byte budget from a JSON payload without coercing it.
 
@@ -950,8 +992,20 @@ class Handler(BaseHTTPRequestHandler):
                 "config": {
                     library_connection_pool_config_key(): library_connection_pool_enabled(self.server.config),
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
+                    "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                 },
                 "status": library_connection_pool_status(),
+            })
+        if path == "/api/config/metadata":
+            projected = metadata_provider_settings_payload(self.server.config)
+            status = METADATA_SERVICE.status() if METADATA_SERVICE else {}
+            return self.send_json({
+                "ok": True,
+                **projected,
+                "enabled": self.server.config.get("metadata_enabled", False) is True,
+                "tag_write_enabled": self.server.config.get("metadata_tag_write_enabled", False) is True,
+                "orphan_grace_days": self.server.config.get("metadata_orphan_grace_days", 7),
+                "status": status,
             })
         if path == "/api/access":
             return self.send_json(public_access(self))
@@ -1063,7 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
                 if local_projection.get("best") or local_projection.get("lyrics"):
                     return self.send_json(local_projection)
             if has_cached_track_projection(cached_result):
-                return self.send_json(cached_result)
+                return self.send_json({**cached_result, "ok": True})
             # A queued interactive lookup is still a usable state even when
             # its worker is between restarts.  Do not turn that transient
             # state into a 503, but still probe the lane once: returning a
@@ -1081,7 +1135,7 @@ class Handler(BaseHTTPRequestHandler):
                 local_item = find_library_item(self.server.config, track_id) or {}
                 local_projection = local_cached_projection(track_id, local_item)
                 merged = merge_pending_projection(cached_result, local_projection)
-                return self.send_json({**merged, "retryable": True})
+                return self.send_json({**merged, "retryable": True, "ok": True})
             if not metadata_service_available(METADATA_SERVICE, "fetch"):
                 # Keep an interactive request usable during a short worker
                 # outage.  The library row is authoritative for local tags;
@@ -1090,9 +1144,10 @@ class Handler(BaseHTTPRequestHandler):
                 # had disappeared.  The retryable marker lets the client
                 # re-arm the bounded provider lookup once workers recover.
                 local_item = find_library_item(self.server.config, track_id) or {}
-                return self.send_json(local_pending_projection(
-                    track_id, local_item, "后台元数据服务没有启动"
-                ))
+                return self.send_json({
+                    **local_pending_projection(track_id, local_item, "后台元数据服务没有启动"),
+                    "ok": True,
+                })
             # A healthy worker can still race with a freshly-created service
             # and return ``None`` for one request (for example while the
             # library row is being indexed).  Never project that transport
@@ -1107,18 +1162,20 @@ class Handler(BaseHTTPRequestHandler):
                 # local tags/lyrics/artwork visible and let the bounded client
                 # retry lane recover once the service is healthy again.
                 local_item = find_library_item(self.server.config, track_id) or {}
-                return self.send_json(local_pending_projection(
-                    track_id, local_item, "元数据服务暂时不可用"
-                ))
+                return self.send_json({
+                    **local_pending_projection(track_id, local_item, "元数据服务暂时不可用"),
+                    "ok": True,
+                })
             has_projection = isinstance(result, dict) and any(
                 key in result for key in ("status", "best", "candidates", "pending", "image_url", "lyrics")
             )
             if not has_projection:
                 local_item = find_library_item(self.server.config, track_id) or {}
-                return self.send_json(local_pending_projection(
-                    track_id, local_item, "元数据正在准备中"
-                ))
-            return self.send_json(result)
+                return self.send_json({
+                    **local_pending_projection(track_id, local_item, "元数据正在准备中"),
+                    "ok": True,
+                })
+            return self.send_json({**result, "ok": True})
         if path.startswith("/metadata/artwork/"):
             asset_id = path.rsplit("/", 1)[-1]
             return self.serve_metadata_artwork(asset_id, head_only, query)
@@ -1544,22 +1601,62 @@ class Handler(BaseHTTPRequestHandler):
                 refresh = payload_bool(payload, "refresh", False)
             except (TypeError, ValueError):
                 return self.send_json({"ok": False, "message": "元数据设置包含无效值：宽限天数必须是 0-90 的整数，开关必须是布尔值"}, 400)
+            raw_providers = payload.get("providers", self.server.config.get("metadata_providers"))
+            providers = normalize_metadata_provider_config(raw_providers)
+            providers_repaired = raw_providers != providers
             if not commit_config_update(
                 self.server,
                 lambda candidate: candidate.update({
                     "metadata_enabled": metadata_enabled,
                     "metadata_tag_write_enabled": tag_write_enabled,
                     "metadata_orphan_grace_days": grace_days,
+                    "metadata_providers": providers,
                 }),
             ):
                 return self.send_json({"ok": False, "message": "保存元数据设置失败"}, 500)
             if METADATA_SERVICE:
                 sync_metadata_workers(METADATA_SERVICE, self.server.config)
                 METADATA_SERVICE.wake(force=refresh)
-            return self.send_json({"ok": True, "status": METADATA_SERVICE.status() if METADATA_SERVICE else {}})
+            projected = metadata_provider_settings_payload(self.server.config)
+            return self.send_json({
+                "ok": True,
+                **projected,
+                "providers_repaired": providers_repaired,
+                "enabled": self.server.config.get("metadata_enabled", False) is True,
+                "tag_write_enabled": self.server.config.get("metadata_tag_write_enabled", False) is True,
+                "orphan_grace_days": self.server.config.get("metadata_orphan_grace_days", 7),
+                "status": METADATA_SERVICE.status() if METADATA_SERVICE else {},
+            })
+        if parsed.path == "/api/metadata/provider-test":
+            provider_ids = {item["id"] for item in provider_definitions()}
+            provider_id = payload.get("provider_id")
+            title = payload.get("title")
+            artist = payload.get("artist", "")
+            album = payload.get("album", "")
+            if (
+                not isinstance(provider_id, str)
+                or provider_id not in provider_ids
+                or not isinstance(title, str)
+                or not title.strip()
+                or not isinstance(artist, str)
+                or not isinstance(album, str)
+                or any(len(value) > 512 for value in (provider_id, title, artist, album))
+            ):
+                return self.send_json({"ok": False, "message": "数据源测试参数无效"}, 400)
+            probe = getattr(METADATA_SERVICE, "probe_provider", None) if METADATA_SERVICE else None
+            if not callable(probe):
+                engine = getattr(METADATA_SERVICE, "providers", None) if METADATA_SERVICE else None
+                if engine is None:
+                    engine = MetadataProviders(self.server.config)
+                probe = engine.probe_provider
+            result = probe(provider_id, title.strip(), artist.strip(), album.strip())
+            return self.send_json({"ok": True, "result": result})
         if parsed.path == "/api/metadata/refresh":
             if not METADATA_SERVICE:
                 return self.send_json({"ok": False, "message": "后台元数据服务没有启动"}, 503)
+            starter = getattr(METADATA_SERVICE, "start", None)
+            if callable(starter):
+                starter()
             METADATA_SERVICE.wake(force=True)
             return self.send_json({"ok": True, "message": "已加入后台补全队列"})
         if parsed.path == "/api/metadata/retry-tag-writes":
@@ -1578,9 +1675,52 @@ class Handler(BaseHTTPRequestHandler):
             candidate_index = strict_nonnegative_int(payload.get("candidate_index", 0))
             if candidate_index is None:
                 return self.send_json({"ok": False, "message": "candidate_index must be a non-negative integer"}, 400)
-            if not METADATA_SERVICE.apply_track_match(track_id, candidate_index):
+            search_id = payload.get("search_id", "")
+            if not isinstance(search_id, str) or len(search_id) > 128:
+                return self.send_json({"ok": False, "message": "search_id 参数无效"}, 400)
+            applied = (METADATA_SERVICE.apply_track_match(track_id, candidate_index, search_id=search_id)
+                       if search_id else METADATA_SERVICE.apply_track_match(track_id, candidate_index))
+            if not applied:
                 return self.send_json({"ok": False, "message": "No matching candidate is available for this track"}, 404)
             return self.send_json({"ok": True, "status": METADATA_SERVICE.track_match(track_id)})
+        if parsed.path == "/api/metadata/track/search":
+            track_id = normalize_track_id(payload.get("track_id"))
+            title = payload.get("title", "")
+            artist = payload.get("artist", "")
+            album = payload.get("album", "")
+            provider_id = payload.get("provider_id", "")
+            provider_ids = {item["id"] for item in provider_definitions()}
+            if (
+                not track_id
+                or not isinstance(title, str)
+                or not title.strip()
+                or not isinstance(artist, str)
+                or not isinstance(album, str)
+                or not isinstance(provider_id, str)
+                or provider_id not in provider_ids | {""}
+                or any(len(value) > 512 for value in (title, artist, album, provider_id))
+            ):
+                return self.send_json({"ok": False, "message": "手动搜索参数无效"}, 400)
+            if not METADATA_SERVICE:
+                return self.send_json({"ok": False, "message": "后台元数据服务没有启动"}, 503)
+            track_query = {
+                "id": track_id,
+                "title": title.strip(),
+                "artist": artist.strip(),
+                "album": album.strip(),
+            }
+            candidates = (
+                METADATA_SERVICE.track_candidates(track_query, provider_id=provider_id)
+                if provider_id
+                else METADATA_SERVICE.track_candidates(track_query)
+            )
+            if not candidates:
+                return self.send_json({"ok": True, "status": "no_match", "candidates": []})
+            search_id = METADATA_SERVICE.cache_interactive_track_candidates(track_id, candidates)
+            if not search_id:
+                return self.send_json({"ok": True, "status": "no_match", "candidates": []})
+            return self.send_json({"ok": True, "status": "review", "search_id": search_id,
+                                   "best": candidates[0], "candidates": candidates})
         if parsed.path == "/api/config/runtime":
             pool_key = library_connection_pool_config_key()
             try:
@@ -1607,14 +1747,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(
                     {"ok": False, "message": "运行设置包含无效值：歌词缓存预算必须是范围内的整数字节数"}, 400
                 )
-            if not commit_config_update(
-                self.server,
-                lambda candidate: candidate.update({
-                    pool_key: pool_enabled,
-                    LYRICS_CACHE_BYTES_CONFIG_KEY: lyrics_budget,
-                }),
-            ):
-                return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
+            renderer_name = payload.get("renderer_name", self.server.config.get("renderer_name", "fnAudio Renderer"))
+            if not renderer_name_is_valid(renderer_name):
+                return self.send_json({"ok": False, "message": "运行设置包含无效值：Renderer 名称必须是非空文本且不能包含控制字符"}, 400)
+            renderer_name = normalize_renderer_name(renderer_name)
+            # Keep the persisted config and the live Renderer projection in one
+            # serialized transition. commit_config_update uses this same RLock;
+            # retaining it here prevents a second request from committing a newer
+            # name between the disk/config update and set_renderer_name().
+            with CONFIG_UPDATE_LOCK:
+                if not commit_config_update(
+                    self.server,
+                    lambda candidate: candidate.update({
+                        pool_key: pool_enabled,
+                        LYRICS_CACHE_BYTES_CONFIG_KEY: lyrics_budget,
+                        "renderer_name": renderer_name,
+                    }),
+                ):
+                    return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
+                renderer_name_changed = False
+                if DLNA_PROTOCOL and hasattr(DLNA_PROTOCOL, "set_renderer_name"):
+                    renderer_name_changed = DLNA_PROTOCOL.set_renderer_name(renderer_name)
+                if renderer_name_changed and DLNA_SSDP and hasattr(DLNA_SSDP, "announce_alive"):
+                    DLNA_SSDP.announce_alive()
             # commit_config_update already re-applied the pool switch against the
             # committed dictionary, so a turn-off has drained its idle handles before
             # this response claims success.  No restart is needed for this key; the
@@ -1625,6 +1780,7 @@ class Handler(BaseHTTPRequestHandler):
                 "config": {
                     pool_key: library_connection_pool_enabled(self.server.config),
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
+                    "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                 },
                 "status": library_connection_pool_status(),
             })
@@ -3312,6 +3468,7 @@ def initialize_dlna_services(server):
         output_capabilities,
         library_item=library_item,
         system_update_id=system_update_id,
+        renderer_name=server.config.get("renderer_name", "fnAudio Renderer"),
     )
     DLNA_SSDP = SsdpService(base_url)
     configure_local_renderer_identity(

@@ -10,6 +10,16 @@ from dlna.ssdp import SsdpService
 
 
 class SsdpServiceTests(unittest.TestCase):
+    def test_announce_alive_rebroadcasts_all_discovery_targets(self):
+        service = SsdpService(lambda: "http://127.0.0.1:18080")
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        with mock.patch("dlna.ssdp.socket.socket", return_value=sock):
+            service.announce_alive()
+        packets = [call.args[0] for call in sock.sendto.call_args_list]
+        self.assertEqual(len(packets), 9)
+        self.assertTrue(all(b"NTS: ssdp:alive\r\n" in packet for packet in packets))
+
     def test_start_failure_clears_thread_reference(self):
         service = SsdpService(lambda: "http://127.0.0.1:18080")
         with mock.patch("dlna.ssdp.threading.Thread", side_effect=RuntimeError("no threads")):

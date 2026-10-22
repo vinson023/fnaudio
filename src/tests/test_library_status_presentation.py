@@ -7,6 +7,9 @@ from library_status_presentation import status_message
 
 
 class LibraryStatusPresentationTests(unittest.TestCase):
+    def test_unconfigured_library_prompts_for_post_install_setup(self):
+        self.assertEqual(status_message({"library_path": "", "library_paths": []}), "请在设置 → 音乐库中选择音乐目录并保存")
+
     def test_invalid_path_messages_have_stable_priority(self):
         self.assertEqual(status_message({"allowed": False, "exists": True}), "出于安全保护，这个路径不能作为音乐目录")
         self.assertEqual(status_message({"allowed": True, "exists": False}), "音乐目录不存在，请在应用设置里选择正确的音乐文件夹")

@@ -8,6 +8,7 @@ import unittest
 sys.path.insert(0, "app/server")
 
 from config import MAX_CONFIG_FILE_BYTES, load_config, save_config, save_proxy_port
+from metadata_provider_config import default_metadata_provider_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -68,6 +69,57 @@ class ConfigTests(unittest.TestCase):
                 persisted = json.load(fh)
             self.assertIs(persisted["library_connection_pool"], False)
             self.assertIs(load_config(path)["library_connection_pool"], False)
+
+    def test_renderer_name_defaults_and_survives_a_save(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            config = load_config(path)
+            self.assertEqual(config["renderer_name"], "fnAudio Renderer")
+            config["renderer_name"] = "客厅播放器"
+            self.assertTrue(save_config(path, config))
+            self.assertEqual(load_config(path)["renderer_name"], "客厅播放器")
+
+    def test_renderer_name_is_bounded_and_invalid_values_fall_back(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"renderer_name": "  " + "R" * 140 + "  "}, handle)
+            self.assertEqual(load_config(path)["renderer_name"], "R" * 128)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"renderer_name": ["bad"]}, handle)
+            self.assertEqual(load_config(path)["renderer_name"], "fnAudio Renderer")
+
+    def test_metadata_provider_config_defaults_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            config = load_config(path)
+            self.assertEqual(
+                [entry["id"] for entry in config["metadata_providers"]],
+                ["netease", "kuwo", "kugou", "migu", "joox", "musicbrainz"],
+            )
+            self.assertEqual(config["metadata_providers"], default_metadata_provider_config())
+            config["metadata_providers"][-1] = {"id": "musicbrainz", "enabled": False}
+            self.assertTrue(save_config(path, config))
+            loaded = load_config(path)
+            self.assertEqual(loaded["metadata_providers"][-1]["id"], "musicbrainz")
+            self.assertFalse(loaded["metadata_providers"][-1]["enabled"])
+
+    def test_invalid_metadata_provider_config_falls_back_to_safe_order_on_load_and_save(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"metadata_providers": [{"id": "musicbrainz", "enabled": True}]}, handle)
+            self.assertEqual(load_config(path)["metadata_providers"], default_metadata_provider_config())
+
+            config = load_config(path)
+            config["metadata_providers"] = [{"id": "unknown", "enabled": True}]
+            self.assertTrue(save_config(path, config))
+            with open(path, encoding="utf-8") as handle:
+                persisted = json.load(handle)
+            self.assertEqual(persisted["metadata_providers"], default_metadata_provider_config())
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"renderer_name": "bad\nname"}, handle)
+            self.assertEqual(load_config(path)["renderer_name"], "fnAudio Renderer")
 
     def test_library_connection_pool_accepts_only_json_booleans(self):
         # Text that merely looks like a refusal must not switch the pool off, the same

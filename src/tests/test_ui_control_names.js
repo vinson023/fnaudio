@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 
-// R140 deep read of src/app/ui/index.html (TODO.md:99 欠读面). The document declares 79
+// R140 deep read of src/app/ui/index.html (TODO.md:99 欠读面). The document declares 92
 // form controls; 5 of them resolved to an empty accessible name under every source the
 // accname algorithm falls back to (aria-labelledby, aria-label, <label for>, the text of a
 // wrapping <label>, button text, title, placeholder), so a screen reader announced them as
@@ -93,7 +93,8 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 79, "index.html declares 79 visible form controls");
+assert.equal(controls.length, 99, "index.html declares 99 visible form controls, including independent metadata save actions");
+assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
 
 const nameless = controls.filter((control) => !control.name).map((control) => control.attr.id || control.tag);
 assert.deepEqual(nameless, [], `every control in index.html needs an accessible name, these have none: ${nameless.join(", ")}`);
@@ -140,4 +141,4 @@ assert.equal(
 assert.match(html, /<div class="now-playing" id="nowPlayingSummary" role="button" tabindex="0"/,
   "#nowPlayingSummary keeps the role/tabindex pair its Enter and Space handler needs");
 
-console.log("index.html control names: 79 controls, 0 nameless, 3 labelledby rows, 1 keyboard role kept");
+console.log(`index.html control names: ${controls.length} controls, 0 nameless, 3 labelledby rows, 1 keyboard role kept`);

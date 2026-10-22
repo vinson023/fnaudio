@@ -719,6 +719,7 @@ class DlnaProtocolService:
         output_capabilities: Callable[[], Dict[str, Any]] | None = None,
         library_item: Callable[[str], Dict[str, Any] | None] | None = None,
         system_update_id: Callable[[], int] | None = None,
+        renderer_name: str = "fnAudio Renderer",
     ):
         self.base_url = base_url
         self.renderer = renderer
@@ -730,6 +731,9 @@ class DlnaProtocolService:
         self.output_capabilities = output_capabilities or (lambda: {})
         self.library_item = library_item or (lambda item_id: None)
         self.system_update_id = system_update_id or (lambda: 1)
+        self.renderer_name = dlna_text(renderer_name, 128).strip()
+        if not self.renderer_name:
+            self.renderer_name = "fnAudio Renderer"
         self.events = DlnaEventService()
         self.renderer.add_state_listener(self.events.notify_renderer)
 
@@ -745,6 +749,14 @@ class DlnaProtocolService:
     def shutdown(self) -> None:
         self.events.shutdown()
 
+    def set_renderer_name(self, name: str) -> bool:
+        value = dlna_text(name, 128).strip()
+        value = value or "fnAudio Renderer"
+        if value == self.renderer_name:
+            return False
+        self.renderer_name = value
+        return True
+
     def description(self, role: str) -> bytes:
         is_renderer = role == "renderer"
         # Must match the UUID advertised by SSDP. Strict DLNA controllers reject
@@ -756,7 +768,7 @@ class DlnaProtocolService:
         for service_type, name in services:
             prefix = "/dlna/%s" % role
             rows.append("<service><serviceType>%s</serviceType><serviceId>urn:upnp-org:serviceId:%s</serviceId><SCPDURL>/dlna/scpd/%s.xml</SCPDURL><controlURL>%s/%s/control</controlURL><eventSubURL>%s/%s/event</eventSubURL></service>" % (service_type, name, name, prefix, name, prefix, name))
-        friendly = "fnAudio Renderer" if is_renderer else "fnAudio Music Library"
+        friendly = html.escape(self.renderer_name if is_renderer else "fnAudio Music Library")
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion>'

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 def status_message(status):
     """Return the user-facing message for an already-probed status mapping."""
+    if status.get("library_path") == "" and status.get("library_paths") == []:
+        return "请在设置 → 音乐库中选择音乐目录并保存"
     if not status.get("allowed"):
         return "出于安全保护，这个路径不能作为音乐目录"
     if not status.get("exists"):

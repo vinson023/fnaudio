@@ -35,9 +35,9 @@ class ServerLifecycleTests(unittest.TestCase):
 
         service = Service()
         server.sync_metadata_workers(service, {"metadata_enabled": False, "metadata_tag_write_enabled": False})
-        self.assertEqual(service.calls, ["shutdown"])
+        self.assertEqual(service.calls, [])
         server.sync_metadata_workers(service, {"metadata_enabled": True, "metadata_tag_write_enabled": False})
-        self.assertEqual(service.calls, ["shutdown", "start"])
+        self.assertEqual(service.calls, ["start"])
 
     def test_airplay_http_success_requires_explicit_boolean_ok(self):
         with open("app/server/server.py", encoding="utf-8") as source_file:

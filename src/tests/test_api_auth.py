@@ -1,11 +1,16 @@
+import ipaddress
 import sys
 import unittest
 
 sys.path.insert(0, "app/server")
-from api_auth import ALL_API_SCOPES, authorize_api, required_scope, requires_resource_auth
+from api_auth import ALL_API_SCOPES, TRUSTED_LAN_NETWORKS, authorize_api, required_scope, requires_resource_auth
 
 
 class ApiAuthTests(unittest.TestCase):
+    def test_trusted_networks_are_valid_and_cover_documentation_fixture(self):
+        self.assertTrue(all(ipaddress.ip_network(str(network), strict=True) == network for network in TRUSTED_LAN_NETWORKS))
+        self.assertTrue(any(ipaddress.ip_address("198.51.100.2") in network for network in TRUSTED_LAN_NETWORKS))
+
     def test_public_health_does_not_require_credentials(self):
         self.assertTrue(authorize_api("198.51.100.2", "GET", "/api/health", "", [])[0])
 

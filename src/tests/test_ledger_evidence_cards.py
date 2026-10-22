@@ -24,6 +24,10 @@ phrase, and must instead cite the counters it read.  The same round measured
 L1860 and L1867 and both failed their judgement line, so their boxes stayed
 unticked and carry a 「取证记录」 in exactly the slot a closure note would use:
 the guard is what keeps those two readings apart.
+
+R8 closes the three obsolete build-execution tasks on fresh configured Gradle
+evidence, while retaining the default-invocation limitation and Android runtime
+scope. The historical Tag restoration wait closes without performing writes.
 """
 
 from pathlib import Path
@@ -79,17 +83,24 @@ R7_UNEVIDENCED_CLOSED_IDS = frozenset({1868, 1869, 1870, 1871, 1874})
 R7_EVIDENCED_CLOSED_IDS = frozenset({1866})
 R7_CLOSED_IDS = R7_UNEVIDENCED_CLOSED_IDS | R7_EVIDENCED_CLOSED_IDS
 R7_OPEN_WITH_EVIDENCE_IDS = frozenset({1860, 1867})
+R8_EVIDENCED_CLOSED_IDS = frozenset({827, 988, 990})
+R8_CLOSED_IDS = R8_EVIDENCED_CLOSED_IDS | frozenset({1859})
 CLOSURES_BY_ROUND = {
     "R4": R4_CLOSED_IDS,
     "R5": R5_CLOSED_IDS,
     "R6": R6_CLOSED_IDS,
     "R7": R7_CLOSED_IDS,
+    "R8": R8_CLOSED_IDS,
 }
 CLOSED_IDS = (
-    R4_CLOSED_IDS | R5_CLOSED_IDS | R6_CLOSED_IDS | R7_CLOSED_IDS
+    R4_CLOSED_IDS | R5_CLOSED_IDS | R6_CLOSED_IDS | R7_CLOSED_IDS | R8_CLOSED_IDS
 )
 CLOSURE_ROUND_OF = {nid: label for label, ids in CLOSURES_BY_ROUND.items() for nid in ids}
 CLOSURE_DATE = "2026-09-21"
+CLOSURE_DATE_BY_ROUND = {
+    **dict.fromkeys(("R4", "R5", "R6", "R7"), CLOSURE_DATE),
+    "R8": "2026-10-21",
+}
 CLOSURE_HEAD = re.compile(
     r"^> \*\*结案（(?P<round>R\d+)·(?P<date>\d{4}-\d{2}-\d{2})）\*\*：(?P<body>.*)$"
 )
@@ -361,8 +372,12 @@ class LedgerEvidenceCardTests(unittest.TestCase):
                                  "card L%d points at more than one master" % nid)
             if targets:
                 from_cards[nid] = int(targets[0].group(1))
-                self.assertEqual(self.lines[self._card_index(nid) + 1 + len(FIELD_LABELS)], rows[0],
-                                 "merge note in card L%d is not placed after the four fields" % nid)
+                offset = 4 if nid in CLOSED_IDS else 0
+                self.assertEqual(
+                    self.lines[self._card_index(nid) + 1 + len(FIELD_LABELS) + offset],
+                    rows[0],
+                    "merge note in card L%d must follow its fields and closure note" % nid,
+                )
         self.assertEqual(declared, from_cards,
                          "family declaration and per-card merge notes disagree")
         covered = set(declared) | set(declared.values())
@@ -486,8 +501,8 @@ class LedgerEvidenceCardTests(unittest.TestCase):
         open_rows = [l for l in self.lines if l.startswith("- [ ] ")]
         done_rows = [l for l in self.lines if TICKED_STATE.match(l)]
         self.assertEqual(
-            len(CLOSED_IDS), 17,
-            "R4 closes nine device items, R5 and R6 one each, R7 six",
+            len(CLOSED_IDS), 21,
+            "R4-R7 close seventeen legacy items and R8 closes four superseded states",
         )
         self.assertEqual(
             R7_CLOSED_IDS, R7_UNEVIDENCED_CLOSED_IDS | R7_EVIDENCED_CLOSED_IDS,
@@ -504,7 +519,7 @@ class LedgerEvidenceCardTests(unittest.TestCase):
     def test_closure_note_quotes_the_verdict_of_its_own_card(self):
         notes = self._closure_notes()
         phrases = {}
-        for nid in sorted(CLOSED_IDS - R7_EVIDENCED_CLOSED_IDS):
+        for nid in sorted(CLOSED_IDS - R7_EVIDENCED_CLOSED_IDS - R8_EVIDENCED_CLOSED_IDS):
             self.assertTrue(notes.get(nid), "closed entry L%d carries no closure note" % nid)
             phrases[nid] = self._verdict_phrase(nid)
             self.assertIn("「%s」" % phrases[nid], notes[nid][0],
@@ -532,6 +547,28 @@ class LedgerEvidenceCardTests(unittest.TestCase):
                     self.assertNotIn("「%s」" % phrase, rows[0],
                                      "the note for L%d borrows the verdict of L%d" % (nid, other))
 
+    def test_r8_cleanup_cites_build_evidence_and_preserves_untested_scope(self):
+        notes = self._closure_notes()
+        self.assertEqual(R8_CLOSED_IDS, {827, 988, 990, 1859})
+        text = "\n".join(notes[990])
+        for token in ("artifacts/todo-cleanup-r253-android-configured.log",
+                      "BUILD SUCCESSFUL", "XML", ":app:testDebugUnitTest",
+                      "10 项", "failures=0", "errors=0"):
+            self.assertIn(token, text)
+        self.assertNotIn("「Android 编译门禁未执行」", notes[990][0])
+        for nid in (830, 984, 1860, 1867):
+            self.assertNotIn(nid, self._ticked_ids())
+        for nid in (827, 988):
+            entry = "\n".join(notes[nid])
+            for token in ("-Djdk.net.unixdomain.tmpdir", "不存在的目录",
+                          "--no-daemon", "BUILD SUCCESSFUL",
+                          "artifacts/todo-cleanup-r253-android-configured.log",
+                          "artifacts/todo-cleanup-r253-android.log"):
+                self.assertIn(token, entry)
+            self.assertIn("默认无此参数的启动仍失败", notes[nid][0])
+        self.assertIn("未执行恢复写入", notes[1859][1])
+        self.assertIn("可信快照", notes[1859][3])
+
     def test_closure_notes_carry_measurement_gap_and_reopening(self):
         notes = self._closure_notes()
         for nid in sorted(CLOSED_IDS):
@@ -540,7 +577,7 @@ class LedgerEvidenceCardTests(unittest.TestCase):
                              "note for L%d must be one head plus three sub-fields: %s" % (nid, rows))
             head = CLOSURE_HEAD.match(rows[0])
             self.assertTrue(head, "note head for L%d does not match the closure shape" % nid)
-            self.assertEqual(head.group("date"), CLOSURE_DATE,
+            self.assertEqual(head.group("date"), CLOSURE_DATE_BY_ROUND[CLOSURE_ROUND_OF[nid]],
                              "note for L%d carries a date other than the closing round" % nid)
             self.assertEqual(head.group("round"), CLOSURE_ROUND_OF[nid],
                              "note for L%d is signed by a round that never closed it" % nid)

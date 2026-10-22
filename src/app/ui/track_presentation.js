@@ -26,6 +26,13 @@
     const rate = finiteNumber(read(item, "sample_rate"));
     const depth = finiteNumber(read(item, "bit_depth"));
     const bitrate = finiteNumber(read(item, "bitrate"));
+    if (read(item, "is_dsd") === true) {
+      const dsdRates = [2822400, 5644800, 11289600, 22579200];
+      // Legacy ffprobe rows describe eight DSD bits per transport sample.
+      // Native container rows already contain the one-bit sampling rate.
+      const nativeRate = depth === 8 ? rate * 8 : rate;
+      return dsdRates.includes(nativeRate) ? `${(nativeRate / 1000000).toFixed(1)}MHz` : "—";
+    }
     const pcm = rate ? `${Math.round(rate / 1000)}kHz${depth ? `/${depth}bit` : ""}` : "";
     return pcm || (bitrate ? `${Math.round(bitrate / 1000)}kbps` : "—");
   }

@@ -288,25 +288,23 @@ class MetadataServiceTests(unittest.TestCase):
 
     def test_lyrics_provider_empty_result_does_not_clear_failure_state(self):
         providers = MetadataProviders({})
-        providers._provider_cooldown_until["first_lyrics"] = 0
-        providers._provider_failures["first_lyrics"] = {"count": 2, "last_error": "timeout", "last_at": 1}
+        providers._provider_cooldown_until["netease"] = 0
+        providers._provider_failures["netease"] = {"count": 2, "last_error": "timeout", "last_at": 1}
         first = lambda _track: None
         first.__name__ = "first_lyrics"
-        second = lambda _track: {"lyrics": "[00:01.00]Recovered", "source": "second"}
-        second.__name__ = "second_lyrics"
+        second = lambda _track: {"lyrics": "[00:01.00]Recovered", "source": "kuwo"}
         with patch.object(providers, "_read_local_lyrics_cached", return_value=""), \
              patch.object(providers, "_provider_is_available", return_value=True):
             with patch.object(providers, "netease_lyrics", first), \
-                 patch.object(providers, "qq_lyrics", second), \
+                 patch.object(providers, "kuwo_lyrics", second), \
                  patch.object(providers, "kugou_lyrics", lambda _track: None), \
                  patch.object(providers, "migu_lyrics", lambda _track: None), \
-                 patch.object(providers, "joox_lyrics", lambda _track: None), \
-                 patch.object(providers, "qianqian_lyrics", lambda _track: None):
+                 patch.object(providers, "joox_lyrics", lambda _track: None):
                 result = providers.lyrics({"path": "song.mp3", "title": "Song", "artist": "Artist"})
-        self.assertEqual(result["source"], "second")
-        self.assertEqual(providers._provider_empty_results["first_lyrics"], 1)
-        self.assertNotIn("first_lyrics", providers._provider_successes)
-        self.assertEqual(providers._provider_successes["second_lyrics"]["count"], 1)
+        self.assertEqual(result["source"], "kuwo")
+        self.assertEqual(providers._provider_empty_results["netease"], 1)
+        self.assertNotIn("netease", providers._provider_successes)
+        self.assertEqual(providers._provider_successes["kuwo"]["count"], 1)
 
     def test_provider_text_limit_rejects_untrusted_numeric_objects(self):
         providers = MetadataProviders({})
@@ -1290,12 +1288,36 @@ class MetadataServiceTests(unittest.TestCase):
             with service._connect() as conn:
                 service._upsert_job(conn, "track:one", "track", "one", {"title": "One"}, 1)
                 conn.execute("UPDATE metadata_jobs SET updated_at=1 WHERE job_key='track:one'")
-            result = service.track_match("one")
-            self.assertTrue(result["pending"])
-            with service._connect() as conn:
-                row = conn.execute("SELECT status,updated_at FROM metadata_jobs WHERE job_key='track:one'").fetchone()
-            self.assertEqual(row["status"], "pending")
-            self.assertEqual(row["updated_at"], 1)
+            try:
+                with patch.object(service, "_start_lane", return_value=True):
+                    result = service.track_match("one")
+                self.assertTrue(result["pending"])
+                with service._connect() as conn:
+                    row = conn.execute("SELECT status,updated_at FROM metadata_jobs WHERE job_key='track:one'").fetchone()
+                self.assertEqual(row["status"], "pending")
+                self.assertEqual(row["updated_at"], 1)
+            finally:
+                service.shutdown()
+
+    def test_track_match_recovers_workers_for_an_existing_pending_job(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = self._queued_service(root)
+            gate, requests = self._provider_request_parked(service)
+            try:
+                with service._connect() as conn:
+                    service._upsert_job(conn, "track:lane", "track", "lane", {"title": "Lane"}, 1)
+                result = service.track_match("lane")
+                self.assertTrue(result["pending"])
+                for _ in range(20):
+                    if requests.called:
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(requests.called, "an existing pending lookup must wake a recovered fetch worker")
+                self.assertGreaterEqual(len(service.fetch_threads), 1)
+                self.assertTrue(any(worker.is_alive() for worker in service.fetch_threads))
+            finally:
+                gate.set()
+                service.shutdown()
 
     def _provider_request_parked(self, service):
         """Hold every provider request at the module's single HTTP seam.
@@ -1767,6 +1789,56 @@ class MetadataServiceTests(unittest.TestCase):
             with service._connect() as conn:
                 self.assertEqual(service._track_match_fields(conn, "missing-track")["album"], "Album B")
 
+    def test_interactive_candidates_are_review_only_until_user_confirms(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            candidate = {
+                "title": "One",
+                "artist": "Artist",
+                "album": "Album",
+                "source": "netease",
+                "provider_id": "123",
+                "confidence": 0.96,
+            }
+
+            self.assertTrue(service.store_interactive_track_candidates("manual-track", [candidate]))
+
+            with service._connect() as conn:
+                row = conn.execute(
+                    "SELECT status, source, provider_id FROM metadata_track_matches WHERE track_id=?",
+                    ("manual-track",),
+                ).fetchone()
+                tag_job = conn.execute(
+                    "SELECT 1 FROM metadata_jobs WHERE job_key=?",
+                    ("tag:manual-track",),
+                ).fetchone()
+            self.assertEqual(dict(row), {"status": "review", "source": "netease", "provider_id": "123"})
+            self.assertIsNone(tag_job)
+            self.assertEqual(service.track_match("manual-track")["status"], "review")
+
+    def test_metadata_service_exposes_provider_candidates_for_interactive_search(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+            expected = [{"title": "One", "source": "netease", "confidence": 0.91}]
+            with patch.object(service.providers, "track_candidates", return_value=expected) as track_candidates:
+                actual = service.track_candidates({"title": "One", "artist": "Artist"}, provider_id="netease")
+            self.assertEqual([(item["title"], item["source"], item["confidence"]) for item in actual],
+                             [("One", "netease", 0.91)])
+            track_candidates.assert_called_once_with({"title": "One", "artist": "Artist"}, provider_id="netease", review=True)
+
+    def test_interactive_candidates_reject_empty_results_without_creating_match(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = MetadataService(self._config(root))
+
+            self.assertFalse(service.store_interactive_track_candidates("manual-track", []))
+
+            with service._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM metadata_track_matches WHERE track_id=?",
+                    ("manual-track",),
+                ).fetchone()
+            self.assertIsNone(row)
+
     def test_track_match_rejects_an_index_not_owned_by_the_track(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))
@@ -1804,6 +1876,72 @@ class MetadataServiceTests(unittest.TestCase):
         self.assertEqual(candidates[0]["provider_id"], "88")
         self.assertGreaterEqual(candidates[0]["confidence"], 0.9)
         self.assertGreaterEqual(providers.activity_snapshot()["netease"]["successes"], 1)
+
+    def test_netease_song_details_restore_cover_when_search_omits_pic_url(self):
+        providers = MetadataProviders({})
+        search = {"result": {"songs": [{
+            "id": 185709, "name": "稻香", "artists": [{"name": "周杰伦"}],
+            "album": {"name": "魔杰座"},
+        }]}}
+        detail = {"songs": [{
+            "id": 185709,
+            "album": {"picUrl": "https://p1.music.126.net/example/cover.jpg"},
+        }]}
+        with patch.object(providers, "_json", side_effect=[search, detail]) as request:
+            songs = providers._netease_songs("稻香 周杰伦", 10)
+        self.assertEqual(songs[0]["album"]["picUrl"], "https://p1.music.126.net/example/cover.jpg")
+        self.assertEqual(request.call_count, 2)
+
+    def test_netease_track_search_keeps_deeper_results_for_artist_disambiguation(self):
+        providers = MetadataProviders({})
+        distractors = [
+            {"id": index, "name": "双截棍", "artists": [{"name": "其他歌手"}], "album": {"name": "专辑"}}
+            for index in range(10)
+        ]
+        target = {
+            "id": 185932, "name": "双截棍", "artists": [{"name": "周杰伦"}],
+            "album": {"name": "范特西", "picUrl": "https://example.test/cover.jpg"},
+        }
+        search = {"result": {"songs": distractors + [target]}}
+        detail = {"songs": []}
+        with patch.object(providers, "_json", side_effect=[search, detail]) as request:
+            candidates = providers._track_candidates_for_provider(
+                "netease", {"title": "双截棍", "artist": "周杰伦"}
+            )
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[-1]["provider_id"], "185932")
+        self.assertGreaterEqual(candidates[-1]["confidence"], 0.55)
+        self.assertIn("limit=100", request.call_args_list[0].args[0])
+
+    def test_netease_lyrics_uses_deeper_search_before_lyric_lookup(self):
+        providers = MetadataProviders({})
+        with patch.object(providers, "_netease_songs", return_value=[{
+            "id": 185932, "name": "Song", "artists": [{"name": "Artist"}],
+        }]) as search, patch.object(providers, "_json", return_value={
+            "lrc": {"lyric": "[00:01.00]valid lyric"}
+        }) as request:
+            result = providers.netease_lyrics({"title": "Song", "artist": "Artist"})
+
+        self.assertEqual(result["provider_id"], "185932")
+        search.assert_called_once_with("Song Artist", 100)
+        self.assertIn("id=185932", request.call_args.args[0])
+
+    def test_kugou_search_removes_highlight_markup_from_display_fields(self):
+        providers = MetadataProviders({})
+        payload = {"data": {"lists": [{
+            "SongName": "<em>Song</em>",
+            "SingerName": '<em class="keyword">Artist</em>',
+            "AlbumName": "&lt;em&gt;Album&lt;/em&gt;",
+            "FileHash": "song-hash",
+        }]}}
+        with patch.object(providers, "_json", return_value=payload):
+            candidates = providers._kugou_songs("Song Artist")
+
+        self.assertEqual(candidates[0]["SongName"], "Song")
+        self.assertEqual(candidates[0]["SingerName"], "Artist")
+        self.assertEqual(candidates[0]["AlbumName"], "Album")
+        self.assertEqual(payload["data"]["lists"][0]["SongName"], "<em>Song</em>")
 
     def test_track_candidates_exposes_filename_artist_when_title_tag_is_partial(self):
         providers = MetadataProviders({})
@@ -1993,14 +2131,13 @@ class MetadataServiceTests(unittest.TestCase):
             "Image": "https://example.test/{size}/cover.jpg",
         }
         with patch.object(providers, "_json", return_value={}), \
-             patch.object(providers, "_qq_songs", return_value={"error": "unexpected shape"}), \
+             patch.object(providers, "_kuwo_songs", return_value={"error": "unexpected shape"}), \
              patch.object(providers, "_kugou_songs", return_value=[kugou_item]), \
              patch.object(providers, "_migu_songs", return_value=[]), \
-             patch.object(providers, "_joox_songs", return_value=[]), \
-             patch.object(providers, "_qianqian_songs", return_value=[]):
+             patch.object(providers, "_joox_songs", return_value=[]):
             candidates = providers.track_candidates(track)
         self.assertEqual(candidates[0]["source"], "kugou")
-        self.assertIn("qq", providers.failure_snapshot())
+        self.assertIn("kuwo", providers.failure_snapshot())
 
     def test_track_candidates_cache_key_ignores_untrusted_non_text_fields(self):
         providers = MetadataProviders({})
@@ -2016,11 +2153,10 @@ class MetadataServiceTests(unittest.TestCase):
             "duration": ExplodingValue(),
         }
         with patch.object(providers, "_json", return_value={}), \
-             patch.object(providers, "_qq_songs", return_value=[]), \
+             patch.object(providers, "_kuwo_songs", return_value=[]), \
              patch.object(providers, "_kugou_songs", return_value=[]), \
              patch.object(providers, "_migu_songs", return_value=[]), \
-             patch.object(providers, "_joox_songs", return_value=[]), \
-             patch.object(providers, "_qianqian_songs", return_value=[]):
+             patch.object(providers, "_joox_songs", return_value=[]):
             self.assertIsInstance(providers.track_candidates(track), list)
 
     def test_track_candidate_ignores_untrusted_local_fields(self):
@@ -2050,9 +2186,9 @@ class MetadataServiceTests(unittest.TestCase):
             candidates = providers.track_candidates(track)
         self.assertEqual(candidates[0]["source"], "kugou")
         activity = providers.activity_snapshot()
-        self.assertGreaterEqual(activity["qq"]["empty_results"], 1)
-        self.assertEqual(activity["qq"].get("no_valid_candidates", 0), 0)
-        self.assertNotIn("qq", providers._provider_successes)
+        self.assertGreaterEqual(activity["kuwo"]["empty_results"], 1)
+        self.assertEqual(activity["kuwo"].get("no_valid_candidates", 0), 0)
+        self.assertNotIn("kuwo", providers._provider_successes)
 
     def test_track_candidates_empty_source_does_not_clear_failure_cooldown(self):
         providers = MetadataProviders({})
@@ -2074,14 +2210,13 @@ class MetadataServiceTests(unittest.TestCase):
             "AlbumName": "Resolved Album", "FileHash": "song-hash",
         }
         with patch.object(providers, "_json", return_value={}), \
-             patch.object(providers, "_qq_songs", return_value=[unusable]), \
+             patch.object(providers, "_kuwo_songs", return_value=[unusable]), \
              patch.object(providers, "_kugou_songs", return_value=[kugou_item]), \
              patch.object(providers, "_migu_songs", return_value=[]), \
-             patch.object(providers, "_joox_songs", return_value=[]), \
-             patch.object(providers, "_qianqian_songs", return_value=[]):
+             patch.object(providers, "_joox_songs", return_value=[]):
             candidates = providers.track_candidates(track)
         self.assertEqual(candidates[0]["source"], "kugou")
-        self.assertGreaterEqual(providers.activity_snapshot()["qq"]["no_valid_candidates"], 1)
+        self.assertGreaterEqual(providers.activity_snapshot()["kuwo"]["no_valid_candidates"], 1)
 
     def test_provider_diagnostics_have_bounded_internal_state(self):
         providers = MetadataProviders({})
@@ -2145,37 +2280,35 @@ class MetadataServiceTests(unittest.TestCase):
     def test_track_candidates_skip_corrupt_replacement_text(self):
         providers = MetadataProviders({})
         track = {"title": "One", "artist": "Example Artist", "duration": 180}
-        qq_corrupt = {
-            "songname": "\ufffd\ufffd", "singer": [{"name": "\ufffd\ufffd"}],
-            "albumname": "\ufffd\ufffd", "albummid": "album-mid", "songmid": "song-mid",
+        kuwo_corrupt = {
+            "SONGNAME": "\ufffd\ufffd", "ARTIST": "\ufffd\ufffd",
+            "ALBUM": "\ufffd\ufffd", "MUSICRID": "song-mid",
         }
         kugou_valid = {
             "SongName": "One", "SingerName": "Example Artist",
             "AlbumName": "Resolved Album", "FileHash": "song-hash",
         }
         with patch.object(providers, "_json", return_value={}), \
-             patch.object(providers, "_qq_songs", return_value=[qq_corrupt]), \
+             patch.object(providers, "_kuwo_songs", return_value=[kuwo_corrupt]), \
              patch.object(providers, "_kugou_songs", return_value=[kugou_valid]), \
              patch.object(providers, "_migu_songs", return_value=[]), \
-             patch.object(providers, "_joox_songs", return_value=[]), \
-             patch.object(providers, "_qianqian_songs", return_value=[]):
+             patch.object(providers, "_joox_songs", return_value=[]):
             candidates = providers.track_candidates(track)
         self.assertEqual(candidates[0]["source"], "kugou")
         self.assertNotIn("\ufffd", str(candidates[0]))
-        self.assertIn("qq", providers.failure_snapshot())
+        self.assertIn("kuwo", providers.failure_snapshot())
 
     def test_lyrics_skip_corrupt_provider_and_use_next_source(self):
         providers = MetadataProviders({})
         track = {"title": "Song", "artist": "Artist"}
         with patch.object(providers, "netease_lyrics", return_value={"lyrics": "[00:01.00]\ufffd", "source": "netease"}), \
-             patch.object(providers, "qq_lyrics", return_value={"lyrics": "[00:01.00]valid", "source": "qq"}), \
+             patch.object(providers, "kuwo_lyrics", return_value={"lyrics": "[00:01.00]valid", "source": "kuwo"}), \
              patch.object(providers, "kugou_lyrics", return_value=None), \
              patch.object(providers, "migu_lyrics", return_value=None), \
-             patch.object(providers, "joox_lyrics", return_value=None), \
-             patch.object(providers, "qianqian_lyrics", return_value=None):
+             patch.object(providers, "joox_lyrics", return_value=None):
             result = providers.lyrics(track)
-        self.assertEqual(result["source"], "qq")
-        self.assertIn("netease_lyrics", providers.failure_snapshot())
+        self.assertEqual(result["source"], "kuwo")
+        self.assertIn("netease", providers.failure_snapshot())
 
     def test_priority_worker_claims_only_current_track_lyrics(self):
         with tempfile.TemporaryDirectory() as root:
@@ -4180,14 +4313,103 @@ class MetadataServiceTests(unittest.TestCase):
             self.assertNotIn("spotify_client_secret", status)
             self.assertNotIn("spotify_configured", status)
 
-    def test_provider_routing_prefers_musicbrainz_for_international_album(self):
+    def test_provider_routing_keeps_musicbrainz_as_last_fallback_for_international_album(self):
         providers = MetadataProviders({})
-        musicbrainz = {"name": "Album", "artist": "Artist", "source": "musicbrainz"}
-        with patch.object(providers, "musicbrainz_album", return_value=musicbrainz) as musicbrainz_lookup, patch.object(providers, "netease_album") as netease_lookup:
+        netease = {"name": "Album", "artist": "Artist", "source": "netease"}
+        with patch.object(providers, "netease_album", return_value=netease) as netease_lookup, \
+             patch.object(providers, "musicbrainz_album") as musicbrainz_lookup:
+            result = providers.album("Album", "Artist")
+        self.assertEqual(result["source"], "netease")
+        netease_lookup.assert_called_once()
+        musicbrainz_lookup.assert_not_called()
+
+    def test_provider_routing_uses_configured_enabled_order(self):
+        config = {
+            "metadata_providers": [
+                {"id": "netease", "enabled": False},
+                {"id": "kuwo", "enabled": False},
+                {"id": "kugou", "enabled": False},
+                {"id": "migu", "enabled": False},
+                {"id": "joox", "enabled": False},
+                {"id": "musicbrainz", "enabled": True},
+            ]
+        }
+        providers = MetadataProviders(config)
+        with patch.object(providers, "netease_album", return_value=None), \
+             patch.object(providers, "kuwo_album", return_value=None), \
+             patch.object(providers, "kugou_album", return_value=None), \
+             patch.object(providers, "migu_album", return_value=None), \
+             patch.object(providers, "joox_album", return_value=None), \
+             patch.object(
+                 providers,
+                 "musicbrainz_album",
+                 return_value={"name": "Album", "artist": "Artist", "source": "musicbrainz"},
+             ) as musicbrainz_lookup:
             result = providers.album("Album", "Artist")
         self.assertEqual(result["source"], "musicbrainz")
         musicbrainz_lookup.assert_called_once()
-        netease_lookup.assert_not_called()
+
+    def test_provider_probe_reports_search_cover_lyrics_and_elapsed_without_persisting(self):
+        providers = MetadataProviders({})
+        candidate = {
+            "title": "Song", "artist": "Artist", "image_url": "https://img.example/cover.jpg",
+            "provider_id": "123", "confidence": 0.95,
+        }
+        with patch.object(providers, "_track_candidates_for_provider", return_value=[candidate]), \
+             patch.object(providers, "_probe_cover_url", return_value=True) as cover_probe, \
+             patch.object(providers, "_lyrics_for_provider", return_value={"lyrics": "[00:01]line"}):
+            result = providers.probe_provider("netease", "Song", "Artist")
+        self.assertEqual(result["provider_id"], "netease")
+        self.assertTrue(result["search"]["available"])
+        self.assertTrue(result["cover"]["available"])
+        self.assertTrue(result["lyrics"]["available"])
+        self.assertGreaterEqual(result["response_ms"], 0)
+        self.assertEqual(providers.candidate_cache_snapshot()["entries"], 0)
+        self.assertEqual(providers.failure_snapshot(), {})
+        cover_probe.assert_called_once_with("https://img.example/cover.jpg")
+
+    def test_provider_probe_displays_the_highest_confidence_candidate(self):
+        providers = MetadataProviders({})
+        candidates = [
+            {"title": "Wrong Release", "artist": "Artist", "album": "Album", "confidence": 0.62},
+            {"title": "Exact Match", "artist": "Artist", "album": "Album", "confidence": 0.96},
+        ]
+        with patch.object(providers, "_track_candidates_for_provider", return_value=candidates):
+            result = providers.probe_provider("netease", "Exact Match", "Artist", "Album")
+
+        self.assertEqual(result["search"]["title"], "Exact Match")
+        self.assertEqual(result["search"]["confidence"], 0.96)
+
+    def test_provider_probe_does_not_report_a_low_confidence_result_as_a_match(self):
+        providers = MetadataProviders({})
+        with patch.object(providers, "_track_candidates_for_provider", return_value=[{
+            "title": "Wrong Song", "artist": "Wrong Artist", "confidence": 0.4,
+        }]):
+            result = providers.probe_provider("netease", "Song", "Artist")
+
+        self.assertFalse(result["search"]["available"])
+        self.assertFalse(result["ok"])
+
+    def test_provider_probe_marks_musicbrainz_lyrics_as_unsupported(self):
+        providers = MetadataProviders({})
+        candidate = {"title": "Song", "artist": "Artist", "image_url": "", "confidence": 0.95}
+        with patch.object(providers, "_track_candidates_for_provider", return_value=[candidate]):
+            result = providers.probe_provider("musicbrainz", "Song", "Artist")
+        self.assertFalse(result["lyrics"]["supported"])
+        self.assertFalse(result["lyrics"]["available"])
+
+    def test_track_candidate_provider_chain_uses_configured_order_with_musicbrainz_last(self):
+        providers = MetadataProviders({})
+        expected = ["kuwo", "migu", "netease", "kugou", "joox", "musicbrainz"]
+        with patch.object(providers, "_track_candidates_for_provider", side_effect=lambda source, _track: (
+            [{"title": "Song", "artist": "Artist", "confidence": 0.5, "image_url": ""}]
+            if source == "musicbrainz" else []
+        )) as search, patch("metadata_service.fingerprint_capability", return_value={"available": False}):
+            providers.config["metadata_providers"] = [
+                {"id": source, "enabled": True} for source in expected[:-1]
+            ] + [{"id": "musicbrainz", "enabled": True}]
+            providers.track_candidates({"title": "Song", "artist": "Artist"})
+        self.assertEqual([call.args[0] for call in search.call_args_list], expected)
 
     def test_provider_routing_prefers_netease_for_chinese_album(self):
         providers = MetadataProviders({})
@@ -4305,6 +4527,13 @@ class MetadataServiceTests(unittest.TestCase):
 
         self.assertGreaterEqual(compatible, 0.55)
         self.assertLess(incompatible, 0.55)
+
+    def test_provider_score_accepts_common_gidle_artist_aliases(self):
+        from metadata_service import provider_score
+
+        score = provider_score("퀸카 (Queencard)", "퀸카 (Queencard)", "i-dle", "(G)I-DLE")
+
+        self.assertGreaterEqual(score, 0.55)
 
     def test_provider_score_ignores_untrusted_artist_objects_without_coercion(self):
         from metadata_service import provider_score

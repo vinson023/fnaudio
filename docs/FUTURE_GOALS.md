@@ -1,5 +1,9 @@
 # fnAudio 以后的目标（Android 审计面）
 
+> 当前发布清单范围（2026-10-22 · R258）：**46 个文件 / 9,932 行** Java。按磁盘与发布清单重新取证，补记此前登录可见性、访问码与 Cookie 修复造成的统计漂移；本轮未改 Java，实现审计仍为独立后续目标。下方 R254 的 9,797 行及迁出时快照保留用于追溯。
+
+> 当前发布清单范围（2026-10-21 · R254）：**46 个文件 / 9,797 行** Java，包含本轮新增的 Cookie 编码与回归测试。下文 44 个文件 / 9,713 行是迁出时的历史快照，保留用于追溯；新增修复不代表重新启动全量 Android 审计。统计按 SOURCE_MANIFEST 范围计算，排除 Gradle 生成文件。
+
 本文件是 2026-09-23 负责人裁定的落点：**把安卓的审核移出本次目标，作为以后的单独目标进行**。
 裁定理由同样是负责人原话——安卓的代码已经全部写完了，**不需要你审查**。
 
@@ -9,7 +13,7 @@
 
 ## 第一节 · 迁出范围（Android 客户端审计面）
 
-按现盘 git 索引复算：`android-client` 下已跟踪的 `.java` 共 **43 个文件 / 9,695 行**
+迁出时的历史登记：`android-client` 下已跟踪的 `.java` 共 **44 个文件 / 9,713 行**
 （磁盘上另有 Gradle 生成的 `app/build/.../BuildConfig.java`，未跟踪、不在发布哈希覆盖面内，
 因此不计入本账）。本轮迁出的是负责人点名的四枚已审计面：
 
@@ -17,10 +21,10 @@
 | --- | --- | --- |
 | `RemotePlaybackPlayer.java`（370 行） | `android-client/app/src/main/java/com/fnaudio/client/playback/` | 投送（远端）播放客户端 |
 | `PlaybackService.java`（1,398 行） | 同上 playback 包 | 前台服务与宿主 MediaSession 桥 |
-| `AuthenticatedBitmapLoader.java`（410 行） | 同上 playback 包 | 带凭据的封面位图加载 |
+| `AuthenticatedBitmapLoader.java`（412 行） | 同上 playback 包 | 带凭据的封面位图加载 |
 | `FnConnectRelayConfigClient.java`（258 行） | `android-client/app/src/main/java/com/fnaudio/client/network/` | 飞牛中转配置客户端 |
 
-其余 39 枚已跟踪 `.java`（合计 9,695 − 2,436 ＝ 7,259 行）随本轮一并退出逐轮排期：
+其余 40 枚已跟踪 `.java`（合计 9,713 − 2,436 ＝ 7,277 行）随本轮一并退出逐轮排期：
 既然整个 Android 审计面都已移出本次目标，逐轮目标不再对任何 `.java` 承诺深读。
 
 ## 第二节 · 迁出后留下的账

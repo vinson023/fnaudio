@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.CookieManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -77,6 +78,7 @@ public final class FnOsAuthClient {
         private WebSocket socket;
         private Attempt attempt;
         private String requestId = "";
+        private String accessCodeCookie = "";
 
         private Session(Context context, ConnectionProfile profile, String password, Callback callback) {
             this.profile = profile;
@@ -87,12 +89,59 @@ public final class FnOsAuthClient {
         }
 
         private void connect() {
+            String accessCode = SessionCookies.accessCodeHeader(profile.accessCode);
+            if (accessCode.isEmpty()) {
+                connectWebSocket("");
+                return;
+            }
+            Request request = new Request.Builder()
+                    .url(profile.httpOrigin() + "/access_code_verify")
+                    .header("X-Access-Code", accessCode)
+                    .header("X-Access-Source", "web")
+                    .get()
+                    .build();
+            client.newCall(request).enqueue(new okhttp3.Callback() {
+                @Override public void onFailure(@NonNull okhttp3.Call call, @NonNull java.io.IOException exception) {
+                    finishError("访问码验证失败：" + readableError(exception));
+                }
+
+                @Override public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) {
+                    try (Response ignored = response) {
+                        if (!response.isSuccessful()) {
+                            finishError("访问码验证失败：HTTP " + response.code());
+                            return;
+                        }
+                        for (String setCookie : response.headers("Set-Cookie")) {
+                            String cookie = SessionCookies.accessCodeCookie(setCookie);
+                            if (!cookie.isEmpty()) {
+                                accessCodeCookie = cookie;
+                                CookieManager cookies = CookieManager.getInstance();
+                                cookies.setAcceptCookie(true);
+                                cookies.setCookie(profile.httpOrigin(), setCookie);
+                                cookies.flush();
+                                break;
+                            }
+                        }
+                        if (accessCodeCookie.isEmpty()) {
+                            finishError("访问码验证成功但未取得会话 Cookie。");
+                            return;
+                        }
+                        connectWebSocket(accessCodeCookie);
+                    }
+                }
+            });
+        }
+
+        private void connectWebSocket(String accessCookie) {
             try {
-                Request request = new Request.Builder()
+                Request.Builder requestBuilder = new Request.Builder()
                         .url(profile.webSocketUrl())
                         .header("Origin", profile.httpOrigin())
-                        .header("User-Agent", "fnAudio-Android/" + com.fnaudio.client.BuildConfig.VERSION_NAME)
-                        .build();
+                        .header("User-Agent", "fnAudio-Android/" + com.fnaudio.client.BuildConfig.VERSION_NAME);
+                String accessCode = SessionCookies.accessCodeHeader(profile.accessCode);
+                if (!accessCode.isEmpty()) requestBuilder.header("X-Access-Code", accessCode);
+                if (accessCookie != null && !accessCookie.isEmpty()) requestBuilder.header("Cookie", accessCookie);
+                Request request = requestBuilder.build();
                 socket = client.newWebSocket(request, this);
                 mainHandler.postDelayed(timeoutRunnable, 20000);
             } catch (Exception exception) {

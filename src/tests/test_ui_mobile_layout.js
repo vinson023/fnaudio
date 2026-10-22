@@ -57,6 +57,8 @@ assert.doesNotMatch(css, /\.mobile-menu-back\{/);
 assert.match(css, /\.pager-inner\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-nav\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-page-summary\{flex:0 0 auto!important;/);
+assert.ok(css.includes(".settings-tabs{margin-top:12px!important;flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;scrollbar-width:none!important}"), "mobile settings tabs must stay in one row and scroll when needed");
+assert.ok(css.includes(".settings-tabs button{flex:0 0 auto!important;padding:0 8px!important;white-space:nowrap!important}"), "mobile settings labels must not wrap into uneven tab heights");
 assert.match(css, /body\.mobile-search-active \.player\{[^}]*position:fixed!important;[^}]*display:grid!important;[^}]*bottom:0!important;[^}]*contain:layout paint!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*position:absolute!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none!important/);

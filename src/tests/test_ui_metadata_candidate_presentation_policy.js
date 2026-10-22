@@ -40,6 +40,15 @@ const NL = String.fromCharCode(10);
 // transport row (:58), on a polling face instead of the投送 one.
 // ---------------------------------------------------------------------------
 const app = fs.readFileSync("app/ui/app.js", "utf8");
+const index = fs.readFileSync("app/ui/index.html", "utf8");
+
+assert.match(index, /id="metadataCandidateDialog"/, "metadata completion must have its own dialog");
+assert.match(index, /id="metadataCandidateSearchForm"/, "manual metadata search must have a dedicated form");
+assert.match(index, /id="metadataCandidateSearchInput"/, "manual search needs a visible query input");
+assert.match(index, /id="metadataCandidateSearchResults"/, "manual search needs a result container");
+assert.match(app, /function openMetadataCandidateDialog\(/, "candidate flow must open the dedicated dialog");
+assert.match(app, /api\/metadata\/track\/search/, "manual search must use the track-scoped search endpoint");
+assert.match(app, /function renderMetadataCandidateSearchResults\(/, "manual results need a dedicated renderer");
 
 function appFunctionSource(name) {
   const match = app.match(new RegExp("^(?:async )?function " + name + "\\b[\\s\\S]*?^}", "m"));

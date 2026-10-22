@@ -76,6 +76,8 @@ def normalize_library_paths(config):
             continue
         seen.add(path)
         paths.append(path)
+    if not paths and config.get("library_path") == "" and config.get("library_paths") == []:
+        return []
     fallback = _safe_path_text(config.get("library_path", ".")) or "."
     return paths or [canonical_library_path(fallback)]
 

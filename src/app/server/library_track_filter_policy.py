@@ -46,6 +46,8 @@ def build_track_filters(page_query, *, search_condition, group_condition, use_ft
             condition, values = folder_subtree_clause(scope)
             where.append(condition)
             args.extend(values)
+    elif view == "dsd":
+        where.append("is_dsd = 1")
     if view in ("artists", "composers") and group and album:
         condition, values = group_condition("album", album)
         where.append(condition)

@@ -328,7 +328,7 @@ function activeIndexes(markup) {
   assert.deepEqual(JSON.parse(healthy.storage.store.get(columnsKey))[healthy.trackColumnScope()], ["title", "artist"],
     "the migrated scope is persisted under the encoded key");
   healthy.saveTrackColumnWidth("title", 4000);
-  assert.equal(JSON.parse(healthy.storage.store.get(widthsKey))[healthy.trackColumnScope()].title, 620,
+  assert.equal(JSON.parse(healthy.storage.store.get(widthsKey))[healthy.trackColumnScope()].title, 520,
     "the width write converges on the resize band instead of storing the phantom");
 
   // Every write in this family is guarded, which is what makes one choke point safe.

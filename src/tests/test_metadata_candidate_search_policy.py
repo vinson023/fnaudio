@@ -1,6 +1,6 @@
 import unittest
 
-from metadata_candidate_search_policy import finalize_track_candidates, prefer_track_candidate, should_stop_track_candidate_search
+from metadata_candidate_search_policy import best_track_candidate, finalize_track_candidates, prefer_track_candidate, should_stop_track_candidate_search
 
 
 class MetadataCandidateSearchPolicyTests(unittest.TestCase):
@@ -88,6 +88,22 @@ class MetadataCandidateSearchPolicyTests(unittest.TestCase):
             {"title": "Song", "artist": "Artist", "album": "Album", "confidence": 0.8},
             {"title": "Other", "artist": "Artist", "album": "Album", "confidence": object()},
         ])[0]["title"], "Song")
+
+    def test_best_track_candidate_prefers_confidence_then_completeness(self):
+        self.assertEqual(
+            best_track_candidate([
+                {"title": "Wrong", "confidence": 0.62},
+                {"title": "Right", "artist": "Artist", "album": "Album", "confidence": 0.96},
+            ])["title"],
+            "Right",
+        )
+
+    def test_best_track_candidate_ignores_malformed_entries(self):
+        self.assertIsNone(best_track_candidate([None, {"confidence": object()}]))
+
+    def test_best_track_candidate_does_not_call_a_low_confidence_hit_usable(self):
+        self.assertIsNone(best_track_candidate([{"title": "Wrong Song", "confidence": 0.4}]))
+
 
 
 if __name__ == "__main__":

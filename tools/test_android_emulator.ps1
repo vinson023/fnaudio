@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$SdkRoot = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "C:\path\to\fnAudio\tools\android-sdk" }),
+    [string]$SdkRoot = $env:ANDROID_SDK_ROOT,
     [string]$AvdName = "fnaudio-api35-atd",
     [switch]$InstallSdk,
     [switch]$KeepRunning
@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $androidRoot = Join-Path $repoRoot "android-client"
+if (-not $SdkRoot) { $SdkRoot = Join-Path $repoRoot "tools\android-sdk" }
 $sdkRoot = (Resolve-Path $SdkRoot).Path
 $sdkManager = Join-Path $sdkRoot "cmdline-tools\latest\bin\sdkmanager.bat"
 $avdManager = Join-Path $sdkRoot "cmdline-tools\latest\bin\avdmanager.bat"
@@ -60,30 +61,48 @@ if ($null -eq $existing) {
     }
 }
 
+if ($null -ne $existing) { $serial = ($existing.Line.Trim() -split "\s+")[0] }
+$previousAndroidSerial = $env:ANDROID_SERIAL
+$env:ANDROID_SERIAL = $serial
 try {
     Push-Location $androidRoot
-    & .\gradlew.bat :app:connectedDebugAndroidTest
+    & .\gradlew.bat --no-daemon --console=plain -PfnaudioTestBuildType=emulator :app:assembleEmulator :app:assembleEmulatorAndroidTest
     $gradleSucceeded = $?
     $gradleExitCode = $LASTEXITCODE
     if (-not $gradleSucceeded -or $gradleExitCode -ne 0) {
-        throw "connectedDebugAndroidTest failed (exit code $gradleExitCode)"
+        throw "emulator test APK build failed (exit code $gradleExitCode)"
     }
-    $debugApk = Join-Path $androidRoot "app\build\outputs\apk\debug\app-debug.apk"
+    $debugApk = Join-Path $androidRoot "app\build\outputs\apk\emulator\app-emulator.apk"
     if (-not (Test-Path -LiteralPath $debugApk)) { throw "Debug APK was not built: $debugApk" }
-    & $adb install -r $debugApk
+    & $adb -s $serial install -r $debugApk
     if ($LASTEXITCODE -ne 0) { throw "adb failed to install the Debug APK" }
+    $testApk = Join-Path $androidRoot "app\build\outputs\apk\androidTest\emulator\app-emulator-androidTest.apk"
+    if (-not (Test-Path -LiteralPath $testApk)) { throw "Instrumentation APK was not built: $testApk" }
+    & $adb -s $serial install -r $testApk
+    if ($LASTEXITCODE -ne 0) { throw "adb failed to install the instrumentation APK" }
+    & $adb -s $serial shell pm grant com.fnaudio.client.emulator android.permission.POST_NOTIFICATIONS
+    # Direct adb avoids the Windows UTP testlog-directory failure and retains
+    # the isolated emulator app/profile for follow-up manual verification.
+    $testOutput = & $adb -s $serial shell am instrument -w com.fnaudio.client.emulator.test/androidx.test.runner.AndroidJUnitRunner 2>&1
+    $testExitCode = $LASTEXITCODE
+    $testOutput | Write-Output
+    $testText = $testOutput -join "`n"
+    if ($testExitCode -ne 0 -or $testText -match "FAILURES!!!|INSTRUMENTATION_FAILED|INSTRUMENTATION_RESULT: shortMsg=" -or $testText -notmatch "OK \([0-9]+ tests?\)") {
+        throw "Android instrumentation failed; inspect the adb runner output above"
+    }
     $versionMatch = Select-String -LiteralPath "app\build.gradle" -Pattern "versionCode\s+(\d+)" | Select-Object -First 1
     $expectedVersionCode = [int]$versionMatch.Matches[0].Groups[1].Value
-    $installedPackage = & $adb shell dumpsys package com.fnaudio.client
+    $installedPackage = & $adb -s $serial shell dumpsys package com.fnaudio.client.emulator
     $expectedMarker = "versionCode=$expectedVersionCode"
     if (($installedPackage -join "`n") -notmatch [regex]::Escape($expectedMarker)) {
         throw "The installed Debug APK does not expose $expectedMarker. dumpsys output: $($installedPackage -join ' ')"
     }
 } finally {
+    $env:ANDROID_SERIAL = $previousAndroidSerial
     Pop-Location
     if ($startedHere -and -not $KeepRunning) {
-        & $adb emu kill 2>$null
+        & $adb -s $serial emu kill 2>$null
     }
 }
 
-Write-Host "Android emulator tests passed. Report: $androidRoot\app\build\reports\androidTests\connected\debug\index.html"
+Write-Host "Android emulator tests passed on $serial (isolated com.fnaudio.client.emulator)."

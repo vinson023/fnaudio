@@ -516,6 +516,139 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("non-negative integer", json.loads(body)["message"])
 
+    def test_metadata_manual_search_returns_review_candidates_without_auto_writeback(self):
+        previous = server.METADATA_SERVICE
+
+        class Metadata:
+            def track_candidates(self, track, provider_id=""):
+                self.track = track
+                self.provider_id = provider_id
+                return [{
+                    "title": track["title"],
+                    "artist": "Artist",
+                    "album": "Album",
+                    "source": "fixture",
+                    "provider_id": "fixture-1",
+                    "confidence": 0.91,
+                }]
+
+            def cache_interactive_track_candidates(self, track_id, candidates):
+                self.stored = (track_id, candidates)
+                return "search-fixture"
+
+        fake = Metadata()
+        server.METADATA_SERVICE = fake
+        try:
+            status, _headers, body = self.request(
+                "/api/metadata/track/search",
+                method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=json.dumps({"track_id": "fixture", "title": "Manual query"}).encode(),
+            )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "review")
+        self.assertEqual(payload["candidates"][0]["provider_id"], "fixture-1")
+        self.assertEqual(fake.stored[0], "fixture")
+
+    def test_metadata_manual_search_can_target_one_provider(self):
+        previous = server.METADATA_SERVICE
+
+        class Metadata:
+            def track_candidates(self, track, provider_id=""):
+                self.provider_id = provider_id
+                return [{
+                    "title": track["title"],
+                    "artist": "Artist",
+                    "album": "Album",
+                    "source": provider_id,
+                    "provider_id": "targeted-1",
+                    "confidence": 0.95,
+                }]
+
+            def cache_interactive_track_candidates(self, _track_id, _candidates):
+                return "search-targeted"
+
+        fake = Metadata()
+        server.METADATA_SERVICE = fake
+        try:
+            status, _headers, body = self.request(
+                "/api/metadata/track/search",
+                method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=json.dumps({
+                    "track_id": "fixture",
+                    "title": "Manual query",
+                    "provider_id": "netease",
+                }).encode(),
+            )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(fake.provider_id, "netease")
+        self.assertEqual(payload["candidates"][0]["source"], "netease")
+
+    def test_metadata_manual_search_uses_real_service_provider_scope_and_persists_review_only(self):
+        from metadata_service import MetadataService
+        service = MetadataService(self.httpd.config)
+        candidate = {"title": "Manual query", "artist": "Artist", "album": "Album",
+                     "source": "netease", "provider_id": "remote-1", "confidence": 0.95}
+        with mock.patch.object(server, "METADATA_SERVICE", service), \
+             mock.patch.object(service.providers, "_track_candidates_for_provider",
+                               return_value=[candidate]) as search:
+            status, _headers, body = self.request(
+                "/api/metadata/track/search", method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=json.dumps({"track_id": "fixture", "title": "Manual query",
+                                 "provider_id": "netease"}).encode(),
+            )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["status"], "review")
+        self.assertEqual([call.args[0] for call in search.call_args_list], ["netease"])
+        with service._connect() as conn:
+            stored = conn.execute("SELECT status FROM metadata_track_matches WHERE track_id='fixture'").fetchone()
+            writes = conn.execute("SELECT COUNT(*) FROM metadata_jobs WHERE job_type='tag_write'").fetchone()[0]
+        self.assertIsNone(stored, "searching must not replace the accepted projection")
+        self.assertTrue(payload["search_id"])
+        self.assertEqual(writes, 0)
+        with mock.patch.object(server, "METADATA_SERVICE", service):
+            status, _headers, body = self.request(
+                "/api/metadata/track/apply", method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=json.dumps({"track_id": "fixture", "candidate_index": 0,
+                                 "search_id": payload["search_id"]}).encode(),
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["status"]["best"]["source"], "netease")
+
+    def test_metadata_manual_search_reports_no_match_without_storing(self):
+        previous = server.METADATA_SERVICE
+
+        class Metadata:
+            def track_candidates(self, _track):
+                return []
+
+            def store_interactive_track_candidates(self, _track_id, _candidates):
+                raise AssertionError("empty manual searches must not be stored")
+
+        server.METADATA_SERVICE = Metadata()
+        try:
+            status, _headers, body = self.request(
+                "/api/metadata/track/search",
+                method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=b'{"track_id":"fixture","title":"No match"}',
+            )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"ok": True, "status": "no_match", "candidates": []})
+
     def test_transfer_encoding_is_rejected_before_body_parsing(self):
         status, _headers, body = self.request(
             "/api/playback/target",
@@ -580,6 +713,30 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["source"], "本地标签")
         self.assertFalse(payload.get("metadata_unavailable", False))
         self.assertEqual(payload["track_id"], "fixture")
+
+    def test_metadata_track_success_projection_includes_ok_contract(self):
+        previous = server.METADATA_SERVICE
+        service = mock.Mock()
+        service.track_match.return_value = {
+            "track_id": "fixture",
+            "status": "review",
+            "best": {"title": "Song", "artist": "Artist"},
+            "candidates": [{"title": "Song", "artist": "Artist"}],
+        }
+        server.METADATA_SERVICE = service
+        try:
+            with mock.patch.object(server, "metadata_service_available", return_value=True):
+                status, _headers, body = self.request(
+                    "/api/metadata/track?track_id=fixture",
+                    headers=self.auth_headers("library.read"),
+                )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "review")
+        self.assertEqual(payload["best"]["title"], "Song")
 
     def test_uninitialized_metadata_service_returns_a_lyrics_only_track_as_local(self):
         # An untagged row is only allowed to fall through to the retryable
@@ -1056,6 +1213,41 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertFalse(self.httpd.config["metadata_tag_write_enabled"])
         self.assertEqual(service.forces, [True])
 
+    def test_metadata_refresh_starts_and_wakes_without_persisting_settings(self):
+        class Service:
+            def __init__(self):
+                self.started = 0
+                self.wakes = []
+
+            def start(self):
+                self.started += 1
+
+            def wake(self, force=False):
+                self.wakes.append(force)
+
+        service = Service()
+        previous = server.METADATA_SERVICE
+        self.httpd.config.update({
+            "metadata_enabled": False,
+            "metadata_tag_write_enabled": False,
+        })
+        try:
+            with mock.patch.object(server, "METADATA_SERVICE", service):
+                status, _headers, body = self.request(
+                    "/api/metadata/refresh",
+                    method="POST",
+                    headers=self.auth_headers("settings.write"),
+                )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(service.started, 1)
+        self.assertEqual(service.wakes, [True])
+        self.assertFalse(self.httpd.config["metadata_enabled"])
+        self.assertFalse(self.httpd.config["metadata_tag_write_enabled"])
+
     def test_metadata_config_rejects_fractional_grace_days_without_truncating(self):
         previous = dict(self.httpd.config)
         try:
@@ -1070,6 +1262,116 @@ class HttpIntegrationTests(unittest.TestCase):
             self.httpd.config.update(previous)
         self.assertEqual(status, 400)
         self.assertIn("宽限天数", json.loads(body)["message"])
+
+    def test_metadata_config_get_projects_provider_definitions_and_safe_order(self):
+        self.httpd.config.update({
+            "metadata_enabled": True,
+            "metadata_tag_write_enabled": False,
+            "metadata_orphan_grace_days": 7,
+            "metadata_providers": [
+                {"id": "kugou", "enabled": True},
+                {"id": "netease", "enabled": False},
+                {"id": "kuwo", "enabled": True},
+                {"id": "migu", "enabled": False},
+                {"id": "joox", "enabled": True},
+                {"id": "musicbrainz", "enabled": True},
+            ],
+        })
+        status, _headers, body = self.request(
+            "/api/config/metadata", headers=self.auth_headers("settings.read")
+        )
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [entry["id"] for entry in payload["providers"]],
+            ["kugou", "netease", "kuwo", "migu", "joox", "musicbrainz"],
+        )
+        self.assertEqual(payload["providers"][-1]["id"], "musicbrainz")
+        self.assertTrue(payload["providers"][-1]["fixed_last"])
+        self.assertEqual(payload["config"]["metadata_providers"][-1]["id"], "musicbrainz")
+
+    def test_metadata_config_post_persists_order_and_repairs_invalid_order(self):
+        ordered = [
+            {"id": "joox", "enabled": False},
+            {"id": "migu", "enabled": True},
+            {"id": "kugou", "enabled": False},
+            {"id": "kuwo", "enabled": True},
+            {"id": "netease", "enabled": True},
+            {"id": "musicbrainz", "enabled": False},
+        ]
+        status, _headers, body = self.request(
+            "/api/config/metadata",
+            method="POST",
+            headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+            data=json.dumps({"providers": ordered}).encode(),
+        )
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["providers_repaired"])
+        self.assertEqual(payload["config"]["metadata_providers"], ordered)
+        self.assertEqual(self.httpd.config["metadata_providers"], ordered)
+
+        invalid = [
+            {"id": "musicbrainz", "enabled": True},
+            {"id": "netease", "enabled": True},
+            {"id": "kuwo", "enabled": True},
+            {"id": "kugou", "enabled": True},
+            {"id": "migu", "enabled": True},
+            {"id": "joox", "enabled": True},
+        ]
+        status, _headers, body = self.request(
+            "/api/config/metadata",
+            method="POST",
+            headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+            data=json.dumps({"providers": invalid}).encode(),
+        )
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["providers_repaired"])
+        self.assertEqual(
+            [entry["id"] for entry in payload["config"]["metadata_providers"]],
+            ["netease", "kuwo", "kugou", "migu", "joox", "musicbrainz"],
+        )
+
+    def test_metadata_provider_test_returns_isolated_probe_result(self):
+        class ProbeService:
+            def __init__(self):
+                self.calls = []
+
+            def probe_provider(self, provider_id, title, artist, album):
+                self.calls.append((provider_id, title, artist, album))
+                return {
+                    "ok": True,
+                    "provider_id": provider_id,
+                    "search": {"supported": True, "available": True},
+                    "cover": {"supported": True, "available": False},
+                    "lyrics": {"supported": True, "available": True},
+                    "response_ms": 12,
+                }
+
+        previous = server.METADATA_SERVICE
+        service = ProbeService()
+        server.METADATA_SERVICE = service
+        try:
+            status, _headers, body = self.request(
+                "/api/metadata/provider-test",
+                method="POST",
+                headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                data=json.dumps({
+                    "provider_id": "kuwo",
+                    "title": "Song",
+                    "artist": "Artist",
+                    "album": "Album",
+                }).encode(),
+            )
+        finally:
+            server.METADATA_SERVICE = previous
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["response_ms"], 12)
+        self.assertEqual(service.calls, [("kuwo", "Song", "Artist", "Album")])
 
     # --- R124 / D9: the library connection pool switch on the settings pane -------
     # These are the discriminative checks for exposing a switch that used to be
@@ -1124,6 +1426,151 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)["ok"])
         self.assertIs(self.httpd.config["library_connection_pool"], False)
+
+    def test_runtime_config_reads_persists_and_applies_renderer_name_immediately(self):
+        class RendererService:
+            def __init__(self):
+                self.names = []
+                self.name = "fnAudio Renderer"
+
+            def set_renderer_name(self, name):
+                changed = name != self.name
+                self.name = name
+                self.names.append(name)
+                return changed
+
+        class SsdpService:
+            def __init__(self):
+                self.announcements = 0
+
+            def announce_alive(self):
+                self.announcements += 1
+
+        service = RendererService()
+        ssdp = SsdpService()
+        self.httpd.config.pop("renderer_name", None)
+        with mock.patch.object(server, "DLNA_PROTOCOL", service), mock.patch.object(server, "DLNA_SSDP", ssdp):
+            status, _headers, body = self.runtime_get()
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["config"]["renderer_name"], "fnAudio Renderer")
+
+            status, _headers, body = self.runtime_post({"renderer_name": "  客厅 <DAC> & NAS  "})
+            self.assertEqual(status, 200, body)
+            payload = json.loads(body)
+            self.assertEqual(payload["config"]["renderer_name"], "客厅 <DAC> & NAS")
+            self.assertIs(payload["restart_required"], False)
+
+            status, _headers, body = self.runtime_post({"renderer_name": "客厅 <DAC> & NAS"})
+            self.assertEqual(status, 200, body)
+
+        self.assertEqual(self.httpd.config["renderer_name"], "客厅 <DAC> & NAS")
+        self.assertEqual(service.names, ["客厅 <DAC> & NAS", "客厅 <DAC> & NAS"])
+        self.assertEqual(ssdp.announcements, 1, "a changed friendly name must be re-announced over SSDP")
+        with open(self.httpd.config_path, "r", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["renderer_name"], "客厅 <DAC> & NAS")
+
+    def test_concurrent_renderer_name_saves_keep_persisted_and_runtime_values_in_sync(self):
+        class LockProbe:
+            def __init__(self):
+                self.inner = threading.RLock()
+                self.guard = threading.Lock()
+                self.entries = 0
+                self.second_transaction_entered = threading.Event()
+
+            def __enter__(self):
+                with self.guard:
+                    self.entries += 1
+                    # Request A enters the outer transaction and the nested commit
+                    # lock (entries 1-2); this is request B's outer transaction.
+                    if self.entries == 3:
+                        self.second_transaction_entered.set()
+                self.inner.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.inner.release()
+
+        class RendererService:
+            def __init__(self):
+                self.name = "fnAudio Renderer"
+                self.second_applied = threading.Event()
+                self.release_first = threading.Event()
+
+            def set_renderer_name(self, name):
+                if name == "Renderer A":
+                    if not self.release_first.wait(3):
+                        raise AssertionError("test did not release the first Renderer update")
+                self.name = name
+                if name == "Renderer B":
+                    self.second_applied.set()
+                return True
+
+        class SsdpService:
+            def announce_alive(self):
+                pass
+
+        service = RendererService()
+        lock_probe = LockProbe()
+        first_committed = threading.Event()
+        responses = {}
+        actual_commit = server.commit_config_update
+
+        def observe_commit(httpd, update):
+            candidate = dict(httpd.config)
+            update(candidate)
+            name = candidate.get("renderer_name")
+            committed = actual_commit(httpd, update)
+            if committed and name == "Renderer A":
+                first_committed.set()
+            return committed
+
+        def post(name):
+            responses[name] = self.runtime_post({"renderer_name": name})[0]
+
+        first = threading.Thread(target=post, args=("Renderer A",), name="renderer-first")
+        second = threading.Thread(target=post, args=("Renderer B",), name="renderer-second")
+        with mock.patch.object(server, "commit_config_update", side_effect=observe_commit), \
+             mock.patch.object(server, "CONFIG_UPDATE_LOCK", lock_probe), \
+             mock.patch.object(server, "DLNA_PROTOCOL", service), \
+             mock.patch.object(server, "DLNA_SSDP", SsdpService()):
+            first.start()
+            self.assertTrue(first_committed.wait(2), "the first request must commit before it is delayed")
+            second.start()
+            second_reached_transaction = lock_probe.second_transaction_entered.wait(2)
+            # Without a transaction-wide lock, B is applied while A is paused;
+            # with the lock, B waits until A's runtime projection is complete.
+            second_waited_for_first = second_reached_transaction and not service.second_applied.is_set()
+            service.release_first.set()
+            first.join(3)
+            second.join(3)
+
+        self.assertTrue(second_reached_transaction, "the second request must reach the transaction lock")
+        self.assertTrue(second_waited_for_first, "the second Renderer update must wait for the first transaction")
+        self.assertFalse(first.is_alive(), "the first settings request must complete")
+        self.assertFalse(second.is_alive(), "the second settings request must complete")
+        self.assertEqual(responses, {"Renderer A": 200, "Renderer B": 200})
+        self.assertEqual(self.httpd.config["renderer_name"], "Renderer B")
+        self.assertEqual(service.name, "Renderer B")
+
+    def test_runtime_config_rejects_invalid_renderer_names_without_mutating_service(self):
+        self.httpd.config["renderer_name"] = "Existing Renderer"
+        class RendererService:
+            def set_renderer_name(self, _name):
+                raise AssertionError("invalid names must not reach the running renderer")
+
+        with mock.patch.object(server, "DLNA_PROTOCOL", RendererService()):
+            for value in (None, 7, [], "", "   ", "bad\nname", "bad\x00name"):
+                status, _headers, body = self.runtime_post({"renderer_name": value})
+                self.assertEqual(status, 400, repr(value))
+                self.assertIn("Renderer 名称", json.loads(body)["message"])
+                self.assertEqual(self.httpd.config["renderer_name"], "Existing Renderer")
+
+    def test_runtime_config_renderer_name_is_truncated_to_the_persisted_bound(self):
+        long_name = "R" * 140
+        status, _headers, body = self.runtime_post({"renderer_name": long_name})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["config"]["renderer_name"], "R" * 128)
+        self.assertEqual(self.httpd.config["renderer_name"], "R" * 128)
 
     def test_runtime_config_turning_the_pool_off_drains_handles_after_the_commit(self):
         self.httpd.config["library_connection_pool"] = True

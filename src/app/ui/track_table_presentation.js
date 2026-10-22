@@ -12,7 +12,7 @@
 
   function widthLimits(key) {
     return {
-      title: [260, 620], track_no: [64, 84], artist: [120, 280], album: [150, 340],
+      title: [180, 520], track_no: [48, 72], artist: [88, 220], album: [110, 280],
       format: [76, 110], duration: [72, 96], size: [88, 120], quality: [120, 170],
       added: [110, 150], composer: [120, 260], genre: [110, 200],
     }[key] || [80, 260];

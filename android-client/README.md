@@ -1,6 +1,6 @@
 # fnAudio Android 客户端
 
-这是 fnAudio `0.2.61` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。当前配套服务端版本基线为 `0.2.61`。
+这是 fnAudio `0.2.100` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。当前配套服务端版本基线为 `0.2.100`。
 
 ## 已实现
 
@@ -71,3 +71,15 @@ $env:FNAUDIO_RELEASE_KEY_PASSWORD = '...'
 
 Debug APK 使用 Android 调试证书，只适合当前开发验证，不应作为正式发布包。
 
+
+## 本地模拟器验收
+
+`emulator` 构建使用独立包名 `com.fnaudio.client.emulator`，只排除 ARM64 的 FN Connect 中继库，其余 WebView、原生 HTTP 和播放代码与 Debug 相同。它用于局域网登录、曲库与设置回显测试，不能代替 ARM64 中继、USB DAC 或手机后台策略验收。
+
+```powershell
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=$env:TEMP/fnaudio-gradle-missing/socketdir"
+# 上述目录须保持不存在；这是当前 Windows Gradle 通信兼容参数。
+.\tools\test_android_emulator.ps1 -KeepRunning
+```
+
+令牌 Cookie 必须保留 Base64 的 `+`、`/` 和 `=`，不能使用表单编码传给 fnOS 网关。网关 HTTP 200 的 `invalid token` 正文会按认证失败报告，不作为空曲库或默认设置处理。

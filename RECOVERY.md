@@ -7,7 +7,7 @@
 1. 固定工作目录为 `C:\path\to\fnAudio`，不要从 `E:\Codex`、旧 FPK 解包目录或 `artifacts/` 覆盖源码。
 2. 阅读 `PROJECT_CONTEXT.md` 顶部、`TODO.md`、`DECISIONS.md` 最新决策和 `CHANGELOG_AI.md` 末尾。
 3. 运行 `git status --short`。工作树可能包含用户或前一会话的未提交修改，禁止 reset、checkout 或清理未知文件。
-4. 核对 `VERSION`、`src/manifest`、Web 静态资源版本和 Android `versionName/versionCode`。当前源码基线为 `0.2.61`；若版本继续演进，以 `VERSION` 和 `src/manifest` 的一致值为准。
+4. 核对 `VERSION`、`src/manifest`、Web 静态资源版本和 Android `versionName/versionCode`。当前源码基线为 `0.2.100`；若版本继续演进，以 `VERSION` 和 `src/manifest` 的一致值为准。
 5. 运行统一离线验证；涉及 Android 时再运行 JVM 测试、Lint 和 Debug 构建。
 6. 查看 `TODO.md`。本地 1-9 连续目标已完成，剩余项目都依赖 fnOS、外部数据、模拟器/设备或负责人决策。
 

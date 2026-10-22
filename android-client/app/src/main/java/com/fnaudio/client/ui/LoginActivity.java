@@ -11,6 +11,8 @@ import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.method.HideReturnsTransformationMethod;
+import android.text.method.PasswordTransformationMethod;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -36,6 +38,9 @@ public final class LoginActivity extends AppCompatActivity {
     private CheckBox trustSelfSigned;
     private EditText username;
     private EditText password;
+    private EditText accessCode;
+    private ImageButton passwordVisibilityButton;
+    private ImageButton accessCodeVisibilityButton;
     private CheckBox savePassword;
     private Button loginButton;
     private ImageButton historyButton;
@@ -123,6 +128,9 @@ public final class LoginActivity extends AppCompatActivity {
         trustSelfSigned = findViewById(R.id.trustSelfSigned);
         username = findViewById(R.id.username);
         password = findViewById(R.id.password);
+        accessCode = findViewById(R.id.accessCode);
+        passwordVisibilityButton = findViewById(R.id.passwordVisibilityButton);
+        accessCodeVisibilityButton = findViewById(R.id.accessCodeVisibilityButton);
         savePassword = findViewById(R.id.savePassword);
         loginButton = findViewById(R.id.loginButton);
         historyButton = findViewById(R.id.historyButton);
@@ -135,6 +143,8 @@ public final class LoginActivity extends AppCompatActivity {
 
         if (port.getText().toString().trim().isEmpty()) port.setText("5666");
         loginButton.setOnClickListener(view -> loginWithPassword());
+        passwordVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(password, passwordVisibilityButton, "密码"));
+        accessCodeVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(accessCode, accessCodeVisibilityButton, "访问码"));
         historyButton.setOnClickListener(view -> startActivityForResult(
                 new Intent(this, ConnectionHistoryActivity.class), REQUEST_HISTORY));
         fnConnectButton.setOnClickListener(view -> openFnConnect());
@@ -149,6 +159,15 @@ public final class LoginActivity extends AppCompatActivity {
         });
         trustSelfSigned.setEnabled(useHttps.isChecked());
         renderFnConnectSettingsSummary();
+    }
+
+    private static void toggleSecretVisibility(EditText field, ImageButton button, String label) {
+        boolean visible = field.getTransformationMethod() == null;
+        int selection = field.getSelectionStart();
+        field.setTransformationMethod(visible ? PasswordTransformationMethod.getInstance() : HideReturnsTransformationMethod.getInstance());
+        field.setSelection(Math.max(0, Math.min(selection, field.length())));
+        button.setImageResource(visible ? R.drawable.ic_visibility_off : R.drawable.ic_visibility);
+        button.setContentDescription(visible ? "显示" + label : "隐藏" + label);
     }
 
     private void openFnConnect() {
@@ -180,7 +199,8 @@ public final class LoginActivity extends AppCompatActivity {
                         "fnconnect:" + fnIdValue + ":" + user.toLowerCase(java.util.Locale.ROOT),
                         "FN Connect - " + fnIdValue, resolved.host, resolved.port, resolved.https,
                         false, user, savePassword.isChecked() ? passwordValue : "")
-                        .withFnConnectMode(effectiveMode);
+                        .withFnConnectMode(effectiveMode)
+                        .withAccessCode(accessCode.getText().toString());
                 authenticate(profile, passwordValue, "正在登录 FN Connect 设备...", false);
             }
             @Override public void onError(String message) {
@@ -352,7 +372,7 @@ public final class LoginActivity extends AppCompatActivity {
                 trustSelfSigned.isChecked(),
                 usernameValue,
                 passwordToSave
-        );
+        ).withAccessCode(accessCode.getText().toString());
         ConnectionProfile existing = store.find(result.id);
         if (result.trustSelfSigned && existing != null && existing.matchesConnection(
                 result.host, result.port, result.https, result.username)) {
@@ -440,6 +460,7 @@ public final class LoginActivity extends AppCompatActivity {
         trustSelfSigned.setEnabled(profile.https);
         username.setText(profile.username);
         password.setText(profile.password);
+        accessCode.setText(profile.accessCode);
         savePassword.setChecked(true);
         renderFnConnectSettingsSummary();
     }
@@ -456,6 +477,7 @@ public final class LoginActivity extends AppCompatActivity {
         port.setText("5666");
         username.setText("");
         password.setText("");
+        accessCode.setText("");
         savePassword.setChecked(true);
         renderFnConnectSettingsSummary();
         loginStatus.setText("");

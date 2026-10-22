@@ -8,6 +8,7 @@ import math
 import mimetypes
 import os
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -18,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from version import APP_USER_AGENT
 from contextlib import contextmanager
@@ -83,14 +85,15 @@ from metadata_provider_response import (
     decode_base64_lyrics as _decode_base64_lyrics,
     lyrics_document as _lyrics_document,
 )
-from metadata_provider_values import provider_text as _provider_text, provider_int as _provider_int
+from metadata_provider_values import provider_display_text as _provider_display_text, provider_text as _provider_text, provider_int as _provider_int
 from metadata_artwork_policy import artwork_url, normalize_artwork_id
 from metadata_artwork_file import open_bounded_artwork, read_bounded_artwork
 from metadata_remote_url_policy import public_metadata_http_url
 from metadata_query_policy import entity_search_query, filename_track_candidate, filename_track_hint, local_track_candidate, track_search_query
 from metadata_candidate_cache_key import build_candidate_cache_key
 from metadata_provider_routing_policy import contains_cjk
-from metadata_candidate_search_policy import finalize_track_candidates, prefer_track_candidate, should_stop_track_candidate_search
+from metadata_provider_config import MUSICBRAINZ_PROVIDER_ID, provider_definitions, provider_ids_for
+from metadata_candidate_search_policy import best_track_candidate, finalize_track_candidates, prefer_track_candidate, should_stop_track_candidate_search
 from metadata_numeric_policy import bounded_epoch, finite_confidence, strict_nonnegative_int
 from metadata_job_policy import retry_attempt, retry_delay_seconds, worker_status
 from metadata_job_payload_policy import project_metadata_job_payload
@@ -613,6 +616,7 @@ class MetadataProviders:
         self._provider_empty_results = {}
         self._provider_no_valid_candidates = {}
         self._provider_cooldown_until = {}
+        self._search_local = threading.local()
         self._provider_cooldown_seconds = 20
         # Interactive polling can ask for the same track several times while
         # a worker transitions from pending to done. Keep a tiny process-local
@@ -633,8 +637,228 @@ class MetadataProviders:
         with self._failure_lock:
             self._provider_cooldown_until.clear()
 
+    def _provider_ids(self, capability):
+        """Read the normalized, user-selected provider order for one capability."""
+        configured = self.config.get("metadata_providers") if isinstance(self.config, dict) else None
+        return provider_ids_for(configured, capability)
+
     def _read_local_lyrics_cached(self, path, version_hint=None):
         return self._local_lyrics_cache.read(path, version_hint)
+
+    def _track_candidates_for_provider(self, provider_id, track):
+        """Search one configured provider without touching caches or diagnostics."""
+        track = self._normalize_track_input(track)
+        query = track_search_query(track)
+        self._search_local.outcome = "empty"
+        if not query or not isinstance(provider_id, str):
+            return []
+
+        netease = (
+            lambda: self._netease_songs(query, 100),
+            lambda item: self._track_candidate(
+                track, item, "netease", item.get("name"), _artist_name(item.get("artists") or []),
+                (item.get("album") or {}).get("name"),
+                _artist_name((item.get("album") or {}).get("artists") or []),
+                (item.get("album") or {}).get("publishTime"), "", item.get("no"),
+                (item.get("album") or {}).get("picUrl"), item.get("id"),
+            ),
+        )
+        kuwo = (
+            lambda: self._kuwo_songs(query, 10),
+            lambda item: self._track_candidate(
+                track, item, "kuwo", item.get("SONGNAME") or item.get("name"), self._kuwo_artist(item),
+                item.get("ALBUM") or item.get("album"), self._kuwo_artist(item),
+                item.get("PUBLISHDATE") or item.get("pubDate"), item.get("GENRE"),
+                item.get("TRACK"), item.get("hts_MVPIC") or item.get("albumpic") or item.get("pic"),
+                self._kuwo_song_id(item),
+            ),
+        )
+        kugou = (
+            lambda: self._kugou_songs(query, 10),
+            lambda item: self._track_candidate(
+                track, item, "kugou", item.get("SongName"), item.get("SingerName"), item.get("AlbumName"),
+                item.get("SingerName"), item.get("PublishDate") or item.get("PublishTime"),
+                item.get("Genre"), item.get("OriSongName"),
+                _provider_text(item.get("Image"), MAX_ARTWORK_URL_LENGTH).replace("{size}", "500"),
+                item.get("FileHash"),
+            ),
+        )
+        migu = (
+            lambda: self._migu_songs(query, 10),
+            lambda item: self._track_candidate(
+                track, item, "migu", item.get("name") or item.get("songName"), self._migu_artist(item),
+                self._migu_album_name(item), self._migu_artist(item), item.get("publishDate"),
+                item.get("genre"), item.get("trackNo"), self._migu_image(item), item.get("contentId"),
+            ),
+        )
+        joox = (
+            lambda: self._joox_songs(query),
+            lambda item: self._track_candidate(
+                track, item, "joox", item.get("name"), self._joox_artist(item),
+                (item.get("album") or {}).get("name"), self._joox_artist(item),
+                (item.get("album") or {}).get("publish_date"), item.get("genre"), item.get("track"),
+                self._joox_image(item), item.get("id"),
+            ),
+        )
+        musicbrainz = (
+            lambda: self._musicbrainz_recordings(self._musicbrainz_track_query(track)),
+            lambda item: self._musicbrainz_track_candidate(track, item),
+        )
+        legacy = {
+            "qq": (
+                lambda: self._qq_songs(query, 10),
+                lambda item: self._track_candidate(
+                    track, item, "qq", item.get("songname"), _artist_name(item.get("singer") or []),
+                    item.get("albumname"), _artist_name(item.get("singer") or []), item.get("pubtime"),
+                    item.get("genre"), item.get("songid"),
+                    "https://y.gtimg.cn/music/photo_new/T002R500x500M000%s.jpg" % item.get("albummid")
+                    if item.get("albummid") else "", item.get("songmid"),
+                ),
+            ),
+            "qianqian": (
+                lambda: self._qianqian_songs(query),
+                lambda item: self._track_candidate(
+                    track, item, "qianqian", item.get("title"), self._qianqian_artist(item),
+                    item.get("albumTitle") or item.get("album"), self._qianqian_artist(item),
+                    item.get("releaseDate"), item.get("genre"), item.get("trackNo"),
+                    item.get("pic"), item.get("TSID"),
+                ),
+            ),
+        }
+        adapters = {
+            "netease": netease,
+            "kuwo": kuwo,
+            "kugou": kugou,
+            "migu": migu,
+            "joox": joox,
+            MUSICBRAINZ_PROVIDER_ID: musicbrainz,
+            **legacy,
+        }
+        adapter = adapters.get(provider_id)
+        if adapter is None:
+            raise ValueError("unknown metadata provider")
+        payload = adapter[0]()
+        if not candidate_payload_is_sequence(payload):
+            raise ValueError("metadata provider candidate payload has invalid shape")
+        if not payload:
+            self._search_local.outcome = "empty"
+            return []
+        candidates = []
+        corrupt = False
+        for item in candidate_mappings(payload):
+            try:
+                mapped = adapter[1](item)
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not isinstance(mapped, dict):
+                continue
+            if any(candidate_text_is_corrupt(mapped.get(field)) for field in ("title", "artist", "album", "album_artist", "genre", "image_url")):
+                corrupt = True
+                continue
+            candidates.append(mapped)
+            if should_stop_track_candidate_search(mapped):
+                break
+        if corrupt and not candidates:
+            raise ValueError("metadata provider returned corrupt candidate text")
+        self._search_local.outcome = "success" if candidates else "no_valid_candidates"
+        return candidates
+
+    def _probe_cover_url(self, image_url):
+        image_url = _provider_text(image_url, MAX_ARTWORK_URL_LENGTH)
+        if not image_url:
+            return False
+        url = public_metadata_http_url(image_url)
+        if not url:
+            return False
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; fnAudio/1.0)",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Range": "bytes=0-65535",
+        })
+        try:
+            with _open_metadata_url(request, 5) as response:
+                body = _read_response_limited(response, 64 * 1024)
+                return bool(safe_image_media_type(response.headers.get("Content-Type", ""), body))
+        except Exception:
+            return False
+
+    def _lyrics_for_provider(self, provider_id, track):
+        """Run one configured lyric adapter without consulting other sources."""
+        adapters = {
+            "netease": self.netease_lyrics,
+            "kuwo": self.kuwo_lyrics,
+            "kugou": self.kugou_lyrics,
+            "migu": self.migu_lyrics,
+            "joox": self.joox_lyrics,
+        }
+        provider = adapters.get(provider_id)
+        if provider is None:
+            return None
+        return provider(track)
+
+    def _track_artwork_for_provider(self, provider_id, track):
+        """Return artwork from exactly one configured source."""
+        direct = {
+            "netease": self.netease_track_artwork,
+            "kuwo": self.kuwo_track_artwork,
+        }.get(provider_id)
+        if direct is not None:
+            return direct(track)
+        for candidate in self._track_candidates_for_provider(provider_id, track):
+            image_url = _provider_text(candidate.get("image_url"), MAX_ARTWORK_URL_LENGTH)
+            if image_url:
+                return {
+                    "image_url": image_url,
+                    "source": _provider_text(candidate.get("source"), 64) or provider_id,
+                    "provider_id": _provider_text(candidate.get("provider_id"), 128),
+                    "confidence": finite_confidence(candidate.get("confidence")),
+                }
+        return None
+
+    def probe_provider(self, provider_id, title, artist="", album=""):
+        """Run an isolated source smoke test for the settings pane."""
+        started = time.monotonic()
+        definition = next((item for item in provider_definitions() if item.get("id") == provider_id), None)
+        if not definition:
+            raise ValueError("unknown metadata provider")
+        track = {"title": title, "artist": artist, "album": album}
+        result = {
+            "provider_id": provider_id,
+            "name": definition.get("name", provider_id),
+            "search": {"supported": "track" in definition.get("capabilities", ()), "available": False},
+            "cover": {"supported": "cover" in definition.get("capabilities", ()), "available": False},
+            "lyrics": {"supported": "lyrics" in definition.get("capabilities", ()), "available": False},
+            "response_ms": 0,
+        }
+        try:
+            candidates = self._track_candidates_for_provider(provider_id, track) if result["search"]["supported"] else []
+            if candidates:
+                best = best_track_candidate(candidates)
+            else:
+                best = None
+            if best:
+                result["search"].update({
+                    "available": True,
+                    "title": _provider_text(best.get("title"), 512),
+                    "artist": _provider_text(best.get("artist"), 512),
+                    "album": _provider_text(best.get("album"), 512),
+                    "confidence": finite_confidence(best.get("confidence")),
+                })
+                image_url = _provider_text(best.get("image_url"), MAX_ARTWORK_URL_LENGTH)
+                if result["cover"]["supported"] and image_url:
+                    result["cover"]["available"] = self._probe_cover_url(image_url)
+                    result["cover"]["url"] = image_url if result["cover"]["available"] else ""
+            if result["lyrics"]["supported"]:
+                lyric_result = self._lyrics_for_provider(provider_id, track)
+                text = lyric_result.get("lyrics") if isinstance(lyric_result, dict) else ""
+                if isinstance(text, str) and text.strip() and "\ufffd" not in text:
+                    result["lyrics"]["available"] = True
+                    result["lyrics"]["preview"] = text[:160]
+        except Exception as exc:
+            result["error"] = (type(exc).__name__ + ": " + str(exc).replace("\n", " "))[:240]
+        result["ok"] = bool(result["search"]["available"] or result["cover"]["available"] or result["lyrics"]["available"])
+        result["response_ms"] = max(0, int((time.monotonic() - started) * 1000))
+        return result
 
     def candidate_cache_snapshot(self):
         """Return bounded diagnostics for the interactive candidate cache."""
@@ -916,6 +1140,151 @@ class MetadataProviders:
             "confidence": best_score,
         }
 
+    def _netease_songs(self, query, limit=100):
+        """Search NetEase and enrich results whose current search payload lacks covers."""
+        query = entity_search_query(query)
+        if not query:
+            return ()
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
+        data = self._json(
+            "https://music.163.com/api/search/get/web?type=1&limit=%d&s=%s" % (limit, urllib.parse.quote(query)),
+            headers,
+        )
+        songs = list(candidate_mappings((data.get("result") or {}).get("songs")))
+        ids = [
+            str(item.get("id"))[:128]
+            for item in songs
+            if isinstance(item, dict) and isinstance(item.get("id"), (int, str)) and not isinstance(item.get("id"), bool)
+        ]
+        ids = [item for item in ids if item]
+        if not ids:
+            return songs
+        try:
+            detail = self._json(
+                "https://music.163.com/api/song/detail?ids=" + urllib.parse.quote("[" + ",".join(ids[:50]) + "]"),
+                headers,
+            )
+            details = {
+                str(item.get("id"))[:128]: item
+                for item in candidate_mappings(detail.get("songs"))
+                if isinstance(item, dict) and isinstance(item.get("id"), (int, str)) and not isinstance(item.get("id"), bool)
+            }
+        except Exception:
+            details = {}
+        enriched = []
+        for item in songs:
+            replacement = details.get(str(item.get("id"))[:128])
+            if not isinstance(replacement, dict):
+                enriched.append(item)
+                continue
+            album = dict(item.get("album") or {})
+            replacement_album = replacement.get("album") or {}
+            if not album.get("picUrl") and isinstance(replacement_album, dict):
+                album["picUrl"] = replacement_album.get("picUrl") or replacement_album.get("pic") or ""
+            merged = dict(item)
+            merged["album"] = album
+            enriched.append(merged)
+        return enriched
+
+    def _kuwo_songs(self, query, limit=10):
+        """Search Kuwo's public catalog without using its download APIs."""
+        query = entity_search_query(query)
+        if not query:
+            return ()
+        params = {
+            "vipver": "1", "client": "kt", "ft": "music", "cluster": "0",
+            "strategy": "2012", "encoding": "utf8", "rformat": "json", "mobi": "1",
+            "issubtitle": "1", "show_copyright_off": "1", "pn": "0",
+            "rn": str(min(MAX_PROVIDER_CANDIDATES, max(1, int(limit or 10)))), "all": query,
+        }
+        url = "https://www.kuwo.cn/search/searchMusicBykeyWord?" + urllib.parse.urlencode(params)
+        data = self._json(url, {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134 Safari/537.36",
+            "Referer": "https://www.kuwo.cn/",
+        })
+        return candidate_mappings((data or {}).get("abslist"))
+
+    @staticmethod
+    def _kuwo_song_id(item):
+        raw = item.get("MUSICRID") or item.get("musicrid") or item.get("rid") or item.get("id")
+        value = _provider_text(raw, 128)
+        return value.removeprefix("MUSIC_")
+
+    @staticmethod
+    def _kuwo_artist(item):
+        return _provider_text(item.get("ARTIST") or item.get("artist") or item.get("AARTIST"), 512)
+
+    def _kuwo_song_info(self, song_id):
+        song_id = _provider_text(song_id, 128)
+        if not song_id:
+            return {}
+        data = self._json(
+            "https://m.kuwo.cn/newh5/singles/songinfoandlrc?" + urllib.parse.urlencode({"musicId": song_id}),
+            {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1",
+                "Referer": "https://m.kuwo.cn/yinyue/%s" % song_id,
+                "Accept": "application/json, text/plain, */*",
+            },
+        )
+        data = data.get("data") if isinstance(data, dict) else {}
+        return data if isinstance(data, dict) else {}
+
+    def kuwo_album(self, name, artist=""):
+        best = None
+        best_score = 0
+        for item in self._kuwo_songs(entity_search_query(name, artist)):
+            score = provider_score(item.get("ALBUM") or item.get("album"), name, self._kuwo_artist(item), artist)
+            if score > best_score:
+                best, best_score = item, score
+        if not best or best_score < 0.55:
+            return None
+        cover = _provider_text(best.get("hts_MVPIC") or best.get("albumpic") or best.get("pic"), MAX_ARTWORK_URL_LENGTH)
+        return {
+            "name": _provider_text(best.get("ALBUM") or best.get("album"), 512) or name,
+            "artist": self._kuwo_artist(best) or artist,
+            "release_date": _provider_text(best.get("PUBLISHDATE") or best.get("pubDate"), 64),
+            "image_url": cover,
+            "provider_id": self._kuwo_song_id(best),
+            "source": "kuwo",
+            "confidence": best_score,
+        }
+
+    def kuwo_track_artwork(self, track):
+        best = None
+        best_score = 0
+        for item in self._kuwo_songs(track_search_query(track)):
+            score = provider_score(item.get("SONGNAME") or item.get("name"), track.get("title"), self._kuwo_artist(item), track.get("artist"))
+            if score > best_score:
+                best, best_score = item, score
+        image_url = _provider_text((best or {}).get("hts_MVPIC") or (best or {}).get("albumpic") or (best or {}).get("pic"), MAX_ARTWORK_URL_LENGTH)
+        if not best or best_score < 0.55 or not image_url:
+            return None
+        return {"image_url": image_url, "source": "kuwo", "provider_id": self._kuwo_song_id(best), "confidence": best_score}
+
+    def kuwo_lyrics(self, track):
+        best = None
+        best_score = 0
+        for item in self._kuwo_songs(track_search_query(track)):
+            score = provider_score(item.get("SONGNAME") or item.get("name"), track.get("title"), self._kuwo_artist(item), track.get("artist"))
+            if score > best_score:
+                best, best_score = item, score
+        song_id = self._kuwo_song_id(best or {})
+        if not best or best_score < 0.55 or not song_id:
+            return None
+        info = self._kuwo_song_info(song_id)
+        rows = info.get("lrclist") or info.get("lrclist").get("lrclist") if isinstance(info.get("lrclist"), dict) else info.get("lrclist")
+        rows = rows if isinstance(rows, (list, tuple)) else []
+        lines = []
+        for row in rows[:MAX_PROVIDER_CANDIDATES * 4]:
+            if not isinstance(row, dict):
+                continue
+            timestamp = _provider_text(row.get("time"), 32)
+            line = _provider_text(row.get("lineLyric") or row.get("lyric"), 4096)
+            if timestamp and line:
+                lines.append("[%s]%s" % (timestamp, line))
+        text = "\n".join(lines).strip()
+        return {"lyrics": text, "source": "kuwo", "provider_id": song_id, "confidence": best_score} if text else None
+
     def _qq_songs(self, query, limit=20):
         url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?" + urllib.parse.urlencode({
             "format": "json", "p": 1, "n": limit, "w": query,
@@ -1054,20 +1423,27 @@ class MetadataProviders:
     def album(self, name, artist=""):
         if not entity_search_query(name, artist):
             return None
-        if contains_cjk(name, artist):
-            providers = (self.netease_album, self.qq_album, self.kugou_album, self.migu_album, self.joox_album, self.qianqian_album, self.musicbrainz_album)
-        else:
-            providers = (self.musicbrainz_album, self.netease_album, self.qq_album, self.kugou_album, self.migu_album, self.joox_album, self.qianqian_album)
+        adapters = {
+            "netease": self.netease_album,
+            "kuwo": self.kuwo_album,
+            "kugou": self.kugou_album,
+            "migu": self.migu_album,
+            "joox": self.joox_album,
+            "musicbrainz": self.musicbrainz_album,
+        }
+        providers = tuple(adapters[provider_id] for provider_id in self._provider_ids("album") if provider_id in adapters)
         return self._first_match(providers, name, artist)
 
     def person(self, name):
         # Mirror the album entry guard. An absent, non-text or placeholder
         # artist must never reach an adapter: quote() raises on a non-string
         # name and adapter exceptions feed the provider failure streak, so one
-        # bad queue payload would cool netease and qq for unrelated lookups.
+        # bad queue payload would cool a real provider for an unrelated lookup.
         if not entity_search_query(name):
             return None
-        return self._first_match((self.netease_person, self.qq_person), name)
+        adapters = {"netease": self.netease_person}
+        providers = tuple(adapters[provider_id] for provider_id in self._provider_ids("artist") if provider_id in adapters)
+        return self._first_match(providers, name)
 
     def _first_match(self, providers, *args):
         for provider in providers:
@@ -1097,17 +1473,17 @@ class MetadataProviders:
     def netease_lyrics(self, track):
         query = track_search_query(track)
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
-        data = self._json("https://music.163.com/api/search/get/web?type=1&limit=10&s=" + urllib.parse.quote(query), headers)
         best = None
         best_score = 0
-        for item in candidate_mappings((data.get("result") or {}).get("songs")):
+        for item in self._netease_songs(query, 100):
             item_artist = _artist_name(item.get("artists") or [])
             score = provider_score(item.get("name"), track.get("title"), item_artist, track.get("artist"))
             if score > best_score:
                 best, best_score = item, score
         if not best or best_score < 0.55:
             return None
-        provider_id = _provider_text(best.get("id"), 128)
+        raw_provider_id = best.get("id")
+        provider_id = str(raw_provider_id)[:128] if isinstance(raw_provider_id, (int, str)) and not isinstance(raw_provider_id, bool) else ""
         if not provider_id:
             return None
         lyric = self._json("https://music.163.com/api/song/lyric?lv=1&kv=1&tv=-1&id=%s" % provider_id, headers)
@@ -1116,11 +1492,9 @@ class MetadataProviders:
 
     def netease_track_artwork(self, track):
         query = track_search_query(track)
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
-        data = self._json("https://music.163.com/api/search/get/web?type=1&limit=10&s=" + urllib.parse.quote(query), headers)
         best = None
         best_score = 0
-        for item in candidate_mappings((data.get("result") or {}).get("songs")):
+        for item in self._netease_songs(query, 100):
             score = provider_score(item.get("name"), track.get("title"), _artist_name(item.get("artists") or []), track.get("artist"))
             if score > best_score:
                 best, best_score = item, score
@@ -1173,7 +1547,15 @@ class MetadataProviders:
         # proxy that refuses HTTP redirects.
         url = "https://songsearch.kugou.com/song_search_v2?" + urllib.parse.urlencode(params)
         data = self._json(url, {"User-Agent": "Mozilla/5.0", "Referer": "https://www.kugou.com/"})
-        return candidate_mappings((data.get("data") or {}).get("lists"))
+        return tuple(
+            {
+                **item,
+                "SongName": _provider_display_text(item.get("SongName")),
+                "SingerName": _provider_display_text(item.get("SingerName")),
+                "AlbumName": _provider_display_text(item.get("AlbumName")),
+            }
+            for item in candidate_mappings((data.get("data") or {}).get("lists"))
+        )
 
     def kugou_album(self, name, artist=""):
         best = None
@@ -1496,12 +1878,11 @@ class MetadataProviders:
             local = self._read_local_lyrics_cached(local_path)
         if local:
             return {"lyrics": local, "source": "本地歌词", "provider_id": "", "confidence": 1.0}
-        for provider in (self.netease_lyrics, self.qq_lyrics, self.kugou_lyrics, self.migu_lyrics, self.joox_lyrics, self.qianqian_lyrics):
-            provider_name = _provider_name(provider, "lyrics")
+        for provider_name in self._provider_ids("lyrics"):
             if not self._provider_is_available(provider_name):
                 continue
             try:
-                result = provider(track)
+                result = self._lyrics_for_provider(provider_name, track)
                 lyrics_text = result.get("lyrics") if isinstance(result, dict) else ""
                 if isinstance(lyrics_text, str) and "\ufffd" in lyrics_text:
                     raise ValueError("metadata provider returned corrupt lyric text")
@@ -1520,35 +1901,17 @@ class MetadataProviders:
 
     def track_artwork(self, track):
         track = self._normalize_track_input(track)
-        # Keep the cheap provider-specific artwork path first, but do not
-        # stop at the two legacy sources.  Lyrics requests are also the
-        # user's most visible metadata request; when NetEase/QQ have no
-        # result, the other supported catalogs may still provide a valid
-        # cover through the same bounded candidate search used by track
-        # matching.  This avoids reporting a coverless track as metadata
-        # unavailable merely because the first two providers missed it.
-        artwork = self._first_match(
-            (self.netease_track_artwork, self.qq_track_artwork), track
-        )
-        if artwork:
-            return artwork
-        try:
-            candidates = self.track_candidates(track)
-        except Exception as exc:
-            self._record_provider_failure("track-artwork-fallback", exc)
-            return None
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
+        for provider_name in self._provider_ids("cover"):
+            if not self._provider_is_available(provider_name):
                 continue
-            image_url = _provider_text(candidate.get("image_url"), 2048)
-            if not image_url:
-                continue
-            return {
-                "image_url": image_url,
-                "source": _provider_text(candidate.get("source"), 64),
-                "provider_id": _provider_text(candidate.get("provider_id"), 128),
-                "confidence": candidate.get("confidence", 0),
-            }
+            try:
+                artwork = self._track_artwork_for_provider(provider_name, track)
+                if artwork:
+                    self._record_provider_success(provider_name)
+                    return artwork
+                self._record_provider_outcome(provider_name, "empty")
+            except Exception as exc:
+                self._record_provider_failure(provider_name, exc)
         return None
 
     @staticmethod
@@ -1582,13 +1945,16 @@ class MetadataProviders:
             **projected, "confidence": round(score, 4),
         }
 
-    def track_candidates(self, track):
+    def track_candidates(self, track, provider_id="", *, review=False):
         """Return scored, deduplicated recording candidates from existing providers.
 
         Provider calls deliberately reuse the same search APIs as lyrics/artwork.
         A provider failure is isolated so an outage never blocks the whole queue.
         """
         track = self._normalize_track_input(track)
+        provider_scope = provider_id.strip() if isinstance(provider_id, str) else ""
+        if provider_scope and not any(item.get("id") == provider_scope for item in provider_definitions()):
+            return []
         # Keep candidate search on the same bounded/placeholder-aware query
         # policy used by lyrics and artwork providers.  The old raw
         # interpolation let values such as "未知歌手" leak into every
@@ -1606,6 +1972,10 @@ class MetadataProviders:
             hinted_artist=hinted_artist,
             hinted_title=hinted_title,
         )
+        if provider_scope:
+            cache_key = "%s|provider:%s" % (cache_key, provider_scope)
+        if review:
+            cache_key += "|review"
         now = time.monotonic()
         cached_value = None
         cached_entry = None
@@ -1694,7 +2064,7 @@ class MetadataProviders:
             or not local_album
             or local_album.casefold() in PLACEHOLDER_NAMES
         )
-        if hinted_title and (hinted_artist or not local_title) and missing_local_identity:
+        if not provider_scope and hinted_title and (hinted_artist or not local_title) and missing_local_identity:
             local = self._track_candidate(
                 track, {}, "filename", hinted_title, hinted_artist,
                 local_album if local_album.casefold() not in PLACEHOLDER_NAMES else "",
@@ -1705,7 +2075,7 @@ class MetadataProviders:
             # below the automatic writeback threshold.
             local["confidence"] = 0.56
             candidates.append(local)
-        if fingerprint_capability(self.config).get("available"):
+        if not provider_scope and fingerprint_capability(self.config).get("available"):
             try:
                 sample = audio_fingerprint(track.get("path") or "", self.config)
                 params = urllib.parse.urlencode({
@@ -1735,105 +2105,28 @@ class MetadataProviders:
                     candidates.append(candidate)
             except (OSError, ValueError, TypeError, RuntimeError, urllib.error.URLError, urllib.error.HTTPError) as exc:
                 self._record_provider_failure("acoustid", exc)
-        musicbrainz_adapter = (
-            "musicbrainz", lambda: self._musicbrainz_recordings(self._musicbrainz_track_query(track)),
-            lambda item: self._musicbrainz_track_candidate(track, item),
-        )
-        netease_adapter = (
-            "netease", lambda: ((self._json("https://music.163.com/api/search/get/web?type=1&limit=10&s=" + urllib.parse.quote(query), {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}).get("result") or {}).get("songs") or []),
-            lambda item: self._track_candidate(track, item, "netease", item.get("name"), _artist_name(item.get("artists") or []), (item.get("album") or {}).get("name"), _artist_name((item.get("album") or {}).get("artists") or []), (item.get("album") or {}).get("publishTime"), "", item.get("no"), (item.get("album") or {}).get("picUrl"), item.get("id")),
-        )
-        qq_adapter = ("qq", lambda: self._qq_songs(query, 10),
-             lambda item: self._track_candidate(track, item, "qq", item.get("songname"), _artist_name(item.get("singer") or []), item.get("albumname"), _artist_name(item.get("singer") or []), item.get("pubtime"), item.get("genre"), item.get("songid"), "https://y.gtimg.cn/music/photo_new/T002R500x500M000%s.jpg" % item.get("albummid") if item.get("albummid") else "", item.get("songmid")))
-        kugou_adapter = ("kugou", lambda: self._kugou_songs(query, 10),
-             lambda item: self._track_candidate(track, item, "kugou", item.get("SongName"), item.get("SingerName"), item.get("AlbumName"), item.get("SingerName"), item.get("PublishDate") or item.get("PublishTime"), item.get("Genre"), item.get("OriSongName"), _provider_text(item.get("Image"), MAX_ARTWORK_URL_LENGTH).replace("{size}", "500"), item.get("FileHash")))
-        migu_adapter = ("migu", lambda: self._migu_songs(query, 10),
-             lambda item: self._track_candidate(track, item, "migu", item.get("name") or item.get("songName"), self._migu_artist(item), self._migu_album_name(item), self._migu_artist(item), item.get("publishDate"), item.get("genre"), item.get("trackNo"), self._migu_image(item), item.get("contentId")))
-        joox_adapter = ("joox", lambda: self._joox_songs(query),
-             lambda item: self._track_candidate(track, item, "joox", item.get("name"), self._joox_artist(item), (item.get("album") or {}).get("name"), self._joox_artist(item), (item.get("album") or {}).get("publish_date"), item.get("genre"), item.get("track"), self._joox_image(item), item.get("id")))
-        qianqian_adapter = ("qianqian", lambda: self._qianqian_songs(query),
-             lambda item: self._track_candidate(track, item, "qianqian", item.get("title"), self._qianqian_artist(item), item.get("albumTitle") or item.get("album"), self._qianqian_artist(item), item.get("releaseDate"), item.get("genre"), item.get("trackNo"), item.get("pic"), item.get("TSID")))
-        # MusicBrainz is deliberately first for international titles, where
-        # it is the strongest broad-catalog source.  For CJK titles the
-        # regional adapters are both faster and more complete; keep
-        # MusicBrainz as a true fallback so its public rate limit does not
-        # delay the common Chinese-song path.
-        if contains_cjk(track.get("title"), track.get("artist")):
-            adapters = (netease_adapter, qq_adapter, kugou_adapter, migu_adapter, joox_adapter, qianqian_adapter, musicbrainz_adapter)
-        else:
-            adapters = (musicbrainz_adapter, netease_adapter, qq_adapter, kugou_adapter, migu_adapter, joox_adapter, qianqian_adapter)
-        for _source, request, mapper in adapters:
+        provider_chain = [provider_scope] if provider_scope else self._provider_ids("search")
+        for _source in provider_chain:
             if not self._provider_is_available(_source):
                 continue
-            search_complete = False
             try:
-                payload = request()
-                # Every recording-search adapter has a list-shaped result.
-                # Do not let an error object/schema drift be quietly treated
-                # as a valid empty list: that incorrectly writes a long-lived
-                # ``no_match`` and makes metadata appear permanently broken.
-                # Raising here is contained by this provider's boundary,
-                # recorded for diagnostics, and lets the remaining sources
-                # supply a result in the same bounded job.
-                if not candidate_payload_is_sequence(payload):
-                    raise ValueError("metadata provider candidate payload has invalid shape")
-                if not payload:
-                    self._record_provider_outcome(_source, "empty")
-                valid_candidate_seen = False
-                usable_candidate_seen = False
-                corrupt_candidate_seen = False
-                # Keep a malformed single candidate from poisoning the whole
-                # provider result.  Third-party search payloads occasionally
-                # contain null/shape-drift entries mixed with valid songs;
-                # mapping them in one generator used to abort the remaining
-                # candidates and falsely record a provider failure.
-                for item in candidate_mappings(payload):
-                    try:
-                        mapped = mapper(item)
-                    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
-                        continue
-                    # Some catalog gateways return JSON that is syntactically
-                    # valid but already contains U+FFFD replacement text.
-                    # Treat that candidate as corrupt instead of allowing a
-                    # high title score to block every healthy fallback source.
-                    if isinstance(mapped, dict) and not any(
-                        candidate_text_is_corrupt(mapped.get(field))
-                        for field in ("title", "artist", "album", "album_artist", "genre", "image_url")
-                    ):
-                        valid_candidate_seen = True
-                        candidates.append(mapped)
-                        usable_candidate_seen = usable_candidate_seen or candidate_has_displayable_fields(mapped)
-                        if should_stop_track_candidate_search(mapped):
-                            # Current-song requests should become visible as
-                            # soon as one complete, high-confidence result is
-                            # available; lower-priority providers remain a
-                            # fallback when the match is sparse or ambiguous.
-                            search_complete = True
-                            break
-                    elif isinstance(mapped, dict):
-                        corrupt_candidate_seen = True
-                # A syntactically valid list containing only replacement-text
-                # candidates is a provider data failure, not a successful
-                # no-match.  Keep it retryable so a later request can recover
-                # after the source fixes its encoding/payload.
-                if corrupt_candidate_seen and not valid_candidate_seen:
-                    raise ValueError("metadata provider returned corrupt candidate text")
-                if payload and not valid_candidate_seen:
-                    self._record_provider_outcome(_source, "no_valid_candidates")
-                # An empty or structurally valid-but-unusable response is not
-                # a provider success: keep failure cooldowns intact so the
-                # next bounded retry can recover after a transient outage.
-                if usable_candidate_seen:
+                mapped_candidates = self._track_candidates_for_provider(_source, track)
+                if mapped_candidates:
+                    candidates.extend(mapped_candidates)
                     self._record_provider_success(_source)
+                elif getattr(self._search_local, "outcome", "empty") == "no_valid_candidates":
+                    self._record_provider_outcome(_source, "no_valid_candidates")
+                else:
+                    self._record_provider_outcome(_source, "empty")
             except Exception as exc:
                 # A single provider's schema drift must not make metadata look
                 # globally unavailable. Continue through the remaining bounded
                 # sources and expose the failure through diagnostics.
                 self._record_provider_failure(_source, exc)
                 continue
-            if search_complete:
+            if candidates and should_stop_track_candidate_search(candidates[-1]):
                 break
-        result = finalize_track_candidates(candidates)
+        result = finalize_track_candidates(candidates, minimum_confidence=0.0 if review else 0.55)
         if result:
             with self._candidate_cache_lock:
                 self._candidate_cache.pop(cache_key, None)
@@ -1954,6 +2247,7 @@ class MetadataService:
         self.current_track_id = ""
         self.dropped_jobs = 0
         self.lock = threading.RLock()
+        self._interactive_results = OrderedDict()
         # Serializes lazy worker recovery triggered by an interactive metadata
         # request.  Without this, two concurrent WebView clients can both see
         # a dead pool and race through ``start()``, producing duplicate workers
@@ -2750,7 +3044,9 @@ class MetadataService:
                 self.fetch_wake_event.wait(1)
                 self.fetch_wake_event.clear()
                 continue
-            if not self.config.get("metadata_enabled", False):
+            with self.lock:
+                force_requested = self.force_reconcile
+            if not self.config.get("metadata_enabled", False) and not force_requested:
                 # A candidate dialog is an explicit per-track request. Allow
                 # only that bounded priority lane while keeping whole-library
                 # reconciliation disabled by default.
@@ -2972,7 +3268,7 @@ class MetadataService:
             conn.execute("UPDATE metadata_tracks SET orphaned_at=0 WHERE track_id IN (SELECT track_id FROM active_metadata_tracks)")
             conn.execute("UPDATE metadata_tracks SET orphaned_at=? WHERE orphaned_at=0 AND track_id NOT IN (SELECT track_id FROM active_metadata_tracks)", (now,))
             conn.execute(
-                "DELETE FROM metadata_jobs WHERE job_type IN ('lyrics','track','tag_write') AND entity_key NOT IN (SELECT track_id FROM active_metadata_tracks)"
+                "DELETE FROM metadata_jobs WHERE job_type IN ('lyrics','track','track_artwork','tag_write') AND entity_key NOT IN (SELECT track_id FROM active_metadata_tracks)"
             )
             conn.execute("UPDATE metadata_track_matches SET orphaned_at=0 WHERE track_id IN (SELECT track_id FROM active_metadata_tracks)")
             conn.execute("UPDATE metadata_track_matches SET orphaned_at=? WHERE track_id NOT IN (SELECT track_id FROM active_metadata_tracks) AND orphaned_at=0", (now,))
@@ -3124,7 +3420,7 @@ class MetadataService:
             if lyrics_only:
                 clauses.append("job_type='lyrics'")
             if track_only:
-                clauses.append("job_type='track'")
+                clauses.append("job_type IN ('track','track_artwork')")
             if tag_writes_only:
                 clauses.append("job_type='tag_write'")
                 # The tag writer is intentionally single-file. The guard is
@@ -3255,6 +3551,8 @@ class MetadataService:
                     )
                 if artwork_candidate and artwork_candidate.get("image_url"):
                     self._store_track_artwork(job["entity_key"], artwork_candidate)
+            elif job["job_type"] == "track_artwork":
+                result = self._store_confirmed_track_artwork(job["entity_key"])
             elif job["job_type"] == "tag_write":
                 result = self._write_track_tags(job["entity_key"])
             else:
@@ -3402,6 +3700,31 @@ class MetadataService:
             )
         self._invalidate_status_cache(projection_changed=projection_changed)
 
+    def _store_confirmed_track_artwork(self, track_id):
+        # Read the committed selection rather than retaining a provider URL in
+        # the job payload. Repeated confirmations coalesce and a recovered job
+        # uses the latest accepted candidate without running another search.
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT fields_json FROM metadata_track_matches WHERE track_id=? AND status='confirmed' AND orphaned_at=0",
+                (track_id,),
+            ).fetchone()
+        fields = decode_track_match_fields(row["fields_json"]) if row else {}
+        selected = fields.get("best") or {}
+        if not isinstance(selected, dict) or not selected.get("image_url"):
+            return {}
+        stored = self._store_track_artwork(track_id, selected)
+        with self._connect() as conn:
+            artwork = conn.execute(
+                "SELECT artwork_id FROM metadata_tracks WHERE track_id=? AND orphaned_at=0", (track_id,),
+            ).fetchone()
+            if not artwork or not valid_artwork_id(artwork["artwork_id"]):
+                raise RuntimeError("confirmed artwork download failed")
+            # A normal tag job may already be writing a pre-cover snapshot.
+            # A separate coalesced key guarantees a subsequent serial write.
+            self._queue_tag_write(conn, track_id, after_artwork=True)
+        return {"artwork_id": artwork["artwork_id"], "stored": stored}
+
     def _store_track_artwork(self, track_id, result):
         """Persist candidate artwork without replacing an existing track asset."""
         result = result if isinstance(result, dict) else {}
@@ -3540,7 +3863,7 @@ class MetadataService:
         artwork_id = _provider_text(row["artwork_id"] if row else "", 128).strip().lower()
         return normalize_artwork_id(artwork_id)
 
-    def apply_track_match(self, track_id, candidate_index=0):
+    def apply_track_match(self, track_id, candidate_index=0, search_id=""):
         """Confirm one stored candidate and promote it to safe writeback."""
         track_id = normalize_track_id(track_id)
         if not track_id:
@@ -3548,38 +3871,145 @@ class MetadataService:
         candidate_index = strict_nonnegative_int(candidate_index)
         if candidate_index is None:
             return False
+        review_fields = None
+        if search_id:
+            with self.lock:
+                entry = self._interactive_results.get(search_id)
+                if not entry or entry[0] != track_id or time.monotonic() - entry[1] >= 600:
+                    return False
+                review_fields = {"candidates": entry[2]}
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT fields_json FROM metadata_track_matches WHERE track_id=? AND orphaned_at=0",
-                (track_id,),
-            ).fetchone()
-            if not row:
-                return False
-            fields = decode_track_match_fields(row["fields_json"])
-            if not fields:
-                return False
+            if review_fields is None:
+                row = conn.execute(
+                    "SELECT fields_json FROM metadata_track_matches WHERE track_id=? AND orphaned_at=0",
+                    (track_id,),
+                ).fetchone()
+                if not row:
+                    return False
+                fields = decode_track_match_fields(row["fields_json"])
+                if not fields:
+                    return False
+            else:
+                fields = review_fields
             candidates = normalize_track_candidates(fields.get("candidates"))
             if candidate_index >= len(candidates) or not isinstance(candidates[candidate_index], dict):
                 return False
             selected = dict(candidates[candidate_index])
+            if selected.get("image_url") and not self._upsert_job(
+                conn, "track-artwork:" + track_id, "track_artwork", track_id, {}, 1, True,
+            ):
+                return False
             fields = {"best": selected, "candidates": candidates}
             conn.execute(
-                """UPDATE metadata_track_matches
-                   SET fields_json=?,source=?,provider_id=?,confidence=?,status='confirmed'
-                   WHERE track_id=?""",
+                """INSERT INTO metadata_track_matches(
+                       fields_json,source,provider_id,confidence,track_id,status,fetched_at,expires_at,orphaned_at
+                   ) VALUES (?,?,?,?,?,'confirmed',?,?,0)
+                   ON CONFLICT(track_id) DO UPDATE SET
+                       fields_json=excluded.fields_json,source=excluded.source,
+                       provider_id=excluded.provider_id,confidence=excluded.confidence,status='confirmed',
+                       fetched_at=excluded.fetched_at,expires_at=excluded.expires_at,orphaned_at=0""",
                 (
                     json.dumps(fields, ensure_ascii=False),
                     str(selected.get("source") or ""),
                     str(selected.get("provider_id") or ""),
                     finite_confidence(selected.get("confidence")),
                     track_id,
+                    int(time.time()),
+                    int(time.time()) + POSITIVE_TTL,
                 ),
             )
             self._queue_tag_write(conn, track_id)
+        if selected.get("image_url"):
+            self.fetch_wake_event.set()
+            # Recover an already started pool without starting background work
+            # for callers that only constructed a service for offline use.
+            if self.fetch_threads:
+                self.ensure_workers("fetch")
         # Confirmation promotes candidate fields into the visible track
         # projection, so cached library pages must be invalidated immediately.
         self._invalidate_status_cache(projection_changed=True)
         self.tag_wake_event.set()
+        return True
+
+    def track_candidates(self, track, provider_id=""):
+        """Search interactive sources independently of background early-stop rules.
+
+        Three bounded lanes keep one slow source from blocking the rest. Keep
+        each source's first result before filling the remaining eight review
+        slots; equivalent songs from different catalogs are meaningful choices.
+        """
+        known = {item["id"] for item in provider_definitions()}
+        if provider_id and provider_id not in known:
+            return []
+        sources = [provider_id] if provider_id else self.providers._provider_ids("search")
+        if not sources:
+            return []
+
+        def search(source):
+            self.providers.begin_job_observation(8)
+            try:
+                return self.providers.track_candidates(track, provider_id=source, review=True)
+            finally:
+                self.providers.end_job_observation()
+
+        with ThreadPoolExecutor(max_workers=min(3, len(sources)), thread_name_prefix="metadata-review") as pool:
+            batches = list(pool.map(search, sources))
+        candidates = []
+        for index in range(8):
+            for batch in batches:
+                if index < len(batch):
+                    candidates.append(batch[index])
+                    if len(candidates) == 8:
+                        return normalize_track_candidates(candidates)
+        return normalize_track_candidates(candidates)
+
+    def cache_interactive_track_candidates(self, track_id, candidates):
+        """Bind bounded review choices to an immutable ID without replacing accepted metadata."""
+        track_id = normalize_track_id(track_id)
+        normalized = normalize_track_candidates(candidates)
+        if not track_id or not normalized:
+            return ""
+        now = time.monotonic()
+        search_id = secrets.token_urlsafe(24)
+        with self.lock:
+            for key, entry in list(self._interactive_results.items()):
+                if now - entry[1] >= 600:
+                    self._interactive_results.pop(key, None)
+            self._interactive_results[search_id] = (track_id, now, normalized)
+            while len(self._interactive_results) > 128:
+                self._interactive_results.popitem(last=False)
+        return search_id
+
+    def store_interactive_track_candidates(self, track_id, candidates):
+        """Store manual-search candidates without authorizing automatic writeback."""
+        track_id = normalize_track_id(track_id)
+        normalized = normalize_track_candidates(candidates)
+        if not track_id or not normalized:
+            return False
+        best = normalized[0]
+        now = int(time.time())
+        fields_json = json.dumps(
+            {"best": best, "candidates": normalized},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO metadata_track_matches(
+                    track_id,fields_json,source,provider_id,confidence,status,fetched_at,expires_at,orphaned_at
+                ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                (
+                    track_id,
+                    fields_json,
+                    _provider_text(best.get("source"), 64),
+                    _provider_text(best.get("provider_id"), 128),
+                    finite_confidence(best.get("confidence")),
+                    "review",
+                    now,
+                    now + POSITIVE_TTL,
+                ),
+            )
+        self._invalidate_status_cache(projection_changed=False)
         return True
 
     def track_match(self, track_id, retry_failed=False):
@@ -3638,11 +4068,13 @@ class MetadataService:
                 existing_status = str(existing_job["status"] or "") if existing_job else ""
                 if existing_status not in ("pending", "retry", "running"):
                     self._upsert_job(conn, "track:" + track_id, "track", track_id, dict(track), 1, True)
-                    # Only a newly queued terminal/missing lookup may start
-                    # the pool here.  Polling an existing active job must not
-                    # alter its lifecycle or race it into ``running`` before
-                    # the caller can observe the stable pending projection.
-                    self.ensure_workers("fetch")
+                # A service can be recreated while its database still contains
+                # an interactive pending/running/retry job.  Do the liveness
+                # check for those rows as well as newly queued rows; otherwise
+                # the UI keeps polling a job that has no worker generation.
+                # ensure_workers() is idempotent for a healthy pool and does
+                # not claim or rewrite the job before this transaction commits.
+                self.ensure_workers("fetch")
                 self.fetch_wake_event.set()
                 self._invalidate_status_cache()
                 # Return a local, low-confidence identity immediately while
@@ -3850,7 +4282,7 @@ class MetadataService:
         self.priority_wake_event.set()
         return True
 
-    def _queue_tag_write(self, conn, track_id):
+    def _queue_tag_write(self, conn, track_id, after_artwork=False):
         # One low-priority job per track coalesces separately discovered cover
         # and lyric data, so the original file is not repeatedly rewritten.
         # Non-current tracks get a short debounce window: album artwork and
@@ -3858,7 +4290,11 @@ class MetadataService:
         if not self.config.get("metadata_tag_write_enabled", False):
             return False
         priority = 2 if str(track_id) == self.current_track_id else 200
-        self._upsert_job(conn, "tag:" + track_id, "tag_write", track_id, {}, priority)
+        job_key = ("tag-artwork:" if after_artwork else "tag:") + track_id
+        if not self._upsert_job(conn, job_key, "tag_write", track_id, {}, priority):
+            if after_artwork:
+                raise RuntimeError("confirmed artwork tag queue is full")
+            return False
         self.tag_wake_event.set()
         # A fetch worker can discover artwork/lyrics after the dedicated tag
         # writer has died. Recover that already-started lane at the enqueue
@@ -3873,7 +4309,7 @@ class MetadataService:
                 """UPDATE metadata_jobs
                    SET next_attempt_at=MAX(next_attempt_at, ?), updated_at=?
                    WHERE job_key=? AND status IN ('pending','retry')""",
-                (int(time.time()) + 10, int(time.time()), "tag:" + track_id),
+                (int(time.time()) + 10, int(time.time()), job_key),
             )
 
     def _queue_album_tag_writes(self, conn, album, album_artist):
@@ -4383,6 +4819,8 @@ class MetadataService:
             for row in batch:
                 conn.execute("DELETE FROM metadata_jobs WHERE job_key=?", ("lyrics:" + row["track_id"],))
                 conn.execute("DELETE FROM metadata_jobs WHERE job_key=?", ("tag:" + row["track_id"],))
+                conn.execute("DELETE FROM metadata_jobs WHERE job_key=?", ("tag-artwork:" + row["track_id"],))
+                conn.execute("DELETE FROM metadata_jobs WHERE job_key=?", ("track-artwork:" + row["track_id"],))
             conn.executemany(
                 "DELETE FROM metadata_tracks WHERE track_id=?",
                 [(row["track_id"],) for row in batch],

@@ -1,6 +1,14 @@
 const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放" };
 const $ = (id) => document.getElementById(id);
 state.playTargetName = "当前设备";
+const MUSICBRAINZ_PROVIDER_ID = "musicbrainz";
+const METADATA_PROVIDER_SAFE_ORDER = ["netease", "kuwo", "kugou", "migu", "joox", MUSICBRAINZ_PROVIDER_ID];
+state.metadataProviders = [];
+state.metadataProviderRecommended = [];
+state.metadataProviderResults = Object.create(null);
+state.metadataProvidersLoaded = false;
+state.metadataProviderDragId = "";
+state.metadataProviderTestInFlight = "";
 const audio = $("audio");
 const groupViews = { albums: "album", artists: "artist", composers: "composer", genres: "genre" };
 function isCreatorView(view = state.view) {
@@ -77,10 +85,10 @@ function parseStoredJson(key, fallback, maxChars = MAX_UI_PREFERENCE_STORAGE_CHA
 }
 
 const TRACK_COLUMN_DEFINITIONS = {
-  title: { label: "标题", width: 420, sort: "title" },
-  track_no: { label: "序号", width: 64, sort: "track_no" },
-  artist: { label: "歌手", width: 200, sort: "artist" },
-  album: { label: "专辑", width: 240, sort: "album" },
+  title: { label: "标题", width: 280, sort: "title" },
+  track_no: { label: "序号", width: 48, sort: "track_no" },
+  artist: { label: "歌手", width: 140, sort: "artist" },
+  album: { label: "专辑", width: 160, sort: "album" },
   format: { label: "格式", width: 76, sort: "format" },
   duration: { label: "时长", width: 72 },
   size: { label: "大小", width: 88 },
@@ -94,6 +102,7 @@ const DEFAULT_LIBRARY_TRACK_COLUMNS = ["title", "artist", "album", "size", "form
 const DEFAULT_ALBUM_DETAIL_TRACK_COLUMNS = ["track_no", ...DEFAULT_LIBRARY_TRACK_COLUMNS];
 const PAGED_LIBRARY_VIEWS = new Set(["all", "dsd", "recent", "random100", "folders", "albums", "artists", "composers", "genres"]);
 state.libraryStatus = null;
+state.libraryLoadError = "";
 state.libraryStatusPromise = null;
 state.libraryStatusRefreshQueued = false;
 state.libraryStatusRequestToken = 0;
@@ -139,6 +148,9 @@ state.metadataCandidatePollTimer = 0;
 state.metadataCandidatePollAttempts = 0;
 state.metadataCandidateRequestToken = 0;
 state.metadataCandidateController = null;
+state.metadataCandidateSearchController = null;
+state.metadataCandidateSearchToken = 0;
+state.metadataCandidateProviderId = "";
 const METADATA_CANDIDATE_MAX_POLLS = 12;
 // Track-level metadata prefetches are started when playback begins, rather
 // than waiting for the user to open the candidate dialog.  Keep one token per
@@ -364,6 +376,7 @@ state.albumMetadata = globalThis.fnAudioAlbumMetadataCache?.(4096) || {
   get size() { return 0; }
 };
 state.settingsTab = "library";
+state.metadataSettingsTab = "overview";
 state.searchTimer = null;
 state.nativePlayback = { available: false, mediaId: "", queueIds: [], position: 0, duration: 0, playing: false, playbackState: 1 };
 state.mediaSession = { supported: false, metadata: false, actions: [], host: "standalone" };
@@ -750,9 +763,14 @@ async function fetchJsonChecked(input, init = {}, fallbackMessage = "请求失�
     const response = result.response;
     const data = result.data || {};
     if (!response.ok) {
-      throw new Error(data.message || data.error || `${fallbackMessage}（HTTP ${response.status}）`);
+      const authFailure = response.status === 401 || response.status === 403;
+      const error = new Error(authFailure
+        ? `登录已失效或没有访问权限，请重新登录（HTTP ${response.status}）`
+        : (data.message || data.error || `${fallbackMessage}（HTTP ${response.status}）`));
+      error.status = response.status;
+      throw error;
     }
-    if (strictBody && globalThis.fnAudioResponseJsonLoader.usableBody?.(result.bodyStatus) === false) {
+    if (strictBody && globalThis.fnAudioResponseJsonLoader.parsedBody(result.bodyStatus) === false) {
       const error = new Error(`${fallbackMessage}（响应体不完整）`);
       error.name = "ResponseError";
       error.bodyStatus = result.bodyStatus;
@@ -1062,7 +1080,7 @@ function saveTrackColumns(columns) {
 }
 function currentTrackColumnWidths() {
   const scope = trackColumnScope();
-  const merged = { ...normalizeTrackColumnWidths(state.autoTrackColumnWidths[scope]), ...normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]) };
+  const merged = { ...normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]), ...normalizeTrackColumnWidths(state.autoTrackColumnWidths[scope]) };
   // Stored and auto-measured widths can predate a column's current resize
   // band.  Converge them on read so the template never shows a width that
   // saveTrackColumnWidth() could not have written, and so the first drag grabs
@@ -1929,6 +1947,33 @@ function scanProgressText() {
   const suffix = current ? ` · ${current}` : "";
   if (scanned || found) return `${prefix}：已检查 ${scanned} 个文件，已发现 ${found} 首歌曲${suffix}`;
   return `${prefix}${suffix}`;
+}
+function renderLibraryHealth() {
+  const status = state.libraryStatus || {};
+  const health = $("libraryHealth");
+  if (!health) return;
+  const exists = status.exists === true;
+  const readable = status.readable === true;
+  const scanning = status.scanning === true;
+  const unconfigured = status.library_path === "" && Array.isArray(status.library_paths) && status.library_paths.length === 0;
+  const stateText = unconfigured ? "尚未配置音乐目录" : (scanning ? scanProgressText() || "正在扫描音乐库" : (!exists ? "目录不存在" : (!readable ? "目录不可读" : (status.last_error ? "最近一次扫描有错误" : "目录正常"))));
+  const pathText = displayText(status.library_path || (status.library_paths || []).join(", ") || "未配置");
+  const count = Math.max(0, Number(status.count || status.found || 0));
+  const lastScan = Number(status.last_scan || 0);
+  const lastScanText = Number.isFinite(lastScan) && lastScan > 0 ? new Date(lastScan * 1000).toLocaleString("zh-CN", { hour12: false }) : "尚未扫描";
+  const detail = status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`);
+  setTextContentIfChanged($("libraryHealthStatus"), stateText);
+  setTextContentIfChanged($("libraryHealthPath"), pathText);
+  setTextContentIfChanged($("libraryHealthCount"), `${count} 首`);
+  setTextContentIfChanged($("libraryHealthLastScan"), lastScanText);
+  setTextContentIfChanged($("libraryHealthDetail"), detail);
+  health.classList.toggle("is-error", !exists || !readable || Boolean(status.last_error));
+  health.classList.toggle("is-scanning", scanning);
+  const button = $("libraryScanNowBtn");
+  if (button) {
+    button.disabled = scanning || unconfigured;
+    button.textContent = scanning ? "扫描中..." : "立即扫描";
+  }
 }
 function updateDeviceLabel() {
   // Changing device repaints the row's *owner* without repainting the row: `render()`
@@ -3045,7 +3090,7 @@ function applyTrackGridTemplate() {
 function trackColumnWidthLimits(key) {
   if (globalThis.fnAudioTrackTablePresentation?.widthLimits) return globalThis.fnAudioTrackTablePresentation.widthLimits(key);
   return {
-    title: [260, 620], track_no: [64, 84], artist: [120, 280], album: [150, 340],
+    title: [180, 520], track_no: [48, 72], artist: [88, 220], album: [110, 280],
     format: [76, 110], duration: [72, 96], size: [88, 120], quality: [120, 170],
     added: [110, 150], composer: [120, 260], genre: [110, 200],
   }[key] || [80, 260];
@@ -3072,10 +3117,8 @@ function measureAutoTrackColumnWidths() {
     return;
   }
   const scope = trackColumnScope();
-  const saved = normalizeTrackColumnWidths(state.trackColumnWidthPreferences[scope]);
   const widths = {};
   activeTrackColumns().forEach(key => {
-    if (saved[key]) return;
     const [minimum, maximum] = trackColumnWidthLimits(key);
     const header = document.querySelector(`[data-track-column="${key}"] .track-head-button,[data-track-column="${key}"] .track-head-label`);
     let measured = Number(header?.scrollWidth || 0) + 24;
@@ -3722,6 +3765,7 @@ function needsVisibleTrackCoverHydration() {
   return Number(status?.queued || 0) === 0 && Number(status?.inFlight || 0) === 0;
 }
 function hydrateVisibleTrackCovers() {
+  const hadScheduler = Boolean(state.coverLoadScheduler);
   if (!state.coverLoadScheduler && globalThis.fnAudioCoverLoadScheduler?.create) {
     state.coverLoadScheduler = globalThis.fnAudioCoverLoadScheduler.create({
       document,
@@ -3743,8 +3787,8 @@ function hydrateVisibleTrackCovers() {
     return;
   }
   const status = state.coverLoadScheduler?.hydrate();
-  state.uiMetrics.coverHydrations = Math.min(1000000, state.uiMetrics.coverHydrations + 1);
-  if (!state.uiMetrics.firstCoverHydrationMs) {
+  if (!hadScheduler) state.uiMetrics.coverHydrations = Math.min(1000000, state.uiMetrics.coverHydrations + 1);
+  if (!hadScheduler && !state.uiMetrics.firstCoverHydrationMs) {
     const elapsed = Date.now() - Number(state.uiMetrics.sessionStartedAt || Date.now());
     state.uiMetrics.firstCoverHydrationMs = Math.min(3600000, Math.max(0, elapsed));
   }
@@ -5532,8 +5576,68 @@ function shouldRetainSnapshotForEmptyResponse(data, refresh = false) {
     { refresh, guardUsed: state.librarySnapshotEmptyGuardUsed, snapshotHit: state.librarySnapshot?.hit === true },
   ));
 }
+async function refreshVisibleMetadataProjection() {
+  if (!isPagedTrackListing() || state.libraryLoading || !state.pageItems?.length) return false;
+  const items = state.pageItems;
+  const requestSeq = state.libraryRequestSeq;
+  const rows = items.slice(0, 500);
+  const ids = rows.map(item => String(item?.id || "")).filter(Boolean);
+  const refreshed = [];
+  try {
+    // This is a local SQLite projection read, never a new provider search.
+    // A placeholder cover URL alone cannot tell us whether its image exists.
+    for (let offset = 0; offset < ids.length; offset += 100) {
+      if (requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
+      refreshed.push(...await fetchLibraryItemsByIds(ids.slice(offset, offset + 100)));
+    }
+  } catch (_) { return false; }
+  if (requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
+  const byId = new Map((refreshed || []).map(item => [String(item?.id || ""), item]));
+  const fields = ["title", "artist", "album", "album_artist", "composer", "genre", "date", "track_no",
+    "cover_url", "cover_thumbnail_url"];
+  let changed = false;
+  for (const item of rows) {
+    const fresh = byId.get(String(item.id));
+    if (!fresh) continue;
+    const changedFields = fields.filter(field => fresh[field] != null
+      && (field.startsWith("cover_") || String(fresh[field]).trim())
+      && String(fresh[field]) !== String(item[field] ?? ""));
+    if (!changedFields.length) continue;
+    for (const target of [item, ...(state.queue || []).filter(entry => String(entry?.id || "") === String(item.id))]) {
+      changedFields.forEach(field => { target[field] = fresh[field]; });
+      if (fresh.metadata_source) target.metadata_source = fresh.metadata_source;
+    }
+    state.itemCache.set(String(item.id), item);
+    if (!changed) invalidateTrackRowsMarkup(items);
+    changed = true;
+    scheduleMetadataRowRender(String(item.id), changedFields);
+  }
+  if (changed) restoreLibraryNowPlaying();
+  return true;
+}
 function metadataProjectionSignature(data = {}) {
   return globalThis.fnAudioMetadataProjectionPolicy?.signature(data) || "";
+}
+function validateLibraryResponse(url, data) {
+  const endpoint = String(url).split("?")[0].split("/").pop();
+  const field = ["roots", "folders", "groups"].includes(endpoint) ? endpoint : "items";
+  if (!data || typeof data !== "object" || !Array.isArray(data[field])
+    || (field !== "roots" && (!Number.isSafeInteger(data.count) || data.count < 0))) {
+    throw new Error("音乐库响应格式异常，请重试或检查 NAS 服务");
+  }
+  const text = value => typeof value === "string" && value.trim().length > 0;
+  const validRow = row => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    if (field === "roots") {
+      if ((row.root !== undefined && typeof row.root !== "string") || (row.path !== undefined && typeof row.path !== "string")) return false;
+      return text(row.root || row.path);
+    }
+    if (field === "folders") return text(row.path);
+    if (field === "groups") return typeof row.name === "string";
+    return text(row.id);
+  };
+  if (!data[field].every(validRow)) throw new Error("音乐库响应格式异常，请重试或检查 NAS 服务");
+  return data;
 }
 async function fetchLibraryResponse(url, message, refresh = false, signal = undefined) {
   return globalThis.fnAudioLibraryResponseLoader.loadLibraryResponse({
@@ -5552,7 +5656,7 @@ async function fetchLibraryResponse(url, message, refresh = false, signal = unde
       requestSignal ? { signal: requestSignal } : {},
       requestMessage,
       { strictBody: true },
-    ),
+    ).then(data => validateLibraryResponse(requestUrl, data)),
   });
 }
 function cacheLibraryItems(items = [], trim = true) {
@@ -5624,6 +5728,10 @@ function setDatasetStateIfChanged(node, value) {
   node.dataset.state = next;
 }
 function updateLibraryStatusDecorations() {
+  renderLibraryHealth();
+  const loadError = $("libraryLoadError");
+  if (loadError) loadError.hidden = !state.libraryLoadError;
+  setTextContentIfChanged($("libraryLoadErrorText"), state.libraryLoadError || "");
   const serverPortValue = $("serverPortValue");
   setTextContentIfChanged(serverPortValue, state.libraryStatus?.server_port || "--");
   setTextContentIfChanged($("allCount"), libraryCount(state.libraryStatus?.count));
@@ -6367,6 +6475,8 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
   };
   if (refresh) clearLibraryResponseCaches();
   state.libraryLoading = true;
+  state.libraryLoadError = "";
+  updateLibraryStatusDecorations();
   state.page = libraryPageNumber(page);
   // When no bootstrap snapshot exists, hide only the static empty-state frame
   // as soon as the authoritative request begins.  Calling the full render()
@@ -6615,6 +6725,7 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
     }
     state.libraryLoading = false;
     state.libraryInteractionBlocked = false;
+    state.libraryLoadError = String(error?.message || error || "音乐库加载失败");
     state.libraryStatus = {
       ...(state.libraryStatus || {}),
       scanning: false,
@@ -7019,24 +7130,29 @@ function cancelDeviceLoad() {
 }
 
 async function getTrimSdk() {
-  if (!window.fnaudioTrimSdk) {
-    try {
-      const module = await import("./vendor/trim-web-app.js");
-      const TrimApp = module.TrimApp || module.default;
-      if (TrimApp) window.fnaudioTrimSdk = new TrimApp();
-    } catch (error) {
-    }
+  if (window.fnaudioTrimSdk) return window.fnaudioTrimSdk;
+  if (!window.fnaudioTrimSdkLoading) {
+    window.fnaudioTrimSdkLoading = (async () => {
+      try {
+        const module = await import("./vendor/trim-web-app.js");
+        const TrimApp = module.TrimApp || module.default;
+        if (TrimApp) window.fnaudioTrimSdk = new TrimApp();
+      } catch (error) {
+      }
+      return window.fnaudioTrimSdk || null;
+    })().finally(() => { window.fnaudioTrimSdkLoading = null; });
   }
-  return window.fnaudioTrimSdk || null;
+  return window.fnaudioTrimSdkLoading;
 }
 function fnAppVersion() {
   const match = String(navigator.userAgent || "").match(/FNAppVer\/([0-9.]+)/i);
   return match ? match[1] : "";
 }
 async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新时请点击刷新音乐库。") {
+  const status = $("librarySettingsStatus");
   const paths = collectLibraryPaths();
   if (!paths.length) {
-    $("folderSaveStatus").textContent = "请输入音乐目录";
+    if (status) status.textContent = "请先选择音乐目录";
     return false;
   }
   const response = await apiFetch("api/config/library", {
@@ -7046,43 +7162,153 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) {
-    $("folderSaveStatus").textContent = data.message || "保存设置失败";
+    if (status) status.textContent = data.message || "保存设置失败";
     return false;
   }
   state.libraryStatus = data.status || state.libraryStatus;
-  $("folderSaveStatus").textContent = statusText;
+  if (status) status.textContent = statusText;
   render();
   return true;
 }
 async function openFolderBrowser(path = "") {
   $("folderDialog").showModal();
+  ensureSettingsStatusNodes();
   setSettingsTab("library");
-  renderLibraryPathInputs(state.libraryStatus?.library_paths || [state.libraryStatus?.library_path || ""]);
-  $("folderSaveStatus").textContent = "";
-  loadMetadataStatus();
+  renderLibraryPathInputs(state.libraryStatus?.library_paths || []);
+  ["librarySettingsStatus", "runtimeSettingsStatus", "metadataOverviewSettingsStatus", "metadataTagSettingsStatus", "playbackSettingsStatus"].forEach(id => {
+    const node = $(id);
+    if (node) node.textContent = "";
+  });
+}
+function ensureSettingsStatusNodes() {
+  const entries = [
+    ["library", "librarySettingsStatus"],
+    ["playback", "playbackSettingsStatus"],
+    ["runtime", "runtimeSettingsStatus"],
+    ["metadata", "metadataOverviewSettingsStatus", "overview"],
+    ["metadata", "metadataTagSettingsStatus", "tags"],
+  ];
+  entries.forEach(([paneName, id, subpaneName]) => {
+    if ($(id)) return;
+    const pane = document.querySelector(subpaneName
+      ? `[data-metadata-settings-pane="${subpaneName}"]`
+      : `[data-settings-pane="${paneName}"]`);
+    if (!pane) return;
+    const status = document.createElement("p");
+    status.className = "settings-pane-status";
+    status.id = id;
+    status.setAttribute("aria-live", "polite");
+    pane.appendChild(status);
+  });
 }
 function setSettingsTab(name = "library") {
   state.settingsTab = name;
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
-    button.classList.toggle("active", button.dataset.settingsTab === name);
+    const active = button.dataset.settingsTab === name;
+    if (!button.id) button.id = `settings-tab-${button.dataset.settingsTab}`;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll("[data-settings-pane]").forEach(pane => {
     const active = pane.dataset.settingsPane === name;
     pane.hidden = !active;
     pane.classList.toggle("active", active);
   });
-  if (name === "metadata") loadMetadataStatus();
+  if (name === "metadata") {
+    setMetadataSettingsTab(state.metadataSettingsTab || "overview");
+    ensureMetadataSettingsOverview();
+    updateMetadataSettingsOverview();
+    loadMetadataStatus();
+  }
   if (name === "runtime") loadRuntimeSettings();
+  if (name === "playback") loadPlaybackSettings();
+}
+function settingsTabIndexForKey(key, currentIndex, count) {
+  if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count <= 0) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowRight" || key === "ArrowDown") return (currentIndex + 1) % count;
+  if (key === "ArrowLeft" || key === "ArrowUp") return (currentIndex + count - 1) % count;
+  return -1;
+}
+function bindSettingsTabs() {
+  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+    button.onclick = () => setSettingsTab(button.dataset.settingsTab);
+    button.onkeydown = event => {
+      const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
+      const nextIndex = settingsTabIndexForKey(event.key, tabs.indexOf(button), tabs.length);
+      if (nextIndex < 0) return;
+      event.preventDefault();
+      const next = tabs[nextIndex];
+      setSettingsTab(next.dataset.settingsTab);
+      next.focus();
+    };
+  });
+  setSettingsTab(state.settingsTab || "library");
+}
+function setMetadataSettingsTab(name = "overview") {
+  const tabs = Array.from(document.querySelectorAll("[data-metadata-settings-tab]"));
+  const panes = Array.from(document.querySelectorAll("[data-metadata-settings-pane]"));
+  if (!tabs.some(tab => tab.dataset.metadataSettingsTab === name)) {
+    name = tabs[0]?.dataset.metadataSettingsTab || "overview";
+  }
+  tabs.forEach(tab => {
+    const active = tab.dataset.metadataSettingsTab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+  });
+  panes.forEach(pane => {
+    const active = pane.dataset.metadataSettingsPane === name;
+    pane.hidden = !active;
+    pane.classList.toggle("active", active);
+  });
+  state.metadataSettingsTab = name;
+  syncMetadataSettingsSaveAction(name);
+  return name;
+}
+function syncMetadataSettingsSaveAction(name = "overview") {
+  const button = $("saveMetadataSettingsBtn");
+  const tagButton = $("saveMetadataTagSettingsBtn");
+  if (button) button.onclick = saveMetadataOverviewPaneSettings;
+  if (tagButton) tagButton.onclick = saveMetadataTagPaneSettings;
+}
+function metadataSettingsTabIndexForKey(key, currentIndex, count) {
+  if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count <= 0) return -1;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  if (key === "ArrowRight" || key === "ArrowDown") return (currentIndex + 1) % count;
+  if (key === "ArrowLeft" || key === "ArrowUp") return (currentIndex + count - 1) % count;
+  return -1;
+}
+function bindMetadataSettingsTabs() {
+  document.querySelectorAll("[data-metadata-settings-tab]").forEach(button => {
+    button.onclick = () => setMetadataSettingsTab(button.dataset.metadataSettingsTab);
+    button.onkeydown = event => {
+      const tabs = Array.from(document.querySelectorAll("[data-metadata-settings-tab]"));
+      const nextIndex = metadataSettingsTabIndexForKey(event.key, tabs.indexOf(button), tabs.length);
+      if (nextIndex < 0) return;
+      event.preventDefault();
+      const next = tabs[nextIndex];
+      setMetadataSettingsTab(next.dataset.metadataSettingsTab);
+      next.focus();
+    };
+  });
 }
 const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
 // Spelled exactly as `CONFIG_BYTES_KEY` in app/server/metadata_local_lyrics_cache.py;
 // test_ui_runtime_settings.js compares the two so a rename cannot pass on one side.
 const LYRICS_CACHE_BUDGET_SETTING_KEY = "metadata_lyrics_cache_max_bytes";
+const RENDERER_NAME_SETTING_KEY = "renderer_name";
 function runtimeConnectionPoolInput() {
   return $("libraryConnectionPoolInput");
 }
 function runtimeLyricsBudgetInput() {
   return $("lyricsCacheBudgetInput");
+}
+function playbackRendererNameInput() {
+  return $("rendererNameInput");
 }
 function applyRuntimeLyricsBudget(budget, limit) {
   // Show the budget the process really enforces. An unusable answer leaves the
@@ -7114,7 +7340,8 @@ async function loadRuntimeSettings() {
     applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
     return data;
   } catch (error) {
-    $("folderSaveStatus").textContent = "无法读取运行设置，当前显示的是上一次已知状态";
+    const status = $("runtimeSettingsStatus");
+    if (status) status.textContent = "无法读取运行设置，当前显示的是上一次已知状态";
     return null;
   }
 }
@@ -7127,8 +7354,8 @@ async function saveRuntimeSettings() {
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Both live settings travel together: the endpoint commits the whole
-    // runtime dictionary, so omitting a key would let this save drop it.
+    // The endpoint preserves omitted settings from the live config, so this
+    // page sends only the two advanced performance controls it owns.
     body: JSON.stringify({
       [LIBRARY_CONNECTION_POOL_SETTING_KEY]: input.checked === true,
       [LYRICS_CACHE_BUDGET_SETTING_KEY]: lyricsBudget,
@@ -7138,6 +7365,46 @@ async function saveRuntimeSettings() {
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存运行设置失败");
   input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
   applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
+  return data;
+}
+async function loadPlaybackSettings() {
+  const renderer = playbackRendererNameInput();
+  if (!renderer) return null;
+  const status = $("playbackSettingsStatus");
+  try {
+    const response = await apiFetch("api/config/runtime", { cache: "no-store" });
+    const data = await readResponseJsonBounded(response);
+    if (!response.ok || data.ok !== true) throw new Error(data.message || "");
+    if (typeof data?.config?.[RENDERER_NAME_SETTING_KEY] === "string" && data.config[RENDERER_NAME_SETTING_KEY].trim()) {
+      renderer.value = data.config[RENDERER_NAME_SETTING_KEY];
+    }
+    if (status) status.textContent = "";
+    return data;
+  } catch (error) {
+    if (status) status.textContent = "无法读取播放与设备设置，当前显示的是上一次已知状态";
+    return null;
+  }
+}
+async function savePlaybackSettings() {
+  const renderer = playbackRendererNameInput();
+  if (!renderer) throw new Error("播放与设备设置控件不可用");
+  const rendererName = renderer.value.trim();
+  const invalidRendererName = !rendererName || [...rendererName].length > 128 || [...rendererName].some(char => {
+    const codePoint = char.codePointAt(0);
+    return codePoint < 32 || (codePoint >= 127 && codePoint <= 159)
+      || (codePoint >= 0xD800 && codePoint <= 0xDFFF) || codePoint === 0xFFFE || codePoint === 0xFFFF;
+  });
+  if (invalidRendererName) throw new Error("播放与设备设置控件不可用");
+  const response = await apiFetch("api/config/runtime", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [RENDERER_NAME_SETTING_KEY]: rendererName }),
+  });
+  const data = await readResponseJsonBounded(response);
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存播放与设备设置失败");
+  if (typeof data?.config?.[RENDERER_NAME_SETTING_KEY] === "string" && data.config[RENDERER_NAME_SETTING_KEY].trim()) {
+    renderer.value = data.config[RENDERER_NAME_SETTING_KEY];
+  }
   return data;
 }
 function metadataStatusSummary(data = {}) {
@@ -7175,7 +7442,438 @@ function metadataStatusSummary(data = {}) {
       return `${name}×${Number(value?.count || 0)}${cooldown ? `（冷却${cooldown}s）` : ""}${error ? `：${error}` : ""}`;
     }).join("、")}`
     : "";
-  return `MusicBrainz、网易云、QQ、酷狗、咪咕、JOOX、千千音乐 · ${progress} · 已缓存 ${Number(data.entities || 0)} 项分类资料、${Number(data.lyrics || 0)} 首歌词${matchStatus}${pipeline}${writeStatus}${noMatchStatus}${providerStatus}`;
+  return `元数据数据源 · ${progress} · 已缓存 ${Number(data.entities || 0)} 项分类资料、${Number(data.lyrics || 0)} 首歌词${matchStatus}${pipeline}${writeStatus}${noMatchStatus}${providerStatus}`;
+}
+function metadataProviderFallbackEntries(recommended = []) {
+  const source = Array.isArray(recommended) && recommended.length === METADATA_PROVIDER_SAFE_ORDER.length
+    ? recommended
+    : METADATA_PROVIDER_SAFE_ORDER.map(id => ({ id, enabled: true }));
+  return METADATA_PROVIDER_SAFE_ORDER.map(id => {
+    const entry = source.find(item => item && item.id === id) || { id, enabled: true };
+    return { ...entry, id, enabled: entry.enabled === true, fixed_last: id === MUSICBRAINZ_PROVIDER_ID };
+  });
+}
+function normalizeMetadataProviderEntries(value, recommended = []) {
+  const fallback = metadataProviderFallbackEntries(recommended);
+  if (!Array.isArray(value) || value.length !== METADATA_PROVIDER_SAFE_ORDER.length) return fallback;
+  const seen = new Set();
+  const normalized = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || typeof raw.id !== "string"
+        || !METADATA_PROVIDER_SAFE_ORDER.includes(raw.id) || seen.has(raw.id)
+        || typeof raw.enabled !== "boolean") return fallback;
+    seen.add(raw.id);
+    normalized.push({ ...raw, id: raw.id, enabled: raw.enabled === true, fixed_last: raw.id === MUSICBRAINZ_PROVIDER_ID });
+  }
+  if (seen.size !== METADATA_PROVIDER_SAFE_ORDER.length || normalized.at(-1)?.id !== MUSICBRAINZ_PROVIDER_ID) return fallback;
+  return normalized;
+}
+function serializeMetadataProviderEntries(entries = []) {
+  return normalizeMetadataProviderEntries(entries).map(entry => ({ id: entry.id, enabled: entry.enabled === true }));
+}
+function moveMetadataProviderToIndex(entries = [], providerId = "", targetIndex = 0) {
+  const current = normalizeMetadataProviderEntries(entries);
+  if (providerId === MUSICBRAINZ_PROVIDER_ID) return current;
+  const fromIndex = current.findIndex(entry => entry.id === providerId);
+  if (fromIndex < 0) return current;
+  const maxIndex = Math.max(0, current.length - 2);
+  const boundedIndex = Math.max(0, Math.min(maxIndex, Number.isInteger(targetIndex) ? targetIndex : fromIndex));
+  const [moved] = current.splice(fromIndex, 1);
+  current.splice(boundedIndex, 0, moved);
+  const musicbrainz = current.find(entry => entry.id === MUSICBRAINZ_PROVIDER_ID);
+  return current.filter(entry => entry.id !== MUSICBRAINZ_PROVIDER_ID).concat(musicbrainz || { id: MUSICBRAINZ_PROVIDER_ID, enabled: true, fixed_last: true });
+}
+function metadataProviderDropTargetIndex(entries = [], draggedId = "", targetId = "", afterTarget = false) {
+  const current = normalizeMetadataProviderEntries(entries);
+  if (draggedId === MUSICBRAINZ_PROVIDER_ID) return -1;
+  const fromIndex = current.findIndex(entry => entry.id === draggedId);
+  const targetIndex = current.findIndex(entry => entry.id === targetId);
+  if (fromIndex < 0 || targetIndex < 0 || (targetId === MUSICBRAINZ_PROVIDER_ID && afterTarget)) return -1;
+  let destination = targetIndex + (afterTarget ? 1 : 0);
+  if (fromIndex < destination) destination -= 1;
+  return Math.max(0, Math.min(current.length - 2, destination));
+}
+function moveMetadataProviderEntries(entries = [], providerId = "", direction = 0) {
+  const current = normalizeMetadataProviderEntries(entries);
+  const index = current.findIndex(entry => entry.id === providerId);
+  if (index < 0 || providerId === MUSICBRAINZ_PROVIDER_ID) return current;
+  return moveMetadataProviderToIndex(current, providerId, index + (Number(direction) || 0));
+}
+function metadataProviderPayload() {
+  return serializeMetadataProviderEntries(state.metadataProviders);
+}
+function metadataProviderLabel(entry) {
+  return displayText(entry?.name || entry?.id || "数据源");
+}
+function metadataProviderDisplayName(providerId = "") {
+  const normalizedId = displayText(providerId).trim();
+  if (!normalizedId) return "未知数据源";
+  const entries = [
+    ...(Array.isArray(state.metadataProviders) ? state.metadataProviders : []),
+    ...(Array.isArray(state.metadataProviderRecommended) ? state.metadataProviderRecommended : []),
+  ];
+  const entry = entries.find(item => item && item.id === normalizedId);
+  const configuredName = displayText(entry?.name).trim();
+  if (configuredName) return configuredName;
+  return ({
+    netease: "网易云音乐",
+    kuwo: "酷我音乐",
+    kugou: "酷狗音乐",
+    migu: "咪咕音乐",
+    joox: "JOOX",
+    musicbrainz: "MusicBrainz",
+  })[normalizedId] || normalizedId;
+}
+function metadataCandidateSourceLabel(candidate = {}) {
+  const providerId = displayText(candidate.provider_id || "").trim();
+  const source = displayText(candidate.source || "").trim();
+  const knownIds = new Set(METADATA_PROVIDER_SAFE_ORDER);
+  if (knownIds.has(providerId)) return metadataProviderDisplayName(providerId);
+  if (knownIds.has(source)) return metadataProviderDisplayName(source);
+  return source || (providerId ? metadataProviderDisplayName(providerId) : "未知数据源");
+}
+function metadataProviderCapabilityText(entry) {
+  const capabilities = new Set(Array.isArray(entry?.capabilities) ? entry.capabilities : []);
+  return [
+    ["search", "搜索"],
+    ["cover", "封面"],
+    ["lyrics", "歌词"],
+  ].filter(([key]) => capabilities.has(key)).map(([, label]) => label).join(" · ") || "无可用能力说明";
+}
+function metadataProviderResultMark(value, supported = true) {
+  if (!supported) return "不支持";
+  return value === true ? "可用" : "不可用";
+}
+function metadataProviderResultText(result = {}) {
+  const search = result.search || {};
+  const cover = result.cover || {};
+  const lyrics = result.lyrics || {};
+  const responseMs = Number(result.response_ms);
+  const elapsed = Number.isFinite(responseMs) ? Math.max(0, Math.round(responseMs)) : 0;
+  return `搜索：${metadataProviderResultMark(search.available, search.supported)} · 封面：${metadataProviderResultMark(cover.available, cover.supported)} · 歌词：${metadataProviderResultMark(lyrics.available, lyrics.supported)} · 响应时间：${elapsed} ms`;
+}
+function metadataProviderResultDetails(result = {}) {
+  const search = result.search || {};
+  const cover = result.cover || {};
+  const lyrics = result.lyrics || {};
+  const parts = [];
+  if (search.title || search.artist || search.album) parts.push([search.title, search.artist, search.album].filter(Boolean).join(" · "));
+  if (cover.url) parts.push(cover.url);
+  if (lyrics.preview) parts.push(lyrics.preview.replace(/[\r\n]+/g, " ").slice(0, 120));
+  if (result.error) parts.push(result.error);
+  return parts.join(" | ");
+}
+function metadataProviderUnavailableResult(providerId, errorMessage = "数据源测试失败") {
+  const entry = (Array.isArray(state.metadataProviders) ? state.metadataProviders : [])
+    .concat(Array.isArray(state.metadataProviderRecommended) ? state.metadataProviderRecommended : [])
+    .find(item => item && item.id === providerId) || {};
+  const capabilities = new Set(Array.isArray(entry.capabilities) ? entry.capabilities : []);
+  const supported = capability => capabilities.has(capability) || (capability === "search" && capabilities.has("track"));
+  return {
+    ok: false,
+    error: displayText(errorMessage || "数据源测试失败"),
+    response_ms: 0,
+    search: { supported: supported("search"), available: false },
+    cover: { supported: supported("cover"), available: false },
+    lyrics: { supported: supported("lyrics"), available: false },
+  };
+}
+function metadataProviderProbeResponse(value) {
+  let payload = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
+    const probe = payload.result;
+    const isProbeResult = probe && typeof probe === "object" && !Array.isArray(probe)
+      && typeof probe.provider_id === "string"
+      && (Object.prototype.hasOwnProperty.call(probe, "search")
+        || Object.prototype.hasOwnProperty.call(probe, "cover")
+        || Object.prototype.hasOwnProperty.call(probe, "lyrics")
+        || Object.prototype.hasOwnProperty.call(probe, "response_ms"));
+    // The normal metadata projection unwrapping treats a provider probe's
+    // `lyrics` field as a transport projection and also interprets the
+    // provider-level `ok` as the HTTP API's `ok`. Preserve this endpoint's
+    // explicit API envelope instead of losing its result.
+    if (typeof payload.ok === "boolean" && (payload.ok !== true || isProbeResult)) return payload;
+    const nested = ["data", "result", "payload", "metadata"]
+      .map(key => payload[key])
+      .find(candidate => candidate && typeof candidate === "object" && !Array.isArray(candidate));
+    if (!nested) return payload;
+    payload = nested;
+  }
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+}
+function metadataProviderStatusNode(row) {
+  return row?.querySelector?.("[data-metadata-provider-result]") || null;
+}
+function renderMetadataProviderTestResult(row, result) {
+  const node = metadataProviderStatusNode(row);
+  if (!node) return;
+  node.hidden = false;
+  node.className = `metadata-provider-result ${result?.ok === true ? "is-ok" : "is-failed"}`;
+  node.replaceChildren();
+  const summary = document.createElement("span");
+  const error = displayText(result?.error || "");
+  summary.textContent = `${error ? `测试失败：${error} · ` : ""}${metadataProviderResultText(result || {})}`;
+  node.append(summary);
+  const detail = metadataProviderResultDetails(result || {});
+  if (detail) {
+    const description = document.createElement("small");
+    description.textContent = displayText(detail);
+    node.append(description);
+  }
+}
+function metadataProviderResultFor(providerId) {
+  return state.metadataProviderResults?.[providerId] || null;
+}
+function ensureMetadataSettingsOverview() {
+  const pane = document.querySelector('[data-metadata-settings-pane="overview"]');
+  if (!pane || pane.querySelector(".metadata-settings-overview")) return;
+  const overview = document.createElement("div");
+  overview.className = "metadata-settings-overview";
+  overview.innerHTML = '<div><span>后台补全</span><strong data-metadata-overview="enabled">未启用</strong></div><div><span>Tag 写回</span><strong data-metadata-overview="tag-write">未启用</strong></div><div><span>数据源</span><strong data-metadata-overview="providers">读取中</strong></div>';
+  pane.prepend(overview);
+}
+function updateMetadataSettingsOverview() {
+  ensureMetadataSettingsOverview();
+  const enabled = $("metadataEnabledInput")?.checked === true;
+  const tagWrite = $("metadataTagWriteEnabledInput")?.checked === true;
+  const entries = normalizeMetadataProviderEntries(state.metadataProviders, state.metadataProviderRecommended);
+  const enabledCount = entries.filter(entry => entry.enabled === true).length;
+  const writeNode = document.querySelector('[data-metadata-overview="tag-write"]');
+  const enabledNode = document.querySelector('[data-metadata-overview="enabled"]');
+  const providersNode = document.querySelector('[data-metadata-overview="providers"]');
+  if (enabledNode) enabledNode.textContent = enabled ? "已启用" : "未启用";
+  if (writeNode) writeNode.textContent = tagWrite ? "已启用" : "未启用";
+  if (providersNode) providersNode.textContent = `${enabledCount} 个已启用`;
+}
+function ensureMetadataProviderSaveAction() {
+  const status = $("metadataProviderStatusText");
+  const pane = document.querySelector('[data-metadata-settings-pane="providers"]');
+  if (!status || !pane) return null;
+  let actions = pane.querySelector(".metadata-provider-save-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "metadata-settings-actions metadata-provider-save-actions";
+    status.insertAdjacentElement("afterend", actions);
+  }
+  let button = $("saveMetadataProvidersBtn");
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button";
+    button.id = "saveMetadataProvidersBtn";
+    button.textContent = "保存数据源设置";
+    actions.append(button);
+  }
+  button.onclick = saveMetadataProviderPaneSettings;
+  return button;
+}
+function ensureMetadataCandidateProviderPicker() {
+  const dialog = metadataCandidateDialogNode();
+  if (!dialog) return;
+  let bar = dialog.querySelector(".metadata-candidate-source-bar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "metadata-candidate-source-bar";
+    bar.innerHTML = '<label><span>查询数据源</span><select id="metadataCandidateProviderSelect"><option value="">自动匹配（按设置顺序）</option></select></label><small>单独选择数据源不会改变全局排序。</small>';
+    const status = metadataCandidateStatusNode();
+    dialog.insertBefore(bar, status || dialog.firstChild);
+  }
+  const select = bar.querySelector("select");
+  if (!select || select.dataset.bound === "1") return;
+  select.dataset.bound = "1";
+  select.addEventListener("change", () => {
+    cancelMetadataCandidateLookup();
+    state.metadataCandidateSearchToken += 1;
+    try { state.metadataCandidateSearchController?.abort(); } catch (_) {}
+    state.metadataCandidateProviderId = select.value;
+    const statusNode = metadataCandidateStatusNode();
+    if (statusNode) statusNode.textContent = select.value ? `已选择${select.options[select.selectedIndex]?.textContent || "指定数据源"}，请点击搜索开始查询。` : "将按设置页顺序自动尝试数据源。";
+  });
+}
+function renderMetadataCandidateProviderPicker() {
+  ensureMetadataCandidateProviderPicker();
+  const select = $("metadataCandidateProviderSelect");
+  if (!select) return;
+  const entries = normalizeMetadataProviderEntries(state.metadataProviders, state.metadataProviderRecommended);
+  select.replaceChildren(new Option("自动匹配（按设置顺序）", ""));
+  entries.forEach(entry => select.append(new Option(metadataProviderDisplayName(entry.id), entry.id)));
+  select.value = state.metadataCandidateProviderId || "";
+}
+function renderMetadataProviders() {
+  const list = $("metadataProviderList");
+  if (!list) return;
+  ensureMetadataProviderSaveAction();
+  list.replaceChildren();
+  const entries = normalizeMetadataProviderEntries(state.metadataProviders, state.metadataProviderRecommended);
+  state.metadataProviders = entries;
+  updateMetadataSettingsOverview();
+  entries.forEach((entry, index) => {
+    const row = document.createElement("article");
+    row.className = `metadata-provider-row${entry.id === MUSICBRAINZ_PROVIDER_ID ? " is-fixed-last" : ""}`;
+    row.dataset.providerId = entry.id;
+    row.draggable = entry.id !== MUSICBRAINZ_PROVIDER_ID;
+    if (row.draggable) {
+      row.addEventListener("dragstart", event => {
+        state.metadataProviderDragId = entry.id;
+        event.dataTransfer?.setData("text/plain", entry.id);
+      });
+      row.addEventListener("dragend", () => { state.metadataProviderDragId = ""; });
+    }
+    row.addEventListener("dragover", event => {
+      if (state.metadataProviderDragId && state.metadataProviderDragId !== MUSICBRAINZ_PROVIDER_ID) event.preventDefault();
+    });
+    row.addEventListener("drop", event => {
+      event.preventDefault();
+      const draggedId = event.dataTransfer?.getData("text/plain") || state.metadataProviderDragId;
+      if (!draggedId || draggedId === entry.id) return;
+      const bounds = row.getBoundingClientRect();
+      const afterTarget = entry.id !== MUSICBRAINZ_PROVIDER_ID
+        && event.clientY >= bounds.top + bounds.height / 2;
+      const targetIndex = metadataProviderDropTargetIndex(state.metadataProviders, draggedId, entry.id, afterTarget);
+      if (targetIndex < 0) return;
+      state.metadataProviders = moveMetadataProviderToIndex(state.metadataProviders, draggedId, targetIndex);
+      state.metadataProviderDirty = true;
+      renderMetadataProviders();
+      updateMetadataProviderDirtyStatus();
+    });
+    const header = document.createElement("div");
+    header.className = "metadata-provider-header";
+    const toggle = document.createElement("label");
+    toggle.className = "metadata-toggle metadata-provider-toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = entry.enabled === true;
+    checkbox.dataset.metadataProviderToggle = entry.id;
+    checkbox.addEventListener("change", () => {
+      const target = state.metadataProviders.find(item => item.id === entry.id);
+      if (target) target.enabled = checkbox.checked === true;
+      state.metadataProviderDirty = true;
+      updateMetadataProviderDirtyStatus();
+      updateMetadataSettingsOverview();
+    });
+    const name = document.createElement("span");
+    name.textContent = metadataProviderDisplayName(entry.id);
+    toggle.append(checkbox, name);
+    const capabilities = document.createElement("small");
+    capabilities.className = "metadata-provider-capabilities";
+    capabilities.textContent = metadataProviderCapabilityText(entry);
+    header.append(toggle, capabilities);
+    const actions = document.createElement("div");
+    actions.className = "metadata-provider-actions";
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "secondary-button metadata-provider-move";
+    up.textContent = "上移";
+    up.dataset.metadataProviderMove = "up";
+    up.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index === 0;
+    up.addEventListener("click", () => moveMetadataProvider(entry.id, -1));
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "secondary-button metadata-provider-move";
+    down.textContent = "下移";
+    down.dataset.metadataProviderMove = "down";
+    down.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index >= entries.length - 2;
+    down.addEventListener("click", () => moveMetadataProvider(entry.id, 1));
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "secondary-button metadata-provider-test";
+    test.textContent = state.metadataProviderTestInFlight === entry.id ? "测试中..." : "测试";
+    test.disabled = Boolean(state.metadataProviderTestInFlight);
+    test.dataset.metadataProviderTest = entry.id;
+    test.addEventListener("click", () => testMetadataProvider(entry.id));
+    actions.append(up, down, test);
+    header.append(actions);
+    const result = document.createElement("div");
+    result.className = "metadata-provider-result";
+    result.dataset.metadataProviderResult = entry.id;
+    result.hidden = true;
+    row.append(header, result);
+    list.append(row);
+    const previous = metadataProviderResultFor(entry.id);
+    if (previous) renderMetadataProviderTestResult(row, previous);
+  });
+}
+function updateMetadataProviderDirtyStatus() {
+  const status = $("metadataProviderStatusText");
+  if (!status) return;
+  const saveButton = $("saveMetadataProvidersBtn");
+  if (saveButton) saveButton.disabled = state.metadataProviderDirty !== true;
+  status.textContent = state.metadataProviderDirty === true
+    ? "数据源配置已修改，点击“保存数据源设置”后生效。"
+    : "拖动或使用上移/下移调整顺序，可单独测试或启用数据源。";
+}
+function moveMetadataProvider(providerId, direction) {
+  state.metadataProviders = moveMetadataProviderEntries(state.metadataProviders, providerId, direction);
+  state.metadataProviderDirty = true;
+  renderMetadataProviders();
+  updateMetadataProviderDirtyStatus();
+}
+function restoreRecommendedMetadataProviders() {
+  state.metadataProviders = normalizeMetadataProviderEntries(state.metadataProviderRecommended);
+  state.metadataProviderResults = Object.create(null);
+  state.metadataProviderDirty = true;
+  renderMetadataProviders();
+  updateMetadataProviderDirtyStatus();
+}
+async function restoreAndSaveRecommendedMetadataProviders() {
+  // If the settings pane is opened before its first read completes, load the
+  // current server state first, then re-apply the user's restore intent.  The
+  // load response must never overwrite that intent before the save.
+  if (!state.metadataProvidersLoaded) {
+    const loaded = await loadMetadataStatus();
+    if (!loaded || !state.metadataProvidersLoaded) throw new Error("数据源配置不可用");
+  }
+  restoreRecommendedMetadataProviders();
+  return saveMetadataProvidersOnly();
+}
+function applyMetadataProviderSettings(data = {}) {
+  const recommended = Array.isArray(data.recommended) ? data.recommended : [];
+  state.metadataProviderRecommended = normalizeMetadataProviderEntries(recommended);
+  const configured = Array.isArray(data.providers) ? data.providers : data?.config?.metadata_providers;
+  state.metadataProviders = normalizeMetadataProviderEntries(configured, state.metadataProviderRecommended);
+  state.metadataProviderDirty = data.providers_repaired === true;
+  state.metadataProvidersLoaded = true;
+  renderMetadataProviders();
+  updateMetadataProviderDirtyStatus();
+  updateMetadataSettingsOverview();
+}
+function metadataProviderProbePayload() {
+  const title = $("metadataProbeTitleInput")?.value?.trim() || "";
+  const artist = $("metadataProbeArtistInput")?.value?.trim() || "";
+  const album = $("metadataProbeAlbumInput")?.value?.trim() || "";
+  if (!title) throw new Error("请输入要测试的歌曲标题");
+  return { title, artist, album };
+}
+async function testMetadataProvider(providerId) {
+  const row = $("metadataProviderList")?.querySelector?.(`[data-provider-id="${providerId}"]`);
+  if (!row || state.metadataProviderTestInFlight) return null;
+  let query;
+  try {
+    query = metadataProviderProbePayload();
+  } catch (error) {
+    $("metadataProviderStatusText").textContent = error.message;
+    return null;
+  }
+  state.metadataProviderTestInFlight = providerId;
+  renderMetadataProviders();
+  try {
+    const response = await apiFetch("api/metadata/provider-test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider_id: providerId, ...query }),
+    });
+    const data = metadataProviderProbeResponse(await readResponseJsonBounded(response));
+    if (!response.ok || data.ok !== true) throw new Error(data.message || data.error || "数据源测试失败");
+    state.metadataProviderResults[providerId] = data.result || {};
+    return data.result || {};
+  } catch (error) {
+    state.metadataProviderResults[providerId] = metadataProviderUnavailableResult(providerId, error.message);
+    return state.metadataProviderResults[providerId];
+  } finally {
+    state.metadataProviderTestInFlight = "";
+    renderMetadataProviders();
+  }
 }
 function libraryCursorQueryKey() {
   return libraryLoadRequestKey(0);
@@ -7229,7 +7927,8 @@ function ensureMetadataStatusUi() {
     retryButton.textContent = "重试失败写回";
     retryButton.hidden = true;
     retryButton.onclick = retryFailedTagWrites;
-    $("refreshMetadataBtn")?.after(retryButton);
+    $("metadataTagWriteActions")?.append(retryButton);
+    if (!$("metadataTagWriteActions")) $("refreshMetadataBtn")?.after(retryButton);
   }
   return { list, retryButton };
 }
@@ -7254,50 +7953,102 @@ function renderMetadataTagJobs(data = {}) {
     list.append(row);
   });
 }
+function metadataTagWriteConfirmation(input, confirmFn = confirm) {
+  if (!input || input.checked !== true || input.dataset?.savedEnabled === "true") return true;
+  return typeof confirmFn === "function" && confirmFn("启用 Tag 写回后，补全结果可能修改原始歌曲文件。确定继续吗？") === true;
+}
 async function loadMetadataStatus() {
   const statusNode = $("metadataStatusText");
   if (!statusNode) return null;
   const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const statusController = typeof AbortController === "function" ? new AbortController() : null;
   try {
-    const request = fetch("api/metadata/status", {
+    const request = fetch("api/config/metadata", {
       cache: "no-store",
       ...(controller ? { signal: controller.signal } : {}),
     });
-    const result = await globalThis.fnAudioResponseJsonLoader.read({
-      request,
-      timeoutMs: 6000,
-      onTimeout: () => { try { controller?.abort(); } catch (_) {} },
-      fallback: {},
+    const statusRequest = fetch("api/metadata/status", {
+      cache: "no-store",
+      ...(statusController ? { signal: statusController.signal } : {}),
     });
+    const [result, statusResult] = await Promise.all([
+      globalThis.fnAudioResponseJsonLoader.read({
+        request,
+        timeoutMs: 6000,
+        onTimeout: () => { try { controller?.abort(); } catch (_) {} },
+        fallback: {},
+      }),
+      globalThis.fnAudioResponseJsonLoader.read({
+        request: statusRequest,
+        timeoutMs: 6000,
+        onTimeout: () => { try { statusController?.abort(); } catch (_) {} },
+        fallback: {},
+      }),
+    ]);
     const response = result.response;
     const data = unwrapMetadataResponsePayload(result.data || {});
     if (!response.ok || data.ok !== true) throw new Error();
+    applyMetadataProviderSettings(data);
     $("metadataEnabledInput").checked = data.enabled === true;
-    $("metadataTagWriteEnabledInput").checked = data.tag_write_enabled === true;
+    const tagWriteInput = $("metadataTagWriteEnabledInput");
+    tagWriteInput.checked = data.tag_write_enabled === true;
+    tagWriteInput.dataset.savedEnabled = String(tagWriteInput.checked);
     $("metadataGraceDaysInput").value = Number(data.orphan_grace_days ?? 7);
-    statusNode.textContent = metadataStatusSummary(data);
-    renderMetadataTagJobs(data);
+    const liveStatus = statusResult.response?.ok
+      ? unwrapMetadataResponsePayload(statusResult.data || {})
+      : data.status || {};
+    statusNode.textContent = metadataStatusSummary(liveStatus);
+    renderMetadataTagJobs(liveStatus);
     return data;
   } catch (error) {
     statusNode.textContent = "无法读取后台元数据状态";
+    const list = $("metadataProviderList");
+    if (list && !state.metadataProvidersLoaded) {
+      list.replaceChildren();
+      const message = document.createElement("p");
+      message.className = "dialog-help";
+      message.textContent = "无法读取数据源配置；当前未覆盖已有配置。";
+      list.append(message);
+    }
     return null;
   }
 }
-async function saveMetadataSettings(options = {}) {
+async function saveMetadataOverviewSettings() {
+  const enabledInput = $("metadataEnabledInput");
+  const graceInput = $("metadataGraceDaysInput");
+  if (!enabledInput || !graceInput) throw new Error("元数据概览控件不可用");
+  const graceDays = Number(graceInput.value || 7);
+  if (!Number.isInteger(graceDays) || graceDays < 0 || graceDays > 90) throw new Error("元数据概览控件不可用");
   const response = await apiFetch("api/config/metadata", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      enabled: $("metadataEnabledInput").checked,
-      tag_write_enabled: $("metadataTagWriteEnabledInput").checked,
-      orphan_grace_days: Number($("metadataGraceDaysInput").value || 7),
-      refresh: Boolean(options.refresh),
-    }),
+    body: JSON.stringify({ enabled: enabledInput.checked === true, orphan_grace_days: graceDays }),
   });
   const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
-  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存元数据设置失败");
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存概览设置失败");
+  $("metadataEnabledInput").checked = data.enabled === true;
+  $("metadataGraceDaysInput").value = Number(data.orphan_grace_days ?? graceDays);
   $("metadataStatusText").textContent = metadataStatusSummary(data.status || {});
   renderMetadataTagJobs(data.status || {});
+  updateMetadataSettingsOverview();
+  return data;
+}
+async function saveMetadataTagSettings() {
+  const tagWriteInput = $("metadataTagWriteEnabledInput");
+  if (!tagWriteInput) throw new Error("Tag 写回控件不可用");
+  if (!metadataTagWriteConfirmation(tagWriteInput, confirm)) throw new Error("已取消启用 Tag 写回");
+  const response = await apiFetch("api/config/metadata", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tag_write_enabled: tagWriteInput.checked === true }),
+  });
+  const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存 Tag 写回设置失败");
+  tagWriteInput.checked = data.tag_write_enabled === true;
+  tagWriteInput.dataset.savedEnabled = String(data.tag_write_enabled === true);
+  $("metadataStatusText").textContent = metadataStatusSummary(data.status || {});
+  renderMetadataTagJobs(data.status || {});
+  updateMetadataSettingsOverview();
   return data;
 }
 async function retryFailedTagWrites() {
@@ -7320,14 +8071,10 @@ async function refreshMetadataLibrary() {
   const button = $("refreshMetadataBtn");
   button.disabled = true;
   try {
-    // A manual refresh is an explicit opt-in. Keep the setting's initial
-    // default disabled, but do not report success while workers are still
-    // gated by metadata_enabled=false.
-    if ($("metadataEnabledInput") && !$("metadataEnabledInput").checked) {
-      $("metadataEnabledInput").checked = true;
-    }
-    await saveMetadataSettings({ refresh: true });
-    $("metadataStatusText").textContent = "已开启后台元数据补全并加入队列，页面可以正常关闭或继续播放。";
+    const response = await apiFetch("api/metadata/refresh", { method: "POST" });
+    const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
+    if (!response.ok || data.ok !== true) throw new Error(data.message || "启动后台补全失败");
+    $("metadataStatusText").textContent = "已请求后台元数据补全并加入队列，页面可以正常关闭或继续播放。";
   } catch (error) {
     $("metadataStatusText").textContent = error.message || "启动后台补全失败";
   } finally {
@@ -7385,7 +8132,7 @@ function renderLibraryPathInputs(paths = [""]) {
   if (!values.length) values.push("");
   $("libraryPathList").innerHTML = values.map(value => `
     <div class="library-path-row">
-      <input class="library-path-input" value="${escapeHtml(value)}" placeholder="/vol1/1000/music">
+      <input class="library-path-input" value="${escapeHtml(value)}" placeholder="请选择音乐目录" readonly>
       <button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录">×</button>
     </div>
   `).join("");
@@ -7396,38 +8143,135 @@ function renderLibraryPathInputs(paths = [""]) {
     };
   });
 }
-function addLibraryPathInput(value = "") {
-  const wrapper = document.createElement("div");
-  wrapper.className = "library-path-row";
-  wrapper.innerHTML = `<input class="library-path-input" value="${escapeHtml(value)}" placeholder="/vol1/1000/music"><button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录">×</button>`;
-  wrapper.querySelector(".library-path-remove").onclick = () => wrapper.remove();
-  $("libraryPathList").appendChild(wrapper);
-  wrapper.querySelector("input").focus();
-}
 function collectLibraryPaths() {
   return [...$("libraryPathList").querySelectorAll(".library-path-input")].map(input => input.value.trim()).filter(Boolean);
 }
-async function chooseCurrentFolder() {
-  const button = $("chooseFolderBtn");
-  button.disabled = true;
-  button.textContent = "正在保存...";
-  $("folderSaveStatus").textContent = "";
-  try {
-    if (state.settingsTab === "runtime") {
-      await saveRuntimeSettings();
-      $("folderDialog").close();
-    } else if (state.settingsTab === "metadata") {
-      await saveMetadataSettings();
-      $("folderDialog").close();
-    } else if (await saveLibraryPathsFromDialog()) {
-      $("folderDialog").close();
+async function runTrimHostAction(method, args = [], { dialog = null, timeoutMs = 10000 } = {}) {
+  let active = true;
+  let restoreDialog = false;
+  const bounded = async (work, duration) => {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(work),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("飞牛宿主响应超时，请重试或从飞牛应用入口重新打开 fnAudio")), duration);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
+  };
+  try {
+    const sdk = await bounded(async () => {
+      const host = await getTrimSdk();
+      if (!host) throw new Error("无法连接飞牛宿主，请从飞牛应用入口打开 fnAudio");
+      if (typeof host.ready === "function") await host.ready();
+      return host;
+    }, 10000);
+    if (sdk.isStandaloneWeb) throw new Error("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开");
+    if (!method) return sdk;
+    if (typeof sdk[method] !== "function") throw new Error("当前飞牛宿主不支持此操作，请更新系统或 App 后重试");
+    // A native modal makes host-injected UI in this document inert. Keep the
+    // settings DOM (including unsaved values), and restore it after the picker.
+    restoreDialog = dialog?.open === true;
+    if (restoreDialog) dialog.close();
+    return await bounded(() => active ? sdk[method](...args) : undefined, timeoutMs);
+  } finally {
+    active = false;
+    if (restoreDialog && !dialog.open) dialog.showModal();
+  }
+}
+async function chooseLibraryPath() {
+  const status = $("librarySettingsStatus");
+  const button = $("chooseLibraryPathBtn");
+  if (button?.disabled) return false;
+  if (button) button.disabled = true;
+  if (status) status.textContent = "正在打开目录选择窗口...";
+  try {
+    const response = await runTrimHostAction("pickUserFile", [{
+      directory: true,
+      title: "选择音乐目录",
+      okText: "确认授权",
+      sidebarGroup: ["myFiles", "otherShare", "favorites"],
+    }], { dialog: $("folderDialog"), timeoutMs: 120000 });
+    if (response && response.code != null && response.code !== 0) {
+      throw new Error(response.msg || "目录授权失败");
+    }
+    const selected = (Array.isArray(response?.data)
+      ? response.data
+      : (Array.isArray(response) ? response : []))
+      .filter(value => typeof value === "string" && value.trim()).map(value => value.trim());
+    if (!selected.length) {
+      if (status) status.textContent = "未选择音乐目录。";
+      return false;
+    }
+    const current = collectLibraryPaths();
+    const merged = [...new Set([...current, ...selected].map(value => String(value || "").trim()).filter(Boolean))];
+    renderLibraryPathInputs(merged);
+    if (status) status.textContent = `已选择 ${selected.length || 1} 个目录，请点击“保存音乐库设置”。`;
+    return true;
   } catch (error) {
-    $("folderSaveStatus").textContent = error.message || "保存失败，请确认应用服务正在运行";
+    if (status) status.textContent = error.message || "打开目录选择窗口失败";
+    return false;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+async function saveSettingsPane(button, statusNode, saveAction, successMessage = "已保存。") {
+  if (!button || typeof saveAction !== "function") return false;
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "正在保存...";
+  if (statusNode) statusNode.textContent = "";
+  try {
+    const result = await saveAction();
+    if (result !== false) {
+      if (statusNode) statusNode.textContent = successMessage;
+      return true;
+    }
+    return false;
+  } catch (error) {
+    if (statusNode) statusNode.textContent = error.message || "保存失败，请确认应用服务正在运行";
+    return false;
   } finally {
     button.disabled = false;
-    button.textContent = "保存设置";
+    button.textContent = originalText;
   }
+}
+function saveLibrarySettings() {
+  return saveSettingsPane($("saveLibrarySettingsBtn"), $("librarySettingsStatus"), () => saveLibraryPathsFromDialog(), "音乐库设置已保存。");
+}
+function saveRuntimePaneSettings() {
+  return saveSettingsPane($("saveRuntimeSettingsBtn"), $("runtimeSettingsStatus"), () => saveRuntimeSettings(), "运行设置已保存。");
+}
+function saveMetadataPaneSettings() {
+  return state.metadataSettingsTab === "tags"
+    ? saveMetadataTagPaneSettings()
+    : saveMetadataOverviewPaneSettings();
+}
+function saveMetadataOverviewPaneSettings() {
+  return saveSettingsPane($("saveMetadataSettingsBtn"), $("metadataOverviewSettingsStatus"), saveMetadataOverviewSettings, "概览设置已保存。");
+}
+function saveMetadataTagPaneSettings() {
+  return saveSettingsPane($("saveMetadataTagSettingsBtn"), $("metadataTagSettingsStatus"), saveMetadataTagSettings, "Tag 写回设置已保存。");
+}
+async function saveMetadataProvidersOnly() {
+  const response = await apiFetch("api/config/metadata", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ providers: metadataProviderPayload() }),
+  });
+  const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存数据源设置失败");
+  applyMetadataProviderSettings(data);
+  return data;
+}
+function saveMetadataProviderPaneSettings() {
+  return saveSettingsPane($("saveMetadataProvidersBtn"), $("metadataProviderStatusText"), saveMetadataProvidersOnly, "数据源设置已保存。");
+}
+function savePlaybackPaneSettings() {
+  return saveSettingsPane($("savePlaybackSettingsBtn"), $("playbackSettingsStatus"), () => savePlaybackSettings(), "播放与设备设置已保存。");
 }
 function openPlaylistDialog(trackId = "") {
   openPlaylistDialogForTracks(trackId ? [trackId] : []);
@@ -7493,13 +8337,17 @@ function addTracksToPlaylist(playlistId, trackIds = []) {
 function closeTrackActionDialog() {
   state.metadataCandidateRequestToken += 1;
   try { state.metadataCandidateController?.abort(); } catch (_) {}
+  state.metadataCandidateSearchToken += 1;
+  try { state.metadataCandidateSearchController?.abort(); } catch (_) {}
   state.metadataCandidateController = null;
+  state.metadataCandidateSearchController = null;
   if (state.metadataCandidatePollTimer) {
     clearTimeout(state.metadataCandidatePollTimer);
     state.metadataCandidatePollTimer = 0;
   }
   state.metadataCandidatePollAttempts = 0;
   if ($("trackActionDialog").open) $("trackActionDialog").close();
+  if ($("metadataCandidateDialog")?.open) $("metadataCandidateDialog").close();
 }
 function closeTrackContextMenu() {
   const menu = $("trackContextMenu");
@@ -7713,6 +8561,76 @@ function metadataSourceText(item) {
   const label = value => value === "tag" ? "Tag" : value === "filename" ? "文件名" : value === "folder" ? "文件夹" : "未知";
   return `来源：歌名 ${label(source.title)} · 歌手 ${label(source.artist)} · 专辑 ${label(source.album)}`;
 }
+function metadataCandidateDialogNode() {
+  return $("metadataCandidateDialog") || $("trackActionDialog");
+}
+function metadataCandidateResultsNode() {
+  return $("metadataCandidateSearchResults") || $("metadataCandidateResults") || $("trackActionList");
+}
+function metadataCandidateStatusNode() {
+  return $("metadataCandidateStatus") || $("trackActionTitle");
+}
+function openMetadataCandidateDialog(trackId) {
+  const item = itemById(trackId);
+  const dialog = metadataCandidateDialogNode();
+  if (!item || !dialog) return;
+  state.actionTrackId = String(trackId);
+  state.metadataCandidateProviderId = "";
+  renderMetadataCandidateProviderPicker();
+  const summary = $("metadataCandidateTrackSummary");
+  if (summary) summary.textContent = [displayTrackTitle(item), item.artist, item.album].filter(Boolean).join(" · ");
+  const input = $("metadataCandidateSearchInput");
+  if (input) input.value = displayTrackTitle(item);
+  const searchStatus = $("metadataCandidateSearchStatus");
+  if (searchStatus) searchStatus.textContent = "识别失败时可手动搜索并选择结果。";
+  dialog.showModal();
+  searchTrackMetadataManually();
+}
+function renderMetadataCandidateChoices(list, candidates, trackId, status = "review", searchId = "") {
+  const candidateRows = candidates.map((candidate, index) => {
+    const subtitle = [candidate.artist, candidate.album, metadataCandidateSourceLabel(candidate), globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
+    return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
+  }).join("");
+  list.innerHTML = `<div class="metadata-candidate-list">${candidateRows}</div><button class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`;
+  const apply = list.querySelector("[data-apply-track-metadata]");
+  if (!apply) return;
+  apply.onclick = async () => {
+    apply.disabled = true;
+    const applyController = typeof AbortController === "function" ? new AbortController() : null;
+    state.metadataCandidateController = applyController;
+    try {
+      const selected = list.querySelector('input[name="metadataCandidate"]:checked');
+      const candidateIndex = Number(selected?.value);
+      if (!Number.isInteger(candidateIndex) || candidateIndex < 0) throw new Error("请选择一个候选结果");
+      const response = await apiFetch("api/metadata/track/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ track_id: trackId, candidate_index: candidateIndex, search_id: searchId }),
+        ...(applyController ? { signal: applyController.signal } : {}),
+      });
+      const result = await readResponseJsonBounded(response);
+      if (!response.ok || result.ok !== true) throw new Error(result.message || "确认失败");
+      if (state.metadataCandidateController !== applyController || state.actionTrackId !== String(trackId)) return;
+      list.textContent = "已确认，后台将只补全空白 Tag 字段。";
+      clearLibraryResponseCaches();
+      if (state.pageItems?.length && !state.libraryLoading) await loadLibrary(false);
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      apply.disabled = false;
+      list.insertAdjacentHTML("afterbegin", `<div class="track-action-info">${escapeHtml(error.message || "确认失败")}</div>`);
+    } finally {
+      if (state.metadataCandidateController === applyController) state.metadataCandidateController = null;
+    }
+  };
+}
+function renderMetadataCandidateSearchResults(list, candidates, trackId, searchId = "") {
+  const valid = Array.isArray(candidates) ? candidates.filter(candidate => candidate && candidate.title) : [];
+  if (!valid.length) {
+    list.innerHTML = `<div class="track-action-info">没有找到匹配结果，请修改关键词后重试。</div>`;
+    return;
+  }
+  renderMetadataCandidateChoices(list, valid, trackId, "review", searchId);
+}
 function trackActionButtons(trackId) {
   const selected = selectedTrackIds(trackId);
   const multiple = selected.length > 1;
@@ -7772,6 +8690,10 @@ function renderMetadataCandidateRetry(list, trackId, message) {
 async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed = false) {
   const item = itemById(trackId);
   if (!item) return;
+  const dialog = $("metadataCandidateDialog") || $("trackActionDialog");
+  const statusNode = $("metadataCandidateStatus") || $("trackActionTitle");
+  const list = $("metadataCandidateSearchResults") || $("metadataCandidateResults") || $("trackActionList");
+  if (!dialog || !list) return;
   if (!requestToken) {
     try { state.metadataCandidateController?.abort(); } catch (_) {}
     state.metadataCandidateController = null;
@@ -7781,11 +8703,10 @@ async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed
     requestToken = ++state.metadataCandidateRequestToken;
   }
   const isCurrentRequest = () => requestToken === state.metadataCandidateRequestToken
-    && state.actionTrackId === String(trackId) && $("trackActionDialog").open;
-  $("trackActionTitle").textContent = "元数据补全候选";
-  const list = $("trackActionList");
-  list.textContent = "正在查询候选结果...";
-  if (!$("trackActionDialog").open) $("trackActionDialog").showModal();
+    && state.actionTrackId === String(trackId) && dialog.open;
+  if (statusNode) statusNode.textContent = "正在查询候选结果...";
+  list.textContent = "";
+  if (!dialog.open) dialog.showModal();
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   state.metadataCandidateController = controller;
   try {
@@ -7807,7 +8728,7 @@ async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed
         // below stops arming polls, and a dialog left saying it will display the
         // result automatically can never keep that word.
         const canPollAgain = state.metadataCandidatePollAttempts < METADATA_CANDIDATE_MAX_POLLS
-          && state.actionTrackId === String(trackId) && $("trackActionDialog").open;
+          && state.actionTrackId === String(trackId) && dialog.open;
         if (canPollAgain) {
           state.metadataCandidatePollAttempts += 1;
           list.textContent = "正在后台检索元数据，完成后将自动显示...";
@@ -7841,7 +8762,7 @@ async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed
     }
     const review = data.status === "review";
     const candidateRows = candidates.map((candidate, index) => {
-      const subtitle = [candidate.artist, candidate.album, candidate.source, globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
+      const subtitle = [candidate.artist, candidate.album, metadataCandidateSourceLabel(candidate), globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
       return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
     }).join("");
     const details = [["歌名", best.title], ["歌手", best.artist], ["专辑", best.album], ["发行日期", best.date], ["曲序", best.track_no], ["来源", best.source], ["可信度", globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(best.confidence)]].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
@@ -7898,6 +8819,66 @@ async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed
     }
   }
 }
+function cancelMetadataCandidateLookup() {
+  state.metadataCandidateRequestToken += 1;
+  try { state.metadataCandidateController?.abort(); } catch (_) {}
+  state.metadataCandidateController = null;
+  if (state.metadataCandidatePollTimer) clearTimeout(state.metadataCandidatePollTimer);
+  state.metadataCandidatePollTimer = 0;
+  state.metadataCandidatePollAttempts = 0;
+}
+async function searchTrackMetadataManually() {
+  const trackId = String(state.actionTrackId || "");
+  const item = itemById(trackId);
+  const input = $("metadataCandidateSearchInput");
+  const status = $("metadataCandidateSearchStatus");
+  const list = metadataCandidateResultsNode();
+  if (!item || !input || !status || !list) return;
+  const query = input.value.trim();
+  if (!query) {
+    status.textContent = "请输入歌名、歌手或专辑关键词。";
+    return;
+  }
+  cancelMetadataCandidateLookup();
+  try { state.metadataCandidateSearchController?.abort(); } catch (_) {}
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const token = ++state.metadataCandidateSearchToken;
+  state.metadataCandidateSearchController = controller;
+  status.textContent = "正在搜索候选...";
+  const queryStatus = metadataCandidateStatusNode();
+  if (queryStatus) queryStatus.textContent = "正在查询候选结果...";
+  list.textContent = "正在搜索候选...";
+  try {
+    const result = await fetchJsonResponseBounded("api/metadata/track/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        track_id: trackId,
+        title: query,
+        artist: "",
+        album: "",
+        provider_id: $("metadataCandidateProviderSelect")?.value || "",
+      }),
+      ...(controller ? { signal: controller.signal } : {}),
+    }, 25000);
+    const response = result.response;
+    const data = unwrapMetadataResponsePayload(result.data);
+    if (token !== state.metadataCandidateSearchToken || state.actionTrackId !== trackId || !metadataCandidateDialogNode().open) return;
+    if (!response.ok || data.ok !== true) throw new Error(data.message || `手动搜索失败（HTTP ${response.status || "未知"}）`);
+    if (data.candidates?.length && !data.search_id) throw new Error("服务端版本不支持安全确认候选，请先升级 fnAudio 服务端。");
+    renderMetadataCandidateSearchResults(list, data.candidates, trackId, data.search_id || "");
+    if (queryStatus) queryStatus.textContent = data.candidates?.length ? `查询完成：找到 ${data.candidates.length} 条候选结果。` : "没有找到匹配结果。";
+    status.textContent = data.candidates?.length ? "请选择一个结果并确认补全。" : "没有找到匹配结果。";
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (token !== state.metadataCandidateSearchToken || state.actionTrackId !== trackId || !metadataCandidateDialogNode().open) return;
+    list.innerHTML = `<div class="track-action-info">${escapeHtml(error.message || "手动搜索失败")}</div>`;
+    status.textContent = "搜索失败，请修改关键词后重试。";
+    if (queryStatus) queryStatus.textContent = "搜索失败，可修改关键词或切换数据源后重试。";
+  } finally {
+    if (state.metadataCandidateSearchController === controller) state.metadataCandidateSearchController = null;
+  }
+}
 async function resolveTrackLocation(trackId) {
   const result = await fetchJsonResponseBounded(
     `api/library/location?id=${encodeURIComponent(String(trackId || ""))}`,
@@ -7914,20 +8895,14 @@ async function openContainingFolder(trackId) {
     const location = await resolveTrackLocation(trackId);
     const folder = String(location.folder || "");
     if (!folder) throw new Error("无法获取歌曲所在文件夹");
-    const sdk = await getTrimSdk();
-    if (!sdk || typeof sdk.openFileManager !== "function") throw new Error("unsupported");
-    if (typeof sdk.ready === "function") await sdk.ready();
-    if (sdk.isStandaloneWeb) return alert("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开，才能跳转到文件管理");
     // fnOS 的文件管理入口接收目录路径；传入完整文件路径会被宿主当作“打开文件”处理。
-    Promise.resolve(sdk.openFileManager(folder)).catch(error => {
-      console.warn("openFileManager failed", error);
-      alert("飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
-    });
-    return;
+    await runTrimHostAction("openFileManager", [folder]);
+    return true;
   } catch (error) {
     console.warn("openFileManager failed", error);
+    alert(error.message || "飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
+    return false;
   }
-  alert("飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
 }
 function externalShareDateValue(date) {
   const offset = date.getTimezoneOffset() * 60000;
@@ -7985,32 +8960,31 @@ async function openExternalShareDetails() {
   const location = state.externalShareLocation;
   if (!location?.path) return;
   try {
-    const sdk = await getTrimSdk();
-    if (!sdk || typeof sdk.showFileDetails !== "function") throw new Error("unsupported");
-    await sdk.showFileDetails([location.path]);
+    await runTrimHostAction("showFileDetails", [[location.path]], { dialog: $("externalShareDialog") });
+    return true;
   } catch (error) {
     console.warn("showFileDetails failed", error);
+    $("externalShareStatus").textContent = error.message || "无法打开飞牛文件详情，请从飞牛应用入口重试";
+    return false;
   }
 }
 async function shareTrack(trackId) {
   try {
     const location = await resolveTrackLocation(trackId);
-    const sdk = await getTrimSdk();
-    if (!sdk) throw new Error("unsupported");
-    if (typeof sdk.ready === "function") await sdk.ready();
-    if (sdk.isStandaloneWeb) return alert("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开，才能创建外部链接");
+    await runTrimHostAction(null);
     resetExternalShareDialog(location);
     $("externalShareDialog").showModal();
     return;
   } catch (error) {
     console.warn("fnOS file sharing handoff failed", error);
+    alert(error.message || "无法调用飞牛外链服务，请从飞牛应用入口打开 fnAudio 后重试");
   }
-  alert("无法调用飞牛外链服务，请从飞牛应用入口打开 fnAudio 后重试");
 }
 async function createExternalShareLink() {
   const location = state.externalShareLocation;
   if (!location?.path) return;
   const button = $("createExternalShare");
+  if (button.disabled) return;
   const expiryEnabled = $("shareExpiryEnabled").checked;
   const passwordEnabled = $("sharePasswordEnabled").checked;
   const accessEnabled = $("shareAccessEnabled").checked;
@@ -8023,9 +8997,9 @@ async function createExternalShareLink() {
   button.disabled = true;
   $("externalShareStatus").textContent = "正在创建...";
   try {
-    const sdk = await getTrimSdk();
-    if (!sdk || typeof sdk.query !== "function" || sdk.isStandaloneWeb) throw new Error("unsupported");
-    const defaultResponse = await sdk.query({ req: "appcgi.sharesvr.share.link.default", data: {} });
+    const defaultResponse = await runTrimHostAction("query", [{ req: "appcgi.sharesvr.share.link.default" }]);
+    const defaultLink = String(defaultResponse?.data?.defaultLink || "").replace(/\/$/, "");
+    if (defaultResponse?.result !== "succ" || !defaultLink) throw new Error(defaultResponse?.errmsg || "无法读取飞牛外链地址");
     const payload = {
       name: String(location.path || "").split("/").pop() || "fnAudio",
       files: [String(location.path)],
@@ -8033,9 +9007,10 @@ async function createExternalShareLink() {
     };
     if (passwordEnabled) payload.passwd = password;
     if (expiryEnabled) payload.validTo = validTo;
-    const created = await sdk.query({ req: "appcgi.sharesvr.share.link.create", data: payload });
+    // query forwards the raw fnOS request; unlike the open gateway API, its
+    // arguments belong beside req, not inside a data envelope (see file.rm).
+    const created = await runTrimHostAction("query", [{ req: "appcgi.sharesvr.share.link.create", ...payload }]);
     const id = String(created?.data?.id || "");
-    const defaultLink = String(defaultResponse?.data?.defaultLink || "").replace(/\/$/, "");
     if (created?.result !== "succ" || !id || !defaultLink) throw new Error(created?.errmsg || "create failed");
     $("externalShareUrl").value = `${defaultLink}/s/${id}`;
     $("externalSharePasswordResult").hidden = !passwordEnabled;
@@ -8044,8 +9019,10 @@ async function createExternalShareLink() {
     $("externalShareResult").hidden = false;
   } catch (error) {
     console.warn("create external share failed", error);
-    $("externalShareStatus").textContent = "创建失败，已打开飞牛文件详情，请在文件管理中创建外部链接";
-    openExternalShareDetails();
+    $("externalShareStatus").textContent = error.message || "创建失败，正在尝试打开飞牛文件详情";
+    if (await openExternalShareDetails()) {
+      $("externalShareStatus").textContent = "创建未完成，已请求打开飞牛文件详情，请在文件管理中检查或创建外部链接";
+    }
   } finally {
     button.disabled = false;
   }
@@ -8192,7 +9169,7 @@ function runTrackAction(action) {
   else if (action === "playlist") openPlaylistDialogForTracks(selected);
   else if (action === "insert") insertSelectedTracks(selected);
   else if (action === "info") showTrackInformation(trackId);
-  else if (action === "metadata-candidate") showTrackMetadataCandidate(trackId);
+  else if (action === "metadata-candidate") openMetadataCandidateDialog(trackId);
   else if (action === "open-folder") openContainingFolder(trackId);
   else if (action === "share") shareTrack(trackId);
   else if (action === "delete-file") openDeleteTrackDialog(selected);
@@ -8370,10 +9347,12 @@ async function refreshLibraryStatus(refresh = false) {
     // new page or restart a load that belongs to the old view.
     if (token !== state.libraryStatusRequestToken || state.libraryStatusController !== controller) return;
     let metadataChanged = false;
+    let nextMetadataSignature = "";
     if (metadata) {
       const signature = metadataProjectionSignature(metadata);
       metadataChanged = Boolean(state.metadataProjectionSignature && signature !== state.metadataProjectionSignature);
-      state.metadataProjectionSignature = signature;
+      nextMetadataSignature = signature;
+      if (!metadataChanged) state.metadataProjectionSignature = signature;
       retryCurrentTrackMetadataAfterRecovery(metadata);
     }
     if (wasScanning && data.scanning !== true) {
@@ -8391,6 +9370,14 @@ async function refreshLibraryStatus(refresh = false) {
     // disturbing the settled DOM.
     if (metadataChanged && state.pageItems?.length && !state.libraryLoading) {
       invalidateLibraryResponseCacheForMetadataRevision();
+      // A confirmed cover can finish after the dialog's immediate refresh.
+      // Patch only changed rows; complete title/artist/album fields otherwise
+      // exclude that WAV from the optional candidate-prefetch lane forever.
+      const projectionRefreshed = await refreshVisibleMetadataProjection();
+      if (token !== state.libraryStatusRequestToken || state.libraryStatusController !== controller) return;
+      // Consume a changed revision only after its row projection was read.
+      // A timeout leaves the old signature so the next bounded poll retries.
+      if (projectionRefreshed) state.metadataProjectionSignature = nextMetadataSignature;
       // A failed/no-match visible lookup releases its dedupe key. Re-arm the
       // small cancellable lane when the backend publishes a new projection,
       // so worker recovery or provider cooldown expiry can repair the row
@@ -8828,15 +9815,21 @@ $("deviceDialog").addEventListener("close", () => {
   state.deviceRefreshTimer = null;
 });
 $("closeFolderDialog").onclick = () => $("folderDialog").close();
-document.querySelectorAll("[data-settings-tab]").forEach(button => {
-  button.onclick = () => setSettingsTab(button.dataset.settingsTab);
-});
+bindSettingsTabs();
+bindMetadataSettingsTabs();
 $("dlnaDiagnosticsBtn").onclick = openDlnaDiagnostics;
 $("closeDlnaDiagnosticsDialog").onclick = () => $("dlnaDiagnosticsDialog").close();
 $("refreshDlnaDiagnosticsBtn").onclick = loadDlnaDiagnostics;
 $("newPlaylistBtn").onclick = () => openPlaylistDialog();
 $("closePlaylistDialog").onclick = () => $("playlistDialog").close();
 $("closeTrackActionDialog").onclick = closeTrackActionDialog;
+$("closeMetadataCandidateDialog").onclick = closeTrackActionDialog;
+$("metadataCandidateSearchForm").addEventListener("submit", event => {
+  event.preventDefault();
+  searchTrackMetadataManually();
+});
+$("metadataEnabledInput").addEventListener("change", updateMetadataSettingsOverview);
+$("metadataTagWriteEnabledInput").addEventListener("change", updateMetadataSettingsOverview);
 $("closeExternalShareDialog").onclick = () => $("externalShareDialog").close();
 $("cancelExternalShare").onclick = () => $("externalShareDialog").close();
 $("shareExpiryEnabled").onchange = syncExternalShareOptions;
@@ -8849,8 +9842,22 @@ $("favoriteCurrentBtn").onclick = toggleCurrentFavorite;
 $("lyricsFavoriteBtn").onclick = toggleCurrentFavorite;
 $("savePlaylistBtn").onclick = savePlaylistFromDialog;
 $("playlistNameInput").onkeydown = event => { if (event.key === "Enter") savePlaylistFromDialog(); };
-$("chooseFolderBtn").onclick = chooseCurrentFolder;
-$("addLibraryPathBtn").onclick = () => addLibraryPathInput();
+$("saveLibrarySettingsBtn").onclick = saveLibrarySettings;
+$("libraryScanNowBtn").onclick = () => requestLibraryLoad(1, true);
+$("retryLibraryLoadBtn").onclick = () => requestLibraryLoad(state.page || 1, false);
+$("saveRuntimeSettingsBtn").onclick = saveRuntimePaneSettings;
+$("saveMetadataSettingsBtn").onclick = saveMetadataOverviewPaneSettings;
+$("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
+$("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
+$("chooseLibraryPathBtn").onclick = chooseLibraryPath;
+$("restoreMetadataProvidersBtn").onclick = async () => {
+  try {
+    await restoreAndSaveRecommendedMetadataProviders();
+    $("metadataProviderStatusText").textContent = "已恢复推荐数据源顺序并保存。";
+  } catch (error) {
+    $("metadataProviderStatusText").textContent = error.message || "恢复推荐配置失败";
+  }
+};
 $("refreshMetadataBtn").onclick = refreshMetadataLibrary;
 $("scanDevices").onclick = () => loadDevices(true);
 $("playBtn").onclick = () => {
@@ -9013,6 +10020,9 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !$("lyricsView").hidden && !document.querySelector("dialog[open]")) closeLyrics();
 });
 setupMediaSession();
+// fnOS stops waiting for the child handshake after a minute. Start the bridge
+// at boot, so opening settings later can still use the existing connection.
+void getTrimSdk();
 // Paint a recent, bounded page immediately when available. The network
 // response still remains authoritative and replaces it only when its content
 // differs, avoiding the blank-first-paint/cover-flash pattern on large libs.

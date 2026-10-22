@@ -9,6 +9,7 @@ sys.path.insert(0, "app/server")
 
 import probe_runner
 from probe_runner import read_audio_info, read_probe_metadata
+from probe_metadata import normalize_probe_payload
 
 
 class ProbeRunnerTests(unittest.TestCase):
@@ -212,6 +213,38 @@ class ProbeRunnerTests(unittest.TestCase):
                 native_reader=lambda _path: {},
             )
         self.assertEqual(result, {"sample_rate": 96000, "bit_depth": 24, "bit_rate": 4608000})
+
+    def test_dsf_native_container_facts_override_transport_rate_from_ffprobe(self):
+        with patch("probe_runner.subprocess.run") as run:
+            run.return_value = type("Result", (), {
+                "stdout": b'{"streams":[{"sample_rate":"705600","bits_per_sample":8,"bit_rate":"11289600"}]}'
+            })()
+            result = read_audio_info(
+                "track.dsf", {},
+                ffprobe_resolver=lambda _config: "ffprobe",
+                native_reader=lambda _path: {
+                    "sample_rate": 5644800, "bit_depth": 1,
+                    "bit_rate": 11289600, "duration": 10.0,
+                },
+            )
+        self.assertEqual(result["sample_rate"], 5644800)
+        self.assertEqual(result["bit_depth"], 1)
+        self.assertEqual(result["bit_rate"], 11289600)
+        self.assertEqual(result["duration"], 10.0)
+
+    def test_both_probe_entry_points_prefer_dff_native_rate_and_preserve_tags(self):
+        native = {"sample_rate": 5644800, "bit_depth": 1, "bit_rate": 11289600, "duration": 10.0}
+        with patch("probe_runner.subprocess.run") as run:
+            run.return_value = type("Result", (), {
+                "stdout": b'{"format":{"duration":"10","tags":{"title":"DSD128"}},"streams":[{"sample_rate":"705600","bits_per_sample":8,"bit_rate":"11289600"}]}'
+            })()
+            info = read_audio_info("track.dff", {}, ffprobe_resolver=lambda _: "ffprobe", native_reader=lambda _: native)
+            tags, metadata_info = read_probe_metadata(
+                "track.dff", {}, ffprobe_resolver=lambda _: "ffprobe",
+                native_reader=lambda _: native, payload_normalizer=normalize_probe_payload)
+        self.assertEqual(info, native)
+        self.assertEqual(metadata_info, native)
+        self.assertEqual(tags["title"], "DSD128")
 
 
 if __name__ == "__main__":

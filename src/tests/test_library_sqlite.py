@@ -1717,10 +1717,11 @@ class LibrarySqliteTests(unittest.TestCase):
             with mock.patch.object(library, "library_db_connect", side_effect=traced_connect):
                 recent = query_library_page(config, {"view": "recent", "limit": "1"})
                 random = query_library_page(config, {"view": "random100", "limit": "1"})
-                dsd = query_library_page(config, {"view": "dsd", "limit": "1"})
+                dsd = query_library_page(config, {"view": "dsd", "limit": "10"})
             self.assertEqual(recent["count"], 2)
             self.assertEqual(random["count"], 1)
             self.assertEqual(dsd["count"], 1)
+            self.assertEqual([item["id"] for item in dsd["items"]], ["one"])
             self.assertFalse(any("COUNT(*) FROM tracks" in statement for statement in traces))
 
     def test_unfiltered_random_page_avoids_full_random_sort_when_rowids_are_available(self):

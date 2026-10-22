@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const assert = require("assert").strict;
 
-const source = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "app.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "app.js"), "utf8").replace(/\r\n/g, "\n");
 const vm = require("vm");
 const playbackSecondsStart = source.indexOf("function playbackSeconds(");
 const playbackSecondsEnd = source.indexOf("function mediaUrl(", playbackSecondsStart);
@@ -238,7 +238,9 @@ if (!index.includes('id="metadataTagWriteEnabledInput" type="checkbox"')
 }
 requireText('data.tag_write_enabled === true', "Metadata Tag writeback status must load explicitly");
 requireText('data.enabled === true', "Background metadata completion status must load explicitly");
-requireText('tag_write_enabled: $("metadataTagWriteEnabledInput").checked', "Metadata Tag writeback setting must be saved");
+if (!/tag_write_enabled:\s*tagWriteInput\.checked/.test(source)) {
+  throw new Error("Metadata Tag writeback setting must be saved after its confirmation gate");
+}
 
 requireText("window.FnAudioNative", "Android bridge detection is missing");
 requireText("function resolvedDeviceTarget", "Device menu must recover from a stale target during discovery");

@@ -548,7 +548,7 @@ assert.match(app, /fnAudioDeviceTargetPresentation\.stableTargets\(targets, disp
 assert.match(app, /return targets\.some\(target => String\(target\.id \|\| ""\) === targetId\) \? targetId : "local"/);
 assert.match(app, /fetchJson: \(requestUrl, requestMessage, requestSignal\) => fetchJsonChecked\(/, "Library loader must preserve checked API responses");
 assert.match(app, /async function fetchJsonChecked\(input, init = \{\}, fallbackMessage = "请求失败", options = \{\}\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?timeoutMs: 15000,[\s\S]*?onTimeout: \(\) => \{ try \{ controller\?\.abort\(\);/, "Library response loading must bound headers and JSON-body parsing before it occupies an in-flight slot indefinitely");
-assert.match(app, /const strictBody = options\?\.strictBody === true;[\s\S]*?if \(strictBody && globalThis\.fnAudioResponseJsonLoader\.usableBody\?\.\(result\.bodyStatus\) === false\) \{[\s\S]*?error\.name = "ResponseError";[\s\S]*?error\.bodyStatus = result\.bodyStatus;[\s\S]*?throw error;\s*\}\s*return data;/, "Only the strict caller may fail on an unreadable body, and it must still return a parsed one");
+assert.match(app, /const strictBody = options\?\.strictBody === true;[\s\S]*?if \(strictBody && globalThis\.fnAudioResponseJsonLoader\.parsedBody\(result\.bodyStatus\) === false\) \{[\s\S]*?error\.name = "ResponseError";[\s\S]*?error\.bodyStatus = result\.bodyStatus;[\s\S]*?throw error;\s*\}\s*return data;/, "Only the strict caller may fail on an unreadable body, and it must still return a parsed one");
 assert.match(app, /requestMessage,\s*\{\s*strictBody: true\s*\},/, "The cached library list must be the strict-body caller");
 assert.doesNotMatch(app, /fetchJsonChecked\("api\/access", \{\}, "读取访问模式失败", \{ strictBody: true \}\)/, "Status reads outside the list must keep their existing fallback behaviour");
 assert.match(app, /if \(state\.libraryAbortController\) state\.libraryAbortController\.abort\(\);/);
@@ -888,7 +888,6 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     "async function fetchJsonResponseBounded(input", "fetchJsonChecked");
 
   for (const entry of unreadableBodies) {
-    if (entry[0] === "empty") continue;
     const context = runUi(fetchCheckedSource, "fetchJsonChecked", {
       fetch: async () => entry[1](),
     });
@@ -903,9 +902,9 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     const context = runUi(fetchCheckedSource, "fetchJsonChecked", {
       fetch: async () => hostResponse(""),
     });
-    const data = await context.__target("api/library", {}, "读取曲库失败", { strictBody: true });
-    // Objects built inside the vm carry that realm's prototype, so the shape is asserted by keys.
-    assert.equal(Object.keys(data).length, 0, "a host that answered without content is still a usable answer");
+    const failure = await rejectionOf(context.__target("api/library", {}, "读取曲库失败", { strictBody: true }));
+    assert.equal(failure?.name, "ResponseError", "an empty response must not masquerade as an empty library");
+    assert.equal(failure.bodyStatus, "empty");
   }
   {
     // Without the flag the contract is unchanged, so no legacy caller starts throwing. Deleting
@@ -1166,12 +1165,12 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
 
   // (5) wiring pins. The behaviour above is the proof; these only stop a fourth call site from
   // appearing without being classified, and stop the loose gate from being migrated by mistake.
-  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 16,
+  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 17,
     "every bounded read is enumerated by this round: a new caller has to classify its body too");
-  assert.equal(countOccurrences(app, "parsedBody(result.bodyStatus)"), 3,
-    "exactly the three sites that act on the fallback ask for a parsed document");
-  assert.equal(countOccurrences(app, "usableBody?.(result.bodyStatus)"), 1,
-    "the list lane keeps the looser gate, so a no-content answer may still render an empty page");
+  assert.equal(countOccurrences(app, "parsedBody(result.bodyStatus)"), 4,
+    "the list and three state-changing sites require a parsed document");
+  assert.equal(countOccurrences(app, "usableBody?.(result.bodyStatus)"), 0,
+    "the list must never accept no-content as an authoritative empty page");
   for (const slice of [validateTargetSource, loadDevicesSource, saveStateSource]) {
     assert.ok(slice.includes("parsedBody(result.bodyStatus)"),
       "each gated function has to carry the gate itself, not inherit it from a helper");
