@@ -14,6 +14,7 @@ class Element {
     this.tagName = tagName;
     this.className = "";
     this.dataset = {};
+    this.attributes = {};
     this.children = [];
     this.hidden = false;
   }
@@ -25,6 +26,8 @@ class Element {
   }
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   addEventListener() {}
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   querySelector(selector) {
     for (const child of this.children) {
       if (selector === "[data-metadata-provider-result]"

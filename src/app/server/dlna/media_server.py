@@ -180,7 +180,10 @@ def soap_push(
     # is why the gate reads the three-state predicate instead of testing the
     # probe record for truthiness: a failed ConnectionManager request carries no
     # DSD claim at all, and silence must not be reported as a refusal.
-    if item.get("is_dsd"):
+    type_detection_enabled = (
+        getattr(handler.server, "config", {}) or {}
+    ).get("dlna_type_detection", True) is True
+    if item.get("is_dsd") and type_detection_enabled:
         if dsd_capability_state(device) == DSD_CAPABILITY_UNSUPPORTED:
             return False, "设备不支持源码 DSD，已阻止 PCM 转码"
 

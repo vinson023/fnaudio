@@ -173,6 +173,21 @@ class MediaFormatTests(unittest.TestCase):
             self._write_id3_file(path, b"TT2" + b"\x00\x00\x05" + b"\x03nope", major=2, trailing=b"\xff\xfb\x90\x00" + v1)
             self.assertEqual(read_id3(path), {"title": "Song", "artist": "Artist", "album": "Album"})
             self.assertEqual(read_id3_cover(path), (None, None))
+
+    def test_wav_riff_info_reads_track_number_when_id3_is_absent(self):
+        def info_chunk(chunk_id, value):
+            data = value.encode("utf-8") + b"\x00"
+            return chunk_id + len(data).to_bytes(4, "little") + data + (b"\x00" if len(data) & 1 else b"")
+        info = b"INFO" + info_chunk(b"INAM", "Song") + info_chunk(b"ITRK", "07/12")
+        list_chunk = b"LIST" + len(info).to_bytes(4, "little") + info
+        fmt = b"fmt " + (16).to_bytes(4, "little") + b"\x01\x00\x01\x00" + (44100).to_bytes(4, "little") + (88200).to_bytes(4, "little") + b"\x02\x00\x10\x00"
+        data = b"data" + (0).to_bytes(4, "little")
+        body = fmt + list_chunk + data
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "riff-info.wav")
+            with open(path, "wb") as handle:
+                handle.write(b"RIFF" + (4 + len(body)).to_bytes(4, "little") + b"WAVE" + body)
+            self.assertEqual(read_id3(path), {"title": "Song", "track_no": 7})
     def test_mp4_cover_reader_bounds_nested_atom_depth(self):
         payload = b""
         for _ in range(40):

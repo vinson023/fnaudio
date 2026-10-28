@@ -67,6 +67,31 @@ async function testRevisionRetry() {
   assert.equal(attempts, 2);
   assert.equal(state.metadataProjectionSignature, 'new');
 }
+async function testConcurrentProjectionRefreshKeepsNewestResult() {
+  const item = { id: 'wav1', cover_url: 'old', cover_thumbnail_url: '' };
+  const state = { pageItems: [item], libraryRequestSeq: 1, libraryLoading: false, itemCache: new Map(), queue: [],
+    metadataProjectionRequestSeq: 0 };
+  let releaseOld;
+  const oldPending = new Promise(resolve => { releaseOld = resolve; });
+  let calls = 0;
+  const context = { state, isPagedTrackListing: () => true,
+    fetchLibraryItemsByIds: async () => {
+      calls += 1;
+      if (calls === 1) await oldPending;
+      return [{ id: 'wav1', cover_url: calls === 1 ? 'old-result' : 'new-result', cover_thumbnail_url: '' }];
+    },
+    invalidateTrackRowsMarkup() {}, scheduleMetadataRowRender() {}, restoreLibraryNowPlaying() {},
+  };
+  vm.runInNewContext(match[0], context);
+  const first = context.refreshVisibleMetadataProjection();
+  await Promise.resolve();
+  const second = context.refreshVisibleMetadataProjection();
+  await second;
+  assert.equal(item.cover_url, 'new-result', 'newer projection must commit first');
+  releaseOld();
+  assert.equal(await first, false, 'older projection must be discarded after newer commit');
+  assert.equal(item.cover_url, 'new-result');
+}
 (async () => {
   await run();
   await run({ stale: true });
@@ -75,6 +100,7 @@ async function testRevisionRetry() {
   await run({ failed: true });
   await testWholePage();
   await testRevisionRetry();
+  await testConcurrentProjectionRefreshKeepsNewestResult();
   assert.match(app, /await refreshVisibleMetadataProjection\(\)/, 'wire refresh to metadata revisions');
   console.log('Metadata artwork refresh checks passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

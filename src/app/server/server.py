@@ -465,8 +465,13 @@ from transcode import (
     trusted_forwarded_headers,
     warm_transcode_cache,
 )
-from resource_limits import ResourceLimitError, ffmpeg_slot
+from resource_limits import ConcurrencyGate, ResourceLimitError, ffmpeg_slot
 from http_server import BoundedThreadingHTTPServer
+
+# Shared by both blocking metadata HTTP routes, including service-free probes.
+# Separate per-route limits would still let mixed requests fill the HTTP pool.
+METADATA_INTERACTIVE_GATE = ConcurrencyGate("metadata-interactive", max_waiters=0)
+METADATA_INTERACTIVE_LIMIT = 2
 
 
 def public_base_url(handler):
@@ -993,6 +998,7 @@ class Handler(BaseHTTPRequestHandler):
                     library_connection_pool_config_key(): library_connection_pool_enabled(self.server.config),
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
+                    "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
                 },
                 "status": library_connection_pool_status(),
             })
@@ -1643,13 +1649,18 @@ class Handler(BaseHTTPRequestHandler):
                 or any(len(value) > 512 for value in (provider_id, title, artist, album))
             ):
                 return self.send_json({"ok": False, "message": "数据源测试参数无效"}, 400)
-            probe = getattr(METADATA_SERVICE, "probe_provider", None) if METADATA_SERVICE else None
-            if not callable(probe):
-                engine = getattr(METADATA_SERVICE, "providers", None) if METADATA_SERVICE else None
-                if engine is None:
-                    engine = MetadataProviders(self.server.config)
-                probe = engine.probe_provider
-            result = probe(provider_id, title.strip(), artist.strip(), album.strip())
+            try:
+                with METADATA_INTERACTIVE_GATE.slot(METADATA_INTERACTIVE_LIMIT, timeout=0):
+                    probe = getattr(METADATA_SERVICE, "probe_provider", None) if METADATA_SERVICE else None
+                    if not callable(probe):
+                        engine = getattr(METADATA_SERVICE, "providers", None) if METADATA_SERVICE else None
+                        if engine is None:
+                            engine = MetadataProviders(self.server.config)
+                        probe = engine.probe_provider
+                    result = probe(provider_id, title.strip(), artist.strip(), album.strip())
+            except ResourceLimitError:
+                return self.send_json({"ok": False, "message": "数据源测试繁忙，请稍后重试"}, 503,
+                                      extra_headers={"Retry-After": "1"})
             return self.send_json({"ok": True, "result": result})
         if parsed.path == "/api/metadata/refresh":
             if not METADATA_SERVICE:
@@ -1709,11 +1720,16 @@ class Handler(BaseHTTPRequestHandler):
                 "artist": artist.strip(),
                 "album": album.strip(),
             }
-            candidates = (
-                METADATA_SERVICE.track_candidates(track_query, provider_id=provider_id)
-                if provider_id
-                else METADATA_SERVICE.track_candidates(track_query)
-            )
+            try:
+                with METADATA_INTERACTIVE_GATE.slot(METADATA_INTERACTIVE_LIMIT, timeout=0):
+                    candidates = (
+                        METADATA_SERVICE.track_candidates(track_query, provider_id=provider_id)
+                        if provider_id
+                        else METADATA_SERVICE.track_candidates(track_query)
+                    )
+            except ResourceLimitError:
+                return self.send_json({"ok": False, "message": "元数据搜索繁忙，请稍后重试"}, 503,
+                                      extra_headers={"Retry-After": "1"})
             if not candidates:
                 return self.send_json({"ok": True, "status": "no_match", "candidates": []})
             search_id = METADATA_SERVICE.cache_interactive_track_candidates(track_id, candidates)
@@ -1747,6 +1763,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(
                     {"ok": False, "message": "运行设置包含无效值：歌词缓存预算必须是范围内的整数字节数"}, 400
                 )
+            try:
+                dlna_type_detection = payload_bool(
+                    payload, "dlna_type_detection", self.server.config.get("dlna_type_detection", True)
+                )
+            except (TypeError, ValueError):
+                return self.send_json({"ok": False, "message": "运行设置包含无效值：DLNA 类型检测必须是布尔值"}, 400)
             renderer_name = payload.get("renderer_name", self.server.config.get("renderer_name", "fnAudio Renderer"))
             if not renderer_name_is_valid(renderer_name):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：Renderer 名称必须是非空文本且不能包含控制字符"}, 400)
@@ -1762,6 +1784,7 @@ class Handler(BaseHTTPRequestHandler):
                         pool_key: pool_enabled,
                         LYRICS_CACHE_BYTES_CONFIG_KEY: lyrics_budget,
                         "renderer_name": renderer_name,
+                        "dlna_type_detection": dlna_type_detection,
                     }),
                 ):
                     return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
@@ -1781,6 +1804,7 @@ class Handler(BaseHTTPRequestHandler):
                     pool_key: library_connection_pool_enabled(self.server.config),
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
+                    "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
                 },
                 "status": library_connection_pool_status(),
             })

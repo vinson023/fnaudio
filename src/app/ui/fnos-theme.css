@@ -1,0 +1,889 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench
+ * design-system: design.md · designed-as-app
+ * Existing app.css owns functional states and generated column geometry.
+ * This single presentation boundary supersedes its historical !important rules.
+ * Never set display on [hidden] or closed dialogs. */
+
+html, body { overflow-x: clip !important; height: 100%; min-width: 0 !important; }
+body {
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--ui-header-height) minmax(0, 1fr) var(--ui-player-height);
+  height: 100dvh; overflow-y: hidden; background: var(--ui-canvas) !important;
+  color: var(--ui-text) !important; font: 14px/1.5 var(--ui-font) !important;
+}
+button, input, select, textarea { font: inherit; accent-color: var(--ui-accent); }
+button { white-space: nowrap; transition: none !important; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible, .nav-item:focus-visible {
+  outline: 2px solid var(--ui-accent) !important; outline-offset: 2px !important;
+}
+button:disabled, [aria-disabled="true"] { opacity: .48 !important; cursor: not-allowed !important; }
+button:active:not(:disabled) { filter: brightness(.94); }
+button svg, .library-search svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+input::placeholder { color: var(--ui-muted) !important; opacity: 1; }
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), select, textarea {
+  min-width: 0; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important;
+  background: var(--ui-surface) !important; color: var(--ui-text) !important; box-shadow: none !important;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select { min-height: 36px; }
+input[type="range"] { accent-color: var(--ui-accent) !important; }
+h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap: anywhere; min-width: 0; }
+.topbar {
+  grid-row: 1; height: var(--ui-header-height) !important; padding: 0 var(--ui-space-6) !important;
+  background: var(--ui-surface) !important; border-bottom: 1px solid var(--ui-line) !important;
+  box-shadow: none !important; gap: var(--ui-space-6) !important;
+}
+.topbar-library { display: block !important; min-width: 0 !important; }
+.eyebrow { color: var(--ui-accent) !important; font-size: 12px !important; letter-spacing: 0 !important; font-weight: 650 !important; }
+.topbar-library-main { gap: var(--ui-space-4) !important; }
+.topbar-library-title h1 { margin: 0 !important; font-size: 24px !important; line-height: 1.3 !important; font-weight: 650 !important; }
+.topbar-library-title p { margin: 0 !important; color: var(--ui-muted) !important; font-size: 12px !important; }
+.topbar-library-note { display: none !important; }
+.top-actions { display: flex !important; flex-wrap: wrap; gap: var(--ui-space-1) !important; }
+.top-actions .top-icon-button {
+  display: inline-flex !important; align-items: center !important; justify-content: center !important;
+  gap: var(--ui-space-2) !important; height: 36px !important; width: 36px !important; min-width: 36px !important;
+  padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--ui-radius-sm) !important;
+  background: transparent !important; color: var(--ui-secondary) !important; box-shadow: none !important;
+}
+.top-actions #folderBtn, .top-actions #refreshBtn { width: auto !important; padding-inline: var(--ui-space-3) !important; }
+.top-actions .settings-entry-button:hover,
+.top-actions .settings-entry-button:focus-visible {
+  color: var(--ui-accent) !important;
+  background: var(--ui-selected) !important;
+}
+.top-actions .settings-entry-button:focus-visible {
+  outline: 2px solid var(--ui-accent) !important;
+  outline-offset: 2px !important;
+}
+.top-actions .settings-entry-button.is-open {
+  color: var(--ui-on-accent) !important;
+  background: var(--ui-accent) !important;
+}
+.top-actions .settings-entry-button.is-open:hover,
+.top-actions .settings-entry-button.is-open:focus-visible {
+  color: var(--ui-on-accent) !important;
+  background: var(--ui-accent-hover) !important;
+}
+.top-actions .tool-label { display: inline !important; font-size: 13px !important; }
+.top-actions .top-icon-button svg { width: 20px !important; height: 20px !important; }
+.top-actions .mode-mp3-icon { display: grid !important; width: 25px; height: 22px; place-items: center; color: currentColor; font-size: 12px; font-weight: 750; line-height: 1; letter-spacing: 0; }
+.top-actions #folderBtn .settings-menu-icon { display: block !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.75 !important; stroke-linecap: round !important; }
+.top-actions #playAllBtn { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
+.top-actions .mobile-top-control, .mobile-pagebar { display: none !important; }
+.shell { grid-row: 2; display: grid !important; grid-template-columns: var(--ui-sidebar-width) minmax(0, 1fr) !important; height: 100% !important; min-height: 0 !important; background: var(--ui-canvas) !important; }
+.sidebar {
+  position: static !important; width: auto !important; height: 100% !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important; padding: var(--ui-space-4) var(--ui-space-3) !important;
+  background: var(--ui-sidebar) !important; border-right: 1px solid var(--ui-line) !important;
+  overflow: auto !important; transform: none !important; box-shadow: none !important; transition: none !important;
+}
+.library-search { display: flex !important; gap: var(--ui-space-2) !important; min-height: 36px !important; margin: 0 0 var(--ui-space-6) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
+.library-search input, .mobile-library-search input { width: 100% !important; border: 0 !important; background: transparent !important; outline-offset: -2px !important; }
+#searchInput, #mobileSearchInput { border: 0 !important; border-radius: 0 !important; background: transparent !important; }
+.nav-title { padding: 0 var(--ui-space-3) var(--ui-space-2) !important; font-size: 12px !important; letter-spacing: 0 !important; color: var(--ui-muted) !important; }
+.nav-title.secondary { margin-top: var(--ui-space-6) !important; }
+.nav-item {
+  flex: 0 0 auto !important; display: flex !important; align-items: center !important; gap: var(--ui-space-3) !important;
+  width: 100% !important; min-height: 40px !important; margin: 2px 0 !important; padding: var(--ui-space-2) var(--ui-space-3) !important;
+  border: 0 !important; border-radius: var(--ui-radius-sm) !important; background: transparent !important;
+  color: var(--ui-secondary) !important; font-size: 14px !important; text-align: left !important;
+}
+.nav-item span { flex: 1 !important; }
+.nav-item.active { background: color-mix(in srgb, var(--ui-accent) 4%, var(--ui-surface)) !important; color: var(--ui-accent) !important; font-weight: 600 !important; }
+.nav-item b { color: var(--ui-muted) !important; font-size: 12px !important; font-weight: 400 !important; }
+:root[data-theme="dark"] .nav-item.active { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+:root[data-theme="dark"] .nav-item.active b { color: var(--ui-on-accent) !important; opacity: .86; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .nav-item.active { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+  :root:not([data-theme="light"]) .nav-item.active b { color: var(--ui-on-accent) !important; opacity: .86; }
+}
+.new-playlist { border: 1px dashed var(--ui-border) !important; margin-top: var(--ui-space-3) !important; }
+.sidebar-footer { margin-top: auto !important; padding: var(--ui-space-6) var(--ui-space-3) 0 !important; color: var(--ui-muted) !important; }
+.pulse { background: var(--ui-success) !important; box-shadow: none !important; animation: none !important; }
+.content { width: 100% !important; max-width: none !important; height: 100% !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; background: var(--ui-surface) !important; overflow: hidden !important; }
+.library-scroll { min-height: 0 !important; flex: 1 1 auto !important; background: var(--ui-surface) !important; }
+.library-scroll .table-head,
+.library-scroll .track-list {
+  width: max-content !important;
+  min-width: 100% !important;
+}
+.track-list, .track-list.group-mode { background: var(--ui-surface) !important; box-shadow: none !important; }
+.table-head { min-height: 44px !important; padding: var(--ui-space-1) var(--ui-space-4) !important; background: var(--ui-sidebar) !important; border-bottom: 1px solid var(--ui-line) !important; color: var(--ui-secondary) !important; letter-spacing: 0 !important; }
+.library-scroll .table-head { background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; }
+.track-header-cell, .track-head-label, .track-head-button, .album-header-cell, .table-head-more { color: var(--ui-secondary) !important; }
+/* Match the number text to the header's column edge, including after sorting. */
+.track-cell-track_no { text-align: left !important; }
+.track-sort-indicator { color: var(--ui-accent) !important; }
+[data-track-column="track_no"] .track-head-button,
+[data-track-column="track_no"] .track-head-label { padding-inline: 0 !important; }
+.track { min-height: 64px !important; padding-block: var(--ui-space-2) !important; padding-inline: var(--ui-space-4) !important; background: transparent !important; border-color: var(--ui-line) !important; }
+.track-title, .track-cell, .album-group-title strong { color: var(--ui-text) !important; font-size: 14px !important; }
+.track-title { font-weight: 500 !important; }
+.track-artist, .track-subtitle, .track-album, .track-size, .album-group-row > span, .group-info span { color: var(--ui-muted) !important; }
+.track-cover, .group-icon, .cover { background: var(--ui-hover) !important; color: var(--ui-accent) !important; border-radius: var(--ui-radius-sm) !important; box-shadow: none !important; }
+.track-cover span { text-shadow: none !important; }
+.track.is-selected, .track.is-selected:hover, .album-group-row.is-selected, .group-row.is-selected { background: var(--ui-selected) !important; box-shadow: none !important; }
+.track.is-current:not(.is-selected) .track-title { color: var(--ui-accent) !important; }
+.track.is-current:not(.is-selected) .track-cover { background: var(--ui-selected) !important; }
+.track-playing-indicator {
+  background: var(--ui-selected) !important;
+  color: var(--ui-accent) !important;
+}
+.track-playing-indicator::before {
+  background: currentColor !important;
+  box-shadow: 0 0 0 2px var(--ui-selected) !important;
+}
+.format-badge { color: var(--ui-secondary) !important; border-color: var(--ui-border) !important; background: var(--ui-sidebar) !important; }
+.track-cell .format-badge { color: var(--ui-secondary) !important; border-color: var(--ui-border) !important; background: var(--ui-sidebar) !important; }
+.format-badge.dsd { color: var(--ui-warning) !important; border-color: var(--ui-warning) !important; background: var(--ui-warning-bg) !important; }
+.group-row, .track-list.group-mode .group-row, .album-group-row { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; box-shadow: none !important; }
+.group-info strong { color: var(--ui-text) !important; }
+.group-play { color: var(--ui-accent) !important; border-color: var(--ui-border) !important; background: var(--ui-selected) !important; }
+.folder-group-row { cursor: pointer !important; grid-template-columns: 44px minmax(0, 1fr) 18px !important; }
+.folder-group-row:focus-visible { outline: 2px solid var(--ui-accent) !important; outline-offset: -2px !important; }
+.artist-all-songs-entry:focus-visible { outline: 2px solid var(--ui-accent) !important; outline-offset: 2px !important; }
+.folder-group-chevron { color: var(--ui-muted) !important; font-size: 22px !important; line-height: 1 !important; text-align: center !important; }
+.folder-group-row:hover .folder-group-chevron,
+.folder-group-row:focus-visible .folder-group-chevron { color: var(--ui-accent) !important; }
+.folder-group-chevron svg { width: 18px !important; height: 18px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.folder-toolbar, .playlist-toolbar, .album-detail-hero, .artist-all-tracks-breadcrumb, .artist-all-songs-entry { background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border-color: var(--ui-line) !important; box-shadow: none !important; }
+.album-detail-title, .artist-all-songs-title, .album-detail-meta strong { color: var(--ui-text) !important; }
+.folder-toolbar span, .album-detail-meta span, .artist-all-songs-count { color: var(--ui-muted) !important; }
+.album-detail-layout { background: var(--ui-surface) !important; }
+.album-detail-sidebar { background: var(--ui-sidebar) !important; }
+.album-detail-cover { background: var(--ui-hover) !important; color: var(--ui-accent) !important; box-shadow: none !important; }
+.album-detail-sidebar h2, .album-detail-breadcrumb strong, .artist-all-songs-copy strong, .artist-all-tracks-breadcrumb strong { color: var(--ui-text) !important; }
+.album-detail-sidebar p, .album-detail-sidebar small, .album-detail-breadcrumb, .album-detail-actions,
+.artist-all-songs-copy small, .artist-all-songs-chevron { color: var(--ui-muted) !important; }
+.album-detail-breadcrumb button, .artist-all-tracks-breadcrumb button { color: var(--ui-accent) !important; }
+.album-detail-table-head { padding-inline: var(--ui-space-4) !important; background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; }
+.album-detail-actions { background: var(--ui-sidebar) !important; border-bottom-color: var(--ui-line) !important; color: var(--ui-muted) !important; }
+.album-detail-table-head .track-head-button, .album-detail-table-head .track-head-label { color: var(--ui-secondary) !important; }
+.table-head-more, .album-detail-table-head .table-head-more { background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; box-shadow: none !important; }
+.artist-all-songs-icon { background: var(--ui-selected) !important; color: var(--ui-accent) !important; }
+.pager { min-height: 44px !important; flex: 0 0 auto !important; margin: 0 !important; padding: var(--ui-space-1) var(--ui-space-4) !important; background: var(--ui-sidebar) !important; border-top: 1px solid var(--ui-line) !important; }
+.pager-nav, .pager-status, .pager-page-summary, .pager-nav-button, .pager-page-button, .pager-refresh-button { color: var(--ui-secondary) !important; }
+.pager-page-button.is-current { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+.empty { max-width: 48ch; padding: var(--ui-space-6); color: var(--ui-muted) !important; }
+.empty-icon { color: var(--ui-accent) !important; }
+.library-load-error { background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; border-color: var(--ui-danger) !important; }
+
+/* Player: every real control stays in the DOM and has a reachable counterpart. */
+.player {
+  grid-row: 3; position: relative !important; inset: auto !important; z-index: 50 !important;
+  height: var(--ui-player-height) !important; width: 100% !important; padding: var(--ui-space-3) var(--ui-space-6) !important;
+  display: grid !important; grid-template-columns: minmax(180px, 1fr) minmax(260px, 480px) minmax(280px, 1fr) !important;
+  grid-template-rows: 48px 24px !important; gap: var(--ui-space-1) var(--ui-space-6) !important;
+  background: var(--ui-surface) !important; border-top: 1px solid var(--ui-line) !important; box-shadow: none !important;
+}
+.now-playing { grid-column: 1 !important; grid-row: 1 / 3 !important; gap: var(--ui-space-3) !important; }
+.cover { width: 60px !important; height: 60px !important; max-width: 60px !important; max-height: 60px !important; flex-basis: 60px !important; }
+.now-meta strong { color: var(--ui-text) !important; font-size: 14px !important; }
+.now-meta span, .now-meta small { color: var(--ui-muted) !important; }
+.now-meta small { display: none !important; }
+.transport { grid-column: 2 !important; grid-row: 1 !important; min-width: 0 !important; justify-content: center !important; gap: var(--ui-space-2) !important; padding: 0 !important; }
+.player-button, .icon-button, .device-button { color: var(--ui-secondary) !important; background: transparent !important; border-radius: var(--ui-radius-sm) !important; box-shadow: none !important; }
+.player-button { width: 40px !important; height: 40px !important; }
+.player-button.play-button { width: 44px !important; height: 44px !important; border-radius: 50% !important; background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+.progress { position: static !important; inset: auto !important; grid-column: 2 !important; grid-row: 2 !important; display: flex !important; height: 24px !important; padding: 0 !important; gap: var(--ui-space-2) !important; background: transparent !important; color: var(--ui-muted) !important; }
+.progress #elapsed, .progress #duration { display: inline !important; font-variant-numeric: tabular-nums; font-size: 12px !important; }
+.progress #transportStateUnknown { position: static !important; inset: auto !important; font-size: 11px !important; padding: 0 var(--ui-space-1) !important; background: var(--ui-warning-bg) !important; color: var(--ui-warning) !important; box-shadow: none !important; }
+.progress input { height: 24px !important; width: 100% !important; min-width: 0 !important; margin: 0 !important; background: transparent !important; border: 0 !important; }
+.progress input::-webkit-slider-runnable-track { height: 4px !important; background: linear-gradient(to right, var(--ui-accent) var(--seek-fill, 0%), var(--ui-line) var(--seek-fill, 0%)) !important; border-radius: 2px !important; }
+.progress input::-webkit-slider-thumb { width: 12px !important; height: 12px !important; margin-top: -4px !important; background: var(--ui-surface) !important; border: 2px solid var(--ui-accent) !important; box-shadow: none !important; }
+.progress input::-moz-range-track { background: var(--ui-line) !important; }
+.progress input::-moz-range-progress { background: var(--ui-accent) !important; }
+.progress input::-moz-range-thumb { background: var(--ui-surface) !important; border-color: var(--ui-accent) !important; box-shadow: none !important; }
+.player-actions { grid-column: 3 !important; grid-row: 1 / 3 !important; display: flex !important; gap: var(--ui-space-1) !important; justify-content: end !important; justify-self: stretch !important; width: 100% !important; align-items: center !important; }
+.player-actions .action-button, .player-actions .device-button { width: 36px !important; height: 36px !important; min-width: 36px !important; padding: var(--ui-space-2) !important; border: 0 !important; }
+.player-actions svg { width: 20px !important; height: 20px !important; }
+.player-actions #lyricsBtn .lyric-symbol {
+  display: grid !important; place-items: center !important; width: 20px !important; height: 20px !important;
+  color: currentColor !important; font-size: 14px !important; font-weight: 700 !important; line-height: 1 !important;
+}
+.active-control, .favorite-current.active-control, .top-actions .active-control, .player-actions .active-control { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
+.volume-control { position: relative !important; display: inline-grid !important; place-items: center !important; }
+.volume-panel { position: absolute !important; right: 0 !important; bottom: calc(100% + 8px) !important; transform: none !important; display: grid !important; place-items: center !important; width: 48px !important; height: 144px !important; padding: var(--ui-space-3) 0 !important; z-index: 90 !important; background: var(--ui-raised) !important; border: 1px solid var(--ui-border) !important; box-shadow: var(--ui-shadow) !important; border-radius: var(--ui-radius) !important; }
+.volume-panel::after { display: none !important; }
+.volume-slider { appearance: auto !important; writing-mode: vertical-rl !important; direction: rtl !important; transform: none !important; width: 24px !important; height: 112px !important; margin: 0 !important; }
+
+/* Native dialog lifecycle, IDs, pane states and generated actions are retained. */
+dialog {
+  position: fixed !important; inset: 0 !important; margin: auto !important;
+  width: min(640px, calc(100% - 32px)) !important; max-width: calc(100% - 32px) !important;
+  max-height: calc(100dvh - 48px) !important; height: fit-content !important; overflow: auto !important;
+  padding: var(--ui-space-6) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius-lg) !important;
+  background: var(--ui-raised) !important; color: var(--ui-text) !important; box-shadow: var(--ui-shadow) !important;
+}
+dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: none !important; }
+.dialog-close-button { display: inline-grid !important; place-items: center !important; flex: 0 0 36px !important; width: 36px !important; height: 36px !important; padding: 0 !important; color: var(--ui-secondary) !important; }
+.dialog-close-button svg, .library-path-remove svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.library-path-remove { display: inline-grid !important; place-items: center !important; }
+.dialog-head { gap: var(--ui-space-4) !important; padding: 0 0 var(--ui-space-4) !important; background: transparent !important; border-color: var(--ui-line) !important; }
+.dialog-head > div { min-width: 0; }
+.dialog-head h2 { margin: 0 !important; font-size: 20px !important; font-weight: 650 !important; }
+:is(#folderDialog, #deviceDialog, #metadataCandidateDialog, #externalShareDialog, #playlistDialog, #dlnaDiagnosticsDialog, #trackActionDialog, #columnsDialog) .dialog-head h2 { color: var(--ui-text) !important; }
+#deviceDialog { overflow: auto !important; padding: var(--ui-space-6) !important; }
+#deviceDialog .dialog-head h2 { color: var(--ui-text) !important; }
+#deviceDialog .dialog-head .icon-button, #deviceDialog > .dialog-help { color: var(--ui-secondary) !important; }
+#externalShareDialog { padding: var(--ui-space-6) !important; background: var(--ui-raised) !important; color: var(--ui-text) !important; }
+#externalShareDialog .dialog-head { margin: 0 !important; }
+.external-share-file strong { color: var(--ui-text) !important; }
+.external-share-file-icon { color: var(--ui-on-accent) !important; background: var(--ui-accent) !important; }
+.external-share-file-icon svg { width: 18px !important; height: 18px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.dialog-head .icon-button { width: 36px !important; height: 36px !important; flex: none; }
+.dialog-help, .dialog-current-target, .settings-help, .settings-inline-feedback, .settings-description, .settings-section-heading p { color: var(--ui-muted) !important; font-size: 12px !important; line-height: 1.6 !important; }
+.settings-pane-status { color: var(--ui-secondary) !important; }
+.settings-pane-status.is-success { color: var(--ui-success) !important; }
+.settings-pane-status.is-error { color: var(--ui-danger) !important; }
+.primary-button, .secondary-button, .track-action-choice, .native-delete-cancel, .native-delete-outline { min-height: 36px; padding: var(--ui-space-2) var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-text) !important; box-shadow: none !important; line-height: 1.4 !important; }
+.danger-button { border-color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; }
+.danger-button:hover:not(:disabled) { border-color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; }
+.primary-button, .settings-save, #saveMetadataProvidersBtn, #savePlaylistBtn, #saveColumnsBtn { border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+.settings-tabs { display: flex !important; flex-wrap: wrap !important; gap: var(--ui-space-1) !important; margin: 0 !important; padding: 0 0 var(--ui-space-3) !important; border-bottom: 1px solid var(--ui-line) !important; overflow: visible !important; }
+.settings-tabs button, .metadata-settings-tabs button { min-height: 36px !important; padding: var(--ui-space-2) var(--ui-space-3) !important; border: 0 !important; border-radius: var(--ui-radius-sm) !important; background: transparent !important; color: var(--ui-secondary) !important; white-space: nowrap !important; }
+.settings-tabs button.active, .metadata-settings-tabs button.active { background: var(--ui-selected) !important; color: var(--ui-accent) !important; font-weight: 600 !important; box-shadow: none !important; border: 0 !important; }
+.settings-tabs button::after, .metadata-settings-tabs button::after { display: none !important; }
+.settings-pane { min-height: 0 !important; padding-top: var(--ui-space-4) !important; }
+.settings-section-heading { margin-block: var(--ui-space-4) var(--ui-space-3) !important; }
+.settings-section-heading strong, .settings-section-heading h3, .metadata-provider-heading strong { color: var(--ui-text) !important; }
+.settings-pane-actions { display: flex !important; flex-wrap: wrap !important; align-items: center !important; justify-content: flex-end !important; gap: var(--ui-space-3) !important; position: sticky !important; bottom: calc(-1 * var(--ui-space-6)) !important; z-index: 2 !important; padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-2) !important; margin: var(--ui-space-4) calc(-1 * var(--ui-space-6)) calc(-1 * var(--ui-space-2)) !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-raised) !important; }
+#settings-pane-dlna .settings-pane-actions { justify-content: flex-end !important; }
+#settings-pane-dlna .settings-diagnostics-heading {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  border-top: 0 !important;
+}
+.metadata-settings-tabs { display: flex !important; flex-wrap: wrap !important; gap: var(--ui-space-1) !important; padding-bottom: var(--ui-space-3) !important; border-color: var(--ui-line) !important; background: transparent !important; }
+.metadata-provider-settings { margin: var(--ui-space-3) 0 var(--ui-space-1) !important; padding-top: 0 !important; border-top: 0 !important; }
+.metadata-settings-section { margin-bottom: var(--ui-space-3) !important; padding: var(--ui-space-3) 0 !important; background: transparent !important; border-color: var(--ui-line) !important; box-shadow: none !important; }
+.metadata-settings-section .settings-section-heading { margin: 0 0 var(--ui-space-2) !important; }
+.metadata-settings-overview { gap: var(--ui-space-2) !important; margin-bottom: var(--ui-space-2) !important; background: var(--ui-sidebar) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; padding: var(--ui-space-3) !important; }
+.metadata-settings-overview > div { min-width: 0; min-height: 60px; padding: var(--ui-space-2) !important; }
+.metadata-settings-overview strong { font-size: 16px !important; overflow-wrap: anywhere; }
+.metadata-settings-overview strong, .metadata-toggle strong { color: var(--ui-text) !important; }
+.metadata-settings-overview span, .metadata-toggle small, .metadata-provider-capabilities { color: var(--ui-muted) !important; }
+.metadata-core-controls .metadata-toggle { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius-sm) !important; }
+.metadata-settings-grid label, .metadata-probe-query label { color: var(--ui-secondary) !important; }
+.metadata-provider-list { gap: var(--ui-space-2) !important; padding-bottom: calc(var(--ui-space-5) + 56px) !important; }
+.metadata-provider-row, .metadata-provider-row.is-fixed-last { display: grid; grid-template-columns: minmax(0, 1fr) !important; gap: var(--ui-space-2) !important; padding: var(--ui-space-3) !important; background: var(--ui-surface) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; box-shadow: none !important; }
+.metadata-provider-header { display: grid !important; grid-template-columns: minmax(0,1fr) auto !important; gap: var(--ui-space-2) !important; }
+.metadata-provider-toggle span { color: var(--ui-text) !important; }
+.metadata-provider-toggle input, .metadata-toggle input { accent-color: var(--ui-accent) !important; }
+.metadata-provider-actions { grid-column: 2 !important; grid-row: 1 / 3 !important; gap: var(--ui-space-1) !important; }
+.metadata-provider-actions button { min-height: 36px !important; background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; }
+.metadata-provider-actions .metadata-provider-move { display: grid !important; place-items: center !important; width: 36px !important; min-width: 36px !important; height: 36px !important; padding: 0 !important; font-size: 0 !important; }
+.metadata-provider-actions .metadata-provider-move::before { content: none !important; }
+.metadata-provider-actions .metadata-provider-move svg { width: 17px !important; height: 17px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.metadata-provider-actions .metadata-provider-test { min-width: 60px; }
+.metadata-provider-result { grid-column: 1 / -1 !important; min-width: 0 !important; background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border-color: var(--ui-line) !important; overflow-wrap: anywhere; }
+.metadata-provider-result strong { color: var(--ui-text) !important; }
+.metadata-provider-result[data-state="error"], .metadata-provider-result.is-failed { color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; }
+.metadata-provider-result.is-ok { color: var(--ui-success) !important; background: var(--ui-success-bg) !important; }
+.metadata-provider-result small { color: inherit !important; }
+.metadata-provider-save-actions { display: flex !important; align-items: center !important; justify-content: flex-end !important; gap: var(--ui-space-3) !important; position: sticky !important; bottom: calc(-1 * var(--ui-space-6)) !important; z-index: 2 !important; margin: var(--ui-space-3) calc(-1 * var(--ui-space-3)) calc(-1 * var(--ui-space-2)) !important; padding: var(--ui-space-3) var(--ui-space-3) var(--ui-space-2) !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-raised) !important; }
+.metadata-provider-save-actions button { min-width: 132px !important; }
+.metadata-settings-status, .metadata-tag-jobs, .metadata-tag-job { background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border-color: var(--ui-line) !important; }
+.metadata-tag-job.is-done { background: var(--ui-success-bg) !important; color: var(--ui-success) !important; border-left-color: var(--ui-success) !important; }
+.metadata-tag-job.is-running { background: var(--ui-selected) !important; color: var(--ui-accent) !important; border-left-color: var(--ui-accent) !important; }
+.metadata-tag-job.is-retry, .metadata-tag-job.is-no_match { background: var(--ui-warning-bg) !important; color: var(--ui-warning) !important; border-left-color: var(--ui-warning) !important; }
+.metadata-tag-job.is-failed { background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; border-left-color: var(--ui-danger) !important; }
+.metadata-candidate-dialog { width: min(800px, calc(100% - 32px)) !important; padding: var(--ui-space-6) !important; background: var(--ui-raised) !important; }
+.metadata-candidate-source-bar { grid-template-columns: minmax(0,1fr) auto !important; padding: var(--ui-space-3) !important; gap: var(--ui-space-3) !important; background: var(--ui-sidebar) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; }
+.metadata-candidate-source-bar small, .metadata-candidate-source-bar label { color: var(--ui-muted) !important; }
+.metadata-candidate-dialog #metadataCandidateStatus { margin: var(--ui-space-3) 0 !important; padding: var(--ui-space-3) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-selected) !important; color: var(--ui-secondary) !important; }
+.metadata-candidate-dialog .track-action-choice {
+  border-color: var(--ui-accent) !important;
+  background: var(--ui-accent) !important;
+  color: var(--ui-on-accent) !important;
+}
+.metadata-candidate-results { max-height: 40dvh !important; margin: 0 !important; padding: var(--ui-space-3) 0 !important; overflow: auto !important; }
+.metadata-candidate-choice { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius) !important; }
+.metadata-candidate-choice:has(input:checked) { background: var(--ui-selected) !important; border-color: var(--ui-accent) !important; }
+.metadata-candidate-choice strong { color: var(--ui-text) !important; }
+.metadata-candidate-choice small { color: var(--ui-muted) !important; }
+.metadata-candidate-search { padding: var(--ui-space-4) 0 0 !important; gap: var(--ui-space-2) !important; background: transparent !important; border-top: 1px solid var(--ui-line) !important; }
+.metadata-candidate-dialog #metadataCandidateSearchStatus { background: transparent !important; padding: var(--ui-space-2) 0 0 !important; color: var(--ui-muted) !important; }
+.library-health, .library-health-grid > div, .diagnostics-list, .diagnostics-row { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-secondary) !important; box-shadow: none !important; }
+.library-health strong, .library-health-grid strong { color: var(--ui-text) !important; }
+.library-health-heading p, .library-health-detail, .library-health-grid span { color: var(--ui-muted) !important; }
+.library-health.is-error { border-color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; }
+.library-health.is-scanning { border-color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
+.library-path-row input, .path-entry input { background: var(--ui-surface) !important; color: var(--ui-text) !important; }
+.device-section { border-color: var(--ui-line) !important; }
+.device-section h3, .device-section-title { color: var(--ui-muted) !important; }
+.device-section h3 { background: var(--ui-surface) !important; }
+.device-row { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; color: var(--ui-text) !important; box-shadow: none !important; }
+.device-row.is-current, .device-row.is-switching { background: var(--ui-selected) !important; border-color: var(--ui-accent) !important; }
+.device-row strong, .device-row-text strong { color: var(--ui-text) !important; }
+.device-row small, .device-row-text span, .device-dialog-footer { color: var(--ui-muted) !important; }
+.device-row-radio { border-color: var(--ui-border) !important; }
+.device-row-radio { color: var(--ui-on-accent) !important; }
+.device-row-radio svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.device-row.is-current .device-row-radio { border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; }
+.device-row.is-current::after { background: var(--ui-accent) !important; }
+.device-dialog-footer { border-color: var(--ui-line) !important; background: var(--ui-sidebar) !important; }
+.device-dialog-footer span { color: var(--ui-muted) !important; }
+.device-dialog-footer .secondary-button { background: var(--ui-surface) !important; color: var(--ui-text) !important; border-color: var(--ui-border) !important; }
+.track-context-menu { max-width: calc(100% - 16px) !important; background: var(--ui-raised) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius) !important; box-shadow: var(--ui-shadow) !important; }
+.track-context-actions .track-action-choice, .track-action-choice { color: var(--ui-text) !important; background: var(--ui-surface) !important; }
+.track-action-choice { display: flex !important; align-items: center !important; gap: var(--ui-space-2) !important; }
+.track-action-choice .track-action-icon { width: 18px !important; height: 18px !important; flex: 0 0 18px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.track-action-choice > span { min-width: 0 !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.track-action-choice.danger, .track-action-choice[data-track-action="delete"] { color: var(--ui-danger) !important; }
+.track-action-info, .external-share-description, .external-share-file span, .external-share-option, .native-delete-description { color: var(--ui-secondary) !important; }
+.external-share-file, .external-share-result, .column-choice-row, .column-choice-list label, .playlist-choice { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-text) !important; }
+#externalShareDialog .external-share-detail input:focus, #externalShareDialog .external-share-result input:focus { border-color: var(--ui-accent) !important; border-top-color: var(--ui-accent) !important; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 12%, transparent) !important; }
+.external-share-options { background: var(--ui-sidebar) !important; }
+.external-share-option strong { color: var(--ui-text) !important; }
+.external-share-option > div > span, .external-share-result p { color: var(--ui-muted) !important; }
+.external-share-status { color: var(--ui-danger) !important; }
+.switch-control span { background: var(--ui-border) !important; }
+.switch-control span::after { background: var(--ui-surface) !important; }
+.switch-control input:checked + span { background: var(--ui-accent) !important; }
+.column-choice-section-head { color: var(--ui-text) !important; }
+.column-choice-section-head span { color: var(--ui-muted) !important; }
+.column-choice { background: var(--ui-sidebar) !important; color: var(--ui-text) !important; border-color: var(--ui-line) !important; }
+.column-choice.is-selected { background: var(--ui-selected) !important; border-color: var(--ui-accent) !important; }
+.column-choice input { accent-color: var(--ui-accent) !important; }
+.column-move-button { background: transparent !important; color: var(--ui-secondary) !important; }
+.column-move-button svg { width: 16px !important; height: 16px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
+.external-share-detail, .external-share-footer, .native-delete-footer { border-color: var(--ui-line) !important; }
+.native-delete-confirm { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; border-color: var(--ui-accent) !important; }
+.native-delete-outline { color: var(--ui-danger) !important; }
+.native-delete-icon { color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; }
+.native-delete-status { color: var(--ui-danger) !important; }
+.native-delete-title h2 { color: var(--ui-text) !important; }
+
+/* Lyrics shares the workbench surface; cover art remains real library content. */
+.lyrics-view { inset: 0 0 var(--ui-player-height) !important; width: 100% !important; max-width: 100% !important; background: var(--ui-canvas) !important; color: var(--ui-text) !important; }
+.lyrics-bg { opacity: .08 !important; filter: blur(40px) !important; }
+.lyrics-shade { background: var(--ui-canvas) !important; opacity: .88 !important; }
+.lyrics-header { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; backdrop-filter: none !important; }
+.lyrics-cover { position: relative; background: var(--ui-hover) !important; color: var(--ui-accent) !important; box-shadow: none !important; }
+.lyrics-cover:not(:has(img)) { display: grid; place-items: center; font-size: 0 !important; }
+.lyrics-header-meta strong, .lyrics-meta strong { color: var(--ui-text) !important; }
+.lyrics-header-meta span, .lyrics-meta span { color: var(--ui-muted) !important; }
+.lyrics-lines, .lyrics-lines p, .lyrics-lines button { color: var(--ui-muted) !important; }
+.lyrics-lines .active { color: var(--ui-accent) !important; }
+.lyrics-lines p.active { color: var(--ui-accent) !important; }
+.lyrics-close, .lyrics-favorite { background: var(--ui-surface) !important; border-color: var(--ui-border) !important; color: var(--ui-text) !important; border-radius: var(--ui-radius-sm) !important; box-shadow: none !important; }
+.lyrics-close svg, .lyrics-favorite svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.lyrics-favorite { gap: var(--ui-space-1) !important; }
+.lyrics-favorite.active-control svg { fill: currentColor; }
+.lyrics-favorite-label { line-height: 1; }
+.sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
+
+@media (hover: hover) {
+  .nav-item:hover:not(.active), .track:hover:not(.is-selected), .track.is-current:not(.is-selected):hover,
+  .group-row:hover, .track-list.group-mode .group-row:hover, .album-group-row:hover,
+  .artist-all-songs-entry:hover,
+  .top-actions .top-icon-button:hover, .top-actions #modeBtn:hover, .player-button:hover:not(.play-button),
+  .player-actions button:hover, .secondary-button:hover:not(:disabled), .track-action-choice:hover,
+  .settings-tabs button:hover:not(.active), .metadata-settings-tabs button:hover:not(.active),
+  .metadata-candidate-choice:hover, .device-row:hover { background: var(--ui-hover) !important; color: var(--ui-text) !important; }
+  .primary-button:hover:not(:disabled), .settings-save:hover:not(:disabled), .play-button:hover { background: var(--ui-accent-hover) !important; color: var(--ui-on-accent) !important; }
+  .artist-all-songs-entry:hover { border-color: var(--ui-line) !important; }
+}
+
+@media (min-width: 761px) and (max-width: 1100px) {
+  :root { --ui-player-height: 132px; --ui-sidebar-width: 208px; }
+  .player { grid-template-columns: minmax(180px,1fr) minmax(280px,1fr) !important; grid-template-rows: 52px 40px !important; gap: var(--ui-space-2) var(--ui-space-4) !important; padding: var(--ui-space-3) var(--ui-space-4) !important; }
+  .now-playing { grid-column: 1 !important; grid-row: 1 !important; }
+  .transport { grid-column: 2 !important; grid-row: 1 !important; }
+  .progress { grid-column: 1 !important; grid-row: 2 !important; }
+  .player-actions { grid-column: 2 !important; grid-row: 2 !important; justify-content: center !important; }
+}
+@media (max-width: 760px) {
+  :root { --ui-header-height: 104px; --ui-player-height: calc(144px + env(safe-area-inset-bottom, 0px)); }
+  .topbar { display: grid !important; grid-template-columns: minmax(0,1fr) !important; grid-template-rows: 44px 44px !important; gap: var(--ui-space-1) !important; padding: var(--ui-space-1) var(--ui-space-3) !important; }
+  .topbar-library { display: none !important; }
+  .mobile-pagebar { display: flex !important; gap: var(--ui-space-2) !important; }
+  .mobile-page-title { min-width: 0 !important; }
+  .mobile-page-title strong { color: var(--ui-text) !important; font-size: 18px !important; }
+  .mobile-page-title span { color: var(--ui-muted) !important; }
+  #mobileNavBtn { color: var(--ui-secondary) !important; width: 44px !important; height: 44px !important; }
+  .top-actions { width: 100% !important; flex-wrap: nowrap !important; justify-content: space-between !important; gap: 0 !important; }
+  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn { display: inline-flex !important; width: 44px !important; min-width: 44px !important; height: 44px !important; padding: 0 !important; }
+  .top-actions #modeBtn { display: none !important; }
+  .top-actions .tool-label { display: none !important; }
+  .player-actions #lyricsBtn .lyric-symbol { width: 20px !important; height: 20px !important; font-size: 15px !important; }
+  .top-actions .settings-entry-button.is-open { background: var(--ui-accent) !important; }
+  .shell { display: block !important; }
+  .sidebar {
+    position: fixed !important; inset: 0 auto 0 0 !important; z-index: 70 !important;
+    width: min(84%, 288px) !important; height: 100dvh !important; visibility: hidden !important;
+    transform: translateX(-100%) !important; padding: var(--ui-space-4) !important; box-shadow: none !important;
+  }
+  .sidebar.mobile-open { visibility: visible !important; transform: none !important; box-shadow: var(--ui-shadow) !important; }
+  .mobile-nav-backdrop:not([hidden]) { display: block !important; background: var(--ui-backdrop) !important; }
+  .sidebar .library-search { display: none !important; }
+  .nav-item { min-height: 44px !important; }
+  .mobile-library-search { display: flex !important; flex: 0 0 44px !important; margin: var(--ui-space-2) var(--ui-space-3) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
+  .mobile-library-search:focus-within { border-color: var(--ui-accent) !important; box-shadow: none !important; }
+  .mobile-library-search input { font-size: 14px !important; }
+  .table-head { display: none !important; }
+  .track { grid-template-columns: minmax(0,1fr) !important; padding: var(--ui-space-3) !important; min-height: 72px !important; }
+  .track-main { padding-right: 0 !important; width: 100% !important; }
+  .track-info { padding-right: 0 !important; }
+  .track-cell { display: none !important; }
+  .track-title { font-size: 14px !important; }
+  .track-list.group-mode { display: block !important; padding: 0 !important; }
+  .track-list.group-mode .group-row { margin: 0 !important; border: 0 !important; border-bottom: 1px solid var(--ui-line) !important; border-radius: 0 !important; padding: var(--ui-space-3) !important; }
+  .album-group-row { grid-template-columns: minmax(0,1fr) !important; }
+  .pager { padding-inline: var(--ui-space-3) !important; }
+  .player, body.mobile-search-active .player {
+    position: relative !important; inset: auto !important; height: var(--ui-player-height) !important;
+    grid-template-columns: minmax(0,1fr) !important; grid-template-rows: 44px 44px 24px !important;
+    padding: var(--ui-space-2) var(--ui-space-3) calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+    gap: var(--ui-space-1) !important; contain: none !important;
+  }
+  .now-playing { grid-column: 1 !important; grid-row: 1 !important; }
+  .cover { width: 40px !important; height: 40px !important; max-width: 40px !important; max-height: 40px !important; flex-basis: 40px !important; }
+  .transport { grid-column: 1 !important; grid-row: 2 !important; gap: var(--ui-space-2) !important; }
+  .transport .mobile-transport-control { display: grid !important; place-items: center !important; min-width: 44px !important; width: 44px !important; height: 44px !important; color: var(--ui-secondary) !important; }
+  .transport .player-button { width: 44px !important; min-width: 44px !important; height: 44px !important; }
+  .transport .play-button { width: 44px !important; }
+  .transport .mobile-transport-control.active-control { color: var(--ui-accent) !important; }
+  #mobileRepeatBtn[data-repeat="all"]::after, #mobileRepeatBtn[data-repeat="one"]::after { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
+  .progress { grid-column: 1 !important; grid-row: 3 !important; }
+  /* Keep secondary actions available on desktop only; mobile transport stays compact. */
+  .player-actions { display: none !important; }
+  .volume-panel { right: 0 !important; }
+  dialog, #folderDialog, .metadata-candidate-dialog { width: calc(100% - 16px) !important; max-width: calc(100% - 16px) !important; max-height: calc(100dvh - 24px) !important; margin: auto !important; padding: var(--ui-space-4) !important; border-radius: var(--ui-radius-lg) !important; }
+  #folderDialog[open] { display: grid !important; height: calc(100dvh - 24px) !important; grid-template-rows: auto auto minmax(0, 1fr) !important; overflow: hidden !important; }
+  #folderDialog > .dialog-head {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 5 !important;
+    margin: 0 calc(-1 * var(--ui-space-4)) !important;
+    padding: var(--ui-space-3) var(--ui-space-4) !important;
+    border-bottom: 1px solid var(--ui-line) !important;
+    background: var(--ui-raised) !important;
+  }
+  dialog .dialog-head .dialog-close-button { flex-basis: 44px !important; width: 44px !important; min-width: 44px !important; height: 44px !important; }
+  .settings-tabs { display: flex !important; flex-wrap: nowrap !important; gap: var(--ui-space-1) !important; padding-inline-end: 64px !important; overflow-x: auto !important; overflow-y: hidden !important; scrollbar-width: none !important; }
+  .settings-tabs::-webkit-scrollbar { display: none !important; }
+  .settings-tabs button, .metadata-settings-tabs button { min-width: 0 !important; min-height: 44px !important; text-align: center !important; padding: var(--ui-space-2) !important; }
+  .settings-tabs button { flex: 0 0 auto !important; white-space: nowrap !important; }
+  .metadata-settings-tabs { display: flex !important; flex-wrap: nowrap !important; gap: var(--ui-space-1) !important; overflow-x: auto !important; overflow-y: hidden !important; scrollbar-width: none !important; }
+  .metadata-settings-tabs::-webkit-scrollbar { display: none !important; }
+  .metadata-settings-tabs button { flex: 0 0 auto !important; white-space: nowrap !important; }
+  #folderDialog > .settings-pane { grid-row: 3; min-height: 0 !important; overflow-y: auto !important; overscroll-behavior: contain; }
+  .metadata-settings-grid, .metadata-core-controls, .metadata-candidate-source-bar { grid-template-columns: minmax(0,1fr) !important; }
+  .metadata-settings-overview { grid-template-columns: repeat(3,minmax(0,1fr)) !important; gap: var(--ui-space-1) !important; padding: var(--ui-space-2) !important; }
+  .metadata-settings-overview > div { min-height: 54px; padding: var(--ui-space-2) !important; }
+  .metadata-settings-overview span { font-size: 10px !important; }
+  .metadata-settings-overview strong { font-size: 13px !important; }
+  .metadata-provider-heading, .settings-diagnostics-heading { flex-wrap: wrap !important; gap: var(--ui-space-2) !important; }
+  .metadata-provider-list { padding-bottom: calc(var(--ui-space-5) + 240px) !important; scroll-padding-bottom: 240px !important; }
+  .metadata-provider-settings { display: grid !important; grid-template-columns: minmax(0,1fr) !important; grid-template-areas: "heading" "providers" "probe" "status" !important; }
+  .metadata-provider-settings > .metadata-provider-heading { grid-area: heading !important; }
+  .metadata-provider-settings > .metadata-provider-list { grid-area: providers !important; }
+  .metadata-provider-settings > .metadata-probe-query { grid-area: probe !important; }
+  .metadata-provider-settings > #metadataProviderStatusText { grid-area: status !important; }
+  .metadata-provider-header { grid-template-columns: minmax(0,1fr) !important; }
+  .metadata-provider-actions { grid-column: 1 !important; grid-row: 3 !important; justify-content: flex-end !important; width: 100% !important; padding-left: 0 !important; }
+  .metadata-provider-actions button { min-height: 44px !important; flex: 0 0 auto !important; }
+  .metadata-provider-actions .metadata-provider-move { width: 44px !important; min-width: 44px !important; height: 44px !important; }
+  .metadata-provider-save-actions { justify-content: flex-end !important; margin-inline: calc(-1 * var(--ui-space-3)) !important; }
+  .metadata-candidate-source-bar small { max-width: none !important; }
+  .metadata-candidate-choice { grid-template-columns: 18px minmax(0,1fr) !important; }
+  .metadata-candidate-choice > small { grid-column: 2 !important; }
+  .metadata-candidate-search { display: grid !important; grid-template-columns: minmax(0,1fr) !important; }
+  .metadata-candidate-search input, .metadata-candidate-search button { width: 100% !important; min-height: 44px !important; }
+  .metadata-candidate-results { max-height: 32dvh !important; }
+  .settings-pane { padding-bottom: var(--ui-space-4) !important; }
+  .settings-pane-actions { position: sticky !important; bottom: 0 !important; z-index: 2 !important; justify-content: flex-end !important; padding-inline: var(--ui-space-4) !important; margin-inline: calc(-1 * var(--ui-space-4)) !important; margin-bottom: 0 !important; }
+  #settings-pane-dlna .settings-pane-actions { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; justify-content: stretch !important; gap: var(--ui-space-2) !important; }
+  #settings-pane-dlna .settings-pane-actions button { min-width: 0 !important; width: 100% !important; }
+  .library-path-row { grid-template-columns: minmax(0, 1fr) 44px !important; }
+  .library-path-remove { width: 44px !important; min-width: 44px !important; height: 44px !important; }
+  .library-health-grid { grid-template-columns: minmax(0,1fr) !important; }
+  .native-delete-footer, .native-delete-primary-actions { flex-wrap: wrap !important; }
+  .native-delete-footer button { min-height: 44px !important; }
+  .lyrics-view { bottom: var(--ui-player-height) !important; }
+}
+/* Short landscape windows use a side player, preserving a real list viewport. */
+@media (min-width: 560px) and (max-width: 760px) and (max-height: 540px) {
+  :root { --ui-header-height: 60px; }
+  body { grid-template-columns: minmax(0,1fr) 248px; grid-template-rows: 60px minmax(0,1fr); }
+  .topbar { grid-column: 1 / -1; grid-template-columns: minmax(0,1fr) auto !important; grid-template-rows: 44px !important; align-content: center; gap: var(--ui-space-2) !important; }
+  .top-actions { width: auto !important; }
+  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn { width: 36px !important; min-width: 36px !important; }
+  .mobile-page-title strong { font-size: 16px !important; }
+  .shell { grid-column: 1 !important; grid-row: 2 !important; }
+  .player, body.mobile-search-active .player { grid-column: 2 !important; grid-row: 2 !important; height: 100% !important; align-content: center; border-top: 0 !important; border-left: 1px solid var(--ui-line) !important; }
+  .transport { gap: 0 !important; }
+  .transport .player-button, .transport .mobile-transport-control { width: 36px !important; min-width: 36px !important; }
+  .transport .play-button { width: 40px !important; min-width: 40px !important; }
+  .player-actions { display: none !important; }
+  .lyrics-view { top: 60px !important; bottom: 0 !important; right: 248px !important; width: calc(100% - 248px) !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+/* Android keeps transport and progress, without the extra footer action row. */
+html.android-app .player-actions { display: none !important; }
+@media (max-width: 760px) {
+  :root.android-app { --ui-player-height: calc(140px + env(safe-area-inset-bottom, 0px)); }
+  html.android-app .player, html.android-app body.mobile-search-active .player {
+    grid-template-rows: 44px 44px 24px !important;
+  }
+}
+/* Absolute visibility contracts win over all presentation rules above. */
+[hidden] { display: none !important; }
+
+/* Round 1: record-console icon and surface language.
+ * Presentation only: IDs, event hooks and playback semantics remain unchanged. */
+:where(.top-icon-button, .icon-button, .device-button, .player-button,
+  .nav-item, .track-actions button, .column-move-button) {
+  -webkit-tap-highlight-color: transparent;
+}
+:where(.top-icon-button, .icon-button, .device-button, .player-button,
+  .track-actions button, .column-move-button) :is(svg, .transport-icon) {
+  flex: 0 0 auto;
+}
+:where(.top-icon-button, .icon-button, .device-button, .player-button,
+  .track-actions button, .column-move-button):focus-visible,
+.nav-item:focus-visible {
+  outline: 2px solid var(--ui-accent) !important;
+  outline-offset: 2px !important;
+}
+.top-icon-button .tool-label {
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.player-button .transport-icon { display: block; width: 20px; height: 20px; fill: currentColor !important; stroke: none !important; }
+.top-icon-button:has(.tool-label) {
+  width: auto !important;
+  min-width: 72px;
+  padding-inline: var(--ui-space-3) !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-2);
+}
+.nav-item > svg,
+.library-search > svg,
+.mobile-library-search > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.nav-item > svg { color: currentColor; }
+.nav-item.active > svg { stroke-width: 2; }
+.empty-icon { display: grid; place-items: center; color: var(--ui-accent); }
+.empty-icon svg { width: 42px; height: 42px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.library-search:focus-within,
+.mobile-library-search:focus-within {
+  border-color: var(--ui-accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 18%, transparent) !important;
+}
+.track-cover img,
+.cover img,
+.album-detail-cover img {
+  display: block;
+  background: var(--ui-hover);
+}
+.track-cover,
+.cover {
+  position: relative;
+}
+.track-cover:has(.track-cover-fallback:not([hidden])),
+.cover:not(:has(img)) {
+  display: grid;
+  place-items: center;
+  background: var(--ui-selected) !important;
+  color: var(--ui-accent) !important;
+  font-size: 0 !important;
+}
+.track-cover-fallback { display: grid; place-items: center; font-size: 0 !important; }
+.record-placeholder { display: block; width: 58%; height: 58%; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.record-placeholder-center { fill: currentColor; stroke: none; }
+.track.is-current .track-cover:has(.track-cover-fallback:not([hidden])),
+.track.is-selected .track-cover:has(.track-cover-fallback:not([hidden])) {
+  background: var(--ui-accent) !important;
+  color: var(--ui-on-accent) !important;
+}
+.track-title { letter-spacing: 0 !important; }
+.mobile-track-subtitle { color: var(--ui-muted) !important; }
+.track.is-current .mobile-track-subtitle { color: var(--ui-accent) !important; }
+.group-row.is-opening { background: var(--ui-selected) !important; }
+.track-list.group-mode .group-row { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; box-shadow: none !important; }
+.track-list.group-mode .group-row:hover { background: var(--ui-hover) !important; border-color: var(--ui-border) !important; box-shadow: none !important; }
+.folder-breadcrumb { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-muted) !important; }
+.folder-crumb { color: var(--ui-accent) !important; }
+.folder-crumb.is-current { color: var(--ui-text) !important; }
+.folder-crumb-separator { color: var(--ui-muted) !important; }
+.folder-pager { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-muted) !important; }
+.diagnostic-entry { border-bottom-color: var(--ui-line) !important; }
+.diagnostic-entry strong { color: var(--ui-text) !important; }
+.diagnostic-entry span, .diagnostic-entry small { color: var(--ui-muted) !important; }
+.diagnostic-entry p { color: var(--ui-secondary) !important; }
+.format-badge { font-variant-numeric: tabular-nums; }
+:root[data-theme="dark"] .track-cell-format {
+  color: var(--ui-secondary) !important;
+  border-color: var(--ui-border) !important;
+  background: var(--ui-surface) !important;
+}
+:root[data-theme="dark"] .track-cell-format.dsd {
+  color: var(--ui-warning) !important;
+  border-color: var(--ui-warning) !important;
+  background: var(--ui-warning-bg) !important;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .track-cell-format {
+    color: var(--ui-secondary) !important;
+    border-color: var(--ui-border) !important;
+    background: var(--ui-surface) !important;
+  }
+  :root:not([data-theme="light"]) .track-cell-format.dsd {
+    color: var(--ui-warning) !important;
+    border-color: var(--ui-warning) !important;
+    background: var(--ui-warning-bg) !important;
+  }
+}
+
+/* Final authority for playback state colors. These ID-scoped selectors are
+ * intentionally narrow: app.css contains older, more-specific control rules
+ * that would otherwise leak the retired teal accent into active buttons. */
+.player-actions #repeatBtn.active-control,
+.player-actions #shuffleBtn.active-control,
+.player-actions #favoriteCurrentBtn.active-control,
+.player-actions #lyricsBtn.active-control,
+.player-actions #queueBtn.active-control,
+.player-actions #deviceBtn.active-control,
+.top-actions #modeBtn.active-control,
+.top-actions #mobileModeBtn.active-control {
+  color: var(--ui-accent) !important;
+  background: var(--ui-selected) !important;
+  border-color: var(--ui-border) !important;
+}
+.player-actions #deviceBtn:hover:not(:disabled),
+.player-actions #lyricsBtn:hover:not(:disabled),
+.player-actions #repeatBtn:hover:not(:disabled),
+.player-actions #shuffleBtn:hover:not(:disabled),
+.player-actions #queueBtn:hover:not(:disabled),
+.player-actions #favoriteCurrentBtn:hover:not(:disabled),
+.player-actions #volumeBtn:hover:not(:disabled),
+.top-actions #modeBtn:hover:not(:disabled),
+.top-actions #mobileModeBtn:hover:not(:disabled) {
+  color: var(--ui-text) !important;
+  background: var(--ui-hover) !important;
+  border-color: transparent !important;
+}
+
+/* Theme boundary for the metadata/settings workbench. These components were
+ * added after the original FNOS pass and must consume semantic tokens rather
+ * than pinning a light-surface palette that breaks dark mode. */
+.metadata-settings-tabs{border-bottom-color:var(--ui-line)!important}
+.metadata-settings-tabs button{color:var(--ui-secondary)!important}
+.metadata-settings-tabs button.active{color:var(--ui-accent-hover)!important}
+.metadata-settings-section{border-bottom-color:var(--ui-line)!important}
+.metadata-tag-section{background:var(--ui-warning-bg)!important;border-color:var(--ui-border)!important}
+.metadata-tag-section .settings-section-heading h3{color:var(--ui-warning)!important}
+.metadata-core-controls .metadata-toggle small,.metadata-settings-overview span,
+.metadata-provider-capabilities,.metadata-candidate-source-bar label,
+.metadata-candidate-source-bar small{color:var(--ui-muted)!important}
+.metadata-core-controls .metadata-toggle strong,.metadata-settings-overview strong,
+.metadata-provider-toggle span,.metadata-candidate-choice strong{color:var(--ui-text)!important}
+.metadata-settings-overview>div,.metadata-core-controls .metadata-toggle,
+.metadata-provider-row,.metadata-candidate-choice{border-color:var(--ui-border)!important;background:var(--ui-surface)!important}
+.metadata-provider-settings{border-top-color:var(--ui-line)!important}
+.metadata-provider-row.is-fixed-last{background:var(--ui-hover)!important}
+.metadata-provider-result{border-left-color:var(--ui-warning)!important;background:var(--ui-warning-bg)!important;color:var(--ui-warning)!important}
+.metadata-provider-result.is-ok{border-left-color:var(--ui-success)!important;background:var(--ui-success-bg)!important;color:var(--ui-success)!important}
+.metadata-provider-result.is-failed{border-left-color:var(--ui-danger)!important;background:var(--ui-danger-bg)!important;color:var(--ui-danger)!important}
+.metadata-provider-result small,.metadata-candidate-choice small{color:var(--ui-muted)!important}
+.metadata-candidate-dialog{background:var(--ui-canvas)!important;color:var(--ui-text)!important}
+.metadata-candidate-dialog .dialog-head,.metadata-candidate-search{background:var(--ui-surface)!important}
+.metadata-candidate-dialog .dialog-head .dialog-help{color:var(--ui-muted)!important}
+.metadata-candidate-source-bar{border-bottom-color:var(--ui-line)!important;background:var(--ui-sidebar)!important}
+.metadata-candidate-source-bar select,.metadata-candidate-search input{border-color:var(--ui-border)!important;background:var(--ui-surface)!important;color:var(--ui-text)!important}
+.metadata-candidate-dialog #metadataCandidateStatus{border-left-color:var(--ui-success)!important;background:var(--ui-success-bg)!important;color:var(--ui-success)!important}
+.metadata-candidate-choice:hover{border-color:var(--ui-accent)!important;background:var(--ui-selected)!important}
+.metadata-candidate-search{border-top-color:var(--ui-line)!important}
+.metadata-candidate-dialog #metadataCandidateSearchStatus{background:var(--ui-surface)!important;color:var(--ui-muted)!important}
+.library-load-error{border-color:var(--ui-danger)!important;background:var(--ui-danger-bg)!important;color:var(--ui-danger)!important}
+.switch-control input:focus-visible + span{outline:2px solid var(--ui-accent)!important;outline-offset:2px!important}
+
+/* Context actions and destructive confirmation share the same surface and
+ * semantic status treatment in every theme. */
+.track-context-menu{border-color:var(--ui-border)!important;background:var(--ui-surface)!important;color:var(--ui-text)!important;box-shadow:var(--ui-shadow)!important}
+.track-context-title{color:var(--ui-text)!important}
+.track-context-actions .track-action-choice{color:var(--ui-secondary)!important}
+.track-context-actions .track-action-choice:hover{background:var(--ui-hover)!important;color:var(--ui-text)!important}
+.track-context-actions .track-action-choice.danger{color:var(--ui-danger)!important}
+.track-context-actions .track-action-choice.danger:hover{background:var(--ui-danger-bg)!important;color:var(--ui-danger)!important}
+.track-action-info { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-secondary) !important; }
+.track-info-detail{border-color:var(--ui-border)!important;background:var(--ui-surface)!important}
+.track-info-detail>div{border-bottom-color:var(--ui-line)!important}
+.track-info-detail span{color:var(--ui-muted)!important}
+.track-info-detail strong{color:var(--ui-text)!important}
+.native-delete-dialog{background:var(--ui-surface)!important;color:var(--ui-text)!important}
+.native-delete-title h2{color:var(--ui-text)!important}
+.native-delete-description{color:var(--ui-secondary)!important}
+.native-delete-status{color:var(--ui-danger)!important}
+.native-delete-outline{border-color:var(--ui-danger)!important;background:var(--ui-danger-bg)!important;color:var(--ui-danger)!important}
+.native-delete-outline:hover:not(:disabled){background:var(--ui-danger-bg)!important}
+.native-delete-cancel{border-color:var(--ui-border)!important;background:var(--ui-surface)!important;color:var(--ui-secondary)!important}
+.native-delete-cancel:hover:not(:disabled){background:var(--ui-hover)!important;color:var(--ui-text)!important}
+.native-delete-confirm{border-color:var(--ui-danger)!important;background:var(--ui-danger)!important;color:var(--ui-on-accent)!important}
+.native-delete-confirm:hover:not(:disabled){border-color:var(--ui-danger)!important;background:var(--ui-danger)!important}
+
+
+/* Category detail headers are rendered by the library view, but their legacy
+ * white surface bypassed the FNOS theme when entering a group in dark mode. */
+.category-detail {
+  background: var(--ui-sidebar) !important;
+  border-bottom-color: var(--ui-line) !important;
+}
+.category-detail-main strong { color: var(--ui-text) !important; }
+.category-detail-main span { color: var(--ui-muted) !important; }
+
+/* Format cells have a separate runtime class from the compact badge. Keep
+ * both render paths on the same FNOS surface and warning tokens in light and
+ * dark themes instead of inheriting the legacy fixed palette. */
+.track-cell-format {
+  color: var(--ui-secondary) !important;
+  border-color: var(--ui-border) !important;
+  background: var(--ui-sidebar) !important;
+}
+.track-cell-format.dsd {
+  color: var(--ui-warning) !important;
+  border-color: var(--ui-warning) !important;
+  background: var(--ui-warning-bg) !important;
+}
+
+/* The legacy player rules assign a fixed palette to inactive footer controls.
+ * Keep both themes on the FNOS secondary token without changing geometry or
+ * active-state semantics. */
+.player-actions #deviceBtn,
+.player-actions #lyricsBtn,
+.player-actions #favoriteCurrentBtn,
+.player-actions #repeatBtn,
+.player-actions #shuffleBtn,
+.player-actions #queueBtn {
+  color: var(--ui-secondary) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .player-actions #deviceBtn,
+  :root:not([data-theme="light"]) .player-actions #lyricsBtn,
+  :root:not([data-theme="light"]) .player-actions #favoriteCurrentBtn,
+  :root:not([data-theme="light"]) .player-actions #repeatBtn,
+  :root:not([data-theme="light"]) .player-actions #shuffleBtn,
+  :root:not([data-theme="light"]) .player-actions #queueBtn {
+    color: var(--ui-secondary) !important;
+  }
+}
+
+:root[data-theme="dark"] .player-actions #deviceBtn,
+:root[data-theme="dark"] .player-actions #lyricsBtn,
+:root[data-theme="dark"] .player-actions #favoriteCurrentBtn,
+:root[data-theme="dark"] .player-actions #repeatBtn,
+:root[data-theme="dark"] .player-actions #shuffleBtn,
+:root[data-theme="dark"] .player-actions #queueBtn {
+  color: var(--ui-secondary) !important;
+}
+
+/* Mobile geometry contract: the theme sheet is loaded after app.css, so the
+ * final responsive sizing must live here. Keep control groups compact and
+ * centered, and let the seek range share the row with its time labels. */
+@media (max-width: 760px), (pointer: coarse) and (max-width: 1100px) {
+  .topbar,
+  .player {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  .top-actions {
+    width: max-content !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-inline: auto !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    justify-content: center !important;
+    gap: var(--ui-space-2) !important;
+  }
+
+  .transport {
+    width: max-content !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    margin-inline: auto !important;
+    justify-self: center !important;
+    display: flex !important;
+    justify-content: center !important;
+    gap: var(--ui-space-2) !important;
+  }
+
+  .progress {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+  }
+
+  .progress input,
+  .progress #seek {
+    flex: 1 1 0 !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+}
+
+/* Android WebView can expose a tablet-sized CSS viewport while still being
+ * a touch phone surface. Keep the complete mobile shell in that mode too;
+ * applying only the final control geometry leaves the desktop header/player
+ * grid active and produces the horizontally stretched screenshot. */
+@media (pointer: coarse) and (min-width: 761px) and (max-width: 1100px) {
+  :root { --ui-header-height: 104px; --ui-player-height: 144px; }
+  .topbar {
+    height: 104px !important; display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: 44px 44px !important;
+    gap: var(--ui-space-1) !important; padding: var(--ui-space-1) var(--ui-space-3) !important;
+  }
+  .topbar-library { display: none !important; }
+  .mobile-pagebar { display: flex !important; gap: var(--ui-space-2) !important; }
+  .top-actions {
+    grid-column: 1 !important; grid-row: 2 !important; width: max-content !important;
+    max-width: 100% !important; margin-inline: auto !important; display: flex !important;
+    flex-wrap: nowrap !important; justify-content: center !important; gap: var(--ui-space-2) !important;
+  }
+  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn {
+    display: inline-flex !important; width: 44px !important; min-width: 44px !important;
+    height: 44px !important; padding: 0 !important;
+  }
+  .top-actions #modeBtn, .top-actions .tool-label { display: none !important; }
+  .shell { display: block !important; height: 100% !important; }
+  .sidebar { position: fixed !important; }
+  .content { width: 100% !important; max-width: none !important; height: 100% !important; padding: 0 !important; margin: 0 !important; }
+  .table-head { display: none !important; }
+  .track { grid-template-columns: minmax(0, 1fr) !important; padding: var(--ui-space-3) !important; min-height: 72px !important; }
+  .track-cell { display: none !important; }
+  .player {
+    position: relative !important; inset: auto !important; width: 100% !important; height: 144px !important;
+    grid-template-columns: minmax(0, 1fr) !important; grid-template-rows: 44px 44px 24px !important;
+    padding: var(--ui-space-2) var(--ui-space-3) calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+    gap: var(--ui-space-1) !important;
+  }
+  .now-playing { grid-column: 1 !important; grid-row: 1 !important; }
+  .transport { grid-column: 1 !important; grid-row: 2 !important; }
+  .progress { grid-column: 1 !important; grid-row: 3 !important; }
+  .player-actions { display: none !important; }
+}

@@ -272,7 +272,8 @@ vm.runInNewContext(shipped + "\nthis.directTrackChild = directTrackChild; this.c
 const { patchTrackRowNode, directTrackChild, trackRowComparableHtml, invalidateLibraryResponseForTrack } = context;
 
 const coverImg = (src, extra = []) => el("img", [["data-cover-src", src], ["loading", "lazy"], ["decoding", "async"], ["alt", ""]].concat(extra), []);
-const coverCell = src => el("div", [["class", "track-cover"]], [coverImg(src), el("span", [["class", "track-cover-fallback"]], [text("\u266b")])]);
+const coverFallback = () => el("span", [["class", "track-cover-fallback"]], [el("svg", [["class", "record-placeholder"], ["aria-hidden", "true"]], [])]);
+const coverCell = src => el("div", [["class", "track-cover"]], [coverImg(src), coverFallback()]);
 const infoCell = title => el("div", [["class", "track-info"]], [el("div", [["class", "track-title-line"]], [el("strong", [["class", "track-title"]], [text(title)])])]);
 const mainCell = (title, src = "/cover/a") => el("div", [["class", "track-main"], ["data-play", "a"]], [coverCell(src), infoCell(title)]);
 const cell = (key, value) => el("span", [["class", `track-cell track-cell-${key}`]], [text(value)]);
@@ -389,7 +390,7 @@ test("trackRowComparableHtml normalises cover transport state", () => {
   // row signature lives on the row element itself, not on the title cell.
   const hydratedImage = el("img", [["data-cover-src", "/cover/a"], ["loading", "lazy"], ["decoding", "async"], ["alt", ""], ["src", "/cover/a"], ["data-cover-queued", "3"], ["data-cover-loaded-src", "/cover/a"], ["data-cover-observed", "1"]], []);
   const live = row([el("div", [["class", "track-main"], ["data-play", "a"]], [
-    el("div", [["class", "track-cover"]], [hydratedImage, el("span", [["class", "track-cover-fallback"], ["hidden", ""]], [text("\u266b")])]),
+    el("div", [["class", "track-cover"]], [hydratedImage, el("span", [["class", "track-cover-fallback"], ["hidden", ""]], [el("svg", [["class", "record-placeholder"], ["aria-hidden", "true"]], [])])]),
     infoCell("Song A"),
   ]), cell("duration", "3:12")], "old");
   const fresh = row([mainCell("Song A"), cell("duration", "3:12")], "new");

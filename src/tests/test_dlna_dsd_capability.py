@@ -110,6 +110,19 @@ TRUTH_TABLE = [
 
 
 class NativeDsdTruthTableTests(unittest.TestCase):
+    def test_type_detection_can_be_disabled_for_force_push(self):
+        device = {
+            "control_url": "http://renderer/control",
+            "capabilities": {
+                "protocol_info": {"supports_dsd": False},
+            },
+        }
+        handler = type("Handler", (), {"server": type("Server", (), {"config": {"dlna_type_detection": False}})()})()
+        with mock.patch.object(media_server, "soap_request") as request:
+            result = soap_push(device, DSD_ITEM, handler, lambda value: value, lambda _h: "http://host", lambda *_: "")
+        self.assertTrue(result[0], result[1])
+        self.assertTrue(request.called)
+
     def test_every_shape_maps_to_one_state_one_gate_and_one_display(self):
         for label, device, state, push_allowed, display in TRUTH_TABLE:
             with self.subTest(shape=label):

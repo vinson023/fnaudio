@@ -36,7 +36,7 @@ from cover_media_type import SNIFF_PREFIX_BYTES, safe_image_media_type
 from id3_parser import iter_id3_frames
 from library_rows import decode_item_payload
 from metadata_text import parse_track_number
-from resource_limits import ResourceLimitError, bounded_int, disk_has_reserve
+from resource_limits import ConcurrencyGate, ResourceLimitError, bounded_int, disk_has_reserve
 from metadata_queue_policy import project_queue_state, saturating_counter
 import library_self_write
 import metadata_queue_backlog_policy
@@ -214,6 +214,7 @@ ARTWORK_ID_SANITIZE_VERSION = "1"
 TAG_WRITE_BACKFILL_VERSION = "1"
 TAG_WRITE_BACKFILL_BATCH_SIZE = 64
 MAX_ALBUM_TAG_WRITE_TRACKS = 2048
+INTERACTIVE_SEARCH_MAX_REQUESTS = 2
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 MAX_ARTWORK_URL_LENGTH = 2048
 ARTWORK_PRUNE_BATCH_SIZE = 64
@@ -2213,6 +2214,9 @@ class MetadataService:
     def __init__(self, config):
         self.config = config
         self.providers = MetadataProviders(config)
+        # Each accepted review may occupy three provider threads. Reject excess
+        # work immediately so slow searches cannot consume every HTTP worker.
+        self._interactive_search_gate = ConcurrencyGate("metadata-search", max_waiters=0)
         self.stop_event = threading.Event()
         self.fetch_wake_event = threading.Event()
         self.tag_wake_event = threading.Event()
@@ -2616,6 +2620,7 @@ class MetadataService:
             CREATE TABLE IF NOT EXISTS metadata_track_matches (
                 track_id TEXT PRIMARY KEY,
                 fields_json TEXT NOT NULL DEFAULT '{}',
+                confirmed_artwork_id TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT '',
                 provider_id TEXT NOT NULL DEFAULT '',
                 confidence REAL NOT NULL DEFAULT 0,
@@ -2657,6 +2662,14 @@ class MetadataService:
         track_columns = {row["name"] for row in conn.execute("PRAGMA table_info(metadata_tracks)")}
         if "artwork_id" not in track_columns:
             conn.execute("ALTER TABLE metadata_tracks ADD COLUMN artwork_id TEXT NOT NULL DEFAULT ''")
+        match_columns = {row["name"] for row in conn.execute("PRAGMA table_info(metadata_track_matches)")}
+        if "confirmed_artwork_id" not in match_columns:
+            try:
+                conn.execute("ALTER TABLE metadata_track_matches ADD COLUMN confirmed_artwork_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                # Another startup connection may have migrated the same cache.
+                if "confirmed_artwork_id" not in {row["name"] for row in conn.execute("PRAGMA table_info(metadata_track_matches)")}:
+                    raise
         version = conn.execute("SELECT value FROM metadata_state WHERE key='cache_version'").fetchone()
         if not version or str(version["value"] or "") != METADATA_CACHE_VERSION:
             conn.execute("UPDATE metadata_entities SET expires_at=0")
@@ -3649,14 +3662,10 @@ class MetadataService:
         now = int(time.time())
         result = result if isinstance(result, dict) else {}
         lyrics = _lyrics_document(result.get("lyrics"))
-        artwork_id = ""
-        image_url = _provider_text(result.get("image_url"), 2048)
-        if image_url:
-            try:
-                artwork_id = self._download_artwork(image_url, _provider_text(result.get("source"), 64))
-            except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
-                artwork_id = ""
-        artwork_id = normalize_artwork_id(artwork_id)
+        # Lyrics may include a fallback cover, but it must obey the same
+        # confirmed-selection and late-download guards as candidate jobs.
+        # Queue writeback only once both lyrics and artwork have committed.
+        self._store_track_artwork(track_id, result, queue_tag=False)
         projection_changed = False
         with self._connect() as conn:
             existing = conn.execute(
@@ -3665,9 +3674,8 @@ class MetadataService:
             ).fetchone()
             if not lyrics:
                 lyrics = _lyrics_document(existing["lyrics"] if existing else "")
-            if not artwork_id:
-                cached_artwork = _provider_text(existing["artwork_id"] if existing else "", 128).strip().lower()
-                artwork_id = normalize_artwork_id(cached_artwork)
+            cached_artwork = _provider_text(existing["artwork_id"] if existing else "", 128).strip().lower()
+            artwork_id = normalize_artwork_id(cached_artwork)
             existing_source = _provider_text(existing["lyrics_source"] if existing else "", 64)
             existing_provider_id = _provider_text(existing["provider_id"] if existing else "", 128)
             existing_confidence = finite_confidence(existing["confidence"] if existing else 0.0)
@@ -3677,9 +3685,13 @@ class MetadataService:
             if not result.get("confidence") and existing:
                 confidence = existing_confidence
             conn.execute(
-                """INSERT OR REPLACE INTO metadata_tracks(
+                """INSERT INTO metadata_tracks(
                     track_id,lyrics,artwork_id,lyrics_source,provider_id,confidence,fetched_at,expires_at,orphaned_at
-                ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                ) VALUES (?,?,?,?,?,?,?,?,0)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    lyrics=excluded.lyrics,lyrics_source=excluded.lyrics_source,
+                    provider_id=excluded.provider_id,confidence=excluded.confidence,
+                    fetched_at=excluded.fetched_at,expires_at=excluded.expires_at,orphaned_at=0""",
                 (
                     track_id, lyrics, artwork_id, source, provider_id,
                     confidence, now, now + (POSITIVE_TTL if lyrics else NEGATIVE_TTL),
@@ -3687,6 +3699,9 @@ class MetadataService:
             )
             if lyrics or artwork_id:
                 self._queue_tag_write(conn, track_id)
+            # artwork_id is deliberately absent from the conflict update:
+            # another worker may have replaced the read snapshot before this
+            # write. Only the guarded artwork writer owns that column.
             # Repeated polling can receive the same provider result several
             # times.  Updating fetched_at keeps the TTL healthy, but does not
             # constitute a metadata projection change and must not make the
@@ -3713,10 +3728,20 @@ class MetadataService:
         selected = fields.get("best") or {}
         if not isinstance(selected, dict) or not selected.get("image_url"):
             return {}
-        stored = self._store_track_artwork(track_id, selected)
+        stored = self._store_track_artwork(track_id, selected, queue_tag=False, replace_existing=True)
+        if not stored:
+            # A valid old asset is not proof that this choice was downloaded.
+            # Keep the durable job retryable when its selection changed or the
+            # replacement failed, even if another cover remains cached.
+            raise RuntimeError("confirmed artwork replacement did not complete")
         with self._connect() as conn:
             artwork = conn.execute(
-                "SELECT artwork_id FROM metadata_tracks WHERE track_id=? AND orphaned_at=0", (track_id,),
+                """SELECT t.artwork_id FROM metadata_tracks t
+                   JOIN metadata_track_matches m ON m.track_id=t.track_id
+                   WHERE t.track_id=? AND t.orphaned_at=0 AND m.orphaned_at=0
+                     AND m.status='confirmed' AND m.fields_json=?
+                     AND m.confirmed_artwork_id=t.artwork_id""",
+                (track_id, row["fields_json"]),
             ).fetchone()
             if not artwork or not valid_artwork_id(artwork["artwork_id"]):
                 raise RuntimeError("confirmed artwork download failed")
@@ -3725,8 +3750,8 @@ class MetadataService:
             self._queue_tag_write(conn, track_id, after_artwork=True)
         return {"artwork_id": artwork["artwork_id"], "stored": stored}
 
-    def _store_track_artwork(self, track_id, result):
-        """Persist candidate artwork without replacing an existing track asset."""
+    def _store_track_artwork(self, track_id, result, *, queue_tag=True, replace_existing=False):
+        """Keep automatic covers stable; explicit confirmed jobs may replace them."""
         result = result if isinstance(result, dict) else {}
         image_url = _provider_text(result.get("image_url"), 2048)
         if not image_url:
@@ -3736,12 +3761,26 @@ class MetadataService:
         # artwork decoding bounded while preserving the first successful
         # source as authoritative.
         with self._connect() as conn:
+            confirmed = conn.execute(
+                "SELECT fields_json FROM metadata_track_matches WHERE track_id=? AND status='confirmed' AND orphaned_at=0",
+                (str(track_id),),
+            ).fetchone()
+            confirmed_json = confirmed["fields_json"] if confirmed else ""
+            if replace_existing and not confirmed:
+                return False
+            if confirmed:
+                selected = decode_track_match_fields(confirmed_json).get("best") or {}
+                if not isinstance(selected, dict) or any(
+                    selected.get(field) != result.get(field)
+                    for field in ("image_url", "source", "provider_id")
+                ):
+                    return False
             existing = conn.execute(
                 "SELECT lyrics,artwork_id,lyrics_source,provider_id,confidence FROM metadata_tracks WHERE track_id=? AND orphaned_at=0",
                 (str(track_id),),
             ).fetchone()
             existing_artwork = _provider_text(existing["artwork_id"] if existing else "", 128).strip().lower()
-            if existing and valid_artwork_id(existing_artwork):
+            if existing and valid_artwork_id(existing_artwork) and not replace_existing:
                 return False
         try:
             artwork_id = self._download_artwork(image_url, _provider_text(result.get("source"), 64))
@@ -3759,22 +3798,48 @@ class MetadataService:
                 (str(track_id),),
             ).fetchone()
             existing_artwork = _provider_text(existing["artwork_id"] if existing else "", 128).strip().lower()
-            if existing and valid_artwork_id(existing_artwork):
+            if existing and valid_artwork_id(existing_artwork) and not replace_existing:
                 return False
             confidence = finite_confidence(existing["confidence"] if existing else result.get("confidence"))
-            conn.execute(
-                """INSERT OR REPLACE INTO metadata_tracks(
+            stored = conn.execute(
+                """INSERT INTO metadata_tracks(
                     track_id,lyrics,artwork_id,lyrics_source,provider_id,confidence,fetched_at,expires_at,orphaned_at
-                ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                ) SELECT ?,?,?,?,?,?,?,?,0 WHERE NOT EXISTS (
+                    SELECT 1 FROM metadata_track_matches
+                    WHERE track_id=? AND status='confirmed' AND orphaned_at=0 AND fields_json<>?
+                ) AND (?=0 OR EXISTS (
+                    SELECT 1 FROM metadata_track_matches
+                    WHERE track_id=? AND status='confirmed' AND orphaned_at=0
+                ))
+                ON CONFLICT(track_id) DO UPDATE SET
+                    artwork_id=excluded.artwork_id,fetched_at=excluded.fetched_at,
+                    expires_at=excluded.expires_at,orphaned_at=0
+                WHERE metadata_tracks.orphaned_at<>0 OR metadata_tracks.artwork_id IS ?""",
                 (
                     str(track_id), _lyrics_document(existing["lyrics"] if existing else ""), artwork_id,
                     _provider_text(existing["lyrics_source"] if existing else result.get("source"), 64),
                     _provider_text(existing["provider_id"] if existing else result.get("provider_id"), 128),
                     confidence,
                     now, now + POSITIVE_TTL,
+                    str(track_id), confirmed_json,
+                    int(replace_existing), str(track_id),
+                    existing["artwork_id"] if existing else "",
                 ),
             )
-            self._queue_tag_write(conn, str(track_id))
+            if stored.rowcount == 0:
+                # A user changed the selection or another artwork worker won.
+                # Never restore an earlier cover or lyrics snapshot.
+                return False
+            if replace_existing:
+                linked = conn.execute(
+                    """UPDATE metadata_track_matches SET confirmed_artwork_id=?
+                       WHERE track_id=? AND status='confirmed' AND orphaned_at=0 AND fields_json=?""",
+                    (artwork_id, str(track_id), confirmed_json),
+                )
+                if linked.rowcount == 0:
+                    raise RuntimeError("confirmed artwork selection changed")
+            if queue_tag:
+                self._queue_tag_write(conn, str(track_id))
         self._invalidate_status_cache(projection_changed=True)
         return True
 
@@ -3805,14 +3870,25 @@ class MetadataService:
                 (track_id,),
             )
             previous = previous_cursor.fetchone() if previous_cursor is not None else None
-            conn.execute(
-                """INSERT OR REPLACE INTO metadata_track_matches(
+            stored = conn.execute(
+                """INSERT INTO metadata_track_matches(
                     track_id,fields_json,source,provider_id,confidence,status,fetched_at,expires_at,orphaned_at
-                ) VALUES (?,?,?,?,?,?,?,?,0)""",
+                ) VALUES (?,?,?,?,?,?,?,?,0)
+                ON CONFLICT(track_id) DO UPDATE SET
+                    fields_json=excluded.fields_json,source=excluded.source,
+                    provider_id=excluded.provider_id,confidence=excluded.confidence,
+                    status=excluded.status,fetched_at=excluded.fetched_at,
+                    expires_at=excluded.expires_at,orphaned_at=0,confirmed_artwork_id=''
+                WHERE metadata_track_matches.status<>'confirmed'
+                   OR metadata_track_matches.orphaned_at<>0""",
                  (track_id, fields_json,
                   _provider_text(best.get("source"), 64), _provider_text(best.get("provider_id"), 128), confidence,
                   status, now, now + (POSITIVE_TTL if best else NEGATIVE_TTL)),
             )
+            if stored.rowcount == 0:
+                # Enforce this at the write, not the earlier SELECT: manual
+                # confirmation can commit while a background request runs.
+                return self._track_match_fields(conn, track_id) or None
             if status == "auto":
                 self._queue_tag_write(conn, track_id)
             # Only auto/confirmed matches are merged into ordinary library
@@ -3907,7 +3983,7 @@ class MetadataService:
                    ON CONFLICT(track_id) DO UPDATE SET
                        fields_json=excluded.fields_json,source=excluded.source,
                        provider_id=excluded.provider_id,confidence=excluded.confidence,status='confirmed',
-                       fetched_at=excluded.fetched_at,expires_at=excluded.expires_at,orphaned_at=0""",
+                       fetched_at=excluded.fetched_at,expires_at=excluded.expires_at,orphaned_at=0,confirmed_artwork_id=''""",
                 (
                     json.dumps(fields, ensure_ascii=False),
                     str(selected.get("source") or ""),
@@ -3952,16 +4028,17 @@ class MetadataService:
             finally:
                 self.providers.end_job_observation()
 
-        with ThreadPoolExecutor(max_workers=min(3, len(sources)), thread_name_prefix="metadata-review") as pool:
-            batches = list(pool.map(search, sources))
-        candidates = []
-        for index in range(8):
-            for batch in batches:
-                if index < len(batch):
-                    candidates.append(batch[index])
-                    if len(candidates) == 8:
-                        return normalize_track_candidates(candidates)
-        return normalize_track_candidates(candidates)
+        with self._interactive_search_gate.slot(INTERACTIVE_SEARCH_MAX_REQUESTS, timeout=0):
+            with ThreadPoolExecutor(max_workers=min(3, len(sources)), thread_name_prefix="metadata-review") as pool:
+                batches = list(pool.map(search, sources))
+            candidates = []
+            for index in range(8):
+                for batch in batches:
+                    if index < len(batch):
+                        candidates.append(batch[index])
+                        if len(candidates) == 8:
+                            return normalize_track_candidates(candidates)
+            return normalize_track_candidates(candidates)
 
     def cache_interactive_track_candidates(self, track_id, candidates):
         """Bind bounded review choices to an immutable ID without replacing accepted metadata."""
@@ -4398,17 +4475,23 @@ class MetadataService:
                 data["artwork_mime"] = artwork["mime"]
             if artwork:
                 data["date"] = str(artwork["release_date"] or "")
-            if not data.get("artwork_path"):
-                track_artwork = conn.execute(
-                    """SELECT a.path,a.mime FROM metadata_tracks t
-                       JOIN metadata_assets a ON a.id=t.artwork_id
-                       WHERE t.track_id=? AND t.orphaned_at=0""",
-                    (track_id,),
-                ).fetchone()
-                artwork_path = self._safe_artwork_path(track_artwork["path"] if track_artwork else "")
-                if track_artwork and artwork_path:
-                    data["artwork_path"] = artwork_path
-                    data["artwork_mime"] = track_artwork["mime"]
+            track_artwork = conn.execute(
+                """SELECT a.path,a.mime,m.confirmed_artwork_id FROM metadata_tracks t
+                   JOIN metadata_assets a ON a.id=t.artwork_id
+                   LEFT JOIN metadata_track_matches m ON m.track_id=t.track_id
+                     AND m.orphaned_at=0 AND m.status='confirmed'
+                     AND m.confirmed_artwork_id=t.artwork_id
+                   WHERE t.track_id=? AND t.orphaned_at=0""",
+                (track_id,),
+            ).fetchone()
+            artwork_path = self._safe_artwork_path(track_artwork["path"] if track_artwork else "")
+            # The explicit choice wins over an album fallback only once that
+            # exact asset was bound to the selection. source_url is mutable:
+            # another provider can return identical, content-deduplicated art.
+            confirmed_artwork = bool(track_artwork and valid_artwork_id(_provider_text(track_artwork["confirmed_artwork_id"], 128)))
+            if track_artwork and artwork_path and (confirmed_artwork or not data.get("artwork_path")):
+                data["artwork_path"] = artwork_path
+                data["artwork_mime"] = track_artwork["mime"]
             return data
 
     def _note_self_write(self, source):
@@ -5012,7 +5095,10 @@ class MetadataService:
                 cache_rows = conn.execute(
                 """WITH requested(track_id) AS (VALUES %s)
                    SELECT requested.track_id,%s tracks.artwork_id,
-                          matches.fields_json
+                          matches.fields_json,
+                          CASE WHEN matches.status='confirmed'
+                            AND matches.confirmed_artwork_id=tracks.artwork_id
+                            THEN 1 ELSE 0 END AS confirmed_artwork
                    FROM requested
                    LEFT JOIN metadata_tracks AS tracks
                      ON tracks.track_id=requested.track_id
@@ -5032,6 +5118,7 @@ class MetadataService:
                     # re-decodes and re-bounds every stored match it serves.
                     overlay = {
                         "artwork_id": _overlay_artwork_id(row["artwork_id"] or ""),
+                        "confirmed_artwork": row["confirmed_artwork"] == 1,
                         "projected": project_match_fields(row["fields_json"] or ""),
                     }
                     if include_lyrics:
@@ -5063,8 +5150,12 @@ class MetadataService:
             # `_overlay_artwork_id` already bounded and case-folded this value
             # when its row was read, so the merge loop stays a plain lookup.
             row_artwork_id = row.get("artwork_id") if row else ""
-            if valid_artwork_id(row_artwork_id) and not item.get("metadata_artwork_id"):
+            confirmed_artwork = bool(row and row.get("confirmed_artwork"))
+            item.pop("metadata_artwork_confirmed", None)
+            if valid_artwork_id(row_artwork_id) and (confirmed_artwork or not item.get("metadata_artwork_id")):
                 item["metadata_artwork_id"] = row_artwork_id
+                if confirmed_artwork:
+                    item["metadata_artwork_confirmed"] = True
         result = dict(page)
         result["items"] = items
         return result

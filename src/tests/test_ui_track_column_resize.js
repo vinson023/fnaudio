@@ -84,6 +84,14 @@ function styleSink() {
   return {
     vars: new Map(),
     writes: 0,
+    getPropertyValue(name) {
+      return this.vars.get(name) || "";
+    },
+    removeProperty(name) {
+      const value = this.vars.get(name) || "";
+      this.vars.delete(name);
+      return value;
+    },
     setProperty(name, value) {
       this.vars.set(name, value);
       this.writes += 1;
@@ -212,7 +220,7 @@ function harness(options = {}) {
       return view.applied();
     },
     applied() {
-      return head.style.vars.get(GRID_VAR) || "";
+      return head.style.vars.get(GRID_VAR) || context.document.body.style.vars.get(GRID_VAR) || "";
     },
     bodyApplied() {
       return context.document.body.style.vars.get(GRID_VAR) || "";

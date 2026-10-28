@@ -8,14 +8,19 @@ const vm = require("node:vm");
 const UI_DIR = "app/ui";
 const app = fs.readFileSync(path.join(UI_DIR, "app.js"), "utf8");
 
-function uiSources() {
-  return fs.readdirSync(UI_DIR)
-    .filter(name => /\.(js|html)$/.test(name))
-    .map(name => [name, fs.readFileSync(path.join(UI_DIR, name), "utf8")]);
+function uiSources(dir = UI_DIR) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) return uiSources(file);
+    return entry.isFile() && /\.(js|html)$/.test(entry.name)
+      ? [[file, fs.readFileSync(file, "utf8")]] : [];
+  });
 }
 
 // 1) 死码确实消失：不是「调用点为 0」，而是全 UI 树里连名字都不再出现。
-["addQueue", "addQueueAndPlay", "playFolder", "addTrackToPlaylist"].forEach(name => {
+["addQueue", "addQueueAndPlay", "playFolder", "addTrackToPlaylist",
+  "showTrackMetadataCandidate", "renderMetadataCandidateRetry", "METADATA_CANDIDATE_MAX_POLLS",
+  "metadataCandidatePollTimer", "metadataCandidatePollAttempts"].forEach(name => {
   uiSources().forEach(([file, text]) => {
     assert.doesNotMatch(text, new RegExp("\\b" + name + "\\b"), `${name} must stay deleted (${file})`);
   });
@@ -45,7 +50,7 @@ const context = {
   openPlaylistDialogForTracks: record("openPlaylistDialog"),
   insertSelectedTracks: record("insertSelectedTracks"),
   showTrackInformation: record("showTrackInformation"),
-  showTrackMetadataCandidate: record("showTrackMetadataCandidate"),
+  openMetadataCandidateDialog: record("openMetadataCandidateDialog"),
   openContainingFolder: record("openContainingFolder"),
   shareTrack: record("shareTrack"),
   openDeleteTrackDialog: record("openDeleteTrackDialog"),
@@ -69,6 +74,14 @@ assert.deepEqual(calls.filter(([name]) => !/^close/.test(name)), [], "queue-play
 calls.length = 0;
 context.run("play");
 assert.ok(calls.some(([name]) => name === "playSelectedTracks"), "play must still be routed");
+calls.length = 0;
+context.run("metadata-candidate");
+assert.deepEqual(calls.filter(([name]) => !/^close/.test(name)),
+  [["openMetadataCandidateDialog", ["t7"]]],
+  "metadata action must open the current search dialog after closing stale actions");
+assert.ok(calls.findIndex(([name]) => name === "closeActionDialog")
+  < calls.findIndex(([name]) => name === "openMetadataCandidateDialog"),
+  "the previous confirmation must be invalidated before opening a new search");
 
 // 3) 菜单按钮与路由器必须一对一咬合：新增按钮却忘了处理分支、或处理分支
 //    却没有生产者（本次清掉的 queue-play 就是后者），都算缺陷。

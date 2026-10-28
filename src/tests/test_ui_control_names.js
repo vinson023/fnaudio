@@ -93,11 +93,33 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 99, "index.html declares 99 visible form controls, including independent metadata save actions");
+assert.equal(controls.length, 100, "index.html declares 100 visible form controls, including independent metadata and DLNA save actions");
 assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
 
 const nameless = controls.filter((control) => !control.name).map((control) => control.attr.id || control.tag);
 assert.deepEqual(nameless, [], `every control in index.html needs an accessible name, these have none: ${nameless.join(", ")}`);
+
+// Settings panels use aria-labelledby for their tab relationship. Keep the tab
+// ids explicit so assistive technology can announce the active settings page
+// instead of receiving a panel with an unresolved label reference.
+for (const [paneId, tabId] of [
+  ["settings-pane-library", "settings-tab-library"],
+  ["settings-pane-playback", "settings-tab-playback"],
+  ["settings-pane-metadata", "settings-tab-metadata"],
+  ["settings-pane-dlna", "settings-tab-dlna"],
+  ["settings-pane-runtime", "settings-tab-runtime"],
+]) {
+  assert.match(
+    html,
+    new RegExp(`<section[^>]*id="${paneId}"[^>]*aria-labelledby="${tabId}"`),
+    `#${paneId} must be labelled by #${tabId}`,
+  );
+  assert.match(
+    html,
+    new RegExp(`<button[^>]*id="${tabId}"[^>]*aria-controls="${paneId}"`),
+    `#${tabId} must target #${paneId}`,
+  );
+}
 
 // The two sliders are the only range inputs in the document, and neither has any fallback
 // left to fall through to, so pin them by hand rather than relying on the sweep above.

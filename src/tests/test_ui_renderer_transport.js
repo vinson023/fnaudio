@@ -3,6 +3,15 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const app = fs.readFileSync("app/ui/app.js", "utf8");
+const index = fs.readFileSync("app/ui/index.html", "utf8");
+
+assert.match(index, /id="prevBtn"[^>]*>\s*<svg class="transport-icon prev-icon"/, "Previous transport control must use a stable SVG state class");
+assert.doesNotMatch(index, /id="prevBtn"[^>]*>\s*<span/, "Previous transport control must not use a CSS-drawn span");
+assert.match(index, /id="playBtn"[^>]*>\s*<svg class="transport-icon play-icon"/, "Play control must use a stable SVG state class");
+assert.doesNotMatch(index, /id="playBtn"[^>]*>\s*<span/, "Play control must not use a CSS-drawn span");
+assert.match(index, /id="nextBtn"[^>]*>\s*<svg class="transport-icon next-icon"/, "Next transport control must use a stable SVG state class");
+assert.doesNotMatch(index, /id="nextBtn"[^>]*>\s*<span/, "Next transport control must not use a CSS-drawn span");
+assert.match(app, /button\.innerHTML = `<svg class="transport-icon \$\{next === "playing" \? "pause-icon" : "play-icon"\}"/, "Dynamic transport state must retain its current class contract in SVG markup");
 
 function functionSource(name) {
   const match = app.match(new RegExp("^function " + name + "\\b[\\s\\S]*?^}", "m"));
@@ -27,7 +36,7 @@ const limitConst = constSource("TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS");
 ["nowTitle", "nowArtist", "elapsed", "duration"].forEach(id => {
   assert.doesNotMatch(app, new RegExp('\\$\\("' + id + '"\\)\\.textContent\\s*='), `#${id} must only be written through setTextContentIfChanged`);
 });
-assert.equal((app.match(/button\.innerHTML = `<span class="transport-icon/g) || []).length, 1, "Only setPlayButton may write the transport icon");
+assert.equal((app.match(/button\.innerHTML = `<svg class="transport-icon/g) || []).length, 1, "Only setPlayButton may write the transport icon");
 assert.equal((app.match(/transport-icon \$\{/g) || []).length, 1, "The transport icon class must be produced in exactly one place");
 assert.equal((app.match(/setTextContentIfChanged\(\$\("nowTime"\)/g) || []).length, 1, "The compact clock needs one shared write point");
 assert.match(app, /setStyleVarIfChanged\(\$\("seek"\), "--seek-fill"/, "The seek rail must skip identical fill values");

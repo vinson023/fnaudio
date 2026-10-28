@@ -591,6 +591,164 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(fake.provider_id, "netease")
         self.assertEqual(payload["candidates"][0]["source"], "netease")
 
+    def test_interactive_search_overload_preserves_playback_http_capacity(self):
+        self._assert_metadata_network_capacity()
+
+    def test_provider_probe_overload_preserves_playback_http_capacity(self):
+        self._assert_metadata_network_capacity(("probe", "probe"), ("probe", "probe"))
+
+    def test_provider_probe_without_service_preserves_playback_http_capacity(self):
+        self._assert_metadata_network_capacity(("probe", "probe"), ("probe", "probe"), "stopped")
+
+    def test_custom_provider_probe_preserves_playback_http_capacity(self):
+        self._assert_metadata_network_capacity(("probe", "probe"), ("probe", "probe"), "custom")
+
+    def test_mixed_search_and_probe_share_playback_http_capacity(self):
+        self._assert_metadata_network_capacity(("search", "probe"), ("search", "probe"))
+
+    def test_metadata_http_capacity_recovers_after_callback_errors(self):
+        from types import SimpleNamespace
+        candidate = {"title": "Good", "source": "netease", "provider_id": "good"}
+        service = SimpleNamespace(probe_provider=mock.Mock(), track_candidates=mock.Mock(),
+                                  cache_interactive_track_candidates=lambda *args: "good-search")
+        for endpoint, callback in (("/api/metadata/provider-test", service.probe_provider),
+                                   ("/api/metadata/track/search", service.track_candidates)):
+            with self.subTest(endpoint=endpoint), mock.patch.object(server, "METADATA_SERVICE", service):
+                callback.side_effect = RuntimeError("callback failed")
+                for _ in range(3):
+                    status, _, _ = self.request(endpoint, method="POST",
+                                               headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                                               data=b'{"track_id":"fixture","provider_id":"netease","title":"Good"}')
+                    self.assertEqual(status, 500)
+                callback.side_effect = None
+                callback.return_value = [candidate] if endpoint.endswith("search") else {"provider_id": "netease"}
+                for _ in range(3):
+                    status, _, _ = self.request(endpoint, method="POST",
+                                               headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                                               data=b'{"track_id":"fixture","provider_id":"netease","title":"Good"}')
+                    self.assertEqual(status, 200)
+                snapshot = server.METADATA_INTERACTIVE_GATE.snapshot()
+                self.assertEqual(snapshot["active"], 0)
+                self.assertEqual(snapshot["waited"], 0)
+
+    def _assert_metadata_network_capacity(self, accepted_routes=("search", "search"),
+                                          overflow_routes=("search", "search"), service_mode="running"):
+        from concurrent.futures import ThreadPoolExecutor
+        from metadata_service import MetadataService
+        from http_server import BoundedThreadingHTTPServer
+
+        bounded = BoundedThreadingHTTPServer(("127.0.0.1", 0), server.Handler, worker_limit=4)
+        bounded.config = dict(self.httpd.config)
+        bounded.config_path = self.httpd.config_path
+        bounded.web_root = self.httpd.web_root
+        service = MetadataService(bounded.config)
+        engine = service.providers
+        visible_service = service
+        if service_mode == "stopped":
+            visible_service = None
+        elif service_mode == "custom":
+            from types import SimpleNamespace
+            visible_service = SimpleNamespace(probe_provider=engine.probe_provider)
+        release = threading.Event()
+        first_pair = threading.Event()
+        observed_overload = threading.Event()
+        lock = threading.Lock()
+        started = rejected = 0
+        candidate = {"title": "Held search", "artist": "Artist", "source": "netease",
+                     "provider_id": "held", "confidence": 0.95}
+
+        def slow_provider(_source, _track):
+            nonlocal started
+            with lock:
+                started += 1
+                if started >= 2:
+                    first_pair.set()
+                if started >= 4:
+                    observed_overload.set()
+            if not release.wait(8):
+                raise AssertionError("test did not release held provider")
+            return [candidate]
+
+        def search(index, route):
+            nonlocal rejected
+            endpoint = "/api/metadata/provider-test" if route == "probe" else "/api/metadata/track/search"
+            result = self.request(endpoint, method="POST",
+                                  headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                                  data=json.dumps({"track_id": "fixture", "title": "Held search " + str(index),
+                                                   "provider_id": "netease"}).encode())
+            if result[0] == 503:
+                with lock:
+                    rejected += 1
+                    if rejected >= 2:
+                        observed_overload.set()
+            return result
+
+        old_url = self.base_url
+        self.base_url = "http://127.0.0.1:%s" % bounded.server_port
+        serving = threading.Thread(target=bounded.serve_forever, daemon=True)
+        serving.start()
+        clients = ThreadPoolExecutor(max_workers=4)
+        try:
+            with mock.patch.object(server, "METADATA_SERVICE", visible_service), \
+                 mock.patch.object(server, "MetadataProviders", return_value=engine) as factory, \
+                 mock.patch.object(engine, "_lyrics_for_provider", return_value={}), \
+                 mock.patch.object(engine, "_track_candidates_for_provider", side_effect=slow_provider):
+                accepted = [clients.submit(search, index, route) for index, route in enumerate(accepted_routes)]
+                try:
+                    self.assertTrue(first_pair.wait(2), "two searches must really enter the provider")
+                    invalid, _, _ = self.request("/api/metadata/provider-test", method="POST",
+                                                 headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                                                 data=b'{"provider_id":"netease","title":""}')
+                    self.assertEqual(invalid, 400, "invalid input must be rejected before admission")
+                    with bounded.worker_gate._condition:
+                        self.assertTrue(bounded.worker_gate._condition.wait_for(
+                            lambda: bounded.worker_gate.snapshot()["active"] <= 2, timeout=2),
+                            "invalid-request worker must finish before the overload wave")
+                    overflow = [clients.submit(search, index + 2, route) for index, route in enumerate(overflow_routes)]
+                    self.assertTrue(observed_overload.wait(2), "observe rejection or actual worker saturation")
+                    # Receiving a rejection body can precede the HTTP worker's
+                    # finally/release. Observe that completion, not an arbitrary sleep.
+                    with bounded.worker_gate._condition:
+                        bounded.worker_gate._condition.wait_for(
+                            lambda: bounded.worker_gate.snapshot()["active"] <= 2, timeout=2)
+                    status, _, body = self.request("/api/playback/core", headers=self.auth_headers("playback.read"))
+                    observed_started = started
+                finally:
+                    release.set()
+                accepted_results = [future.result(timeout=3) for future in accepted]
+                overflow_results = [future.result(timeout=3) for future in overflow]
+                self.assertEqual(factory.call_count, 2 if service_mode == "stopped" else 0,
+                                 "rejected fallback probes must not construct another provider engine")
+        finally:
+            release.set()
+            clients.shutdown(wait=True)
+            bounded.shutdown()
+            bounded.server_close()
+            serving.join(timeout=2)
+            self.base_url = old_url
+        self.assertEqual(status, 200, "slow metadata searches must leave a worker for playback state")
+        self.assertIn("state", json.loads(body))
+        self.assertEqual(observed_started, 2, "overflow must not start another provider pool")
+        self.assertEqual([result[0] for result in accepted_results], [200, 200])
+        for code, headers, body in overflow_results:
+            self.assertEqual(code, 503)
+            self.assertEqual(headers.get("Retry-After"), "1")
+            self.assertFalse(json.loads(body)["ok"])
+            self.assertIn("message", json.loads(body))
+        with mock.patch.object(server, "METADATA_SERVICE", visible_service), \
+             mock.patch.object(server, "MetadataProviders", return_value=engine), \
+             mock.patch.object(engine, "_lyrics_for_provider", return_value={}), \
+             mock.patch.object(engine, "_track_candidates_for_provider", return_value=[candidate]):
+            endpoint = "/api/metadata/provider-test" if accepted_routes[0] == "probe" else "/api/metadata/track/search"
+            code, _, _ = self.request(endpoint, method="POST",
+                                     headers={**self.auth_headers("settings.write"), "Content-Type": "application/json"},
+                                     data=json.dumps({"track_id": "fixture", "title": "After release",
+                                                      "provider_id": "netease"}).encode())
+        self.assertEqual(code, 200, "completed searches must release capacity")
+        self.assertEqual(server.METADATA_INTERACTIVE_GATE.snapshot()["active"], 0)
+        self.assertEqual(server.METADATA_INTERACTIVE_GATE.snapshot()["waited"], 0,
+                         "blocking metadata HTTP requests must share a no-wait budget")
+
     def test_metadata_manual_search_uses_real_service_provider_scope_and_persists_review_only(self):
         from metadata_service import MetadataService
         service = MetadataService(self.httpd.config)

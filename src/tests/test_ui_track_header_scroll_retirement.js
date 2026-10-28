@@ -160,6 +160,7 @@ const context = {
   listChanged: true,
   tableHeadChanged: false,
   albumHeadChanged: false,
+  albumDetail: false,
   $: id => ({ libraryScroll: viewportNode, trackList: listNode, tableHead: headNode, pager: pagerNode, empty: fakeNode("empty") })[id] || null,
   window: {
     matchMedia: () => ({ matches: false }),
@@ -268,7 +269,8 @@ test("the column widths still travel through the --fnaudio-track-columns propert
   assert.match(cssSource, /\.table-head,\.track\{grid-template-columns:var\(--fnaudio-track-columns/, "the grid template must still read the column property");
 });
 
-// 8. Wiring: the render() animation frame body is exactly the two survivors.
+// 8. Wiring: the animation frame keeps bounded layout work and refreshes the
+//    album-detail head only when that view is active.
 test("the render() animation frame body keeps only real layout work", () => {
   const lines = appLines();
   const region = renderGeometryRegion();
@@ -278,7 +280,17 @@ test("the render() animation frame body keeps only real layout work", () => {
   assert.match(body, /measureAutoTrackColumnWidths\(\);/, "column measurement must stay in the frame");
   assert.match(body, /updateMobilePagerVisibility\(\);/, "pager visibility must stay in the frame");
   const statements = body.slice(body.indexOf("{") + 1, body.indexOf("});")).split("\n").map(line => line.trim()).filter(Boolean);
-  assert.deepEqual(statements, ["measureAutoTrackColumnWidths();", "updateMobilePagerVisibility();"], "the frame must not carry dead writes back in: " + JSON.stringify(statements));
+  assert.deepEqual(statements, [
+    "measureAutoTrackColumnWidths();",
+    "if (albumDetail) {",
+    'const albumHead = $("albumDetailTableHead");',
+    "if (albumHead) {",
+    'albumHead.dataset.fnaudioTableHeadSignature = "";',
+    "renderTableHead(albumHead);",
+    "}",
+    "}",
+    "updateMobilePagerVisibility();",
+  ], "the frame must not carry retired geometry writes back in: " + JSON.stringify(statements));
 });
 
 // 9. Face-level regression: the folder pager still renders from the same math.

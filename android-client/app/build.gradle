@@ -17,8 +17,8 @@ android {
         applicationId "com.fnaudio.client"
         minSdk 23
         targetSdk 36
-        versionCode 365
-        versionName "0.2.100"
+          versionCode 371
+          versionName "0.2.113"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -44,7 +44,7 @@ android {
                 throw new GradleException("fnAudio UI source tree is missing: ${uiRoot}")
             }
             def indexText = indexFile.getText("UTF-8")
-            def requiredAssets = ["app.css", "app.js", "view_presentation.js", "library_render_policy.js"]
+            def requiredAssets = ["app.css", "design-tokens.css", "fnos-theme.css", "app.js", "fnos-ui.js", "view_presentation.js", "library_render_policy.js"]
             requiredAssets.each { asset ->
                 if (!new File(uiRoot, asset).isFile() || !indexText.contains(asset)) {
                     throw new GradleException("fnAudio UI asset is missing or not referenced: ${asset}")

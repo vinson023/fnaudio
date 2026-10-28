@@ -1,0 +1,145 @@
+/* fnAudio UI - FNOS official design tokens (Hallmark prototype parity).
+ * Evidence: references/FNAPP/_analysis_fnos_1.33.4_run2/resources/res/values/colors.xml
+ * (dark from values-night). Values must stay identical with
+ * ui-prototype-hallmark-fnos/tokens.css so the shipped UI matches the
+ * approved design. Do not add new --fn-* or --ui-* literal values here. */
+
+:root{
+  color-scheme: light;
+  --fn-bg-surface:#f3f3f3;
+  --fn-bg-surface-bright:#ffffff;
+  --fn-bg-container-dim:rgba(0,0,0,.08);
+  --fn-bg-brand:#0066ff;
+  --fn-bg-brand-hovered:#005feb;
+  --fn-bg-brand-light:rgba(0,102,255,.15);
+  --fn-bg-overlay:rgba(0,0,0,.5);
+  --fn-text-default:#0b0b0c;
+  --fn-text-secondary:rgba(0,0,0,.75);
+  --fn-text-third:rgba(0,0,0,.5);
+  --fn-text-disabled:rgba(0,0,0,.25);
+  --fn-text-accent:#0066ff;
+  --fn-text-warn:#db382c;
+  --fn-text-success:#009e61;
+  --fn-border-default:rgba(0,0,0,.2);
+  --fn-border-focus:#0066ff;
+  --fn-divider-default:rgba(0,0,0,.2);
+  --fn-divider-strong:rgba(0,0,0,.1);
+
+  --fn-radius-s:4px; --fn-radius-m:6px; --fn-radius-l:8px; --fn-radius-pill:999px;
+  --fn-space-1:4px; --fn-space-2:8px; --fn-space-3:12px; --fn-space-4:16px; --fn-space-5:24px;
+  --fn-font:Inter,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --fn-fs-xs:11px; --fn-fs-s:12px; --fn-fs-m:13px; --fn-fs-l:14px; --fn-fs-xl:16px; --fn-fs-2xl:20px; --fn-fs-3xl:23px;
+  --fn-shadow-dialog:0 18px 52px rgba(23,32,51,.21);
+  --fn-shadow-player:0 -8px 28px rgba(23,32,51,.07);
+  --fn-topbar-h:70px; --fn-sidebar-w:220px; --fn-player-h:88px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --fn-bg-surface:#1e1e21;
+    --fn-bg-surface-bright:#232326;
+    --fn-bg-container-dim:rgba(255,255,255,.1);
+    --fn-bg-brand-light:rgba(0,102,255,.25);
+    --fn-bg-overlay:rgba(0,0,0,.7);
+    --fn-text-default:#ffffff;
+    --fn-text-secondary:rgba(255,255,255,.75);
+    --fn-text-third:rgba(255,255,255,.5);
+    --fn-text-disabled:rgba(255,255,255,.25);
+    --fn-text-success:#23b178;
+    --fn-border-default:rgba(255,255,255,.3);
+    --fn-divider-default:rgba(255,255,255,.1);
+    --fn-divider-strong:rgba(255,255,255,.08);
+  }
+}
+
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --fn-bg-surface:#1e1e21;
+  --fn-bg-surface-bright:#232326;
+  --fn-bg-container-dim:rgba(255,255,255,.1);
+  --fn-bg-brand-light:rgba(0,102,255,.25);
+  --fn-bg-overlay:rgba(0,0,0,.7);
+  --fn-text-default:#ffffff;
+  --fn-text-secondary:rgba(255,255,255,.75);
+  --fn-text-third:rgba(255,255,255,.5);
+  --fn-text-disabled:rgba(255,255,255,.25);
+  --fn-text-success:#23b178;
+  --fn-border-default:rgba(255,255,255,.3);
+  --fn-divider-default:rgba(255,255,255,.1);
+  --fn-divider-strong:rgba(255,255,255,.08);
+}
+
+/* Legacy aliases consumed by app.css and fnos-theme.css. They must point at
+ * the official tokens above; never reintroduce independent values. */
+:root {
+  --ui-canvas: var(--fn-bg-surface);
+  --ui-surface: var(--fn-bg-surface-bright);
+  --ui-sidebar: var(--fn-bg-surface-bright);
+  --ui-raised: var(--fn-bg-surface-bright);
+  --ui-hover: var(--fn-bg-container-dim);
+  --ui-selected: var(--fn-bg-brand-light);
+  --ui-text: var(--fn-text-default);
+  --ui-secondary: var(--fn-text-secondary);
+  --ui-muted: var(--fn-text-third);
+  --ui-line: var(--fn-divider-strong);
+  --ui-border: var(--fn-border-default);
+  --ui-accent: var(--fn-bg-brand);
+  --ui-accent-hover: var(--fn-bg-brand-hovered);
+  --ui-on-accent: #ffffff;
+  --ui-success: var(--fn-text-success);
+  --ui-success-bg: rgba(0,158,97,.12);
+  --ui-warning: #8b5a00;
+  --ui-warning-bg: #fff8e6;
+  --ui-danger: var(--fn-text-warn);
+  --ui-danger-bg: rgba(219,56,44,.12);
+  --ui-backdrop: var(--fn-bg-overlay);
+  --ui-shadow: var(--fn-shadow-dialog);
+  --ui-font: var(--fn-font);
+  --ui-font-mono: ui-monospace, "Cascadia Mono", monospace;
+  --ui-space-1: var(--fn-space-1);
+  --ui-space-2: var(--fn-space-2);
+  --ui-space-3: var(--fn-space-3);
+  --ui-space-4: var(--fn-space-4);
+  --ui-space-5: var(--fn-space-5);
+  --ui-space-6: var(--fn-space-5);
+  --ui-space-8: 32px;
+  --ui-radius-sm: var(--fn-radius-m);
+  --ui-radius: var(--fn-radius-l);
+  --ui-radius-lg: var(--fn-radius-l);
+  --ui-header-height: var(--fn-topbar-h);
+  --ui-player-height: var(--fn-player-h);
+  --ui-sidebar-width: var(--fn-sidebar-w);
+  /* Compatibility: dynamic rows and existing modules already consume these. */
+  --bg: var(--ui-canvas);
+  --panel: var(--ui-surface);
+  --panel2: var(--ui-hover);
+  --line: var(--ui-line);
+  --text: var(--ui-text);
+  --muted: var(--ui-muted);
+  --accent: var(--ui-accent);
+  --accent2: var(--ui-accent);
+  --orange: var(--ui-warning);
+  --fn-bg: var(--ui-canvas);
+  --fn-panel: var(--ui-surface);
+  --fn-line: var(--ui-line);
+  --fn-text: var(--ui-text);
+  --fn-ink: var(--ui-text);
+  --fn-muted: var(--ui-muted);
+  --fn-accent: var(--ui-accent);
+  --fn-player-height: var(--ui-player-height);
+}
+
+:root[data-theme="dark"] {
+  --ui-warning: #eabf75;
+  --ui-warning-bg: rgba(234,191,117,.12);
+}
+
+/* Keep the system-dark override after the generic alias block so it wins
+ * when the user has not selected an explicit theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ui-warning: #eabf75;
+    --ui-warning-bg: rgba(234,191,117,.12);
+  }
+}

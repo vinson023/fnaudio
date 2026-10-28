@@ -6,6 +6,14 @@ const source = fs.readFileSync(
   path.join(__dirname, "..", "app", "ui", "app.js"),
   "utf8"
 );
+function functionBody(name) {
+  const match = source.match(new RegExp('^(?:async )?function ' + name + '\\b[\\s\\S]*?^}', 'm'));
+  assert.ok(match, name);
+  return match[0];
+}
+const searchBody = functionBody("searchTrackMetadataManually");
+const lyricsBody = functionBody("loadLyricsForCurrentTrack");
+const prefetchBody = functionBody("prefetchCurrentTrackMetadata");
 const index = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "index.html"), "utf8");
 assert.ok(index.indexOf('src="metadata_response_policy.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'), "Metadata response policy must load before app.js");
 const start = source.indexOf("function syncLyricsForCurrentTrack");
@@ -32,8 +40,8 @@ assert.match(source, /function unwrapMetadataResponsePayload\(value\)/, "Metadat
 assert.match(source, /const lyricPayload = unwrapMetadataResponsePayload\(data\)/, "Playback lyric prefetch must accept direct and bridge-wrapped lyric payloads");
 assert.match(source, /data = unwrapMetadataResponsePayload\(data\)/, "Track metadata prefetch must accept direct and bridge-wrapped payloads");
 assert.match(source, /if \(response\.ok\) data = unwrapMetadataResponsePayload\(result\.data\)/, "Visible metadata prefetch must normalize bridge-wrapped responses");
-assert.match(source, /const data = unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\);[\s\S]*?const candidates = Array\.isArray\(data\.candidates\)/, "Metadata candidate dialog must normalize bridge-wrapped responses");
-assert.match(source, /async function loadLyricsForCurrentTrack[\s\S]*?data = unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)/, "Lyrics requests must normalize bridge-wrapped responses");
+assert.match(searchBody, /const data = unwrapMetadataResponsePayload\(result\.data\)/, "Current candidate search must normalize the bounded loader payload");
+assert.match(lyricsBody, /const data = unwrapMetadataResponsePayload\(result\.data\)/, "Current lyrics requests must normalize the bounded loader payload");
 assert.match(source, /async function loadMetadataStatus\(\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?unwrapMetadataResponsePayload\(result\.data/, "Metadata status must use the bounded loader and normalize bridge-wrapped responses");
 assert.match(source, /async function saveMetadataOverviewSettings[\s\S]*?unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\)/, "Metadata overview save must normalize bridge-wrapped responses");
 assert.match(source, /async function retryFailedTagWrites[\s\S]*?unwrapMetadataResponsePayload\(await readResponseJsonBounded\(response\)\)/, "Tag-write retry status must normalize bridge-wrapped responses");
@@ -55,8 +63,8 @@ assert.match(source, /state\.metadataPrefetchAttempts < METADATA_PREFETCH_MAX_AT
 assert.match(source, /selectDisplayCandidate\([\s\S]*?data\.candidates/, "Usable non-best metadata candidates should still be shown");
 assert.match(source, /state\.metadataPrefetchTimer = setTimeout/, "Pending metadata must retry without blocking playback");
 assert.match(source, /fnAudioMetadataResponsePolicy\?\.isTransientHttpStatus\?\.\(response\.status\)/, "Transient metadata service errors must remain bounded-retryable");
-assert.match(source, /data\.pending === true \|\| String\(data\.status \|\| \"\"\)\.toLowerCase\(\) === \"pending\"/, "Queued metadata status must remain retryable across response shapes");
-assert.match(source, /String\(data\.status \|\| \"\"\)\.toLowerCase\(\) === \"unavailable\"/, "Metadata dialog must distinguish an unavailable worker from no match");
+assert.match(prefetchBody, /const responseStatus = String\(data\.status \|\| ""\)\.toLowerCase\(\);\s*const responsePending = data\.pending === true \|\| responseStatus === "pending";/, "Playback prefetch must recognize queued metadata status");
+assert.match(prefetchBody, /String\(data\.status \|\| \"\"\)\.toLowerCase\(\) === \"unavailable\"/, "Playback prefetch must distinguish an unavailable worker from no match");
 assert.match(source, /const scheduleRetry = \(\) => \{/, "Network metadata failures must use a bounded retry scheduler");
 assert.match(source, /state\.metadataPrefetchAttempts >= METADATA_PREFETCH_MAX_ATTEMPTS\)[\s\S]*?scheduleRearm\(\)/, "Exhausted metadata retries must enter the bounded cooldown re-arm path");
 assert.match(source, /state\.metadataPrefetchRearms >= 2/, "Same-track metadata re-arm must have a hard cap");

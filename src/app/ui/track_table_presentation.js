@@ -26,7 +26,9 @@
   }
 
   function sortIndicator(sortKey, currentSort, sortDir) {
-    return currentSort === sortKey ? `<span class="track-sort-indicator">${sortDir === "asc" ? "&#9650;" : "&#9660;"}</span>` : "";
+    if (currentSort !== sortKey) return "";
+    const path = sortDir === "asc" ? "m6 14 6-6 6 6" : "m6 10 6 6 6-6";
+    return `<span class="track-sort-indicator" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg></span>`;
   }
 
   function tableHeadPresentation({ mode = "tracks", columns = [], widths = {}, definitions = {}, currentSort = "title", sortDir = "asc", groupSortKey = "title", sortableSortKeys = [] } = {}) {

@@ -1035,6 +1035,8 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         try {
             String html = readBundledText("index.html");
             String css = readBundledText("app.css");
+            String tokensCss = readBundledText("design-tokens.css");
+            String themeCss = readBundledText("fnos-theme.css");
             String viewPresentation = readBundledText("view_presentation.js");
             String trackPresentation = readBundledText("track_presentation.js");
             String uiSyncScheduler = readBundledText("ui_sync_scheduler.js");
@@ -1046,6 +1048,11 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             String javascript = readBundledText("app.js");
             html = html.replaceFirst("(?s)<link\\s+rel=\"stylesheet\"[^>]*>", Matcher.quoteReplacement(
                     "<style id=\"fnaudio-bundled-css\">" + css.replace("</style", "<\\/style") + "</style>"));
+            String[] additionalStyles = {"design-tokens.css", "fnos-theme.css"};
+            String[] styleSources = {tokensCss, themeCss};
+            for (int i = 0; i < additionalStyles.length; i++) {
+                html = inlineBundledStylesheet(html, additionalStyles[i], styleSources[i]);
+            }
             html = html.replaceFirst("(?s)<script\\s+src=\"view_presentation\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
                     "<script>" + viewPresentation.replace("</script", "<\\/script") + "</script>"));
             html = html.replaceFirst("(?s)<script\\s+src=\"track_presentation\\.js[^\"]*\"[^>]*></script>", Matcher.quoteReplacement(
@@ -1088,7 +1095,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     "library_metadata_merge_policy.js", "library_empty_response_policy.js",
                     "metadata_projection_policy.js", "metadata_candidate_presentation_policy.js",
                     "library_load_key.js", "library_page_cursor_policy.js",
-                    "access_profile_loader.js", "library_full_list_policy.js"
+                    "access_profile_loader.js", "library_full_list_policy.js", "fnos-ui.js"
             };
             for (String scriptName : additionalScripts) {
                 html = inlineBundledScript(html, scriptName, readBundledText(scriptName));
@@ -1099,6 +1106,14 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         } catch (IOException exception) {
             showError("fnAudio 界面资源读取失败：" + exception.getMessage());
         }
+    }
+
+    private static String inlineBundledStylesheet(String html, String name, String source) {
+        String pattern = "(?s)<link\\s+rel=\"stylesheet\"\\s+href=\""
+                + Pattern.quote(name) + "(?:\\?[^\"]*)?\"[^>]*>";
+        return html.replaceFirst(pattern, Matcher.quoteReplacement(
+                "<style data-fnaudio-bundled=\"" + name + "\">"
+                        + source.replace("</style", "<\\/style") + "</style>"));
     }
 
     private static String inlineBundledScript(String html, String name, String source) {

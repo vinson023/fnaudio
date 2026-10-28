@@ -144,14 +144,11 @@ state.favorites = loadStoredFavorites();
 state.pendingPlaylistTrack = "";
 state.pendingPlaylistTrackIds = [];
 state.actionTrackId = "";
-state.metadataCandidatePollTimer = 0;
-state.metadataCandidatePollAttempts = 0;
 state.metadataCandidateRequestToken = 0;
 state.metadataCandidateController = null;
 state.metadataCandidateSearchController = null;
 state.metadataCandidateSearchToken = 0;
 state.metadataCandidateProviderId = "";
-const METADATA_CANDIDATE_MAX_POLLS = 12;
 // Track-level metadata prefetches are started when playback begins, rather
 // than waiting for the user to open the candidate dialog.  Keep one token per
 // song so rapid next/previous actions cannot apply a stale response to the
@@ -302,6 +299,7 @@ state.accessProfileTimer = 0;
 // (or an observable terminal error) invalidate the response LRU.
 state.metadataProjectionSignature = "";
 state.metadataProjectionLastFetchAt = 0;
+state.metadataProjectionRequestSeq = 0;
 state.libraryRequestSeq = 0;
 state.libraryAbortController = null;
 state.libraryLoadKey = "";
@@ -1707,10 +1705,15 @@ function applyTrackSort(sortKey) {
 function columnDragIcon() {
   return '<svg viewBox="0 0 12 18" aria-hidden="true"><circle cx="3" cy="3" r="1"/><circle cx="9" cy="3" r="1"/><circle cx="3" cy="9" r="1"/><circle cx="9" cy="9" r="1"/><circle cx="3" cy="15" r="1"/><circle cx="9" cy="15" r="1"/></svg>';
 }
+function columnMoveIcon(direction) {
+  return direction === "up"
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg>';
+}
 function columnChoiceMarkup(key, selected, index, total) {
   const definition = TRACK_COLUMN_DEFINITIONS[key];
   const controls = selected
-    ? `<span class="column-drag-handle" title="拖动排序">${columnDragIcon()}</span><button class="column-move-button" type="button" data-column-move="up" title="上移" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button><button class="column-move-button" type="button" data-column-move="down" title="下移" aria-label="下移" ${index === total - 1 ? "disabled" : ""}>↓</button>`
+    ? `<span class="column-drag-handle" title="拖动排序">${columnDragIcon()}</span><button class="column-move-button" type="button" data-column-move="up" title="上移" aria-label="上移" ${index === 0 ? "disabled" : ""}>${columnMoveIcon("up")}</button><button class="column-move-button" type="button" data-column-move="down" title="下移" aria-label="下移" ${index === total - 1 ? "disabled" : ""}>${columnMoveIcon("down")}</button>`
     : "";
   return `<div class="column-choice${selected ? " is-selected" : ""}" ${selected ? `draggable="true" data-column-key="${key}"` : ""}>${controls}<label class="column-choice-label"><input type="checkbox" value="${key}" ${selected ? "checked" : ""}><span>${definition.label}</span></label></div>`;
 }
@@ -1923,9 +1926,10 @@ function effectiveProfile() {
 function updateModeButton() {
   const title = state.mp3Transcode ? "关闭 MP3 转码" : "开启 MP3 转码";
   const desktopButton = $("modeBtn");
+  desktopButton.textContent = state.mp3Transcode ? "MP3 转码：开" : "MP3 转码：关";
   desktopButton.classList.toggle("active-control", state.mp3Transcode);
   desktopButton.title = title;
-  desktopButton.setAttribute("aria-label", title);
+  desktopButton.setAttribute("aria-label", desktopButton.textContent);
   desktopButton.setAttribute("aria-pressed", String(state.mp3Transcode));
   const mobileButton = $("mobileModeBtn");
   if (mobileButton) {
@@ -2018,8 +2022,14 @@ function updateFavoriteControls() {
     if (!node) return;
     node.classList.toggle("active-control", active);
     node.setAttribute("aria-pressed", String(active));
-    node.title = active ? "取消收藏当前歌曲" : "收藏当前歌曲";
-    if (id === "lyricsFavoriteBtn") node.textContent = active ? "已收藏" : "收藏";
+    const label = active ? "取消收藏当前歌曲" : "收藏当前歌曲";
+    node.title = label;
+    node.setAttribute("aria-label", label);
+    if (id === "lyricsFavoriteBtn") {
+      node.dataset.favoriteLabel = active ? "已收藏" : "收藏";
+      const visibleLabel = node.querySelector(".lyrics-favorite-label");
+      if (visibleLabel) visibleLabel.textContent = active ? "已收藏" : "收藏";
+    }
   });
 }
 function refreshFavoritePresentation() {
@@ -2092,6 +2102,9 @@ function externalArtworkUrl(value) {
     return "";
   }
 }
+function recordPlaceholderMarkup() {
+  return '<svg class="record-placeholder" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="7.5"></circle><circle class="record-placeholder-center" cx="12" cy="12" r="2.1"></circle></svg>';
+}
 function setCoverArtwork(node, source) {
   // The renderer status poll runs every 1.5s and the lyrics retry poll every
   // 900ms, and both repaint these cover blocks.  Assigning innerHTML
@@ -2104,10 +2117,66 @@ function setCoverArtwork(node, source) {
   const next = typeof source === "string" ? source : "";
   if (node.dataset.coverSource === next) return false;
   node.dataset.coverSource = next;
+  node.classList.toggle("has-artwork", Boolean(next));
   node.innerHTML = next
-    ? `<img src="${escapeHtml(next)}" onerror="this.parentNode.innerHTML='\u266b'">`
-    : "\u266b";
+    ? `<img src="${escapeHtml(next)}" onerror="this.parentNode.classList.remove('has-artwork');this.parentNode.innerHTML=recordPlaceholderMarkup()">`
+    : recordPlaceholderMarkup();
   return true;
+}
+function normalizeDialogCloseControls() {
+  const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+  ["closeDialog", "closeFolderDialog", "closeDlnaDiagnosticsDialog", "closePlaylistDialog",
+    "closeTrackActionDialog", "closeMetadataCandidateDialog", "closeExternalShareDialog",
+    "closeColumnsDialog"].forEach(id => {
+    const button = $(id);
+    if (!button) return;
+    button.classList.add("dialog-close-button");
+    button.type = "button";
+    button.title = button.title || "关闭";
+    button.setAttribute("aria-label", button.getAttribute("aria-label") || "关闭");
+    button.innerHTML = icon;
+  });
+}
+function normalizeButtonTypes() {
+  document.querySelectorAll("button:not([type])").forEach(button => {
+    const form = button.closest("form");
+    button.type = form?.id === "metadataCandidateSearchForm" ? "submit" : "button";
+  });
+}
+function installDialogFocusManagement() {
+  if (typeof MutationObserver !== "function") return;
+  const owners = new WeakMap();
+  const focusSelector = "[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]):not(.dialog-close-button), [href], [tabindex]:not([tabindex=\"-1\"])";
+  const focusDialog = dialog => {
+    const preferred = dialog.getAttribute("data-dialog-initial-focus");
+    const preferredNode = preferred ? document.getElementById(preferred) : null;
+    const target = preferredNode && dialog.contains(preferredNode) ? preferredNode : null;
+    const next = target || dialog.querySelector(focusSelector) || dialog.querySelector(".dialog-close-button");
+    if (next && typeof next.focus === "function") next.focus({ preventScroll: true });
+  };
+  const restoreOwner = dialog => {
+    const owner = owners.get(dialog);
+    owners.delete(dialog);
+    if (owner && typeof owner.focus === "function" && document.contains(owner)) {
+      owner.focus({ preventScroll: true });
+    }
+  };
+  document.querySelectorAll("dialog").forEach(dialog => {
+    dialog.addEventListener("close", () => restoreOwner(dialog));
+  });
+  const observer = new MutationObserver(records => {
+    for (const record of records) {
+      if (record.type !== "attributes" || record.attributeName !== "open") continue;
+      const dialog = record.target;
+      if (!dialog || dialog.tagName !== "DIALOG") continue;
+      if (dialog.open) {
+        const active = document.activeElement;
+        owners.set(dialog, active && active !== document.body && !dialog.contains(active) ? active : null);
+        Promise.resolve().then(() => { if (dialog.open) focusDialog(dialog); });
+      }
+    }
+  });
+  observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open"] });
 }
 function setNowPlayingCover(source) {
   return setCoverArtwork($("nowCover"), source);
@@ -2239,7 +2308,10 @@ function setPlayButton(playing) {
   const next = playing === true ? "playing" : "paused";
   if (!button || button.dataset.playing === next) return;
   button.dataset.playing = next;
-  button.innerHTML = `<span class="transport-icon ${next === "playing" ? "pause-icon" : "play-icon"}"></span>`;
+  const icon = next === "playing"
+    ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
+    : '<path d="m8 5 12 7-12 7z"/>';
+  button.innerHTML = `<svg class="transport-icon ${next === "playing" ? "pause-icon" : "play-icon"}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icon}</svg>`;
 }
 function stopLocalAudio() {
   state.playbackLoadToken += 1;
@@ -3001,6 +3073,9 @@ function groupFallbackIcon(view = state.view) {
   };
   return icons[view] || icons.albums;
 }
+function breadcrumbChevronMarkup(className = "breadcrumb-chevron") {
+  return `<span class="${className}" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 5 7 7-7 7"/></svg></span>`;
+}
 function groupIcon(view, items = [], coverTrackId = "", explicitName = "", metadataImage = "") {
   const cachedItem = items.find(item => item?.cover_url);
   const localCover = coverUrl(cachedItem) || (coverTrackId ? mediaUrl(`cover/${encodeURIComponent(coverTrackId)}?size=160`) : "");
@@ -3102,6 +3177,18 @@ function clampTrackColumnWidth(key, value) {
   const [minimum, maximum] = trackColumnWidthLimits(key);
   return Math.min(maximum, Math.max(minimum, preferred));
 }
+function measureTrackContentWidth(node) {
+  if (!node || typeof node.cloneNode !== "function" || !document?.body?.appendChild) {
+    return 0;
+  }
+  const probe = node.cloneNode(true);
+  probe.style.cssText = `${probe.style?.cssText || ""};position:absolute;left:-100000px;top:0;width:max-content;min-width:max-content;max-width:none;overflow:visible;text-overflow:clip;white-space:nowrap;visibility:hidden;`;
+  document.body.appendChild(probe);
+  const width = Number(probe.getBoundingClientRect?.().width || probe.scrollWidth || 0);
+  if (typeof probe.remove === "function") probe.remove();
+  else probe.parentNode?.removeChild?.(probe);
+  return Number.isFinite(width) ? width : 0;
+}
 function measureAutoTrackColumnWidths() {
   if (window.matchMedia("(max-width: 760px)").matches) return;
   if ((isCreatorView() && !currentCreatorName()) || (state.view === "genres" && !state.groupName)) {
@@ -3121,11 +3208,11 @@ function measureAutoTrackColumnWidths() {
   activeTrackColumns().forEach(key => {
     const [minimum, maximum] = trackColumnWidthLimits(key);
     const header = document.querySelector(`[data-track-column="${key}"] .track-head-button,[data-track-column="${key}"] .track-head-label`);
-    let measured = Number(header?.scrollWidth || 0) + 24;
+    let measured = measureTrackContentWidth(header) + 24;
     if (key === "title") {
-      document.querySelectorAll(".track-title").forEach(node => { measured = Math.max(measured, Number(node.scrollWidth || 0) + 72); });
+      document.querySelectorAll(".track-title").forEach(node => { measured = Math.max(measured, measureTrackContentWidth(node) + 72); });
     } else {
-      document.querySelectorAll(`.track-cell-${key}`).forEach(node => { measured = Math.max(measured, Number(node.scrollWidth || 0) + 18); });
+      document.querySelectorAll(`.track-cell-${key}`).forEach(node => { measured = Math.max(measured, measureTrackContentWidth(node) + 18); });
     }
     widths[key] = Math.max(minimum, Math.min(maximum, Math.ceil(measured)));
   });
@@ -3176,21 +3263,22 @@ function renderTableHead(target = $("tableHead")) {
     groupSortKey: groupViews[state.view],
     sortableSortKeys: sortOptionsForView().map(([key]) => key),
   });
-  let template = "";
+  let template = document.body.style.getPropertyValue("--fnaudio-track-columns").trim();
+  if (!template) template = trackGridTemplate();
   let markup = "";
-  if (shared) {
-    template = shared.template;
+  if (shared && template) {
     markup = shared.markup;
   } else {
     const renderHeader = (key, label, sortKey) => {
       const sortable = sortKey && sortOptionsForView().some(([value]) => value === sortKey);
-      const indicator = currentSort === sortKey ? `<span class="track-sort-indicator">${state.sortDir === "asc" ? "&#9650;" : "&#9660;"}</span>` : "";
+      const indicator = currentSort === sortKey
+        ? `<span class="track-sort-indicator" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${state.sortDir === "asc" ? "m6 14 6-6 6 6" : "m6 10 6 6 6-6"}"/></svg></span>`
+        : "";
       const control = sortable
         ? `<button class="track-head-button" type="button" data-track-sort="${sortKey}">${label}${indicator}</button>`
         : `<span class="track-head-label">${label}</span>`;
       return `<div class="track-header-cell" data-track-column="${key}">${control}<span class="column-resize-handle" data-column-resize="${key}" title="拖动调整列宽" aria-hidden="true"></span></div>`;
     };
-    template = trackGridTemplate();
     markup = columns.map(key => renderHeader(key, TRACK_COLUMN_DEFINITIONS[key].label, TRACK_COLUMN_DEFINITIONS[key].sort)).join("") + `<button class="table-head-more" type="button" data-open-columns title="列显示" aria-label="列显示"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>`;
   }
   // Playback and user-state refreshes call render() frequently. Rebuilding an
@@ -3204,7 +3292,7 @@ function renderTableHead(target = $("tableHead")) {
   const signature = JSON.stringify([mode, template, markup]);
   const changed = head.dataset.fnaudioTableHeadSignature !== signature;
   if (changed) {
-    head.style.setProperty("--fnaudio-track-columns", template);
+    head.style.removeProperty("--fnaudio-track-columns");
     document.body.style.setProperty("--fnaudio-track-columns", template);
     head.innerHTML = markup;
     head.dataset.fnaudioTableHeadSignature = signature;
@@ -3274,7 +3362,7 @@ function renderAlbumDetail(list) {
       <small data-album-detail-release-date ${releaseDate ? "" : "hidden"}>${escapeHtml(releaseDate)}</small>
     </aside>
     <section class="album-detail-tracks">
-      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button><span aria-hidden="true">&gt;</span><strong>${escapeHtml(album)}</strong></nav>
+      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button>${breadcrumbChevronMarkup()}<strong>${escapeHtml(album)}</strong></nav>
       <div class="album-detail-table-head" id="albumDetailTableHead"></div>
       <div class="album-detail-track-list">${renderTrackRows(list)}</div>
     </section>
@@ -3324,7 +3412,7 @@ function renderTrack(item, index = 0, columns = activeTrackColumns()) {
   // Lazy rows have not started decoding yet; keep the glyph visible until the
   // scheduler attaches/loads the image. Hiding it for every row created a
   // blank tile between the list commit and IntersectionObserver hydration.
-  const coverFallback = `<span class="track-cover-fallback">♫</span>`;
+  const coverFallback = `<span class="track-cover-fallback">${recordPlaceholderMarkup()}</span>`;
   const titleCell = `<div class="track-main" data-play="${escapeHtml(item.id)}"><div class="track-cover">${coverImage}${coverFallback}</div><div class="track-info"><div class="track-title-line"><strong class="track-title">${escapeHtml(displayTrackTitle(item))}</strong>${playingIndicator}</div><span class="mobile-track-subtitle">${escapeHtml(mobileSubtitle)}</span></div></div>`;
   const rowSignature = trackRowMarkupSignature(item, index, columns, columnValues, localCover);
   return `<div class="track${isCurrent ? " is-current" : ""}${isSelected ? " is-selected" : ""}" data-track-row-key="${escapeHtml(rowKey)}" data-track-row-signature="${escapeHtml(rowSignature)}" data-track-id="${escapeHtml(item.id)}"${hasQueuePosition ? ` data-queue-index="${queueIndex}"` : ""}>
@@ -3794,6 +3882,18 @@ function hydrateVisibleTrackCovers() {
   }
   if (status && typeof status === "object") state.coverLoadStatus = status;
 }
+function prioritizeVisibleTrackCovers() {
+  const root = $("trackList");
+  if (!root?.querySelectorAll) return;
+  const viewport = root.getBoundingClientRect?.();
+  if (!viewport) return;
+  root.querySelectorAll("img[data-cover-src]").forEach(image => {
+    const rect = image.getBoundingClientRect?.();
+    if (!rect || rect.bottom < viewport.top || rect.top > viewport.bottom) return;
+    image.dataset.coverObserved = "";
+  });
+  hydrateVisibleTrackCovers();
+}
 function renderGroups(groups = groupedTracks()) {
   const groupView = isCreatorAlbumView() ? "albums" : state.view;
   return groups.map(group => {
@@ -3811,10 +3911,10 @@ function renderCreatorAllSongsEntry(groups = groupedTracks()) {
   const fallbackTotal = groups.reduce((total, group) => total + libraryCount(group.track_count), 0);
   const trackTotal = libraryCount(currentCreatorTrackTotal() || fallbackTotal);
   return `<button class="artist-all-songs-entry" type="button" data-open-creator-all-tracks>
-    <span class="artist-all-songs-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></span>
+    <span class="artist-all-songs-icon" aria-hidden="true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></span>
     <span class="artist-all-songs-copy"><strong>所有歌曲</strong><small>查看 ${escapeHtml(creator)} 的全部歌曲</small></span>
     <span class="artist-all-songs-count">${trackTotal ? `${trackTotal} 首` : "查看歌曲"}</span>
-    <span class="artist-all-songs-chevron" aria-hidden="true">&gt;</span>
+    ${breadcrumbChevronMarkup("artist-all-songs-chevron")}
   </button>`;
 }
 function renderAlbumGroups(groups = groupedTracks()) {
@@ -3832,15 +3932,15 @@ function renderAlbumGroups(groups = groupedTracks()) {
 function renderCreatorAllTracks(list) {
   const creator = displayText(currentCreatorName() || `未知${currentCreatorLabel()}`);
   return `<nav class="artist-all-tracks-breadcrumb" aria-label="${currentCreatorLabel()}路径">
-    <button type="button" data-creator-root-back>${currentCreatorLabel()}</button><span aria-hidden="true">&gt;</span>
-    <button type="button" data-group-back>${escapeHtml(creator)}</button><span aria-hidden="true">&gt;</span>
+    <button type="button" data-creator-root-back>${currentCreatorLabel()}</button>${breadcrumbChevronMarkup()}
+    <button type="button" data-group-back>${escapeHtml(creator)}</button>${breadcrumbChevronMarkup()}
     <strong>所有歌曲</strong>
   </nav>${renderTrackRows(list)}`;
 }
 function renderGenreTracks(list) {
   const genre = displayText(state.groupName || "未分类");
   return `<nav class="artist-all-tracks-breadcrumb category-tracks-breadcrumb" aria-label="类型路径">
-    <button type="button" data-group-back>类型</button><span aria-hidden="true">&gt;</span>
+    <button type="button" data-group-back>类型</button>${breadcrumbChevronMarkup()}
     <strong>${escapeHtml(genre)}</strong>
   </nav>${renderTrackRows(list)}`;
 }
@@ -3864,13 +3964,13 @@ function renderFolders(data = folderChildren()) {
     const groupRoot = state.folderRoot || root;
     const groupPath = state.folderRoot ? path : "";
     const groupKey = `folder:${groupRoot}:${groupPath}`;
-    return `<div class="group-row${state.selectedGroupKeys.has(groupKey) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(groupKey)}" data-group-type="folder" data-group-root="${encodeURIComponent(groupRoot)}" data-group-path="${encodeURIComponent(groupPath)}" ${openAttribute}>
+    return `<div class="group-row folder-group-row${state.selectedGroupKeys.has(groupKey) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(groupKey)}" data-group-type="folder" data-group-label="${escapeHtml(name)}" role="button" tabindex="0" aria-label="打开文件夹 ${escapeHtml(name)}" data-group-root="${encodeURIComponent(groupRoot)}" data-group-path="${encodeURIComponent(groupPath)}" ${openAttribute}>
       ${groupIcon("folders")}
-      <div class="group-info"><strong>${escapeHtml(name)}</strong><span>${libraryCount(row.track_count)} 首</span></div>
+      <div class="group-info"><strong>${escapeHtml(name)}</strong><span>${libraryCount(row.track_count)} 首</span></div><span class="folder-group-chevron" aria-hidden="true"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>
     </div>`;
   }).join("");
   const folderPages = Math.max(1, Math.ceil(libraryCount(state.folderTotal) / state.folderPageSize));
-  const folderPager = folderPages > 1 ? `<div class="folder-pager"><button class="secondary-button" data-folder-page-step="-1" ${state.folderPage <= 1 ? "disabled" : ""}>上一组文件夹</button><span>文件夹 ${state.folderPage} / ${folderPages}</span><button class="secondary-button" data-folder-page-step="1" ${state.folderPage >= folderPages ? "disabled" : ""}>下一组文件夹</button></div>` : "";
+  const folderPager = folderPages > 1 ? `<div class="folder-pager"><button type="button" class="secondary-button" data-folder-page-step="-1" ${state.folderPage <= 1 ? "disabled" : ""}>上一组文件夹</button><span>文件夹 ${state.folderPage} / ${folderPages}</span><button type="button" class="secondary-button" data-folder-page-step="1" ${state.folderPage >= folderPages ? "disabled" : ""}>下一组文件夹</button></div>` : "";
   const tracks = data.tracks;
   return breadcrumb + folders + folderPager + renderTrackRows(tracks);
 }
@@ -3910,13 +4010,13 @@ function render() {
   const albumDetail = isAlbumDetailView();
   const genreDetail = state.view === "genres" && Boolean(state.groupName);
   const playlistToolbar = isPlaylistView() && currentPlaylist()
-    ? `<div class="playlist-toolbar"><span>${clientPageTotal} 首歌曲</span><button class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button></div>`
+    ? `<div class="playlist-toolbar"><span>${clientPageTotal} 首歌曲</span><button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button></div>`
     : state.view === "favorites"
       ? `<div class="playlist-toolbar"><span>${clientPageTotal} 首收藏歌曲</span></div>`
       : state.view === "queue"
-        ? `<div class="playlist-toolbar"><span>${state.queue.length} 首歌曲</span><button class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button></div>`
+        ? `<div class="playlist-toolbar"><span>${state.queue.length} 首歌曲</span><button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button></div>`
       : isGroup && state.groupName && !albumDetail && !genreDetail
-      ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button class="secondary-button" data-play-all>播放全部</button><button class="secondary-button" data-group-back>返回分类</button></div></div>`
+      ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button><button type="button" class="secondary-button" data-group-back>返回分类</button></div></div>`
     : "";
   const listHtml = isFolder
     ? renderFolders(folderState)
@@ -3929,6 +4029,12 @@ function render() {
         : albumDetail
           ? renderAlbumDetail(list)
           : playlistToolbar + renderTrackRows(list);
+  // Measure the current list before rendering either header.  Otherwise the
+  // header can capture fallback widths while rows are already using the
+  // persisted/auto-measured template, producing visible column drift.
+  if (!window.matchMedia("(max-width: 760px)").matches && list.length) {
+    measureAutoTrackColumnWidths();
+  }
   const tableHeadChanged = renderTableHead();
   $("tableHead").hidden = albumDetail;
   $("libraryScroll").classList.toggle("album-detail-scroll", albumDetail);
@@ -3953,12 +4059,21 @@ function render() {
     // scheduler can assign image sources, including legacy WebViews without IO.
     loadGroupArtwork();
     hydrateVisibleTrackCovers();
+    // On the first commit the scroll container may not have its final
+    // geometry yet. IntersectionObserver can therefore miss the visible
+    // rows until a later category switch. Reconcile once after layout so the
+    // first screen is hydrated without requiring user navigation.
+    requestAnimationFrame(() => prioritizeVisibleTrackCovers());
   }
   // A normal playback/favorite render must not walk every row merely to
   // re-apply the same selection.  A changed list still forces one pass so a
   // keyed DOM commit receives the current selection classes.
   setTrackSelection([...state.selectedTrackRowKeys], listChanged);
   const albumHeadChanged = albumDetail ? renderTableHead($("albumDetailTableHead")) : false;
+  if (albumDetail) {
+    const template = document.body.style.getPropertyValue("--fnaudio-track-columns") || trackGridTemplate();
+    $("albumDetailTableHead")?.style.setProperty("--fnaudio-track-columns", template);
+  }
   const pager = $("pager");
   const pagerHtml = renderPager(clientPageTotal);
   const pagerChanged = pager.innerHTML !== pagerHtml;
@@ -3972,6 +4087,13 @@ function render() {
   if (listChanged || tableHeadChanged || albumHeadChanged || pagerChanged) {
     requestAnimationFrame(() => {
       measureAutoTrackColumnWidths();
+      if (albumDetail) {
+        const albumHead = $("albumDetailTableHead");
+        if (albumHead) {
+          albumHead.dataset.fnaudioTableHeadSignature = "";
+          renderTableHead(albumHead);
+        }
+      }
       updateMobilePagerVisibility();
     });
   }
@@ -4036,6 +4158,11 @@ function render() {
       row.ondblclick = event => {
         if (event.target.closest("button")) return;
         if (row.dataset.groupType !== "folder") return;
+        event.preventDefault();
+        openGroupRow(row);
+      };
+      row.onkeydown = event => {
+        if (row.dataset.groupType !== "folder" || (event.key !== "Enter" && event.key !== " ")) return;
         event.preventDefault();
         openGroupRow(row);
       };
@@ -4110,7 +4237,7 @@ function render() {
 function renderPlaylistNav() {
   const nav = $("playlistNav");
   if (!nav) return;
-  const markup = state.playlists.map(list => `<button class="nav-item playlist-nav-item ${state.view === `playlist:${list.id}` ? "active" : ""}" data-view="playlist:${list.id}">♪ <span>${escapeHtml(list.name)}</span><b>${list.trackIds.length}</b></button>`).join("");
+  const markup = state.playlists.map(list => `<button type="button" class="nav-item playlist-nav-item ${state.view === `playlist:${list.id}` ? "active" : ""}" data-view="playlist:${list.id}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg><span>${escapeHtml(list.name)}</span><b>${list.trackIds.length}</b></button>`).join("");
   if (nav.dataset.fnaudioPlaylistNavMarkup === markup) return;
   nav.innerHTML = markup;
   nav.dataset.fnaudioPlaylistNavMarkup = markup;
@@ -4130,6 +4257,13 @@ function updateNavigationActiveState() {
 function setView(view) {
   const nextView = String(view || "all");
   resetLibraryScrollPosition();
+  const viewChanged = nextView !== state.view;
+  // A paged-to-paged switch used to leave the previous worker's request
+  // sequence alive. If its response won the race before the new microtask
+  // started, it could paint the old category into the new view. Invalidate
+  // before starting folder speculation so the speculative pair belongs to the
+  // new navigation generation too.
+  if (viewChanged) invalidateLibraryLoad();
   if (nextView === "folders") {
     cancelFolderNavigationPrefetch();
     // Start before state.view changes: the existing paged worker is scheduled
@@ -4141,7 +4275,6 @@ function setView(view) {
     state.searchTimer = null;
   }
   state.view = nextView;
-  if (!isPagedLibraryView()) invalidateLibraryLoad();
   state.selectedTrackRowKeys.clear();
   state.selectedGroupKeys.clear();
   state.folderRoot = "";
@@ -4254,13 +4387,20 @@ function openGroupRow(row) {
 }
 async function resolveSelectedGroupTracks(groupKey = "") {
   const groups = selectedGroupDescriptors(groupKey);
+  const creatorView = state.view;
+  const creatorName = isCreatorView() ? currentCreatorName() : "";
+  const querySnapshot = { params: currentQueryParams().toString(), pageSize: state.pageSize };
   const pool = fnAudioBatchRequestPool(groups, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, group => group.type === "folder"
-    ? fetchAllTracksForCurrentView({ view: "folders", root: group.root, folder: group.path })
-    : isCreatorView() && currentCreatorName() && group.view === "albums"
-      ? fetchAllTracksForCurrentView({ view: state.view, group: currentCreatorName(), album: group.name })
-      : fetchAllTracksForCurrentView({ view: group.view, group: group.name }));
+    ? fetchAllTracksForCurrentView({ view: "folders", root: group.root, folder: group.path }, querySnapshot)
+    : creatorName && group.view === "albums"
+      ? fetchAllTracksForCurrentView({ view: creatorView, group: creatorName, album: group.name }, querySnapshot)
+      : fetchAllTracksForCurrentView({ view: group.view, group: group.name }, querySnapshot));
   const resolved = [];
-  for (let index = 0; index < groups.length; index += 1) resolved.push(await pool.get(index));
+  try {
+    for (let index = 0; index < groups.length; index += 1) resolved.push(await pool.get(index));
+  } finally {
+    pool.cancel("group resolution finished");
+  }
   const seen = new Set();
   return resolved.flat().filter(item => {
     const id = String(item?.id || "");
@@ -4382,11 +4522,15 @@ async function resolveTracksByIds(ids = []) {
   const batches = fnAudioItemHydrationPolicy.batchesForItemIds(missing);
   const pool = fnAudioBatchRequestPool(batches, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY,
     batch => fetchLibraryItemsByIds(batch));
-  for (let index = 0; index < batches.length; index += 1) {
-    // A large favorite/playlist can require many 100-item batches.  Keep the
-    // LRU protection pass until every batch is present, otherwise each batch
-    // may rescan the same over-capacity cache.
-    cacheLibraryItems(await pool.get(index), false);
+  try {
+    for (let index = 0; index < batches.length; index += 1) {
+      // A large favorite/playlist can require many 100-item batches. Keep the
+      // LRU protection pass until every batch is present.
+      cacheLibraryItems(await pool.get(index), false);
+    }
+  } finally {
+    // A failed consumer must not leave the remaining ID batches issuing I/O.
+    pool.cancel("item resolution finished");
   }
   state.itemCache.trim(new Set((state.queue || []).map(item => String(item?.id || "")).filter(Boolean)));
   return orderedIds.map(itemById).filter(Boolean);
@@ -5580,6 +5724,14 @@ async function refreshVisibleMetadataProjection() {
   if (!isPagedTrackListing() || state.libraryLoading || !state.pageItems?.length) return false;
   const items = state.pageItems;
   const requestSeq = state.libraryRequestSeq;
+  // A metadata status poll can queue a second projection refresh while the
+  // first by-id read is still waiting. Page identity alone is insufficient:
+  // both reads can target the same page and the older response may otherwise
+  // commit after the newer one. Keep a separate projection generation so only
+  // the latest refresh may mutate visible rows.
+  const projectionSeq = (Number(state.metadataProjectionRequestSeq) || 0) + 1;
+  state.metadataProjectionRequestSeq = projectionSeq;
+  const isCurrentProjection = () => projectionSeq === state.metadataProjectionRequestSeq;
   const rows = items.slice(0, 500);
   const ids = rows.map(item => String(item?.id || "")).filter(Boolean);
   const refreshed = [];
@@ -5587,11 +5739,12 @@ async function refreshVisibleMetadataProjection() {
     // This is a local SQLite projection read, never a new provider search.
     // A placeholder cover URL alone cannot tell us whether its image exists.
     for (let offset = 0; offset < ids.length; offset += 100) {
-      if (requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
+      if (!isCurrentProjection() || requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
       refreshed.push(...await fetchLibraryItemsByIds(ids.slice(offset, offset + 100)));
+      if (!isCurrentProjection()) return false;
     }
   } catch (_) { return false; }
-  if (requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
+  if (!isCurrentProjection() || requestSeq !== state.libraryRequestSeq || items !== state.pageItems || state.libraryLoading) return false;
   const byId = new Map((refreshed || []).map(item => [String(item?.id || ""), item]));
   const fields = ["title", "artist", "album", "album_artist", "composer", "genre", "date", "track_no",
     "cover_url", "cover_thumbnail_url"];
@@ -5737,8 +5890,20 @@ function updateLibraryStatusDecorations() {
   setTextContentIfChanged($("allCount"), libraryCount(state.libraryStatus?.count));
   setTextContentIfChanged($("dsdCount"), libraryCount(state.libraryStatus?.dsd_count));
   setTextContentIfChanged($("recentCount"), libraryCount(state.libraryStatus?.count));
+  const emptyTitle = $("emptyTitle");
   const emptyText = $("emptyText");
-  if (emptyText && state.libraryStatus) {
+  const currentView = String(state.view || "");
+  const emptyContext = currentView.startsWith("playlist:")
+    ? { title: "播放列表为空", text: "从歌曲操作菜单中选择“加入播放列表”，或返回全部音乐选择歌曲。" }
+    : currentView === "favorites"
+      ? { title: "还没有收藏歌曲", text: "在歌曲操作菜单或播放器中收藏歌曲后，会显示在这里。" }
+      : currentView === "queue"
+        ? { title: "当前队列为空", text: "播放歌曲或使用“播放全部”后，歌曲会出现在当前队列。" }
+        : null;
+  if (emptyTitle) setTextContentIfChanged(emptyTitle, emptyContext?.title || "还没有音乐");
+  if (emptyText && emptyContext) {
+    setTextContentIfChanged(emptyText, emptyContext.text);
+  } else if (emptyText && state.libraryStatus) {
     const path = state.libraryStatus.library_path || "";
     setTextContentIfChanged(emptyText, `${state.libraryStatus.message || "没有找到音乐文件"}${path ? `：${path}` : ""}`);
   }
@@ -6737,13 +6902,13 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
     releaseController();
   }
 }
-async function fetchAllTracksForCurrentView(extra = {}) {
-  const pageSize = Math.max(1, Math.min(500, state.pageSize || 120));
-  // Batch workers may start after a view/search change. Freeze the query
-  // identity once so every page belongs to the same play-all request.
-  const baseQueryParams = currentQueryParams();
+async function fetchAllTracksForCurrentView(extra = {}, querySnapshot = null) {
+  const pageSize = Math.max(1, Math.min(500, (querySnapshot ? querySnapshot.pageSize : state.pageSize) || 120));
+  // Group workers may start after navigation. Share the operation's query
+  // snapshot; direct callers capture their current query when invoked.
+  const baseQueryParams = querySnapshot ? new URLSearchParams(querySnapshot.params) : currentQueryParams();
   const pageItemsOf = data => Array.isArray(data?.items) ? data.items : [];
-  const canReuseCurrentPage = state.page === 1
+  const canReuseCurrentPage = !querySnapshot && state.page === 1
     && isPagedTrackListing()
     && state.view !== "random100"
     && state.libraryPageKey === libraryLoadRequestKey(1)
@@ -6777,21 +6942,23 @@ async function fetchAllTracksForCurrentView(extra = {}) {
   for (const offsets of fnAudioLibraryPagePlan.pageOffsetBatches(total, pageSize, firstItems.length, 200000, 32)) {
     const pool = fnAudioBatchRequestPool(offsets, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, fetchPage);
     let complete = false;
-    for (let index = 0; index < offsets.length; index += 1) {
-      const data = await pool.get(index);
-      const pageItems = pageItemsOf(data);
-      cacheLibraryItems(pageItems, false);
-      merged = fnAudioLibraryPageMerge.appendPageItems(merged, pageItems, total);
-      if (fnAudioLibraryFullListPolicy.shouldStopMerge(merged.length, total, pageItems.length)) {
-        complete = true;
-        break;
+    try {
+      for (let index = 0; index < offsets.length; index += 1) {
+        const data = await pool.get(index);
+        const pageItems = pageItemsOf(data);
+        cacheLibraryItems(pageItems, false);
+        merged = fnAudioLibraryPageMerge.appendPageItems(merged, pageItems, total);
+        if (fnAudioLibraryFullListPolicy.shouldStopMerge(merged.length, total, pageItems.length)) {
+          complete = true;
+          break;
+        }
       }
+    } finally {
+      // Release queued work on errors as well as an early complete result.
+      // Active requests retain their slots until they settle naturally.
+      pool.cancel("library batch finished");
     }
     if (complete) {
-      // Do not leave queued requests running after the result is complete (or
-      // the server returned an empty page). Already-running requests finish
-      // naturally; queued batches are rejected by the bounded pool.
-      pool.cancel("library result complete");
       break;
     }
   }
@@ -7010,7 +7177,7 @@ function renderDeviceTargets(targets, currentTarget) {
     const caps = target.caps ? dacCapsText(target.caps) : "";
     const detail = target.message || (caps || kind);
     const disabled = target.online === true || target.online === undefined ? "" : " disabled";
-    return `<button class="device-row${isCurrent ? " is-current" : ""}" data-target="${escapeHtml(target.id)}" data-target-name="${escapeHtml(displayText(target.name || "播放设备"))}" aria-pressed="${isCurrent}"${disabled}><span class="device-row-radio">${isCurrent ? "✓" : ""}</span><span class="device-row-text"><strong>${escapeHtml(displayText(target.name || "播放设备"))}</strong><small>${escapeHtml(detail)}</small></span></button>`;
+  return `<button type="button" class="device-row${isCurrent ? " is-current" : ""}" data-target="${escapeHtml(target.id)}" data-target-name="${escapeHtml(displayText(target.name || "播放设备"))}" aria-pressed="${isCurrent}"${disabled}><span class="device-row-radio" aria-hidden="true">${isCurrent ? '<svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3.2 3.2L13 4.5"/></svg>' : ""}</span><span class="device-row-text"><strong>${escapeHtml(displayText(target.name || "播放设备"))}</strong><small>${escapeHtml(detail)}</small></span></button>`;
   });
   const rowById = new Map(targets.map((target, index) => [String(target.id), rows[index]]));
   const groupedRows = [...groups.values()]
@@ -7030,7 +7197,7 @@ function markCurrentDeviceTarget(targetId, switching = false) {
     button.setAttribute("aria-pressed", String(isCurrent));
     button.disabled = switching;
     const radio = button.querySelector(".device-row-radio");
-    if (radio) radio.textContent = isCurrent ? "✓" : "";
+    if (radio) radio.innerHTML = isCurrent ? '<svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3.2 3.2L13 4.5"/></svg>' : "";
   });
 }
 function scheduleDeviceRefresh() {
@@ -7170,7 +7337,15 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   render();
   return true;
 }
+function setSettingsButtonOpen(open) {
+  const button = $("folderBtn");
+  if (!button) return;
+  button.classList.toggle("is-open", Boolean(open));
+  button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 async function openFolderBrowser(path = "") {
+  setSettingsButtonOpen(true);
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
@@ -7203,7 +7378,8 @@ function ensureSettingsStatusNodes() {
 }
 function setSettingsTab(name = "library") {
   state.settingsTab = name;
-  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+  const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
+  tabs.forEach(button => {
     const active = button.dataset.settingsTab === name;
     if (!button.id) button.id = `settings-tab-${button.dataset.settingsTab}`;
     button.classList.toggle("active", active);
@@ -7215,6 +7391,25 @@ function setSettingsTab(name = "library") {
     pane.hidden = !active;
     pane.classList.toggle("active", active);
   });
+  const activeTab = tabs.find(button => button.dataset.settingsTab === name);
+  const tabStrip = activeTab?.closest(".settings-tabs");
+  if (activeTab && tabStrip && tabStrip.scrollWidth > tabStrip.clientWidth) {
+    const activeIndex = tabs.indexOf(activeTab);
+    const startIndex = activeIndex <= Math.floor((tabs.length - 1) / 2)
+      ? 0
+      : Math.max(0, activeIndex - 2);
+    const firstOffsetLeft = tabs[0]?.offsetLeft || 0;
+    const targetScrollLeft = Math.max(0, (tabs[startIndex]?.offsetLeft || 0) - firstOffsetLeft);
+    tabStrip.scrollLeft = targetScrollLeft;
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        if (tabStrip.isConnected) tabStrip.scrollLeft = targetScrollLeft;
+      });
+    }
+    setTimeout(() => {
+      if (tabStrip.isConnected) tabStrip.scrollLeft = targetScrollLeft;
+    }, 0);
+  }
   if (name === "metadata") {
     setMetadataSettingsTab(state.metadataSettingsTab || "overview");
     ensureMetadataSettingsOverview();
@@ -7223,6 +7418,7 @@ function setSettingsTab(name = "library") {
   }
   if (name === "runtime") loadRuntimeSettings();
   if (name === "playback") loadPlaybackSettings();
+  if (name === "dlna") loadRuntimeSettings();
 }
 function settingsTabIndexForKey(key, currentIndex, count) {
   if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count <= 0) return -1;
@@ -7234,7 +7430,13 @@ function settingsTabIndexForKey(key, currentIndex, count) {
 }
 function bindSettingsTabs() {
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
-    button.onclick = () => setSettingsTab(button.dataset.settingsTab);
+    button.onclick = event => {
+      // Prevent the browser's post-click focus scroll from overriding the
+      // narrow-screen tab-strip position restored by setSettingsTab().
+      event.preventDefault();
+      setSettingsTab(button.dataset.settingsTab);
+      if (typeof button.focus === "function") button.focus({ preventScroll: true });
+    };
     button.onkeydown = event => {
       const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
       const nextIndex = settingsTabIndexForKey(event.key, tabs.indexOf(button), tabs.length);
@@ -7243,6 +7445,14 @@ function bindSettingsTabs() {
       const next = tabs[nextIndex];
       setSettingsTab(next.dataset.settingsTab);
       next.focus();
+      const strip = next.closest(".settings-tabs");
+      if (strip && strip.scrollWidth > strip.clientWidth) {
+        const startIndex = nextIndex <= Math.floor((tabs.length - 1) / 2)
+          ? 0
+          : Math.max(0, nextIndex - 2);
+        const firstOffsetLeft = tabs[0]?.offsetLeft || 0;
+        strip.scrollLeft = Math.max(0, (tabs[startIndex]?.offsetLeft || 0) - firstOffsetLeft);
+      }
     };
   });
   setSettingsTab(state.settingsTab || "library");
@@ -7301,6 +7511,7 @@ const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
 // test_ui_runtime_settings.js compares the two so a rename cannot pass on one side.
 const LYRICS_CACHE_BUDGET_SETTING_KEY = "metadata_lyrics_cache_max_bytes";
 const RENDERER_NAME_SETTING_KEY = "renderer_name";
+const DLNA_TYPE_DETECTION_SETTING_KEY = "dlna_type_detection";
 function runtimeConnectionPoolInput() {
   return $("libraryConnectionPoolInput");
 }
@@ -7309,6 +7520,9 @@ function runtimeLyricsBudgetInput() {
 }
 function playbackRendererNameInput() {
   return $("rendererNameInput");
+}
+function dlnaTypeDetectionInput() {
+  return $("dlnaTypeDetectionInput");
 }
 function applyRuntimeLyricsBudget(budget, limit) {
   // Show the budget the process really enforces. An unusable answer leaves the
@@ -7338,6 +7552,10 @@ async function loadRuntimeSettings() {
     // loader had to coerce is not the config the pool is honouring.
     input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
     applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
+    const dlnaDetection = dlnaTypeDetectionInput();
+    if (dlnaDetection && typeof data?.config?.[DLNA_TYPE_DETECTION_SETTING_KEY] === "boolean") {
+      dlnaDetection.checked = data.config[DLNA_TYPE_DETECTION_SETTING_KEY];
+    }
     return data;
   } catch (error) {
     const status = $("runtimeSettingsStatus");
@@ -7351,6 +7569,7 @@ async function saveRuntimeSettings() {
   if (!input || !budget) throw new Error("运行设置控件不可用");
   const lyricsBudget = Number(budget.value);
   if (!Number.isInteger(lyricsBudget) || lyricsBudget <= 0) throw new Error("运行设置控件不可用");
+  const dlnaDetection = dlnaTypeDetectionInput();
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7365,6 +7584,9 @@ async function saveRuntimeSettings() {
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存运行设置失败");
   input.checked = data?.config?.[LIBRARY_CONNECTION_POOL_SETTING_KEY] === true;
   applyRuntimeLyricsBudget(budget, data?.config?.[LYRICS_CACHE_BUDGET_SETTING_KEY]);
+  if (dlnaDetection && typeof data?.config?.[DLNA_TYPE_DETECTION_SETTING_KEY] === "boolean") {
+    dlnaDetection.checked = data.config[DLNA_TYPE_DETECTION_SETTING_KEY];
+  }
   return data;
 }
 async function loadPlaybackSettings() {
@@ -7764,14 +7986,18 @@ function renderMetadataProviders() {
     const up = document.createElement("button");
     up.type = "button";
     up.className = "secondary-button metadata-provider-move";
-    up.textContent = "上移";
+    up.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>';
+    up.title = "上移";
+    up.setAttribute("aria-label", "上移");
     up.dataset.metadataProviderMove = "up";
     up.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index === 0;
     up.addEventListener("click", () => moveMetadataProvider(entry.id, -1));
     const down = document.createElement("button");
     down.type = "button";
     down.className = "secondary-button metadata-provider-move";
-    down.textContent = "下移";
+    down.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg>';
+    down.title = "下移";
+    down.setAttribute("aria-label", "下移");
     down.dataset.metadataProviderMove = "down";
     down.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index >= entries.length - 2;
     down.addEventListener("click", () => moveMetadataProvider(entry.id, 1));
@@ -8133,7 +8359,7 @@ function renderLibraryPathInputs(paths = [""]) {
   $("libraryPathList").innerHTML = values.map(value => `
     <div class="library-path-row">
       <input class="library-path-input" value="${escapeHtml(value)}" placeholder="请选择音乐目录" readonly>
-      <button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录">×</button>
+      <button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
     </div>
   `).join("");
   $("libraryPathList").querySelectorAll(".library-path-remove").forEach(button => {
@@ -8223,16 +8449,31 @@ async function saveSettingsPane(button, statusNode, saveAction, successMessage =
   button.disabled = true;
   const originalText = button.textContent;
   button.textContent = "正在保存...";
-  if (statusNode) statusNode.textContent = "";
+  const setStatusClass = (name, enabled) => {
+    if (statusNode?.classList && typeof statusNode.classList.toggle === "function") {
+      statusNode.classList.toggle(name, enabled);
+    }
+  };
+  if (statusNode) {
+    statusNode.textContent = "";
+    setStatusClass("is-success", false);
+    setStatusClass("is-error", false);
+  }
   try {
     const result = await saveAction();
     if (result !== false) {
-      if (statusNode) statusNode.textContent = successMessage;
+      if (statusNode) {
+        setStatusClass("is-success", true);
+        statusNode.textContent = successMessage;
+      }
       return true;
     }
     return false;
   } catch (error) {
-    if (statusNode) statusNode.textContent = error.message || "保存失败，请确认应用服务正在运行";
+    if (statusNode) {
+      setStatusClass("is-error", true);
+      statusNode.textContent = error.message || "保存失败，请确认应用服务正在运行";
+    }
     return false;
   } finally {
     button.disabled = false;
@@ -8244,6 +8485,24 @@ function saveLibrarySettings() {
 }
 function saveRuntimePaneSettings() {
   return saveSettingsPane($("saveRuntimeSettingsBtn"), $("runtimeSettingsStatus"), () => saveRuntimeSettings(), "运行设置已保存。");
+}
+async function saveDlnaSettings() {
+  const input = dlnaTypeDetectionInput();
+  if (!input) throw new Error("DLNA 设置控件不可用");
+  const response = await apiFetch("api/config/runtime", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [DLNA_TYPE_DETECTION_SETTING_KEY]: input.checked === true }),
+  });
+  const data = await readResponseJsonBounded(response);
+  if (!response.ok || data.ok !== true) throw new Error(data.message || "保存 DLNA 设置失败");
+  if (typeof data?.config?.[DLNA_TYPE_DETECTION_SETTING_KEY] === "boolean") {
+    input.checked = data.config[DLNA_TYPE_DETECTION_SETTING_KEY];
+  }
+  return data;
+}
+function saveDlnaPaneSettings() {
+  return saveSettingsPane($("saveDlnaSettingsBtn"), $("dlnaSettingsStatus"), saveDlnaSettings, "DLNA 设置已保存。");
 }
 function saveMetadataPaneSettings() {
   return state.metadataSettingsTab === "tags"
@@ -8305,7 +8564,7 @@ function renderPlaylistChoices(trackIds = []) {
   }
   choices.innerHTML = state.playlists.map(list => {
     const exists = ids.length > 0 && ids.every(id => list.trackIds.includes(id));
-    return `<button class="playlist-choice" data-add-to-list="${escapeHtml(list.id)}" ${exists ? "disabled" : ""}><span>${escapeHtml(list.name)}</span><small>${exists ? "已加入" : `${list.trackIds.length} 首`}</small></button>`;
+  return `<button type="button" class="playlist-choice" data-add-to-list="${escapeHtml(list.id)}" ${exists ? "disabled" : ""}><span>${escapeHtml(list.name)}</span><small>${exists ? "已加入" : `${list.trackIds.length} 首`}</small></button>`;
   }).join("");
   choices.querySelectorAll("[data-add-to-list]").forEach(button => button.onclick = () => addTracksToPlaylist(button.dataset.addToList, ids));
 }
@@ -8341,11 +8600,6 @@ function closeTrackActionDialog() {
   try { state.metadataCandidateSearchController?.abort(); } catch (_) {}
   state.metadataCandidateController = null;
   state.metadataCandidateSearchController = null;
-  if (state.metadataCandidatePollTimer) {
-    clearTimeout(state.metadataCandidatePollTimer);
-    state.metadataCandidatePollTimer = 0;
-  }
-  state.metadataCandidatePollAttempts = 0;
   if ($("trackActionDialog").open) $("trackActionDialog").close();
   if ($("metadataCandidateDialog")?.open) $("metadataCandidateDialog").close();
 }
@@ -8498,8 +8752,29 @@ function bindTrackListInteractions() {
   list.addEventListener("pointerup", finishTrackLongPress);
   list.addEventListener("pointercancel", finishTrackLongPress);
 }
-function groupActionButton(label, action) {
-  return `<button class="track-action-choice" data-group-action="${action}">${label}</button>`;
+const TRACK_ACTION_ICONS = {
+  play: '<path d="m9 6 9 6-9 6Z"/>',
+  "play-from-current": '<path d="m9 6 9 6-9 6Z"/><path d="M4 5v14"/>',
+  queue: '<path d="M4 6h9M4 12h9M4 18h9"/><path d="m16 15 4 3-4 3Z"/>',
+  favorite: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
+  "favorite-add": '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
+  playlist: '<path d="M4 6h10M4 12h10M4 18h7"/><path d="M17 14v6M14 17h6"/>',
+  insert: '<path d="M4 6h10M4 12h7M4 18h10"/><path d="m17 14 3 3-3 3"/><path d="M20 17h-7"/>',
+  open: '<path d="M3 7.5h6.2l2 2H21v8.7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7.5V6a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v1.5"/>',
+  info: '<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8.5v.1"/>',
+  "metadata-candidate": '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="m19 16 .7 1.8L21.5 18l-1.8.7L19 20.5l-.7-1.8-1.8-.7 1.8-.7Z"/>',
+  "open-folder": '<path d="M3 7.5h6.2l2 2H21v8.7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7.5V6a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v1.5"/>',
+  share: '<path d="M14 5h5v5"/><path d="m19 5-8 8"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/>',
+  "delete-file": '<path d="M5 7h14M10 4h4l1 3H9Z"/><path d="M7 7v13h10V7M10 11v5M14 11v5"/>',
+  "remove-queue": '<path d="M4 6h9M4 12h9M4 18h9"/><path d="m17 15 4 4M21 15l-4 4"/>',
+  "remove-favorite": '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/><path d="M9 12h6"/>',
+  "remove-playlist": '<path d="M4 6h10M4 12h10M4 18h7"/><path d="m17 15 4 4M21 15l-4 4"/>',
+};
+function trackActionIcon(action) {
+  return `<svg class="track-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${TRACK_ACTION_ICONS[action] || '<circle cx="12" cy="12" r="8"/>'}</svg>`;
+}
+function groupActionButton(label, action, disabled = false) {
+  return `<button class="track-action-choice" type="button" data-group-action="${action}"${disabled ? " disabled" : ""}>${trackActionIcon(action)}<span>${label}</span></button>`;
 }
 function groupActionButtons(groupKey) {
   const selected = selectedGroupDescriptors(groupKey);
@@ -8507,7 +8782,7 @@ function groupActionButtons(groupKey) {
   return [
     groupActionButton("加入当前队列", "queue"),
     groupActionButton("加入播放列表", "playlist"),
-    `<button class="track-action-choice" data-group-action="open" ${multiple ? "disabled" : ""}>打开</button>`,
+    groupActionButton("打开", "open", multiple),
   ];
 }
 function bindGroupActionButtons(container) {
@@ -8554,7 +8829,7 @@ async function runGroupAction(action) {
   else if (action === "playlist") openPlaylistDialogForTracks(ids);
 }
 function actionButton(label, action, danger = false, disabled = false) {
-  return `<button class="track-action-choice ${danger ? "danger" : ""}" data-track-action="${action}" ${disabled ? "disabled" : ""}>${label}</button>`;
+  return `<button type="button" class="track-action-choice ${danger ? "danger" : ""}" data-track-action="${action}" ${disabled ? "disabled" : ""}>${trackActionIcon(action)}<span>${label}</span></button>`;
 }
 function metadataSourceText(item) {
   const source = item.metadata_source || {};
@@ -8591,13 +8866,19 @@ function renderMetadataCandidateChoices(list, candidates, trackId, status = "rev
     const subtitle = [candidate.artist, candidate.album, metadataCandidateSourceLabel(candidate), globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
     return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
   }).join("");
-  list.innerHTML = `<div class="metadata-candidate-list">${candidateRows}</div><button class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`;
+  list.innerHTML = `<div class="metadata-candidate-list">${candidateRows}</div><button type="button" class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`;
   const apply = list.querySelector("[data-apply-track-metadata]");
   if (!apply) return;
   apply.onclick = async () => {
     apply.disabled = true;
     const applyController = typeof AbortController === "function" ? new AbortController() : null;
     state.metadataCandidateController = applyController;
+    const requestToken = state.metadataCandidateRequestToken;
+    const searchToken = state.metadataCandidateSearchToken;
+    const isCurrentRequest = () => state.metadataCandidateController === applyController
+      && state.actionTrackId === String(trackId)
+      && state.metadataCandidateRequestToken === requestToken
+      && state.metadataCandidateSearchToken === searchToken;
     try {
       const selected = list.querySelector('input[name="metadataCandidate"]:checked');
       const candidateIndex = Number(selected?.value);
@@ -8610,12 +8891,13 @@ function renderMetadataCandidateChoices(list, candidates, trackId, status = "rev
       });
       const result = await readResponseJsonBounded(response);
       if (!response.ok || result.ok !== true) throw new Error(result.message || "确认失败");
-      if (state.metadataCandidateController !== applyController || state.actionTrackId !== String(trackId)) return;
+      if (!isCurrentRequest()) return;
       list.textContent = "已确认，后台将只补全空白 Tag 字段。";
       clearLibraryResponseCaches();
       if (state.pageItems?.length && !state.libraryLoading) await loadLibrary(false);
     } catch (error) {
       if (error?.name === "AbortError") return;
+      if (!isCurrentRequest()) return;
       apply.disabled = false;
       list.insertAdjacentHTML("afterbegin", `<div class="track-action-info">${escapeHtml(error.message || "确认失败")}</div>`);
     } finally {
@@ -8682,150 +8964,10 @@ function showTrackInformation(trackId) {
   $("trackActionList").innerHTML = `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   $("trackActionDialog").showModal();
 }
-function renderMetadataCandidateRetry(list, trackId, message) {
-  list.innerHTML = `<div class="track-action-info">${escapeHtml(message)}</div><button class="track-action-choice" data-retry-track-metadata="${escapeHtml(String(trackId))}">重新查询此歌曲</button>`;
-  const retryButton = list.querySelector("[data-retry-track-metadata]");
-  if (retryButton) retryButton.onclick = () => showTrackMetadataCandidate(trackId, 0, true);
-}
-async function showTrackMetadataCandidate(trackId, requestToken = 0, retryFailed = false) {
-  const item = itemById(trackId);
-  if (!item) return;
-  const dialog = $("metadataCandidateDialog") || $("trackActionDialog");
-  const statusNode = $("metadataCandidateStatus") || $("trackActionTitle");
-  const list = $("metadataCandidateSearchResults") || $("metadataCandidateResults") || $("trackActionList");
-  if (!dialog || !list) return;
-  if (!requestToken) {
-    try { state.metadataCandidateController?.abort(); } catch (_) {}
-    state.metadataCandidateController = null;
-    if (state.metadataCandidatePollTimer) clearTimeout(state.metadataCandidatePollTimer);
-    state.metadataCandidatePollTimer = 0;
-    state.metadataCandidatePollAttempts = 0;
-    requestToken = ++state.metadataCandidateRequestToken;
-  }
-  const isCurrentRequest = () => requestToken === state.metadataCandidateRequestToken
-    && state.actionTrackId === String(trackId) && dialog.open;
-  if (statusNode) statusNode.textContent = "正在查询候选结果...";
-  list.textContent = "";
-  if (!dialog.open) dialog.showModal();
-  const controller = typeof AbortController === "function" ? new AbortController() : null;
-  state.metadataCandidateController = controller;
-  try {
-    const retry = retryFailed ? "&retry=1" : "";
-    const result = await fetchMetadataRequest(
-      `api/metadata/track?track_id=${encodeURIComponent(String(trackId))}${retry}`,
-      10000,
-      controller?.signal,
-    );
-    const response = result.response;
-    const data = unwrapMetadataResponsePayload(result.data);
-    if (!response.ok || data.ok !== true) throw new Error(data.message || "读取候选失败");
-    if (!isCurrentRequest()) return;
-    const candidates = Array.isArray(data.candidates) ? data.candidates.filter(candidate => candidate && candidate.title) : [];
-    const best = globalThis.fnAudioMetadataCandidatePresentationPolicy?.selectDisplayCandidate(data.best, candidates) || {};
-    if (!best.title) {
-      if (data.pending === true || String(data.status || "").toLowerCase() === "pending") {
-        // The promise and the follow-up have to be the same decision: the budget
-        // below stops arming polls, and a dialog left saying it will display the
-        // result automatically can never keep that word.
-        const canPollAgain = state.metadataCandidatePollAttempts < METADATA_CANDIDATE_MAX_POLLS
-          && state.actionTrackId === String(trackId) && dialog.open;
-        if (canPollAgain) {
-          state.metadataCandidatePollAttempts += 1;
-          list.textContent = "正在后台检索元数据，完成后将自动显示...";
-          state.metadataCandidatePollTimer = setTimeout(() => {
-            state.metadataCandidatePollTimer = 0;
-            if (isCurrentRequest()) showTrackMetadataCandidate(trackId, requestToken);
-          }, 1200);
-        } else {
-          renderMetadataCandidateRetry(list, trackId, "后台检索仍未返回可信候选，可稍后重新查询。");
-        }
-      } else {
-        // A finished lookup that produced nothing usable still has to leave the
-        // manual exit.  The two server fields describing it come from different
-        // tables: `status` is the cached match projection while `last_error` is
-        // whatever the job row remembers (the worker exception path rewrites only
-        // the job row), so a genuine "no match" can arrive carrying a leftover
-        // provider error.  Testing that error first used to relabel the answer as
-        // an outage and drop the retry button with it.
-        const terminalStatus = String(data.status || "").toLowerCase();
-        const terminalError = String(data.last_error || "").trim();
-        let terminalCopy = "没有找到可信的元数据候选。";
-        if (terminalStatus === "unavailable") terminalCopy = data.message || "后台元数据服务暂不可用，请稍后重试。";
-        else if (terminalStatus === "no_match") {
-          terminalCopy = terminalError
-            ? `当前数据源没有找到可信匹配（${terminalError}）。`
-            : "当前数据源没有找到可信匹配。";
-        } else if (terminalError) terminalCopy = `数据源暂不可用：${terminalError}`;
-        renderMetadataCandidateRetry(list, trackId, terminalCopy);
-      }
-      return;
-    }
-    const review = data.status === "review";
-    const candidateRows = candidates.map((candidate, index) => {
-      const subtitle = [candidate.artist, candidate.album, metadataCandidateSourceLabel(candidate), globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
-      return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
-    }).join("");
-    const details = [["歌名", best.title], ["歌手", best.artist], ["专辑", best.album], ["发行日期", best.date], ["曲序", best.track_no], ["来源", best.source], ["可信度", globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(best.confidence)]].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
-    list.innerHTML = review
-      ? `<div class="metadata-candidate-list">${candidateRows}</div><button class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`
-      : `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("")}</div><div class="track-action-info">${data.status === "auto" ? "已进入安全补全队列，只会写入空白字段。" : "候选已确认，等待后台写入。"}</div>`;
-    const apply = list.querySelector("[data-apply-track-metadata]");
-    if (apply) apply.onclick = async () => {
-      apply.disabled = true;
-      const applyController = typeof AbortController === "function" ? new AbortController() : null;
-      state.metadataCandidateController = applyController;
-      try {
-        const selected = list.querySelector('input[name="metadataCandidate"]:checked');
-        const candidateIndex = Number(selected?.value);
-        if (!Number.isInteger(candidateIndex) || candidateIndex < 0) throw new Error("请选择一个候选结果");
-        const applied = await apiFetch("api/metadata/track/apply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track_id: trackId, candidate_index: candidateIndex }),
-          ...(applyController ? { signal: applyController.signal } : {}),
-        });
-        const result = await readResponseJsonBounded(applied);
-        if (!applied.ok || result.ok !== true) throw new Error(result.message || "确认失败");
-        if (!isCurrentRequest() || state.metadataCandidateController !== applyController) return;
-        list.textContent = "已确认，后台将只补全空白 Tag 字段。";
-        // The confirmation changes the metadata-backed projection immediately,
-        // while the library scanner remains untouched.  Drop the page LRU and
-        // refresh the visible page now instead of waiting for the 30s status
-        // scheduler; keyed row commits preserve decoded covers and avoid a
-        // full-list flash.
-        clearLibraryResponseCaches();
-        if (state.pageItems?.length && !state.libraryLoading) {
-          await loadLibrary(false);
-        }
-      } catch (error) {
-        if (error?.name === "AbortError") return;
-        if (!isCurrentRequest() || state.metadataCandidateController !== applyController) return;
-        apply.disabled = false;
-        list.textContent = error.message || "确认失败";
-      } finally {
-        if (state.metadataCandidateController === applyController) {
-          state.metadataCandidateController = null;
-        }
-      }
-    };
-  } catch (error) {
-    if (error?.name === "AbortError") return;
-    if (!isCurrentRequest()) return;
-    list.textContent = error.message || "读取候选失败";
-  } finally {
-    if (requestToken === state.metadataCandidateRequestToken
-      && state.metadataCandidateController === controller) {
-      state.metadataCandidateController = null;
-    }
-  }
-}
 function cancelMetadataCandidateLookup() {
   state.metadataCandidateRequestToken += 1;
   try { state.metadataCandidateController?.abort(); } catch (_) {}
   state.metadataCandidateController = null;
-  if (state.metadataCandidatePollTimer) clearTimeout(state.metadataCandidatePollTimer);
-  state.metadataCandidatePollTimer = 0;
-  state.metadataCandidatePollAttempts = 0;
 }
 async function searchTrackMetadataManually() {
   const trackId = String(state.actionTrackId || "");
@@ -9082,9 +9224,13 @@ async function deleteTrackFiles(moveToTrashbin = true) {
   setDeleteTrackBusy(true);
   $("deleteTrackStatus").textContent = moveToTrashbin ? "正在移入回收站..." : "正在彻底删除...";
   try {
-  const locationPool = fnAudioBatchRequestPool(ids, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, resolveTrackLocation);
+    const locationPool = fnAudioBatchRequestPool(ids, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, resolveTrackLocation);
     const locations = [];
-    for (let index = 0; index < ids.length; index += 1) locations.push(await locationPool.get(index));
+    try {
+      for (let index = 0; index < ids.length; index += 1) locations.push(await locationPool.get(index));
+    } finally {
+      locationPool.cancel("deletion locations resolved");
+    }
     const paths = [...new Set(locations.map(location => String(location.path || "")).filter(Boolean))];
     if (!paths.length) throw new Error("无法获取歌曲文件路径");
     const sdk = await getTrimSdk();
@@ -9679,7 +9825,9 @@ if (mobileSearchInput) {
   mobileSearchInput.addEventListener("blur", () => setMobileSearchFocusState(false));
 }
 $("playAllBtn").onclick = playAll;
-$("mobileColumnsBtn").onclick = openColumnsDialog;
+normalizeDialogCloseControls();
+normalizeButtonTypes();
+installDialogFocusManagement();
 $("closeColumnsDialog").onclick = () => $("columnsDialog").close();
 $("cancelDeleteTrack").onclick = closeDeleteTrackDialog;
 $("moveTrackToTrash").onclick = () => deleteTrackFiles(true);
@@ -9696,7 +9844,14 @@ document.addEventListener("pointerdown", event => {
   if (!menu?.hidden && !menu.contains(event.target)) closeTrackContextMenu();
 });
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape") closeTrackContextMenu();
+  if (event.key === "Escape") {
+    closeTrackContextMenu();
+    const sidebar = document.querySelector(".sidebar");
+    if (sidebar?.classList.contains("mobile-open")) {
+      setMobileNavigation(false);
+      $("mobileNavBtn").focus();
+    }
+  }
 });
 window.addEventListener("focus", clearTransientListSelection);
 document.addEventListener("visibilitychange", () => {
@@ -9815,6 +9970,7 @@ $("deviceDialog").addEventListener("close", () => {
   state.deviceRefreshTimer = null;
 });
 $("closeFolderDialog").onclick = () => $("folderDialog").close();
+$("folderDialog").addEventListener("close", () => setSettingsButtonOpen(false));
 bindSettingsTabs();
 bindMetadataSettingsTabs();
 $("dlnaDiagnosticsBtn").onclick = openDlnaDiagnostics;
@@ -9846,6 +10002,7 @@ $("saveLibrarySettingsBtn").onclick = saveLibrarySettings;
 $("libraryScanNowBtn").onclick = () => requestLibraryLoad(1, true);
 $("retryLibraryLoadBtn").onclick = () => requestLibraryLoad(state.page || 1, false);
 $("saveRuntimeSettingsBtn").onclick = saveRuntimePaneSettings;
+$("saveDlnaSettingsBtn").onclick = saveDlnaPaneSettings;
 $("saveMetadataSettingsBtn").onclick = saveMetadataOverviewPaneSettings;
 $("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
 $("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
@@ -9899,7 +10056,6 @@ $("playBtn").onclick = () => {
   if (!audio.src && state.queue.length) loadCurrent(); else if (audio.paused) audio.play(); else audio.pause();
 };
 $("prevBtn").onclick = () => playPreviousTrack();
-$("stopBtn").onclick = stopPlayback;
 $("nextBtn").onclick = () => playNextTrack();
 $("repeatBtn").onclick = toggleRepeat;
 $("shuffleBtn").onclick = toggleShuffle;

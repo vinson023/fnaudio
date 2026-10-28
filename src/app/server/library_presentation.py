@@ -55,8 +55,10 @@ def public_library_item(item, config=None, allow_cover_disk_lookup=True):
     source = item if isinstance(item, Mapping) else {}
     try:
         raw_metadata_artwork_id = source.get("metadata_artwork_id")
+        confirmed_artwork = source.get("metadata_artwork_confirmed") is True
     except Exception:
         raw_metadata_artwork_id = ""
+        confirmed_artwork = False
     result = {}
     try:
         iterator = iter(source.items())
@@ -73,7 +75,7 @@ def public_library_item(item, config=None, allow_cover_disk_lookup=True):
         # legacy rows may still carry item_json or full cached lyrics; keeping
         # those values out of the temporary projection reduces first-page
         # allocations and JSON work on cold WebViews.
-        if isinstance(key, str) and key not in ("path", "item_json", "lyrics", "metadata_artwork_id") and len(key) <= 80:
+        if isinstance(key, str) and key not in ("path", "item_json", "lyrics", "metadata_artwork_id", "metadata_artwork_confirmed") and len(key) <= 80:
             result[key] = value
     result.pop("path", None)
     try:
@@ -91,11 +93,15 @@ def public_library_item(item, config=None, allow_cover_disk_lookup=True):
     ) if item_id else ""
     result["cover_thumbnail_url"] = ("cover-asset/%s?size=160" % asset_id) if asset_id else ""
     # Metadata artwork is stored independently from the media-file cover
-    # cache.  Surface it when a provider resolved a cover for a tag-less file;
-    # never replace an already generated thumbnail with the slower asset path.
+    # cache. Automatic enrichment keeps an existing media thumbnail; an
+    # explicit, persisted choice must also replace an older generated image.
     metadata_artwork_id = raw_metadata_artwork_id
-    if not result["cover_thumbnail_url"]:
-        result["cover_url"] = artwork_url(metadata_artwork_id) or result["cover_url"]
+    metadata_url = artwork_url(metadata_artwork_id)
+    if confirmed_artwork and metadata_url:
+        result["cover_url"] = metadata_url
+        result["cover_thumbnail_url"] = ""
+    elif not result["cover_thumbnail_url"]:
+        result["cover_url"] = metadata_url or result["cover_url"]
     # Lyrics are fetched on demand from `/api/lyrics` for the active song.
     # Sending cached full LRC bodies for every row makes an otherwise compact
     # library page balloon after metadata enrichment, delaying first paint and

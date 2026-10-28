@@ -20,6 +20,10 @@ def clean_tag(value):
 
 def parse_track_number(value):
     """Return the numeric part of common track tags such as ``03/12``."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if 1 <= value <= 999999 else 0
     text = clean_tag(value)
     if not text:
         return 0

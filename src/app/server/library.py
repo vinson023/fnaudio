@@ -131,8 +131,9 @@ SUPPORTED = {
     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav", ".aiff": "audio/aiff",
     ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".ape": "audio/ape", ".dsf": "audio/x-dsf", ".dff": "audio/x-dff", ".cue": "application/x-cue",
 }
-# Re-probe cached DSD transport rates using authoritative DSF/DFF headers.
-METADATA_VERSION = 17
+# Re-probe cached metadata so WAV RIFF/INFO track numbers are loaded for
+# existing files instead of being hidden behind a reusable metadata row.
+METADATA_VERSION = 19
 MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"

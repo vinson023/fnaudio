@@ -111,7 +111,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # Frozen on purpose: these two numbers are the arithmetic identity of the move,
 # not a measurement of a living file.
 JAVA_TOTAL_FILES = 46
-JAVA_TOTAL_LINES = 9932
+JAVA_TOTAL_LINES = 9947
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

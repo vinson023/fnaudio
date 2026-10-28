@@ -155,6 +155,14 @@ class LibraryPresentationTests(unittest.TestCase):
                 window,
                 "library projection at server.py:%d has no metadata enrichment" % (index + 1),
             )
+    def test_confirmed_artwork_replaces_an_old_generated_thumbnail(self):
+        item = {"id": "track-5", "metadata_artwork_id": "a" * 64, "metadata_artwork_confirmed": True}
+        with mock.patch("library_presentation.thumbnail_asset_id_for_item", return_value="b" * 64):
+            result = public_library_item(item)
+        self.assertEqual(result["cover_url"], "metadata/artwork/" + "a" * 64)
+        self.assertEqual(result["cover_thumbnail_url"], "")
+        self.assertNotIn("metadata_artwork_confirmed", result)
+
     def test_provider_artwork_does_not_replace_a_generated_thumbnail(self):
         # The provider cover is the slower asset path, so it only fills the
         # gap left by a missing thumbnail.  R107 rejected "always prefer

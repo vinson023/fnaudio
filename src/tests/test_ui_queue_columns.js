@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const source = fs.readFileSync("app/ui/app.js", "utf8");
+const recordPlaceholderSource = source.match(/function recordPlaceholderMarkup\(\) \{[\s\S]*?\n\}/)?.[0];
+assert.ok(recordPlaceholderSource, "Cover placeholders must have one shared SVG renderer");
 
 function sourceBetween(startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -83,8 +85,8 @@ const trackRenderContext = {
   displayTrackTitle: item => String(item.title || ""),
   escapeHtml: value => String(value || ""),
 };
-vm.runInNewContext(`${sourceBetween("function trackRowSelectionKey", "function renderGroups")}; this.track = { renderTrack };`, trackRenderContext);
-assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
+vm.runInNewContext(`${recordPlaceholderSource}; ${sourceBetween("function trackRowSelectionKey", "function renderGroups")}; this.track = { renderTrack };`, trackRenderContext);
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*><svg class="record-placeholder"[^>]*aria-hidden="true"/);
 assert.doesNotMatch(
   trackRenderContext.track.renderTrack({ id: "two", title: "Two" }),
   /<img\b/,
@@ -99,10 +101,10 @@ assert.doesNotMatch(
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: true }), /◈/);
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two", is_dsd: "true" }), /class="[^"]*dsd/);
 trackRenderContext.coverUrl = () => "https://example.test/cover.jpg";
-assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*>♫/);
+assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*><svg class="record-placeholder"[^>]*aria-hidden="true"/);
 assert.match(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /<img[^>]*style="visibility:hidden"/, "Artwork images must stay hidden until decoding succeeds");
 assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /<img[^>]*\ssrc="/, "Artwork requests must be started by the shared scheduler, not by inline markup");
-assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden[^>]*>♫/, "The fallback glyph must remain visible until image decode succeeds");
+assert.doesNotMatch(trackRenderContext.track.renderTrack({ id: "two", title: "Two" }), /track-cover-fallback[^>]*hidden[^>]*>\s*<svg/, "The fallback icon must remain visible until image decode succeeds");
 assert.match(source, /onload="this\.hidden=false;this\.style\.visibility='visible';[^"]*const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=true"/, "Loaded covers must restore the image and hide the fallback");
 assert.match(source, /onerror="this\.hidden=true;this\.style\.visibility='hidden';const fallback=this\.parentElement\?\.querySelector\('\.track-cover-fallback'\);if\(fallback\)fallback\.hidden=false;const retry=Number\(this\.dataset\.coverRetryCount\|\|0\);/, "Failed covers must retain the fallback and use a bounded eager retry");
 assert.doesNotMatch(source, /this\.src='';this\.src=source/, "Eager cover retry must not create an intermediate empty src");
@@ -130,9 +132,10 @@ assert.equal(coreSnapshotContext.favoriteRefreshes, 1);
 
 const favoriteContext = {
   state: { queue: [{ id: 42 }], index: 0, favorites: ["42"] },
+  lyricsFavoriteLabel: { textContent: "" },
   nodes: {
-    favoriteCurrentBtn: { classList: { toggle: (_name, value) => { favoriteContext.currentActive = value; } }, setAttribute: (name, value) => { favoriteContext.currentAttributes[name] = value; } },
-    lyricsFavoriteBtn: { classList: { toggle: (_name, value) => { favoriteContext.lyricsActive = value; } }, setAttribute: (name, value) => { favoriteContext.lyricsAttributes[name] = value; } },
+    favoriteCurrentBtn: { dataset: {}, classList: { toggle: (_name, value) => { favoriteContext.currentActive = value; } }, setAttribute: (name, value) => { favoriteContext.currentAttributes[name] = value; } },
+    lyricsFavoriteBtn: { dataset: {}, classList: { toggle: (_name, value) => { favoriteContext.lyricsActive = value; } }, setAttribute: (name, value) => { favoriteContext.lyricsAttributes[name] = value; }, querySelector: () => favoriteContext.lyricsFavoriteLabel },
   },
   currentAttributes: {},
   lyricsAttributes: {},
@@ -142,10 +145,18 @@ vm.runInNewContext(`${sourceBetween("function currentItem", "function isPrivateH
 favoriteContext.favorites.updateFavoriteControls();
 assert.equal(favoriteContext.currentActive, true, "Favorite IDs must match across numeric and string transport forms");
 assert.equal(favoriteContext.currentAttributes["aria-pressed"], "true", "Favorite state must be exposed independently from hover styling");
+assert.equal(favoriteContext.currentAttributes["aria-label"], "取消收藏当前歌曲", "The player favorite action must describe its active-state action");
+assert.equal(favoriteContext.nodes.lyricsFavoriteBtn.dataset.favoriteLabel, "已收藏");
+assert.equal(favoriteContext.lyricsAttributes["aria-label"], "取消收藏当前歌曲", "The lyrics favorite action must describe its active-state action");
+assert.equal(favoriteContext.lyricsFavoriteLabel.textContent, "已收藏", "The visible lyrics action label must follow favorite state");
 favoriteContext.state.favorites = [];
 favoriteContext.favorites.updateFavoriteControls();
 assert.equal(favoriteContext.currentActive, false, "Favorite control must clear when server state removes the current track");
 assert.equal(favoriteContext.currentAttributes["aria-pressed"], "false");
+assert.equal(favoriteContext.currentAttributes["aria-label"], "收藏当前歌曲");
+assert.equal(favoriteContext.nodes.lyricsFavoriteBtn.dataset.favoriteLabel, "收藏");
+assert.equal(favoriteContext.lyricsAttributes["aria-label"], "收藏当前歌曲");
+assert.equal(favoriteContext.lyricsFavoriteLabel.textContent, "收藏");
 assert.match(source, /const active = state\.shuffle === true;[\s\S]*?const pressed = String\(active\);[\s\S]*?setAttribute\("aria-pressed", pressed\)/, "Shuffle must render only an explicit boolean true as active");
 
 assert.match(source, /openTrackContextMenu\(trackId, x, y, mobile = false\)/);

@@ -70,6 +70,15 @@ class ConfigTests(unittest.TestCase):
             self.assertIs(persisted["library_connection_pool"], False)
             self.assertIs(load_config(path)["library_connection_pool"], False)
 
+    def test_dlna_type_detection_defaults_on_and_survives_a_save(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            config = load_config(path)
+            self.assertIs(config["dlna_type_detection"], True)
+            config["dlna_type_detection"] = False
+            self.assertTrue(save_config(path, config))
+            self.assertIs(load_config(path)["dlna_type_detection"], False)
+
     def test_renderer_name_defaults_and_survives_a_save(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "config.json")

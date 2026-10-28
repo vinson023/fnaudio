@@ -467,7 +467,8 @@ function activeIndexes(markup) {
   const paged = setup({ view: "playlist:p1" });
   paged.setView("albums");
   assert.ok(paged.calls.includes("requestLibraryLoad(1,false)"), "a paged view asks for page one instead");
-  assert.ok(!paged.calls.includes("invalidateLibraryLoad"), "and keeps its own request path");
+  assert.ok(paged.calls.includes("invalidateLibraryLoad"), "and invalidates the outgoing paged request before switching categories");
+  assert.ok(paged.calls.includes("requestLibraryLoad(1,false)"), "while keeping the incoming paged request path");
   assert.deepEqual([...paged.state.selectedTrackRowKeys], [], "switching views drops a stale row selection");
 
   // ---- F. Falsified: selectedTrackIds follows the live rows -------------------

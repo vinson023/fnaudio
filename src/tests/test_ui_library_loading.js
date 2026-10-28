@@ -24,6 +24,12 @@ const statusRefreshPolicy = fs.readFileSync("app/ui/library_status_refresh_polic
 const responseJsonLoader = fs.readFileSync("app/ui/response_json_loader.js", "utf8");
 const pageCursorPolicy = fs.readFileSync("app/ui/library_page_cursor_policy.js", "utf8");
 
+assert.doesNotMatch(index, /♫/, "Static player and lyrics covers must not use the legacy music glyph");
+assert.match(index, /<svg class="record-placeholder"[^>]*aria-hidden="true"/, "Static covers must use the shared record placeholder SVG");
+assert.match(index, /id="newPlaylistBtn"[^>]*>\s*<svg[^>]*aria-hidden="true"/, "The new-playlist action must use the shared SVG icon treatment");
+assert.doesNotMatch(app, /♫/, "Runtime cover fallbacks must not use the legacy music glyph");
+assert.match(app, /function recordPlaceholderMarkup\(\)/, "Runtime cover fallbacks must use one shared placeholder helper");
+
 const pagePresentationSource = app.match(/function trackPagePresentationSignatures\(items = \[\]\) \{[\s\S]*?\n\}/);
 assert.ok(pagePresentationSource, "Track-page presentation signatures must remain independently testable");
 const pagePresentationContext = {
@@ -110,7 +116,7 @@ assert.match(app, /state\.libraryLoadKey = "";/);
 assert.match(app, /state\.libraryLoadPromise = null;/);
 assert.match(app, /function invalidateLibraryLoad\(\)[\s\S]*?state\.libraryStatusRequestToken \+= 1;[\s\S]*?state\.libraryStatusController = null;[\s\S]*?state\.libraryStatusPromise = null;[\s\S]*?state\.libraryStatusRefreshQueued = false;/, "Switching views must invalidate stale library status polling");
 assert.match(app, /function invalidateLibraryLoad\(\) \{[\s\S]*?state\.libraryRequestSeq \+= 1;[\s\S]*?state\.libraryAbortController\.abort\(\);[\s\S]*?cancelVisibleMetadataPrefetch\(\{ releaseKeys: true \}\);/, "Switching to a non-paged view must invalidate stale paged work and release cancelled metadata keys");
-assert.match(app, /function setView\(view\) \{[\s\S]*?state\.view = nextView;\s*if \(!isPagedLibraryView\(\)\) invalidateLibraryLoad\(\);/, "Non-paged view switches must cancel the previous library request before rendering");
+assert.match(app, /function setView\(view\) \{[\s\S]*?const viewChanged = nextView !== state\.view;[\s\S]*?if \(viewChanged\) invalidateLibraryLoad\(\);[\s\S]*?state\.view = nextView;/, "Every view switch must cancel stale library work before rendering the next view");
 assert.match(app, /function deletePlaylist\(playlistId\) \{[\s\S]*?if \(state\.view === `playlist:\$\{playlistId\}`\) \{\s*setView\("all"\);\s*return;/, "Deleting the active playlist must reload the paged all-tracks view instead of rendering its stale rows");
 assert.match(app, /state\.renderedTrackListHtml = null;/, "Initial row markup cache must have an explicit empty state");
 assert.match(app, /state\.trackRowsMarkupCache = typeof WeakMap === "function" \? new WeakMap\(\) : null;/, "Stable page rows need a bounded identity cache");
@@ -298,21 +304,14 @@ assert.match(app, /head\.dataset\.fnaudioTableHeadBound === "1"/, "Unchanged tab
 assert.match(app, /head\.dataset\.fnaudioTableHeadBound = "1"/, "Changed table headers must mark their handlers as bound");
 assert.match(app, /const signature = JSON\.stringify\(\[mode, template, markup\]\);/, "Header identity must include view mode, column template and markup");
 assert.match(app, /Do not use a NUL separator here/, "Header signatures must remain stable through dataset DOMString normalization");
-assert.match(app, /state\.metadataCandidatePollTimer = 0;/, "Metadata candidate polling must have explicit timer state");
-assert.match(app, /const METADATA_CANDIDATE_MAX_POLLS = 12;/, "Metadata candidate polling must use an explicit bounded budget");
-assert.match(app, /state\.metadataCandidatePollAttempts < METADATA_CANDIDATE_MAX_POLLS/, "Metadata candidate polling must remain bounded");
 assert.match(app, /state\.metadataCandidateRequestToken = 0;/, "Metadata candidate requests must have ownership tokens");
 assert.match(app, /state\.metadataCandidateController = null;/, "Metadata candidate requests need explicit cancellation ownership");
-assert.match(app, /requestToken === state\.metadataCandidateRequestToken/, "Stale candidate responses must not overwrite the active dialog");
-assert.match(app, /data-retry-track-metadata/, "Negative metadata matches must expose an explicit retry action");
-assert.match(app, /retry=1/, "Only a deliberate metadata retry may replace a negative cache entry");
-assert.match(app, /完成后将自动显示/, "Pending metadata candidates should update without requiring the user to reopen the dialog");
-assert.match(app, /clearTimeout\(state\.metadataCandidatePollTimer\)/, "Closing the metadata dialog must cancel its poll");
+assert.match(app, /state\.metadataCandidateRequestToken === requestToken[\s\S]*?state\.metadataCandidateSearchToken === searchToken/, "Stale confirmations must retain both request and search ownership guards");
 assert.match(app, /state\.metadataCandidateController\?\.abort\(\)/, "Closing or replacing the metadata dialog must abort an in-flight lookup");
 assert.match(app, /error\?\.name === "AbortError"/, "Cancelled metadata candidate lookups must not be rendered as failures");
 assert.match(app, /const applyController = typeof AbortController === "function" \? new AbortController\(\) : null;[\s\S]*?state\.metadataCandidateController = applyController;/, "Metadata candidate confirmation must own a cancellable request");
 assert.match(app, /api\/metadata\/track\/apply[\s\S]*?signal: applyController\.signal/, "Metadata candidate confirmation must propagate its cancellation signal");
-assert.match(app, /if \(!isCurrentRequest\(\) \|\| state\.metadataCandidateController !== applyController\) return;[\s\S]*?已确认，后台将只补全空白 Tag 字段/, "A stale metadata confirmation must not overwrite a replaced dialog");
+assert.match(app, /if \(!isCurrentRequest\(\)\) return;[\s\S]*?已确认，后台将只补全空白 Tag 字段/, "A stale metadata confirmation must not overwrite a replaced dialog");
 assert.match(app, /cooldown_seconds/, "Metadata status should expose provider cooldown observability");
 assert.match(app, /冷却\$\{cooldown\}s/, "Provider cooldown should be visible in the metadata status summary");
 assert.match(app, /value\.last_error\.replace\(/, "Metadata status should expose a bounded provider failure reason");
@@ -334,7 +333,8 @@ assert.match(app, /if \(state\.sortKey !== previousKey\) writeStoredPreference\(
 assert.doesNotMatch(app, /sortDirBtn|updateSortDirectionButton/, "Removed toolbar sort-direction projection must not return");
 assert.match(app, /data-track-sort="\$\{sortKey\}"/, "Sort direction must remain projected through dynamic table-header controls");
 assert.match(app, /track-sort-indicator/, "Active sort direction must remain visible in the table header");
-assert.match(app, /state\.sortDir === "asc" \? "&#9650;" : "&#9660;"/, "Sort direction indicator must follow the active direction");
+assert.match(app, /track-sort-indicator[\s\S]*m6 14 6-6 6 6[\s\S]*m6 10 6 6 6-6/, "Sort direction indicator must use the shared SVG direction paths");
+assert.doesNotMatch(app, /&#9650;|&#9660;/, "Sort direction indicator must not regress to Unicode triangles");
 assert.match(app, /function setTextContentIfChanged\(node, value\)/, "Status decoration writes need a shared change guard");
 assert.match(app, /function mergeAuthoritativePageItems\(items = \[\]\)/, "Authoritative pages must preserve session-local enrichment when fields are temporarily absent");
 assert.match(app, /fnAudioLibraryMetadataMergePolicy\?\.merge\(items, state\.pageItems, state\.itemCache\)/, "Page merge should use the isolated metadata policy");
@@ -359,8 +359,9 @@ assert.match(app, /if \(refresh\) \{[\s\S]*?updateLibraryStatusDecorations\(\);[
 assert.ok(app.includes('loading="${index < 8 ? "eager" : "lazy"}"'), "Track covers should use a bounded first-paint loading policy");
 assert.ok(app.includes('decoding="async"'), "Track covers should decode asynchronously");
 assert.match(app, /!this\.dataset\.coverSchedulerOwned&&source&&retry<1/, "scheduler-owned lazy covers must not double-schedule inline retries");
+assert.match(app, /loadGroupArtwork\(\);\s*\n\s*hydrateVisibleTrackCovers\(\);\s*\n\s*\/\/ On the first commit[\s\S]*?requestAnimationFrame\(\(\) => prioritizeVisibleTrackCovers\(\)\)/, "the first list commit must reconcile cover visibility after layout");
 assert.ok(app.includes('src="${escapeHtml(localCover)}"'), "The bounded first cover burst should start loading immediately");
-assert.match(app, /const coverFallback = `<span class="track-cover-fallback">♫<\/span>`;/, "Every cover row must retain its placeholder until image decode");
+assert.match(app, /const coverFallback = `<span class="track-cover-fallback">\$\{recordPlaceholderMarkup\(\)\}<\/span>`;/, "Every cover row must retain the shared placeholder until image decode");
 assert.match(app, /async function fetchLibraryResponse\(url, message, refresh = false, signal = undefined\)/);
 assert.match(app, /state\.libraryResponseCache = fnAudioLruCache\(48, \{ maxWeight: 6000, weightOf: libraryResponseWeight \}\);/);
 assert.match(app, /state\.libraryResponseInflight = new Map\(\);/, "Library loads must track in-flight requests");
@@ -393,7 +394,7 @@ assert.match(app, /cancelLyricsRequest\(\);\s*state\.lyricsPollAttempts = 0;/, "
 assert.match(app, /if \(error\?\.name === "AbortError"\) return;/, "Cancelled lyric requests must not be shown as provider failures");
 assert.match(app, /fetchMetadataRequest\(`api\/lyrics\?track_id=\$\{encodeURIComponent\(trackId\)\}[\s\S]*?lyricsController\?\.signal\)/, "Priority lyrics requests must share the current-track cancellation signal");
 assert.match(app, /fetchMetadataRequest\(`api\/metadata\/track\?track_id=\$\{encodeURIComponent\(trackId\)\}[\s\S]*?controller\?\.signal\)/, "Priority metadata requests must share the current-track cancellation signal");
-assert.match(app, /async function showTrackMetadataCandidate\([\s\S]*?fetchMetadataRequest\([\s\S]*?api\/metadata\/track\?track_id=\$\{encodeURIComponent\(String\(trackId\)\)\}[\s\S]*?controller\?\.signal/, "Metadata candidate dialog requests must use the bounded cancellable loader");
+assert.match(app, /async function searchTrackMetadataManually\([\s\S]*?fetchJsonResponseBounded\("api\/metadata\/track\/search",[\s\S]*?signal: controller\.signal[\s\S]*?25000\)/, "The current candidate search must use a bounded cancellable loader");
 assert.match(app, /externalSignal\.addEventListener\("abort", abortFromOwner/, "Visible metadata cancellation must propagate to in-flight requests");
 assert.match(app, /controller\?\.signal,\s*\n\s*\);/, "Visible metadata requests must share the page-owned cancellation signal");
 assert.match(app, /error\.name = "AbortError"/, "Metadata timeout must use cancellation semantics so it remains retryable");
@@ -412,17 +413,22 @@ assert.match(app, /function mediaUrl\(path\)[\s\S]*?path\.length <= 4096[\s\S]*?
 assert.match(app, /data-add-to-list="\$\{escapeHtml\(list\.id\)\}"/, "Playlist identifiers must be escaped before entering HTML attributes");
 const coverPaintSource = app.match(/function setCoverArtwork\(node, source\) \{[\s\S]*?\n\}\nfunction setNowPlayingCover\(source\) \{[\s\S]*?\n\}/);
 assert.ok(coverPaintSource, "The now-playing and lyric cover repaint path must stay independently testable");
+const recordPlaceholderSource = app.match(/function recordPlaceholderMarkup\(\) \{[\s\S]*?\n\}/)?.[0];
+assert.ok(recordPlaceholderSource, "Cover clearing and image failures must share the SVG fallback");
 assert.doesNotMatch(app, /\$\("(?:nowCover|lyricsCover)"\)\.(?:innerHTML|textContent)/, "Cover blocks must be painted only through the shared helper so a poll cannot destroy a decoded image");
 assert.equal((app.match(/node\.innerHTML = next/g) || []).length, 1, "Only the shared cover helper may write cover markup");
 const coverPaintNodes = {};
 function createCoverPaintNode() {
   let html = "\u266b";
   let writes = 0;
+  const classes = new Set();
   return {
     dataset: {},
+    classList: { toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); } },
     get innerHTML() { return html; },
     set innerHTML(value) { html = value; writes += 1; },
     get coverWrites() { return writes; },
+    hasClass(name) { return classes.has(name); },
   };
 }
 ["nowCover", "lyricsCover"].forEach(id => { coverPaintNodes[id] = createCoverPaintNode(); });
@@ -431,10 +437,11 @@ const coverPaintContext = {
   $: id => coverPaintNodes[id],
   escapeHtml: value => String(value || "").replace(/[&<>"']/g, x => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[x])),
 };
-vm.runInNewContext(`${coverPaintSource[0]}; globalThis.paintNow = setNowPlayingCover; globalThis.paintNode = (id, value) => setCoverArtwork(coverPaintNodes[id], value);`, coverPaintContext);
+vm.runInNewContext(`${recordPlaceholderSource}; ${coverPaintSource[0]}; globalThis.paintNow = setNowPlayingCover; globalThis.paintNode = (id, value) => setCoverArtwork(coverPaintNodes[id], value);`, coverPaintContext);
 assert.equal(coverPaintNodes.nowCover.coverWrites, 0, "Nothing may repaint the cover before an address arrives");
 assert.equal(coverPaintContext.paintNow("api/cover/a.jpg"), true, "The first cover address must paint");
 assert.equal(coverPaintNodes.nowCover.coverWrites, 1);
+assert.equal(coverPaintNodes.nowCover.hasClass("has-artwork"), true, "An artwork URL must mark the cover as loaded or loading");
 assert.match(coverPaintNodes.nowCover.innerHTML, /^<img src="api\/cover\/a\.jpg"/, "The painted markup must carry the cover address");
 assert.equal(coverPaintContext.paintNow("api/cover/a.jpg"), false, "A repeated address must be a no-op");
 assert.equal(coverPaintNodes.nowCover.coverWrites, 1, "The 1.5s renderer poll must not re-decode the same cover");
@@ -443,12 +450,13 @@ assert.equal(coverPaintNodes.nowCover.coverWrites, 2);
 assert.equal(coverPaintContext.paintNow("<img>"), true);
 assert.match(coverPaintNodes.nowCover.innerHTML, /^<img src="&lt;img&gt;"/, "Cover addresses must pass through the HTML escaper");
 assert.equal(coverPaintContext.paintNow(null), true, "A non-string address must clear the cover once");
-assert.equal(coverPaintNodes.nowCover.innerHTML, "\u266b", "An absent cover must show the fallback glyph");
+assert.equal(coverPaintNodes.nowCover.innerHTML, coverPaintContext.recordPlaceholderMarkup(), "An absent cover must show the shared record SVG");
+assert.equal(coverPaintNodes.nowCover.hasClass("has-artwork"), false, "Clearing artwork must restore fallback presentation state");
 assert.equal(coverPaintContext.paintNow(""), false, "A cleared cover must stay cleared");
 assert.equal(coverPaintNodes.nowCover.coverWrites, 4, "Only real address changes may touch the DOM");
 assert.equal(coverPaintNodes.lyricsCover.coverWrites, 0);
 assert.equal(coverPaintContext.paintNode("lyricsCover", "api/cover/c.jpg"), true, "The lyric cover must share the dedupe helper");
-assert.match(coverPaintNodes.lyricsCover.innerHTML, /onerror="this\.parentNode\.innerHTML='\u266b'"/, "A failed cover must fall back to the glyph instead of leaving an empty box");
+assert.match(coverPaintNodes.lyricsCover.innerHTML, /onerror="this\.parentNode\.classList\.remove\('has-artwork'\);this\.parentNode\.innerHTML=recordPlaceholderMarkup\(\)"/, "A failed cover must clear artwork state and fall back to the shared record SVG");
 assert.equal(coverPaintContext.paintNode("lyricsCover", "api/cover/c.jpg"), false, "The 900ms lyric retry poll must not re-decode the same cover");
 assert.equal(coverPaintNodes.lyricsCover.coverWrites, 1);
 assert.equal(coverPaintContext.paintNode("missingCover", "api/cover/d.jpg"), false, "A missing cover node must be ignored");
@@ -480,8 +488,8 @@ assert.match(app, /fnAudioLibraryPageCursorPolicy\?\.remember\(/, "Track continu
 assert.match(app, /fnAudioLibraryPageCursorPolicy\?\.get\(/, "Track continuation reads must use the isolated cursor policy");
 assert.match(pageCursorPolicy, /MAX_ENTRIES = 64/);
 assert.match(pageCursorPolicy, /MAX_TOKEN_CHARS = 768/);
-assert.match(app, /async function fetchAllTracksForCurrentView\(extra = \{\}\) \{[\s\S]*?const canReuseCurrentPage = state\.page === 1[\s\S]*?state\.view !== "random100"[\s\S]*?state\.libraryPageKey === libraryLoadRequestKey\(1\)[\s\S]*?state\.pageItems\.length <= pageSize[\s\S]*?const firstPage = canReuseCurrentPage[\s\S]*?\? \{ items: state\.pageItems, count: state\.pageTotal \}[\s\S]*?: await fetchPage\(0\)/, "Play-all should reuse a settled first page only when it exactly matches the current unfiltered track view");
-assert.match(app, /async function fetchAllTracksForCurrentView\(extra = \{\}\) \{[\s\S]*?const baseQueryParams = currentQueryParams\(\);[\s\S]*?const params = new URLSearchParams\(baseQueryParams\.toString\(\)\);/, "Play-all batch requests must keep one frozen query identity across delayed workers");
+assert.match(app, /async function fetchAllTracksForCurrentView\(extra = \{\}, querySnapshot = null\) \{[\s\S]*?const canReuseCurrentPage = !querySnapshot && state\.page === 1[\s\S]*?state\.view !== "random100"[\s\S]*?state\.libraryPageKey === libraryLoadRequestKey\(1\)[\s\S]*?state\.pageItems\.length <= pageSize[\s\S]*?const firstPage = canReuseCurrentPage[\s\S]*?\? \{ items: state\.pageItems, count: state\.pageTotal \}[\s\S]*?: await fetchPage\(0\)/, "Play-all should reuse a settled first page only when it exactly matches the current unfiltered track view");
+assert.match(app, /async function fetchAllTracksForCurrentView\(extra = \{\}, querySnapshot = null\) \{[\s\S]*?const baseQueryParams = querySnapshot \? new URLSearchParams\(querySnapshot\.params\) : currentQueryParams\(\);[\s\S]*?const params = new URLSearchParams\(baseQueryParams\.toString\(\)\);/, "Play-all batch requests must keep one frozen query identity across delayed workers");
 assert.match(app, /async function fetchMetadataProjectionStatus\(externalSignal = undefined\)[\s\S]*?fnAudioResponseJsonLoader\.read\([\s\S]*?const data = unwrapMetadataResponsePayload\(result\.data\);[\s\S]*?return data\?\.ok === true \? data : null;/, "首屏 metadata 状态探测必须接受宿主包装响应并严格判断成功字段");
 assert.match(app, /fetch\("api\/metadata\/status", \{[\s\S]*cache: "no-store"/, "Library status refresh must observe committed metadata changes");
 assert.match(app, /if \(metadataChanged && state\.pageItems\?\.length && !state\.libraryLoading\)/, "Metadata refresh must be bounded to visible loaded pages");
@@ -503,8 +511,7 @@ assert.match(app, /fnAudioLibraryPageSnapshotPolicy\?\.restore\(raw, \{[\s\S]*?b
 assert.match(app, /index < 8/, "The first visible cover burst must remain bounded");
 assert.match(app, /fetchpriority=\"\$\{index < 8 \? \"high\" : \"low\"\}\"/, "Track covers should use a bounded high/low browser fetch priority");
 assert.match(app, /fetchpriority=\"\$\{index < 8 \? \"high\" : \"low\"\}\"/, "Non-visible covers should yield fetch priority to the first-paint burst");
-assert.match(app, /The confirmation changes the metadata-backed projection immediately/, "Manual metadata confirmation must explain immediate projection refresh");
-assert.match(app, /clearLibraryResponseCaches\(\);\s*if \(state\.pageItems\?\.length && !state\.libraryLoading\)\s*\{\s*await loadLibrary\(false\);/, "Confirmed metadata must refresh the visible cached page immediately");
+assert.match(app, /function renderMetadataCandidateChoices\([\s\S]*?clearLibraryResponseCaches\(\);\s*if \(state\.pageItems\?\.length && !state\.libraryLoading\) await loadLibrary\(false\);/, "Current candidate confirmation must refresh the visible cached page immediately");
 assert.match(app, /function clearLibraryResponseCaches\(\)/, "Library response cache invalidation must clear in-flight requests");
 assert.match(app, /for \(const request of state\.libraryResponseInflight\.values\(\)\)[\s\S]*?request\?\.__fnAudioAbort\?\.\(\);[\s\S]*?state\.libraryResponseInflight\.clear\(\);/, "Library response invalidation must cancel stale requests before clearing the in-flight map");
 assert.match(app, /state\.albumMetadata\.clear\?\.\(\);/, "Library invalidation must clear derived album metadata");
@@ -524,7 +531,7 @@ assert.match(app, /return fetchLibraryResponse\(`api\/library\?\$\{params\.toStr
 assert.match(app, /fnAudioLibraryPagePlan\.pageOffsetBatches\(total, pageSize, firstItems\.length, 200000, 32\)/);
 assert.match(app, /const pool = fnAudioBatchRequestPool\(offsets, fnAudioBatchRequestPool\.DEFAULT_CONCURRENCY, fetchPage\);/);
 assert.match(app, /fnAudioLibraryPageMerge\.appendPageItems\(merged, pageItems, total\)/);
-assert.match(app, /pool\.cancel\("library result complete"\)/, "Full-list loading must cancel queued tail batches after completion");
+assert.match(app, /finally \{[\s\S]*?pool\.cancel\("library batch finished"\)/, "Full-list loading must cancel queued tail batches on success and failure");
 assert.ok(!app.includes("pages.push(pageItems)"), "full-list loading must not retain every fetched page");
 assert.match(app, /cacheLibraryItems\(pageItems, false\)/);
 assert.match(app, /cacheLibraryItems\(items, false\)/);
@@ -543,7 +550,7 @@ assert.match(app, /state\.itemHydrationPool = pool;/);
 assert.match(app, /state\.itemHydrationGeneration !== generation \|\| state\.itemHydrationPool !== pool/);
 assert.match(app, /const pool = fnAudioBatchRequestPool\(groups, fnAudioBatchRequestPool\.DEFAULT_CONCURRENCY,/);
 assert.match(app, /const locationPool = fnAudioBatchRequestPool\(ids, fnAudioBatchRequestPool\.DEFAULT_CONCURRENCY, resolveTrackLocation\);/);
-assert.match(app, /for \(let index = 0; index < batches\.length; index \+= 1\) \{\s*\/\/ A large favorite\/playlist[\s\S]*?cacheLibraryItems\(await pool\.get\(index\), false\);\s*\}\s*state\.itemCache\.trim\(new Set/, "ID hydration must defer cache eviction until all batches are written");
+assert.match(app, /for \(let index = 0; index < batches\.length; index \+= 1\) \{\s*\/\/ A large favorite\/playlist[\s\S]*?cacheLibraryItems\(await pool\.get\(index\), false\);\s*\}\s*\} finally \{[\s\S]*?pool\.cancel\("item resolution finished"\);\s*\}\s*state\.itemCache\.trim\(new Set/, "ID hydration must defer cache eviction until all batches are written and cancel queued work on exit");
 assert.match(app, /fnAudioDeviceTargetPresentation\.stableTargets\(targets, displayText\)/);
 assert.match(app, /return targets\.some\(target => String\(target\.id \|\| ""\) === targetId\) \? targetId : "local"/);
 assert.match(app, /fetchJson: \(requestUrl, requestMessage, requestSignal\) => fetchJsonChecked\(/, "Library loader must preserve checked API responses");
@@ -2008,6 +2015,37 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       "the press arms the hold first, then aborts the stale row lane and cover queue, and only then runs the control handler");
     assert.ok(body.indexOf('if (event.button || event.isPrimary === false) return false;') < armAt,
       "and only for a real primary press: a right button or a secondary pointer arms nothing");
+  }
+  {
+    const setViewSource = app.match(/^function setView\(view\) \{[\s\S]*?^\}/m);
+    assert.ok(setViewSource, "view switching must stay directly testable");
+    const state = {
+      view: "all", libraryRequestSeq: 4, searchTimer: null, selectedTrackRowKeys: new Set(),
+      selectedGroupKeys: new Set(), folderRoot: "", folderPath: "", folderPage: 1,
+      groupName: "", page: 3, pageItems: [], librarySnapshotEmptyGuardUsed: false,
+    };
+    const invalidations = [];
+    const oldRequestSeq = state.libraryRequestSeq;
+    const context = {
+      state,
+      resetLibraryScrollPosition() {},
+      invalidateLibraryLoad() { state.libraryRequestSeq += 1; invalidations.push(state.libraryRequestSeq); },
+      prefetchFolderNavigationEntry() {},
+      currentQueryText: () => "",
+      clearTimeout() {},
+      isPagedLibraryView: () => true,
+      resetCreatorState() {},
+      updateNavigationActiveState() {},
+      requestLibraryLoad() { return Promise.resolve(); },
+      render() {},
+      requestAnimationFrame(fn) { fn(); },
+    };
+    vm.runInNewContext(setViewSource[0], context);
+    context.setView("albums");
+    assert.deepEqual(invalidations, [oldRequestSeq + 1],
+      "switching between paged categories must invalidate the outgoing request before loading the new one");
+    assert.equal(oldRequestSeq === state.libraryRequestSeq, false,
+      "an old response must fail the generation check after a category switch");
   }
   console.log("Library loading cancellation regression checks passed.");
 })().catch(error => {

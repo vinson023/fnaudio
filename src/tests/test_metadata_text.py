@@ -11,6 +11,7 @@ class MetadataTextTests(unittest.TestCase):
     def test_tag_and_track_number_normalization(self):
         self.assertEqual(clean_tag("  A\x00  B\n"), "A B")
         self.assertEqual(parse_track_number("03/12"), 3)
+        self.assertEqual(parse_track_number(13), 13)
         self.assertEqual(parse_track_number("side A"), 0)
 
     def test_clean_tag_rejects_objects_and_bounds_text(self):

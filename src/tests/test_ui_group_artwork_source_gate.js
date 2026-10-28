@@ -282,9 +282,13 @@ assert.ok(/hasAttribute\?\.\("src"\)/.test(guardBody) && /coverLoadedSrc/.test(g
 // --- 13. source-level wiring: render() binds the fallback handlers before the
 //         shared scheduler assigns any source, and group covers stay deferred ---
 const renderStart = source.indexOf("function render(");
-const renderLane = source.slice(renderStart, renderStart + 4000);
-assert.match(renderLane, /loadGroupArtwork\(\);\s*\n\s*hydrateVisibleTrackCovers\(\);/,
-  "render() must attach the group fallback handlers immediately before the shared scheduler");
+const renderEnd = source.indexOf("\nfunction ", renderStart + 1);
+assert.ok(renderStart >= 0 && renderEnd > renderStart, "render() must have a bounded top-level function body");
+const renderLane = source.slice(renderStart, renderEnd);
+const groupFallbackIndex = renderLane.indexOf("loadGroupArtwork();");
+const sharedSchedulerIndex = renderLane.indexOf("hydrateVisibleTrackCovers();", groupFallbackIndex);
+assert.ok(groupFallbackIndex >= 0 && sharedSchedulerIndex > groupFallbackIndex,
+  "render() must attach the group fallback handlers before the shared scheduler");
 const groupIconStart = source.indexOf("function groupIcon(");
 const groupIconLane = source.slice(groupIconStart, source.indexOf("function applyGroupArtwork(", groupIconStart));
 assert.ok(/<img style="visibility:hidden" data-cover-src="\$\{escapeHtml\(image\)\}" alt="">/.test(groupIconLane),

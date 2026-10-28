@@ -6,6 +6,69 @@ from id3_parser import decode_id3v1_field, id3_tag_is_readable, parse_id3_cover,
 
 
 MAX_ID3_PAYLOAD_BYTES = 16 * 1024 * 1024
+MAX_RIFF_INFO_BYTES = 4 * 1024 * 1024
+
+
+def _read_riff_info(path):
+    """Read common RIFF/WAVE LIST-INFO tags, including ITRK."""
+    fields = {
+        b"INAM": "title",
+        b"IART": "artist",
+        b"IPRD": "album",
+        b"ICMT": "composer",
+        b"IGNR": "genre",
+        b"ICRD": "date",
+        b"ITRK": "track_no",
+    }
+    tags = {}
+    try:
+        from metadata_text import clean_tag, parse_track_number
+        with open(path, "rb") as fh:
+            header = fh.read(12)
+            if len(header) != 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                return {}
+            limit = min(os.path.getsize(path), 8 + int.from_bytes(header[4:8], "little"))
+            offset = 12
+            while offset + 8 <= limit:
+                fh.seek(offset)
+                chunk_id = fh.read(4)
+                raw_size = fh.read(4)
+                if len(raw_size) != 4:
+                    break
+                chunk_size = int.from_bytes(raw_size, "little")
+                payload = offset + 8
+                if payload + chunk_size > limit:
+                    break
+                if chunk_id == b"LIST" and chunk_size >= 4 and chunk_size <= MAX_RIFF_INFO_BYTES:
+                    fh.seek(payload)
+                    if fh.read(4) == b"INFO":
+                        end = payload + chunk_size
+                        pos = payload + 4
+                        while pos + 8 <= end:
+                            fh.seek(pos)
+                            sub_id = fh.read(4)
+                            sub_size_raw = fh.read(4)
+                            if len(sub_size_raw) != 4:
+                                break
+                            sub_size = int.from_bytes(sub_size_raw, "little")
+                            sub_payload = pos + 8
+                            if sub_payload + sub_size > end:
+                                break
+                            field = fields.get(sub_id)
+                            if field and sub_size <= MAX_ID3_PAYLOAD_BYTES:
+                                fh.seek(sub_payload)
+                                text = fh.read(sub_size).rstrip(b"\x00").decode("utf-8", "ignore")
+                                value = parse_track_number(text) if field == "track_no" else clean_tag(text)
+                                if value:
+                                    result = fields.get(sub_id)
+                                    if result:
+                                        # Preserve the first value from a valid INFO list.
+                                        tags.setdefault(result, value)
+                            pos = sub_payload + sub_size + (sub_size & 1)
+                offset = payload + chunk_size + (chunk_size & 1)
+    except (OSError, ValueError, OverflowError):
+        return {}
+    return tags
 
 
 def read_id3_header_at(fh, offset):
@@ -96,11 +159,14 @@ def read_id3v1(path):
 
 def read_id3(path):
     header, data = id3_tag(path)
+    riff_tags = _read_riff_info(path) if os.path.splitext(path)[1].lower() == ".wav" else {}
     if not data or not id3_tag_is_readable(header):
         # No usable v2 block.  An ID3v1 record at the end of the file can
         # still describe the track, and it is the only thing left to read.
-        return read_id3v1(path)
-    return parse_id3_tags(data, header[3], header[5])
+        result = read_id3v1(path)
+        result = {**riff_tags, **result}
+        return result
+    return {**riff_tags, **parse_id3_tags(data, header[3], header[5])}
 
 
 def read_id3_cover(path):

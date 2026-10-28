@@ -20,7 +20,8 @@ assert.equal(table.safeWidth("artist", "bad", 120), 120);
 const tracks = table.tableHeadPresentation({ columns: ["title", "artist"], widths: { title: 360 }, definitions, currentSort: "title", sortDir: "desc", sortableSortKeys: ["title"] });
 assert.match(tracks.markup, /data-track-sort="title"/);
 assert.doesNotMatch(tracks.markup, /data-track-sort="artist"/);
-assert.match(tracks.markup, /&#9660;/);
+assert.match(tracks.markup, /class="track-sort-indicator" aria-hidden="true"><svg[^>]*aria-hidden="true"[^>]*><path d="m6 10 6 6 6-6"\/><\/svg><\/span>/);
+assert.doesNotMatch(tracks.markup, /&#9650;|&#9660;/);
 assert.match(tracks.markup, /data-open-columns/);
 assert.equal(tracks.template, "360px 140px minmax(0,1fr)");
 

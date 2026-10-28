@@ -133,6 +133,7 @@ class TakeoverForensicsTests(unittest.TestCase):
             "android-client/build/output.apk",
             "android-client/local.properties",
             "android-client/.gradle/caches.lock",
+            "android-client/.gradle-tmp/daemon/daemon.log",
         ):
             write_file(self.root, junk, "junk" + NL)
         self.assertEqual(self.report()["unlisted"], [])

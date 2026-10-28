@@ -22,6 +22,7 @@ MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024
 # handles it already parked (library.apply_library_connection_pool_config).
 DEFAULT_LIBRARY_CONNECTION_POOL = True
 DEFAULT_RENDERER_NAME = "fnAudio Renderer"
+DEFAULT_DLNA_TYPE_DETECTION = True
 MAX_RENDERER_NAME_CHARS = 128
 
 
@@ -32,6 +33,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "library_connection_pool": DEFAULT_LIBRARY_CONNECTION_POOL,
         "server_name": "fnAudio",
         "renderer_name": DEFAULT_RENDERER_NAME,
+        "dlna_type_detection": DEFAULT_DLNA_TYPE_DETECTION,
         "server_port": DEFAULT_PORT,
         "mpd_port": DEFAULT_MPD_PORT,
         "mpd_output_alsa_id": "",
@@ -99,6 +101,7 @@ def load_config(path: str) -> Dict[str, Any]:
     config["library_connection_pool"] = _strict_bool(
         config.get("library_connection_pool"), DEFAULT_LIBRARY_CONNECTION_POOL
     )
+    config["dlna_type_detection"] = _strict_bool(config.get("dlna_type_detection"), DEFAULT_DLNA_TYPE_DETECTION)
     config["mpd_dop"] = _strict_bool(config.get("mpd_dop"), False)
     config["metadata_enabled"] = _strict_bool(config.get("metadata_enabled"), False)
     config["metadata_fingerprint_enabled"] = _strict_bool(config.get("metadata_fingerprint_enabled"), False)
@@ -164,6 +167,7 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         ),
         "server_name": _bounded_text(config.get("server_name"), 128) or "fnAudio",
         "renderer_name": normalize_renderer_name(config.get("renderer_name")),
+        "dlna_type_detection": _strict_bool(config.get("dlna_type_detection"), DEFAULT_DLNA_TYPE_DETECTION),
         "server_port": _bounded_int(config.get("server_port"), DEFAULT_PORT, 1024, 65535),
         "mpd_port": _bounded_int(config.get("mpd_port"), DEFAULT_MPD_PORT, 1024, 65535),
         "mpd_output_alsa_id": _bounded_text(config.get("mpd_output_alsa_id"), 512),

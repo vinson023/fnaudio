@@ -3,6 +3,7 @@ const fs = require("node:fs");
 
 const index = fs.readFileSync("app/ui/index.html", "utf8");
 const css = fs.readFileSync("app/ui/app.css", "utf8");
+const themeCss = fs.readFileSync("app/ui/fnos-theme.css", "utf8");
 const app = fs.readFileSync("app/ui/app.js", "utf8");
 
 const sidebarStart = index.indexOf('<aside class="sidebar">');
@@ -52,8 +53,9 @@ assert.match(css, /\.lyrics-panel\{gap:6px!important;padding:8px 14px 10px!impor
 assert.doesNotMatch(css, /grid-template-rows:calc\(56px \+ env\(safe-area-inset-top,0px\)\)/);
 assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?padding:8px 10px 14px!important;/);
 assert.match(css, /\.mobile-library-search\{[\s\S]*?flex:0 0 42px!important;[\s\S]*?margin:8px 10px 6px!important;[\s\S]*?border-radius:10px!important;/);
-assert.match(css, /\.mobile-library-search:focus-within\{[\s\S]*?box-shadow:0 0 0 3px #12b8a816!important/);
+assert.match(css, /\.mobile-library-search:focus-within\{[\s\S]*?box-shadow:0 0 0 3px var\(--ui-selected\)!important/);
 assert.doesNotMatch(css, /\.mobile-menu-back\{/);
+assert.doesNotMatch(css, /\.mobile-library-tabs\b/, "retired mobile library tabs must not remain in the base stylesheet");
 assert.match(css, /\.pager-inner\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-nav\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-page-summary\{flex:0 0 auto!important;/);
@@ -65,8 +67,23 @@ assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none
 assert.doesNotMatch(css, /body\.mobile-search-active \.content\{height:calc\(100dvh - 60px\)!important/);
 assert.match(css, /body\.mobile-search-active \.now-playing \.is-overflowing\{animation-play-state:paused!important;/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
+assert.match(css, /\.player\{grid-template-columns:1fr!important;grid-template-rows:44px 24px 52px!important;height:144px!important/);
+assert.match(css, /\.player-actions\{display:none!important\}/, "the base mobile stylesheet must not restore the footer action row");
+const finalMobileContract = css.slice(css.lastIndexOf("@media(max-width:760px){"));
+assert.match(finalMobileContract, /\.player-actions\{display:none!important\}/, "the last mobile cascade must hide the footer action row");
+assert.match(finalMobileContract, /\.transport\{[^}]*width:100%!important;[^}]*min-width:0!important;[^}]*margin:0 auto!important;[^}]*justify-content:center!important;[^}]*padding:0!important\}/, "the mobile transport group must be centered against the full footer width");
+assert.match(finalMobileContract, /\.progress\{[^}]*box-sizing:border-box!important;[^}]*width:100%!important;[^}]*max-width:100%!important;[^}]*min-width:0!important;[^}]*overflow:hidden!important;/, "the mobile seek container must stay inside the viewport");
+assert.ok(finalMobileContract.includes('.progress input{box-sizing:border-box!important;display:block!important;width:100%!important;max-width:100%!important;min-width:0!important}'), "the mobile seek input must not widen its grid track");
+assert.match(finalMobileContract, /\.topbar\{height:112px!important;display:grid!important;grid-template-columns:1fr!important;grid-template-rows:56px 56px!important;/, "the mobile top bar must reserve separate title and control rows");
+assert.match(finalMobileContract, /\.top-actions\{[^}]*display:grid!important;grid-template-columns:repeat\(4,38px\)!important;justify-content:center!important;[^}]*gap:8px!important;/, "the mobile top controls must form a fixed centered cluster");
+assert.match(finalMobileContract, /\.transport\{[^}]*justify-self:center!important;[^}]*place-content:center!important;/, "the mobile transport group must not inherit a grid-side offset");
 assert.match(css, /#favoriteCurrentBtn:not\(\.active-control\):hover/);
 assert.match(css, /#shuffleBtn:not\(\.active-control\):hover/);
 assert.match(css, /@media \(hover:none\)/, "Touch devices must not retain a false active-looking hover state");
+
+const finalThemeMobileContract = themeCss.slice(themeCss.lastIndexOf("@media (max-width: 760px)"));
+assert.match(finalThemeMobileContract, /\.top-actions\s*\{[\s\S]*?width:\s*max-content\s*!important;[\s\S]*?margin-inline:\s*auto\s*!important;[\s\S]*?justify-content:\s*center\s*!important;/, "the loaded FNOS theme must keep top controls as a compact centered group");
+assert.match(finalThemeMobileContract, /\.transport\s*\{[\s\S]*?width:\s*max-content\s*!important;[\s\S]*?margin-inline:\s*auto\s*!important;[\s\S]*?justify-self:\s*center\s*!important;/, "the loaded FNOS theme must keep transport controls centered");
+assert.match(finalThemeMobileContract, /\.progress input,[\s\S]*?#seek\s*\{[\s\S]*?flex:\s*1 1 0\s*!important;[\s\S]*?width:\s*auto\s*!important;[\s\S]*?min-width:\s*0\s*!important;/, "the loaded FNOS theme must let the seek range absorb remaining width without overflow");
 
 console.log("Mobile layout regression checks passed.");

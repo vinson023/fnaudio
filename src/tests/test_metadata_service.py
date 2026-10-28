@@ -2645,7 +2645,8 @@ class MetadataServiceTests(unittest.TestCase):
             service.enrich_track_page({"items": [dict(item) for item in items]})
             cached = next(iter(service._track_page_cache.values()))[1]
             row = cached[items[0]["id"]]
-            self.assertEqual(sorted(row), ["artwork_id", "projected"])
+            self.assertEqual(sorted(row), ["artwork_id", "confirmed_artwork", "projected"])
+            self.assertIs(row["confirmed_artwork"], False)
             self.assertNotIn("fields_json", row)
             self.assertEqual(row["artwork_id"], "ab" * 32)
             self.assertEqual(row["projected"]["album"], "Matched Album")

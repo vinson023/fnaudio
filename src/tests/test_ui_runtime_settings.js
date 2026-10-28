@@ -34,6 +34,8 @@ assert.doesNotMatch(index.match(/data-settings-pane="metadata"[^>]*>([\s\S]*?)<\
 assert.match(paneMatch[1], /<select id="lyricsCacheBudgetInput">/, "the budget select belongs to the runtime pane");
 const dlnaPaneMatch = index.match(/<section\b[^>]*class="settings-pane"[^>]*data-settings-pane="dlna"[^>]*>([\s\S]*?)<\/section>/);
 assert.ok(dlnaPaneMatch, "the DLNA settings pane must exist");
+assert.match(dlnaPaneMatch[1], /<input id="dlnaTypeDetectionInput" type="checkbox"/, "the DLNA pane must expose the type detection switch");
+assert.match(dlnaPaneMatch[1], /id="saveDlnaSettingsBtn"/, "the DLNA pane must own its save control");
 const playbackPaneMatch = index.match(/<section\b[^>]*class="settings-pane"[^>]*data-settings-pane="playback"[^>]*>([\s\S]*?)<\/section>/);
 assert.ok(playbackPaneMatch, "the playback and devices settings pane must exist");
 assert.match(playbackPaneMatch[1], /<input id="rendererNameInput" type="text" maxlength="128"/, "the renderer name editor belongs to playback and devices and is bounded");
@@ -50,6 +52,8 @@ assert.doesNotMatch(index.match(/data-settings-pane="metadata"[^>]*>([\s\S]*?)<\
 assert.match(paneMatch[1], /修改端口后，请停止并重新启动 fnAudio/, "the port restart notice must survive in the same pane");
 assert.match(paneMatch[1], /修改后点击“保存高级设置”生效/, "advanced settings must explain their page-local save action");
 assert.doesNotMatch(paneMatch[1], /这个开关即时生效/, "advanced controls must not claim immediate effect when they use a save button");
+assert.match(paneMatch[1], /浅色与深色由 fnAudio 单独显示；跟随系统时按浏览器或设备的浅深色偏好切换。/, "theme help text must describe the actual local and system-preference behavior");
+assert.doesNotMatch(paneMatch[1], /FNOS 官方配色|与 fnOS 系统主题保持一致/, "theme help text must not claim an unimplemented FNOS host-theme integration");
 
 // 2) 常量口径必须与服务端配置键逐字相同，两侧任一改名都会在这里断掉。
 const constLine = app.match(/^const LIBRARY_CONNECTION_POOL_SETTING_KEY = "([^"]+)";$/m);
@@ -66,6 +70,9 @@ assert.equal(budgetConst[1], "metadata_lyrics_cache_max_bytes");
 const rendererNameKey = app.match(/^const RENDERER_NAME_SETTING_KEY = "([^\"]+)";$/m);
 assert.ok(rendererNameKey, "the renderer name setting key must be a single top-level constant");
 assert.equal(rendererNameKey[1], "renderer_name");
+const dlnaTypeDetectionKey = app.match(/^const DLNA_TYPE_DETECTION_SETTING_KEY = "([^\"]+)";$/m);
+assert.ok(dlnaTypeDetectionKey, "the DLNA type detection key must be a single top-level constant");
+assert.equal(dlnaTypeDetectionKey[1], "dlna_type_detection");
 assert.match(configPy, /DEFAULT_RENDERER_NAME = "fnAudio Renderer"/, "configuration must preserve the renderer default");
 assert.match(dlnaServicePy, /friendly = html\.escape\(self\.renderer_name if is_renderer else "fnAudio Music Library"\)/, "only the renderer friendly name is configurable and XML-escaped");
 
@@ -102,7 +109,7 @@ assert.match(index, /role="tabpanel"[^>]*aria-labelledby="settings-tab-runtime"/
 assert.match(index, /id="playbackSettingsStatus"[^>]*aria-live="polite"/, "playback settings reads need a page-local live status");
 
 // 4) 路由字符串两端对齐：UI 拼的是相对路径，服务端注册 GET 与 POST 两条。
-assert.equal((app.match(/"api\/config\/runtime"/g) || []).length, 4, "the advanced and playback panes share exactly two read/write pairs");
+assert.equal((app.match(/"api\/config\/runtime"/g) || []).length, 5, "the advanced, DLNA, and playback panes share their runtime route");
 assert.ok(/path == "\/api\/config\/runtime"/.test(serverPy), "the server must answer GET on the runtime config route");
 assert.ok(/parsed\.path == "\/api\/config\/runtime"/.test(serverPy), "the server must answer POST on the runtime config route");
 
@@ -112,13 +119,16 @@ const sources = [
   constLine[0],
   budgetConstLine,
   rendererNameKey[0],
+  dlnaTypeDetectionKey[0],
   functionSource("runtimeConnectionPoolInput"),
   functionSource("runtimeLyricsBudgetInput"),
   functionSource("playbackRendererNameInput"),
+  functionSource("dlnaTypeDetectionInput"),
   functionSource("applyRuntimeLyricsBudget"),
   functionSource("formatSize"),
   functionSource("loadRuntimeSettings"),
   functionSource("saveRuntimeSettings"),
+  functionSource("saveDlnaSettings"),
   functionSource("loadPlaybackSettings"),
   functionSource("savePlaybackSettings"),
   "globalThis.loadRuntimeSettings = loadRuntimeSettings; globalThis.saveRuntimeSettings = saveRuntimeSettings; globalThis.loadPlaybackSettings = loadPlaybackSettings; globalThis.savePlaybackSettings = savePlaybackSettings;",
@@ -149,6 +159,7 @@ function harness(poolChecked, responses, budgetValue = "8388608") {
     libraryConnectionPoolInput: { checked: poolChecked },
     lyricsCacheBudgetInput: budget,
     rendererNameInput: { value: "客厅 fnAudio" },
+    dlnaTypeDetectionInput: { checked: true },
     runtimeSettingsStatus: { textContent: "" },
     playbackSettingsStatus: { textContent: "" },
   };
@@ -168,7 +179,7 @@ function harness(poolChecked, responses, budgetValue = "8388608") {
   return { context, nodes, calls, budget };
 }
 
-const okResponse = { ok: true, json: { ok: true, config: { library_connection_pool: false, renderer_name: "书房播放器" } } };
+const okResponse = { ok: true, json: { ok: true, config: { library_connection_pool: false, renderer_name: "书房播放器", dlna_type_detection: false } } };
 
 (async () => {
   // 5a) 读回：服务端说关，界面就不许留「开」，哪怕用户刚才勾上了。
@@ -193,7 +204,7 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   assert.equal(h.calls.length, 1, "saving must issue exactly one request");
   assert.equal(h.calls[0].url, "api/config/runtime");
   assert.equal(h.calls[0].init.method, "POST");
-  assert.deepEqual(Object.keys(h.calls[0].body), ["library_connection_pool", budgetConst[1]], "the advanced save must carry exactly the two live settings");
+  assert.deepEqual(Object.keys(h.calls[0].body), ["library_connection_pool", budgetConst[1]], "the advanced save must carry exactly its live settings");
   assert.equal(h.calls[0].body.library_connection_pool, true);
   assert.equal(typeof h.calls[0].body.library_connection_pool, "boolean", "text booleans must never leave the UI");
   assert.equal(h.nodes.libraryConnectionPoolInput.checked, false, "the checkbox must follow the server echo, not the click");
@@ -204,6 +215,13 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   await h.context.saveRuntimeSettings();
   assert.deepEqual(h.calls[0].body, { library_connection_pool: false, [budgetConst[1]]: 8388608 }, "the unchecked box must send false rather than omit a setting");
   assert.equal(h.nodes.libraryConnectionPoolInput.checked, true);
+
+  // 5d2) DLNA 保存独立于高级设置，只发送自己的开关，并回显服务端值。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { dlna_type_detection: false } } }]);
+  h.nodes.dlnaTypeDetectionInput.checked = false;
+  await h.context.saveDlnaSettings();
+  assert.deepEqual(h.calls[0].body, { dlna_type_detection: false });
+  assert.equal(h.nodes.dlnaTypeDetectionInput.checked, false);
 
   // 5e) Renderer identity is saved independently from the advanced controls.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
