@@ -1,0 +1,16 @@
+﻿{
+    "schema":  1,
+    "version":  "0.2.125",
+    "generated_utc":  "2026-10-29T11:37:23.6544873Z",
+    "asset_build":  "0.2.125-58a38563247b",
+    "staged_file_count":  344,
+    "source_manifest_sha256":  "A5B759CCE67DC9791821BC564B6266DB0226F0C699339B3EDCCFFADCCEF82993",
+    "fnpack_sha256":  "D7AF4BD716B009C58F5BCD931615F39DB121E7D4B75DC759E575C4FB2879B6EE",
+    "artifact_sha256":  "C6792285D539BFAFDC5E65DF629A9B8C336BD453166242D6F6DDB4311D120B4A",
+    "git_commit":  "5dee496b04aa434678f1ce15df317160e60cea3f",
+    "git_worktree_dirty":  true,
+    "git_provenance_status":  "dirty",
+    "git_provenance_scope":  "src,android-client",
+    "git_tracked_edits":  8,
+    "git_untracked_inputs":  713
+}

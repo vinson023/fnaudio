@@ -128,6 +128,20 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
+wait_for_configured_port() {
+  local attempts=0
+  while [ "${attempts}" -lt 20 ]; do
+    configured_port_available && return 0
+    # During fnOS upgrades the old server can remain in shutdown briefly after
+    # its PID has been terminated. Keep cleaning only fnAudio-owned processes
+    # while waiting, so the App Center callback does not report a false failure.
+    cleanup_stale_servers ""
+    attempts=$((attempts + 1))
+    sleep 0.5
+  done
+  return 1
+}
+
 persist_backend_port() {
   export FNAUDIO_SERVER_PORT="${SERVER_PORT}"
   if ! "${PYTHON_BIN}" - "${TRIM_PKGETC}/config.json" <<'PY'
@@ -183,7 +197,24 @@ status() {
   return 1
 }
 
-start_process() {
+start_process() (
+  # fnOS may issue overlapping start callbacks during install/upgrade. Serialize
+  # the check-and-bind sequence so two callbacks cannot both pass the port probe.
+  start_lock_dir="${TRIM_PKGVAR}/start.lock"
+  lock_acquired=0
+  for i in $(seq 1 40); do
+    if mkdir "${start_lock_dir}" 2>/dev/null; then
+      lock_acquired=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [ "${lock_acquired}" -ne 1 ]; then
+    log_msg "Unable to acquire fnAudio start lock"
+    exit 1
+  fi
+  trap 'rmdir -- "${start_lock_dir}" 2>/dev/null || true' EXIT
+
   mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
   active_pid=""
   if [ -f "${PID_FILE}" ]; then
@@ -204,7 +235,7 @@ start_process() {
     log_msg "Application server not found: ${APP_ROOT}/server.py"
     return 1
   fi
-  configured_port_available || {
+  wait_for_configured_port || {
     log_msg "Configured TCP port ${SERVER_PORT} is already in use; change it in App Center settings"
     return 1
   }
@@ -235,7 +266,7 @@ start_process() {
   stop_pid "$!" 5
   rm -f "${PID_FILE}"
   return 1
-}
+)
 
 stop_process() {
   # Stop the supervisor first. Otherwise it can immediately restart MPD while

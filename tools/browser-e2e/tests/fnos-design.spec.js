@@ -19,6 +19,10 @@ async function load(page, width=1440, height=900) {
   await page.goto(baseUrl,{waitUntil:'networkidle'});
   await expect(page.locator('.track')).toHaveCount(4);
 }
+async function openSettings(page) {
+  if ((page.viewportSize()?.width ?? 1440) <= 760) await page.locator('#mobileNavBtn').click();
+  await page.locator('#mobileSettingsNavBtn').click();
+}
 async function insideViewport(page, selector) {
   const element = page.locator(selector);
   await expect(element,selector).toBeVisible();
@@ -32,6 +36,39 @@ async function insideViewport(page, selector) {
 async function screenshot(page, info, name) {
   await page.screenshot({path:info.outputPath(name+'.png')});
 }
+
+test('FNOS search field syncs input and clears from either viewport', async ({page}, info) => {
+  await load(page, 1440, 900);
+  await expect(page.locator('.mobile-library-search')).toBeHidden();
+  await expect(page.locator('#pager')).toBeHidden();
+  const desktopInput = page.locator('#searchInput');
+  const mobileInput = page.locator('#mobileSearchInput');
+  const desktopClear = page.locator('#searchClearBtn');
+  const mobileClear = page.locator('#mobileSearchClearBtn');
+  await expect(desktopClear).toBeHidden();
+  await expect(mobileClear).toBeHidden();
+  await page.screenshot({path: info.outputPath('search-field-desktop.png')});
+  await desktopInput.fill('测试搜索');
+  await expect(mobileInput).toHaveValue('测试搜索');
+  await expect(desktopClear).toBeVisible();
+  await expect(mobileClear).toBeHidden();
+  expect(await desktopInput.evaluate(element => getComputedStyle(element).outlineStyle)).toBe('none');
+  expect(await desktopInput.evaluate(element => getComputedStyle(element).boxShadow)).toBe('none');
+  await desktopClear.click();
+  await expect(desktopInput).toHaveValue('');
+  await expect(mobileInput).toHaveValue('');
+  await expect(desktopClear).toBeHidden();
+  await page.setViewportSize({width: 375, height: 812});
+  await expect(mobileInput).toBeVisible();
+  await mobileInput.fill('移动搜索');
+  await expect(desktopInput).toHaveValue('移动搜索');
+  await expect(mobileClear).toBeVisible();
+  await mobileClear.click();
+  await expect(mobileInput).toHaveValue('');
+  await expect(desktopInput).toHaveValue('');
+  await expect(mobileClear).toBeHidden();
+  await page.screenshot({path: info.outputPath('search-field-mobile.png')});
+});
 
 test('Requested UI: toolbar column shortcut removed, table column selector retained', async ({page}) => {
   await load(page);
@@ -93,6 +130,9 @@ test('FNOS: touch WebViews with a wide CSS viewport retain mobile geometry', asy
       pointerCoarse:matchMedia('(pointer: coarse)').matches,
       documentWidth:document.documentElement.scrollWidth,
       headerHeight:getComputedStyle(document.querySelector('.topbar')).height,
+      pagebarJustify:getComputedStyle(document.querySelector('.mobile-pagebar')).justifyContent,
+      pagebarTitleLeft:document.querySelector('.mobile-page-title').getBoundingClientRect().left,
+      pagebarButtonRight:document.querySelector('#mobileNavBtn').getBoundingClientRect().right,
       topActions:rect('.top-actions'),
       player:rect('.player'),
       transport:rect('.transport'),
@@ -100,14 +140,203 @@ test('FNOS: touch WebViews with a wide CSS viewport retain mobile geometry', asy
       duration:rect('#duration'),
     };
   });
-  expect(geometry.headerHeight, JSON.stringify(geometry)).toBe('104px');
-  expect(Math.abs(geometry.topActions.center-geometry.viewport/2)).toBeLessThanOrEqual(1);
+    expect(geometry.headerHeight, JSON.stringify(geometry)).toBe('56px');
+  expect(geometry.pagebarJustify, JSON.stringify(geometry)).toBe('flex-start');
+  expect(geometry.pagebarTitleLeft).toBeGreaterThan(geometry.pagebarButtonRight);
+    await expect(page.locator('.top-actions')).toBeHidden();
+    await expect(page.locator('.mobile-pagebar')).toBeVisible();
   expect(Math.abs(geometry.transport.center-geometry.viewport/2)).toBeLessThanOrEqual(1);
   expect(geometry.elapsed.left).toBeGreaterThanOrEqual(0);
   expect(geometry.duration.right).toBeLessThanOrEqual(geometry.viewport);
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewport);
   expect(geometry.player.right).toBeLessThanOrEqual(geometry.viewport);
   await context.close();
+});
+
+test('Android WebView class keeps the header left-aligned outside media-query width', async ({page}) => {
+  await load(page, 1440, 900);
+  const layout = await page.evaluate(() => {
+    document.documentElement.classList.add('fnaudio-android-client');
+    const pagebar = document.querySelector('.mobile-pagebar');
+    const title = document.querySelector('.mobile-page-title');
+    const menu = document.querySelector('#mobileNavBtn');
+    return {
+      pagebarDisplay: getComputedStyle(pagebar).display,
+      pagebarJustify: getComputedStyle(pagebar).justifyContent,
+      titleTextAlign: getComputedStyle(title).textAlign,
+      titleLeft: title.getBoundingClientRect().left,
+      menuRight: menu.getBoundingClientRect().right,
+      topActionsDisplay: getComputedStyle(document.querySelector('.top-actions')).display,
+    };
+  });
+  expect(layout.pagebarDisplay).toBe('flex');
+  expect(layout.pagebarJustify).toBe('flex-start');
+  expect(layout.titleTextAlign).toBe('left');
+  expect(layout.titleLeft).toBeGreaterThanOrEqual(layout.menuRight);
+  expect(layout.topActionsDisplay).toBe('none');
+});
+
+test('Desktop actions are hidden and sidebar settings stay fixed while library nav scrolls', async ({page}) => {
+  await load(page, 1440, 900);
+  await expect(page.locator('.top-actions')).toBeHidden();
+  await expect(page.locator('.sidebar-footer')).toHaveCount(0);
+  await expect(page.locator('.sidebar')).toHaveCSS('width', '188px');
+  await page.locator('#pager').evaluate(element => {
+    element.innerHTML = '<div class="pager-inner"><div class="pager-nav"><button class="pager-nav-button" type="button" aria-label="首页"><svg viewBox="0 0 24 24"><path d="M18 6 12 12l6 6"/><path d="m11 6-5 6 6 6"/></svg></button><button class="pager-nav-button" type="button" aria-label="上一页"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button><span class="pager-page-summary" aria-label="当前页">第 1 / 2 页</span><button class="pager-nav-button" type="button" aria-label="下一页"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="pager-nav-button" type="button" aria-label="尾页"><svg viewBox="0 0 24 24"><path d="m6 6 6 6-6 6"/><path d="m13 6 6 6-6 6"/></svg></button></div><div class="pager-status"><span>共 2 首</span><button class="pager-refresh-button" type="button" aria-label="刷新音乐库"></button></div></div>';
+  });
+  const settingsRow = await page.locator('.sidebar-settings').boundingBox();
+  const pagerRow = await page.locator('#pager').boundingBox();
+  const settingsButton = await page.locator('#mobileSettingsNavBtn').boundingBox();
+  expect(settingsRow.height).toBe(44);
+  expect(pagerRow.height).toBe(settingsRow.height);
+  const pagerChildren = await page.locator('.pager-nav > *').evaluateAll(elements => elements.map(element => {
+    const rect = element.getBoundingClientRect();
+    return {left: rect.left, right: rect.right};
+  }));
+  for (let index = 1; index < pagerChildren.length; index++) {
+    expect(pagerChildren[index].left).toBeGreaterThanOrEqual(pagerChildren[index - 1].right - 1);
+  }
+  expect(Math.abs((settingsButton.y - settingsRow.y) - (settingsRow.y + settingsRow.height - (settingsButton.y + settingsButton.height)))).toBeLessThanOrEqual(1);
+  const before = await page.locator('#mobileSettingsNavBtn').boundingBox();
+  const scroll = page.locator('.sidebar-scroll');
+  await scroll.evaluate(element => {
+    for (let i = 0; i < 20; i++) {
+      const item = document.createElement('button');
+      item.className = 'nav-item';
+      item.textContent = `额外分类 ${i}`;
+      element.append(item);
+    }
+    element.scrollTop = element.scrollHeight;
+  });
+  const after = await page.locator('#mobileSettingsNavBtn').boundingBox();
+  expect(await scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
+  await expect(page.locator('#mobileSettingsNavBtn')).toBeVisible();
+  await page.screenshot({path:path.resolve(__dirname, '../test-results/sidebar-settings-fixed-desktop.png')});
+  await page.locator('#mobileSettingsNavBtn').click();
+  await expect(page.locator('#folderDialog')).toBeVisible();
+});
+
+test('Mobile sidebar settings stay docked below the scrolling library navigation', async ({page}, info) => {
+  await load(page, 375, 812);
+  await page.locator('#mobileNavBtn').click();
+  await expect(page.locator('.sidebar-footer')).toHaveCount(0);
+  const drawer = await page.locator('.sidebar').boundingBox();
+  expect(drawer.width).toBeCloseTo(260, 0);
+  const scrollBox = await page.locator('.sidebar-scroll').boundingBox();
+  expect(Math.abs((scrollBox.x + scrollBox.width) - (drawer.x + drawer.width))).toBeLessThanOrEqual(1);
+  const settingsBox = await page.locator('.sidebar-settings').boundingBox();
+  const settingsButtonBox = await page.locator('#mobileSettingsNavBtn').boundingBox();
+  expect(Math.abs((settingsButtonBox.y - settingsBox.y) - (settingsBox.y + settingsBox.height - (settingsButtonBox.y + settingsButtonBox.height)))).toBeLessThanOrEqual(1);
+  const settings = page.locator('#mobileSettingsNavBtn');
+  const before = await settings.boundingBox();
+  const scroll = page.locator('.sidebar-scroll');
+  await scroll.evaluate(element => {
+    for (let i = 0; i < 20; i++) {
+      const item = document.createElement('button');
+      item.className = 'nav-item';
+      item.textContent = `额外分类 ${i}`;
+      element.append(item);
+    }
+    element.scrollTop = element.scrollHeight;
+  });
+  const after = await settings.boundingBox();
+  expect(await scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
+  await expect(settings).toBeVisible();
+  await page.screenshot({path:info.outputPath('sidebar-settings-fixed-mobile.png')});
+});
+
+test('Desktop player puts progress on its top edge and transport before track details', async ({page}, info) => {
+  await load(page, 1440, 900);
+  const layout = await page.evaluate(() => {
+    const box = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height};
+    };
+    return {
+      player: box('.player'),
+      progress: box('.player .progress'),
+      elapsed: box('.player #elapsed'),
+      seek: box('.player #seek'),
+      duration: box('.player #duration'),
+      transport: box('.player .transport'),
+      track: box('.player .now-playing'),
+      actions: box('.player .player-actions'),
+    };
+  });
+  expect(Math.abs(layout.progress.top - layout.player.top)).toBeLessThanOrEqual(1);
+  expect(layout.progress.width).toBeLessThan(layout.player.width);
+  expect(layout.elapsed.left).toBeGreaterThan(layout.player.left);
+  expect(layout.duration.right).toBeLessThan(layout.player.right);
+  expect(layout.seek.left).toBeGreaterThan(layout.elapsed.right);
+  expect(layout.seek.right).toBeLessThan(layout.duration.left);
+  expect(layout.transport.left).toBeLessThan(layout.track.left);
+  for (const child of [layout.transport, layout.track, layout.actions]) {
+    expect(Math.abs((child.top + child.bottom) / 2 - (layout.player.top + layout.player.bottom) / 2)).toBeLessThanOrEqual(1);
+  }
+  await page.screenshot({path:info.outputPath('desktop-player-left-controls.png')});
+});
+
+test('Mobile player keeps previous, play and next controls centered', async ({page}, info) => {
+  await load(page, 375, 812);
+  const geometry = await page.evaluate(() => {
+    const player = document.querySelector('.player').getBoundingClientRect();
+    const progress = document.querySelector('.player .progress').getBoundingClientRect();
+    const transport = document.querySelector('.player .transport').getBoundingClientRect();
+    const previous = document.querySelector('#prevBtn').getBoundingClientRect();
+    const play = document.querySelector('#playBtn').getBoundingClientRect();
+    const next = document.querySelector('#nextBtn').getBoundingClientRect();
+    return {
+      playerCenter: (player.left + player.right) / 2,
+      progressLeft: progress.left,
+      progressRight: progress.right,
+      progressCenter: (progress.left + progress.right) / 2,
+      transportCenter: (transport.left + transport.right) / 2,
+      previousCenter: (previous.left + previous.right) / 2,
+      playCenter: (play.left + play.right) / 2,
+      nextCenter: (next.left + next.right) / 2,
+    };
+  });
+  expect(Math.abs(geometry.transportCenter - geometry.playerCenter)).toBeLessThanOrEqual(2);
+  expect(Math.abs(geometry.progressCenter - geometry.playerCenter)).toBeLessThanOrEqual(1);
+  expect(geometry.progressLeft).toBeGreaterThanOrEqual(16);
+  expect(geometry.progressRight).toBeLessThanOrEqual(359);
+  expect(geometry.previousCenter).toBeLessThan(geometry.playCenter);
+  expect(geometry.playCenter).toBeLessThan(geometry.nextCenter);
+  await page.screenshot({path:info.outputPath('mobile-player-centered-controls.png')});
+});
+
+test('Player progress uses a thin blue rail with time labels below', async ({page}, info) => {
+  await load(page, 375, 812);
+  const geometry = await page.evaluate(() => {
+    const seek = document.querySelector('#seek');
+    seek.value = '50';
+    updateSeekRail(50);
+    const box = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height};
+    };
+    const track = getComputedStyle(seek, '::-webkit-slider-runnable-track');
+    const thumb = getComputedStyle(seek, '::-webkit-slider-thumb');
+    return {
+      rail: box('#seek'),
+      elapsed: box('#elapsed'),
+      duration: box('#duration'),
+      trackHeight: track.height,
+      thumbWidth: thumb.width,
+      fill: seek.style.getPropertyValue('--seek-fill'),
+    };
+  });
+  // Chromium reports the range's 8px hit target for the pseudo-track; the
+  // source contract above pins the painted rail itself to 4px.
+  expect(geometry.rail.height).toBe(8);
+  expect(geometry.elapsed.top).toBeGreaterThanOrEqual(geometry.rail.top);
+  expect(geometry.duration.top).toBeGreaterThanOrEqual(geometry.rail.top);
+  expect(geometry.elapsed.left).toBeLessThan(geometry.duration.left);
+  expect(geometry.duration.right).toBeLessThanOrEqual(375);
+  expect(geometry.fill).toBe('50%');
+  await screenshot(page, info, 'player-progress-reference-style');
 });
 
 test('FNOS: every dialog close control uses the shared line icon', async ({page}) => {
@@ -311,7 +540,7 @@ test('FNOS: mobile repeat modes use one state glyph without duplicate badges', a
 
 test('FNOS: settings tablists support keyboard navigation with synchronized ARIA state', async ({page}) => {
   await load(page);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
 
   const runtimeTab = page.locator('[data-settings-tab="runtime"]');
   await page.locator('[data-settings-tab="library"]').focus();
@@ -341,7 +570,7 @@ test('FNOS: settings tablists support keyboard navigation with synchronized ARIA
 test('FNOS: settings controls use the shared state palette', async ({page}) => {
   await load(page);
   await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   const settingsTab = page.locator('[data-settings-tab="metadata"]');
   const activeSettingsTab = page.locator('[data-settings-tab="library"]');
   const tabStyle = await activeSettingsTab.evaluate(button => {
@@ -367,7 +596,7 @@ test('FNOS: settings controls use the shared state palette', async ({page}) => {
 
 test('FNOS: metadata provider pane does not duplicate the subtab divider', async ({page}) => {
   await load(page);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.locator('[data-settings-tab="metadata"]').click();
   await page.locator('[data-metadata-settings-tab="providers"]').click();
   const section = page.locator('#metadata-settings-pane-providers .metadata-provider-settings');
@@ -377,7 +606,7 @@ test('FNOS: metadata provider pane does not duplicate the subtab divider', async
 
 test('FNOS: DLNA pane uses the settings tab divider without a duplicate heading rule', async ({page}) => {
   await load(page);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.locator('[data-settings-tab="dlna"]').click();
   const heading = page.locator('#settings-pane-dlna .settings-diagnostics-heading');
   await expect(heading).toBeVisible();
@@ -395,7 +624,7 @@ test('FNOS: DLNA pane uses the settings tab divider without a duplicate heading 
 for (const [width, height] of [[320, 568], [375, 667], [320, 900], [1440, 900]]) {
   test(`FNOS ${width}x${height}: metadata provider save action stays visible`, async ({page}, info) => {
     await load(page, width, height);
-    await page.locator('#folderBtn').click();
+    await openSettings(page);
     await page.locator('[data-settings-tab="metadata"]').click();
     await page.locator('[data-metadata-settings-tab="providers"]').click();
 
@@ -448,7 +677,7 @@ for (const [width, height] of [[320, 568], [375, 667], [320, 900], [1440, 900]])
 
 test('FNOS: mobile library settings keep directory selection above the save bar', async ({page}, info) => {
   await load(page, 320, 812);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   const picker = page.locator('#chooseLibraryPathBtn');
   const save = page.locator('#saveLibrarySettingsBtn');
   await expect(picker).toBeVisible();
@@ -468,7 +697,7 @@ test('FNOS: mobile library settings keep directory selection above the save bar'
 
 test('FNOS: mobile runtime settings keep the save button inside the pane', async ({page}) => {
   await load(page, 320, 812);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.locator('#settings-tab-runtime').click();
   const geometry = await page.locator('#settings-pane-runtime').evaluate(pane => {
     const button = pane.querySelector('.settings-pane-actions button');
@@ -491,7 +720,7 @@ test('FNOS: mobile runtime settings keep the save button inside the pane', async
 test('FNOS: selected library paths remain readable in dark settings', async ({page}) => {
   await page.emulateMedia({colorScheme: 'dark'});
   await load(page, 1440, 900);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.evaluate(() => renderLibraryPathInputs(['/fixture/music']));
   const colors = await page.locator('.library-path-input').evaluate(element => {
     const style = getComputedStyle(element);
@@ -506,7 +735,7 @@ test('FNOS: selected library paths remain readable in dark settings', async ({pa
 for (const width of [320, 1440]) {
   test(`FNOS ${width}: DLNA settings actions align with the shared save edge`, async ({page}, info) => {
     await load(page, width, 900);
-    await page.locator('#folderBtn').click();
+    await openSettings(page);
     await page.locator('[data-settings-tab="dlna"]').click();
 
     const actions = page.locator('#settings-pane-dlna .settings-pane-actions');
@@ -745,12 +974,19 @@ for (const width of [320,375,414,768,1280,1440]) {
     const viewportHeight=width<761?812:900;
     await load(page,width,viewportHeight);
     const mobile=width<=760;
-    const controls=['#playAllBtn','#folderBtn','#refreshBtn','#prevBtn','#playBtn','#nextBtn','#seek'];
-    controls.push(...(mobile?['#mobileNavBtn','#mobileDeviceBtn','#mobileModeBtn','#mobileShuffleBtn','#mobileRepeatBtn']:['#modeBtn','#deviceBtn','#shuffleBtn','#repeatBtn']));
+    const controls=['#prevBtn','#playBtn','#nextBtn','#seek'];
+    controls.push(...(mobile?['#mobileNavBtn','#mobileShuffleBtn','#mobileRepeatBtn']:['#shuffleBtn','#repeatBtn']));
     for (const selector of controls) await insideViewport(page,selector);
     if (mobile) {
+      await page.locator('#mobileNavBtn').click();
+      await insideViewport(page,'#mobileSettingsNavBtn');
+      await page.locator('#mobileSettingsNavBtn').click();
+      await expect(page.locator('#folderDialog')).toBeVisible();
+      await page.locator('#closeFolderDialog').click();
       await expect(page.locator('.player-actions')).toBeHidden();
     } else {
+      await insideViewport(page,'#mobileSettingsNavBtn');
+      await expect(page.locator('.top-actions')).toBeHidden();
       for (const selector of ['#lyricsBtn','#favoriteCurrentBtn','#queueBtn','#volumeBtn']) await insideViewport(page,selector);
     }
     if (width < 560 && viewportHeight > 540) {
@@ -838,7 +1074,7 @@ test('FNOS 768: wide track columns scroll inside the library viewport', async ({
 for(const width of [320,768,1440]) {
   test(`FNOS ${width}: five settings panes and metadata subtabs remain operable`,async ({page},info) => {
     await load(page,width,width<761?812:900);
-    await page.locator('#folderBtn').click();
+    await openSettings(page);
     const dialog=page.locator('#folderDialog');
     const closeSize=await page.locator('#closeFolderDialog').evaluate(el=>{
       const box=el.getBoundingClientRect();
@@ -1132,7 +1368,7 @@ test('FNOS dark palette applies across library, player and settings without whit
   });
   await screenshot(page,info,'dark-devices');
   await page.locator('#closeDialog').click();
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   expect(await page.locator('#folderDialog h2').evaluate(el=>getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
   expect(await page.locator('.library-health').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgba(219, 56, 44, 0.12)');
   await screenshot(page,info,'dark-library-health');
@@ -1268,7 +1504,7 @@ test('FNOS short landscape preserves browsing space and compact transport contro
   const list=await page.locator('#trackList').boundingBox();
   expect(list.height).toBeGreaterThan(100);
   await expect(page.locator('#stopBtn')).toHaveCount(0);
-  for(const selector of ['#prevBtn','#playBtn','#nextBtn','#mobileShuffleBtn','#mobileRepeatBtn','#folderBtn','#refreshBtn']) await insideViewport(page,selector);
+  for(const selector of ['#prevBtn','#playBtn','#nextBtn','#mobileShuffleBtn','#mobileRepeatBtn','#refreshBtn']) await insideViewport(page,selector);
   await expect(page.locator('.player-actions')).toBeHidden();
   await screenshot(page,info,'landscape');
 });
@@ -1319,7 +1555,7 @@ test('FNOS audit: open dialogs have no retired teal tokens', async ({page}) => {
   await page.locator('#deviceBtn').click();
   await scan('device dialog');
   await page.locator('#closeDialog').click();
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await scan('library settings');
   await page.locator('[data-settings-tab="metadata"]').click();
   await page.locator('[data-metadata-settings-tab="providers"]').click();
@@ -1385,7 +1621,7 @@ test('FNOS audit: dark inactive player controls keep readable secondary contrast
 test('FNOS 375 dark mobile settings keep surfaces tokenized', async ({page}) => {
   await page.emulateMedia({colorScheme: 'dark'});
   await load(page, 375, 812);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.locator('[data-settings-tab="metadata"]').click();
   await page.locator('[data-metadata-settings-tab="providers"]').click();
   await page.locator('#deviceDialog').evaluate(dialog => dialog.showModal());
@@ -1404,7 +1640,7 @@ test('FNOS 375 dark mobile settings keep surfaces tokenized', async ({page}) => 
 test('FNOS 375 dark mobile has no retired teal state colors', async ({page}) => {
   await page.emulateMedia({colorScheme: 'dark'});
   await load(page, 375, 812);
-  await page.locator('#folderBtn').click();
+  await openSettings(page);
   await page.locator('[data-settings-tab="metadata"]').click();
   await page.locator('[data-metadata-settings-tab="providers"]').click();
   const retired = await page.evaluate(() => {
@@ -1422,3 +1658,6 @@ test('FNOS 375 dark mobile has no retired teal state colors', async ({page}) => 
   });
   expect(retired).toEqual([]);
 });
+
+
+

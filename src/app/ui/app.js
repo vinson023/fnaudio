@@ -1938,6 +1938,27 @@ function updateModeButton() {
     mobileButton.setAttribute("aria-label", title);
     mobileButton.setAttribute("aria-pressed", String(state.mp3Transcode));
   }
+  const settingsButton = $("settingsModeBtn");
+  if (settingsButton) {
+    settingsButton.textContent = state.mp3Transcode ? "MP3 转码：开" : "MP3 转码：关";
+    settingsButton.classList.toggle("active-control", state.mp3Transcode);
+    settingsButton.title = title;
+    settingsButton.setAttribute("aria-label", settingsButton.textContent);
+    settingsButton.setAttribute("aria-pressed", String(state.mp3Transcode));
+  }
+}
+function ensurePlaybackSettingsControls() {
+  if ($("settingsDeviceBtn") && $("settingsModeBtn")) return;
+  const pane = $("settings-pane-playback");
+  const status = $("playbackSettingsStatus");
+  if (!pane || !status) return;
+  const controls = document.createElement("div");
+  controls.className = "settings-device-controls";
+  controls.innerHTML = '<button class="secondary-button" id="settingsDeviceBtn" type="button">选择播放设备</button><button class="secondary-button settings-mode-button" id="settingsModeBtn" type="button" aria-pressed="false">MP3 转码：关</button>';
+  status.before(controls);
+  $("settingsDeviceBtn").onclick = openDeviceDialog;
+  $("settingsModeBtn").onclick = toggleMp3Transcode;
+  updateModeButton();
 }
 function scanProgressText() {
   if (state.libraryLoading) return `正在加载音乐库：${state.libraryLoaded}${state.libraryTotal ? ` / ${state.libraryTotal}` : ""} 首`;
@@ -3055,6 +3076,7 @@ function syncCurrentQueuePresentation(previousIndex) {
 function openCurrentQueue() {
   if (!$("lyricsView").hidden) closeLyrics();
   [$('searchInput'), $('mobileSearchInput')].forEach(input => { if (input) input.value = ""; });
+  updateSearchClearButtons();
   setView("queue");
   const page = currentQueuePage();
   if (state.page !== page) {
@@ -3065,11 +3087,11 @@ function openCurrentQueue() {
 }
 function groupFallbackIcon(view = state.view) {
   const icons = {
-    folders: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h6.2l2 2H21v8.7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7.5V6a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v1.5"/></svg>`,
-    albums: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.4"/><path d="M12 4v3"/><path d="M12 17v3"/></svg>`,
-    artists: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>`,
-    composers: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l10-2v13"/><circle cx="7" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>`,
-    genres: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14"/><path d="M5 12h14"/><path d="M5 18h10"/><circle cx="18" cy="18" r="2"/></svg>`,
+    folders: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5h6.2l2 2H21v8.7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7.5V6a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v1.5"/></svg>`,
+    albums: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.4"/><path d="M12 4v3"/><path d="M12 17v3"/></svg>`,
+    artists: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>`,
+    composers: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l10-2v13"/><circle cx="7" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>`,
+    genres: `<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14"/><path d="M5 12h14"/><path d="M5 18h10"/><circle cx="18" cy="18" r="2"/></svg>`,
   };
   return icons[view] || icons.albums;
 }
@@ -7345,6 +7367,7 @@ function setSettingsButtonOpen(open) {
 }
 
 async function openFolderBrowser(path = "") {
+  ensurePlaybackSettingsControls();
   setSettingsButtonOpen(true);
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
@@ -9780,6 +9803,10 @@ function setMobileNavigation(open) {
 }
 $("mobileNavBtn").onclick = () => setMobileNavigation(!document.querySelector(".sidebar")?.classList.contains("mobile-open"));
 $("mobileNavBackdrop").onclick = () => setMobileNavigation(false);
+$("mobileSettingsNavBtn").onclick = () => {
+  setMobileNavigation(false);
+  openFolderBrowser();
+};
 document.querySelectorAll(".nav-item[data-view]").forEach(button => {
   button.addEventListener("click", () => setMobileNavigation(false));
 });
@@ -9788,6 +9815,7 @@ function handleSearchInput(source) {
   [$("searchInput"), $("mobileSearchInput")].forEach(input => {
     if (input && input !== source) input.value = value;
   });
+  updateSearchClearButtons();
   if (state.searchTimer) clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
     state.searchTimer = null;
@@ -9796,6 +9824,20 @@ function handleSearchInput(source) {
     if (isPagedLibraryView()) requestLibraryLoad(1, false);
     else render();
   }, 240);
+}
+function updateSearchClearButtons() {
+  const hasValue = Boolean($("searchInput")?.value || $("mobileSearchInput")?.value);
+  ["searchClearBtn", "mobileSearchClearBtn"].forEach(id => {
+    const button = $(id);
+    if (button) button.hidden = !hasValue;
+  });
+}
+function clearSearchInput(inputId) {
+  const input = $(inputId);
+  if (!input) return;
+  input.value = "";
+  handleSearchInput(input);
+  input.focus();
 }
 $("searchInput").oninput = event => handleSearchInput(event.currentTarget);
 const mobileSearchInput = $("mobileSearchInput");
@@ -9824,6 +9866,9 @@ if (mobileSearchInput) {
   mobileSearchInput.addEventListener("focus", () => setMobileSearchFocusState(true));
   mobileSearchInput.addEventListener("blur", () => setMobileSearchFocusState(false));
 }
+$("searchClearBtn")?.addEventListener("click", () => clearSearchInput("searchInput"));
+$("mobileSearchClearBtn")?.addEventListener("click", () => clearSearchInput("mobileSearchInput"));
+updateSearchClearButtons();
 $("playAllBtn").onclick = playAll;
 normalizeDialogCloseControls();
 normalizeButtonTypes();

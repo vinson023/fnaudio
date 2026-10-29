@@ -1649,3 +1649,15 @@ dialog{background:var(--ui-surface)!important;color:var(--ui-text)!important;bor
   .progress input{box-sizing:border-box!important;display:block!important;width:100%!important;max-width:100%!important;min-width:0!important}
   .shell,.content{height:calc(100dvh - 112px)!important}
 }
+
+/* Mobile navigation owns settings and the transport configuration controls. */
+.mobile-settings-nav-item{display:none!important}
+.settings-device-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0 4px}
+.settings-device-controls .secondary-button{min-height:38px}
+.settings-mode-button.active-control{color:var(--ui-accent-hover)!important;background:var(--ui-selected)!important;border-color:var(--ui-accent)!important}
+@media(max-width:760px){
+  .topbar{height:56px!important;grid-template-rows:56px!important}
+  .top-actions{display:none!important}
+  .shell,.content{height:calc(100dvh - 56px)!important}
+  .mobile-settings-nav-item{display:flex!important}
+}

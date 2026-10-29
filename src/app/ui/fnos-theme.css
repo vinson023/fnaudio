@@ -887,3 +887,381 @@ html.android-app .player-actions { display: none !important; }
   .progress { grid-column: 1 !important; grid-row: 3 !important; }
   .player-actions { display: none !important; }
 }
+
+/* The mobile menu is the single owner of settings and transport setup. */
+@media (max-width: 760px), (pointer: coarse) and (min-width: 761px) and (max-width: 1100px) {
+  /* The compact mobile header replaces the two-row touch layout below. Keep
+   * the body grid row in sync with the visible header or it leaves a blank
+   * strip between the header and library content in Android WebView. */
+  :root { --ui-header-height: 56px; }
+  .topbar {
+    height: 56px !important;
+    grid-template-rows: 56px !important;
+    gap: 0 !important;
+  }
+  .top-actions { display: none !important; }
+  .mobile-pagebar {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+  }
+  .transport {
+    width: max-content !important;
+    max-width: 100% !important;
+    margin-inline: auto !important;
+    justify-self: center !important;
+  }
+  .mobile-settings-nav-item { display: flex !important; }
+  .shell, .content { height: calc(100dvh - 56px) !important; }
+}
+
+/* Android WebView owns the same compact header as the fnOS touch page.
+ * Do not rely on the WebView's reported CSS width: some Android hosts expose
+ * a tablet-sized viewport on a phone, which otherwise re-enables the desktop
+ * header and makes the title appear centered or stretched. */
+html.fnaudio-android-client .topbar {
+  height: 56px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  padding: 0 10px !important;
+  box-sizing: border-box !important;
+}
+html.fnaudio-android-client .topbar-library {
+  display: none !important;
+}
+html.fnaudio-android-client .top-actions {
+  display: none !important;
+}
+html.fnaudio-android-client .mobile-pagebar {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  margin: 0 !important;
+}
+html.fnaudio-android-client .mobile-page-title {
+  min-width: 0 !important;
+  text-align: left !important;
+}
+html.fnaudio-android-client .shell,
+html.fnaudio-android-client .content {
+  height: calc(100dvh - 56px) !important;
+}
+
+/* Progress rail: a quiet 4px track with the time labels below it, matching
+ * the compact player reference while retaining the native range hit target. */
+.progress {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  grid-template-rows: 8px 12px !important;
+  align-items: center !important;
+  column-gap: var(--ui-space-2) !important;
+  row-gap: 2px !important;
+  height: 22px !important;
+  min-width: 0 !important;
+}
+.progress input {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  height: 8px !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+.progress input::-webkit-slider-runnable-track {
+  height: 4px !important;
+  background: linear-gradient(to right, var(--ui-accent) var(--seek-fill, 0%), var(--ui-line) var(--seek-fill, 0%)) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+.progress input::-webkit-slider-thumb {
+  width: 6px !important;
+  height: 6px !important;
+  margin-top: -1px !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--ui-accent) !important;
+  box-shadow: none !important;
+}
+.progress input::-moz-range-track {
+  height: 4px !important;
+  background: var(--ui-line) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+.progress input::-moz-range-progress {
+  height: 4px !important;
+  background: var(--ui-accent) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+.progress input::-moz-range-thumb {
+  width: 6px !important;
+  height: 6px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--ui-accent) !important;
+}
+.progress #elapsed,
+.progress #duration {
+  display: block !important;
+  grid-row: 2 !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 11px !important;
+  line-height: 12px !important;
+  white-space: nowrap !important;
+}
+.progress #elapsed { grid-column: 1 !important; text-align: left !important; }
+.progress #duration { grid-column: 2 !important; text-align: right !important; }
+.progress #transportStateUnknown {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  justify-self: center !important;
+  align-self: start !important;
+  z-index: 1 !important;
+}
+
+/* Desktop actions move out of the header; settings stay below the scrollable library nav. */
+@media (min-width: 761px) {
+  .top-actions { display: none !important; }
+}
+.sidebar { overflow: hidden !important; }
+.sidebar-scroll { min-height: 0 !important; flex: 1 1 auto !important; overflow-y: auto !important; overflow-x: hidden !important; overscroll-behavior: contain !important; }
+.sidebar-settings { flex: 0 0 auto !important; display: flex !important; align-items: center !important; min-height: 56px !important; padding: var(--ui-space-2) 0 !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-sidebar) !important; }
+.sidebar-settings .nav-item { display: flex !important; margin: 0 !important; }
+.sidebar-footer { flex: 0 0 auto !important; margin-top: 0 !important; padding: var(--ui-space-3) var(--ui-space-3) 0 !important; }
+@media (max-width: 760px) {
+  .sidebar { overflow: hidden !important; }
+  .sidebar-scroll { flex: 1 1 auto !important; overflow-y: auto !important; overflow-x: hidden !important; }
+  .sidebar-settings { min-height: 56px !important; }
+  .sidebar-footer { margin-top: 0 !important; }
+}
+
+/* Compact library navigation: settings is the only fixed row at the bottom. */
+:root { --ui-sidebar-width: 188px; }
+@media (max-width: 760px) {
+  .sidebar {
+    width: min(72vw, 260px) !important;
+    padding-left: 8px !important;
+    padding-right: 0 !important;
+  }
+}
+
+/* Keep the scrollbar and settings action on the outer edge without wasting a
+ * second horizontal gutter inside the sidebar. */
+.sidebar {
+  padding-right: 0 !important;
+  padding-bottom: 0 !important;
+  align-items: stretch !important;
+}
+.sidebar-scroll {
+  scrollbar-gutter: stable !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--ui-border) transparent !important;
+  padding-right: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.sidebar-scroll::-webkit-scrollbar { width: 8px !important; }
+.sidebar-scroll::-webkit-scrollbar-thumb { background: var(--ui-border) !important; border-radius: 4px !important; }
+.sidebar-scroll::-webkit-scrollbar-track { background: transparent !important; }
+.sidebar-settings {
+  height: 44px !important;
+  min-height: 44px !important;
+  padding-block: 2px !important;
+  padding-right: 0 !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.sidebar-settings .nav-item {
+  min-height: 36px !important;
+  padding-block: 4px !important;
+}
+@media (max-width: 760px) {
+  .sidebar { padding-bottom: 0 !important; }
+  .sidebar-settings { height: 52px !important; min-height: 52px !important; padding-block: 4px !important; }
+  .sidebar-settings .nav-item { min-height: 44px !important; padding-block: 6px !important; }
+}
+
+/* FNOS-style compact search field: the clear action appears only after input. */
+.library-search,
+.mobile-library-search {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 8px !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: 6px !important;
+  background: var(--ui-surface) !important;
+  color: var(--ui-muted) !important;
+  box-shadow: none !important;
+}
+.library-search:focus-within,
+.mobile-library-search:focus-within {
+  border-color: var(--ui-accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 14%, transparent) !important;
+}
+.library-search > svg,
+.mobile-library-search > svg {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 16px !important;
+  color: var(--ui-muted) !important;
+}
+.library-search input,
+.mobile-library-search input {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 34px !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+}
+.library-search input:focus,
+.library-search input:focus-visible,
+.mobile-library-search input:focus,
+.mobile-library-search input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.search-clear {
+  display: none !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  height: 22px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: color-mix(in srgb, var(--ui-muted) 14%, transparent) !important;
+  color: var(--ui-secondary) !important;
+}
+.search-clear:not([hidden]) { display: inline-flex !important; }
+.search-clear[hidden] { display: none !important; }
+.search-clear svg {
+  width: 12px !important;
+  height: 12px !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 2 !important;
+  stroke-linecap: round !important;
+}
+.search-clear:hover,
+.search-clear:focus-visible {
+  background: color-mix(in srgb, var(--ui-muted) 24%, transparent) !important;
+  color: var(--ui-text) !important;
+}
+@media (max-width: 760px) {
+  .mobile-library-search {
+    height: 42px !important;
+    min-height: 42px !important;
+    border-radius: 6px !important;
+  }
+  .mobile-library-search input { height: 40px !important; }
+}
+@media (min-width: 761px) {
+  /* The mobile content search is intentionally absent from the desktop layout. */
+  .mobile-library-search { display: none !important; }
+}
+/* An empty pager must not reserve a footer-height strip beside the fixed sidebar settings. */
+#pager:empty { display: none !important; }
+
+/* Desktop player layout: the seek rail is the top edge of the player, while
+ * transport controls and track information share one vertically centered row.
+ * Mobile keeps its separate centered transport layout below. */
+@media (min-width: 761px) {
+  .player {
+    height: 76px !important;
+    grid-template-columns: max-content minmax(0, 1fr) max-content !important;
+    grid-template-rows: 1fr !important;
+    align-items: center !important;
+    column-gap: 16px !important;
+    padding: 0 20px !important;
+  }
+  .player .transport {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    width: max-content !important;
+    min-width: 0 !important;
+    justify-content: flex-start !important;
+    align-self: center !important;
+  }
+  .player .now-playing {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    align-self: center !important;
+    min-width: 0 !important;
+  }
+  .player .player-actions {
+    grid-column: 3 !important;
+    grid-row: 1 !important;
+    align-self: center !important;
+  }
+  .player .progress {
+    position: fixed !important;
+    z-index: 60 !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: 64px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: min(720px, calc(100vw - 48px)) !important;
+    height: 24px !important;
+    padding: 0 !important;
+    display: grid !important;
+    grid-template-columns: 38px minmax(0, 1fr) 38px !important;
+    align-items: center !important;
+    column-gap: 10px !important;
+    background: var(--ui-surface) !important;
+  }
+  .player .progress span {
+    display: block !important;
+    color: var(--ui-muted) !important;
+    font-size: 10px !important;
+    line-height: 12px !important;
+    font-variant-numeric: tabular-nums !important;
+    white-space: nowrap !important;
+  }
+  .player .progress #elapsed { grid-column: 1 !important; text-align: left !important; }
+  .player .progress input {
+    grid-column: 2 !important;
+    width: 100% !important;
+    height: 10px !important;
+    margin: 0 !important;
+  }
+  .player .progress #duration { grid-column: 3 !important; text-align: right !important; }
+}
+
+/* Keep the mobile seek rail away from rounded screen corners and align the
+ * time labels to the same inset rather than stretching to the viewport edge. */
+@media (max-width: 760px), (pointer: coarse) and (min-width: 761px) and (max-width: 1100px) {
+  .player .progress {
+    width: auto !important;
+    min-width: 0 !important;
+    margin-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)) !important;
+    justify-self: stretch !important;
+    box-sizing: border-box !important;
+  }
+  .player .progress input {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+}
