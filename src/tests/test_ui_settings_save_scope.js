@@ -37,8 +37,8 @@ function button() {
 
   const source = name => app.match(new RegExp("^function " + name + "\\([\\s\\S]*?^}", "m"))[0];
   const nodes = {
-    saveMetadataSettingsBtn: { disabled: false, textContent: "保存概览设置" },
-    saveMetadataTagSettingsBtn: { disabled: false, textContent: "保存 Tag 写回设置" },
+    saveMetadataSettingsBtn: { disabled: false, textContent: "保存" },
+    saveMetadataTagSettingsBtn: { disabled: false, textContent: "保存" },
     metadataOverviewSettingsStatus: { textContent: "" },
     metadataTagSettingsStatus: { textContent: "Tag 页原提示" },
   };
@@ -57,8 +57,8 @@ function button() {
   await pendingOverview;
   assert.equal(nodes.metadataOverviewSettingsStatus.textContent, "概览设置已保存。");
   assert.equal(nodes.metadataTagSettingsStatus.textContent, "Tag 写回设置已保存。", "late overview completion must not overwrite Tag status");
-  assert.equal(nodes.saveMetadataTagSettingsBtn.textContent, "保存 Tag 写回设置");
-  assert.equal(nodes.saveMetadataSettingsBtn.textContent, "保存概览设置");
+  assert.equal(nodes.saveMetadataTagSettingsBtn.textContent, "保存");
+  assert.equal(nodes.saveMetadataSettingsBtn.textContent, "保存");
   let rejectTag;
   scoped.saveMetadataTagSettings = () => new Promise((_resolve, reject) => { rejectTag = reject; });
   scoped.saveMetadataOverviewSettings = async () => true;

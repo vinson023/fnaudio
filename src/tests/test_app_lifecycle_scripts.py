@@ -150,10 +150,23 @@ class AppLifecycleScriptTests(unittest.TestCase):
         self.assertIn('check_process "${pid}" && is_fnaudio_server_pid "${pid}"', main)
         self.assertIn('if is_fnaudio_server_pid "${pid}"; then', main)
         self.assertIn('*"${APP_ROOT}/server.py"*"--port"*)', main)
-        self.assertNotIn('*"server.py"*"--port"*) return 0', main)
+        # A path-qualified legacy match is intentional; reject only the
+        # unqualified server.py pattern that could terminate an unrelated app.
+        self.assertNotIn('\n    *"server.py"*"--port"*) return 0', main)
         sweep = main.split("cleanup_stale_servers()")[1]
-        self.assertIn('*"@appcenter/fnaudio/"*"server.py"*"--port"*|*"${APP_ROOT}/server.py"*"--port"*)', sweep)
+        self.assertIn(
+            '*"@appcenter/fnaudio/"*"server.py"*"--port"*|'
+            '*"/var/apps/fnaudio/"*"server.py"*"--port"*|'
+            '*"${APP_ROOT}/server.py"*"--port"*)',
+            sweep,
+        )
         self.assertNotIn('"server.py"*)', sweep)
+
+    def test_main_cleans_legacy_fnaudio_server_paths_after_reinstall(self):
+        root = self.project_root()
+        main = (root / "src" / "cmd" / "main").read_text(encoding="utf-8")
+        self.assertIn('*"/var/apps/fnaudio/"*"server.py"*"--port"*', main)
+        self.assertIn('*"/usr/local/apps/@appcenter/fnaudio/"*"server.py"*"--port"*', main)
 
     def test_main_validates_mpd_pid_file_process_identity_before_stop(self):
         root = self.project_root()

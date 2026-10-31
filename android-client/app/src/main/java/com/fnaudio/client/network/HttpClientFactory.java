@@ -50,12 +50,17 @@ public final class HttpClientFactory {
      * returns a usable profile; regular media/UI clients always use create().
      */
     public static OkHttpClient createAuthenticationClient(@Nullable Context context, ConnectionProfile profile) {
+        return createAuthenticationClient(context, profile, null);
+    }
+
+    public static OkHttpClient createAuthenticationClient(@Nullable Context context, ConnectionProfile profile,
+                                                           @Nullable CertificatePin.Observation observation) {
         if (profile == null || !profile.https || !profile.trustSelfSigned
                 || !CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
             return create(context, profile);
         }
         OkHttpClient.Builder builder = create(context, profile).newBuilder();
-        trustFirstUseSelfSigned(builder);
+        trustFirstUseSelfSigned(builder, observation);
         return builder.build();
     }
 
@@ -133,7 +138,6 @@ public final class HttpClientFactory {
                     if (chain == null || chain.length == 0) {
                         throw new CertificateException("server certificate chain is empty");
                     }
-                    chain[0].checkValidity();
                     if (!CertificatePin.matches(normalizedPin, chain[0])) {
                         throw new CertificateException("certificate pin mismatch");
                     }
@@ -153,7 +157,8 @@ public final class HttpClientFactory {
         }
     }
 
-    private static void trustFirstUseSelfSigned(OkHttpClient.Builder builder) {
+    private static void trustFirstUseSelfSigned(OkHttpClient.Builder builder,
+                                                @Nullable CertificatePin.Observation observation) {
         try {
             X509TrustManager trustManager = new X509TrustManager() {
                 @Override
@@ -165,10 +170,13 @@ public final class HttpClientFactory {
                     if (chain == null || chain.length == 0) {
                         throw new CertificateException("server certificate chain is empty");
                     }
+                    if (observation != null) observation.record(chain[0]);
                     // The user explicitly opted into a self-signed endpoint.
                     // FnOsAuthClient observes and persists this certificate's
-                    // pin before any regular client is created.
-                    chain[0].checkValidity();
+                    // exact pin before any regular client is created. For this
+                    // explicitly trusted pinned identity, validity dates do
+                    // not add identity assurance and can block local NASes
+                    // using expired self-signed certificates.
                 }
 
                 @Override

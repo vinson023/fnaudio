@@ -27,6 +27,7 @@ would hide a genuine change to the user's library.
 """
 
 import threading
+import time
 from collections import OrderedDict
 
 # One entry per audio file covers the largest realistic collection, and the LRU
@@ -40,6 +41,8 @@ SELF_WRITE_TEMP_MARKER = ".fnaudio-tagging"
 
 _LOCK = threading.Lock()
 _REVISIONS = OrderedDict()
+_RECENT_PATHS = OrderedDict()
+SELF_WRITE_EVENT_GRACE_SECONDS = 5.0
 
 
 def _clean_path(path):
@@ -81,9 +84,13 @@ def record(path, mtime_ns, size):
         existing = _REVISIONS.get(key)
         _REVISIONS[key] = revision
         _REVISIONS.move_to_end(key)
+        _RECENT_PATHS[key] = time.monotonic()
+        _RECENT_PATHS.move_to_end(key)
         if existing is None:
             while len(_REVISIONS) > MAX_TRACKED_REVISIONS:
                 _REVISIONS.popitem(last=False)
+        while len(_RECENT_PATHS) > MAX_TRACKED_REVISIONS:
+            _RECENT_PATHS.popitem(last=False)
     return True
 
 
@@ -126,6 +133,27 @@ def matches_stat(path, stat_result):
     )
 
 
+def recent_path(path, max_age=SELF_WRITE_EVENT_GRACE_SECONDS):
+    """Return true for a short-lived rename/delete event from our tag writer."""
+    key = _clean_path(path)
+    try:
+        age = float(max_age)
+    except (TypeError, ValueError, OverflowError):
+        age = SELF_WRITE_EVENT_GRACE_SECONDS
+    if key is None or age < 0:
+        return False
+    now = time.monotonic()
+    with _LOCK:
+        created = _RECENT_PATHS.get(key)
+        if created is None:
+            return False
+        if now - created <= age:
+            _RECENT_PATHS.move_to_end(key)
+            return True
+        _RECENT_PATHS.pop(key, None)
+        return False
+
+
 def is_self_write_artifact(filename):
     """True for the staging files this process writes next to a track.
 
@@ -151,6 +179,7 @@ def clear():
     """Forget every remembered revision."""
     with _LOCK:
         _REVISIONS.clear()
+        _RECENT_PATHS.clear()
 
 
 __all__ = [
@@ -160,6 +189,7 @@ __all__ = [
     "is_self_write_artifact",
     "matches",
     "matches_stat",
+    "recent_path",
     "record",
     "record_from_stat",
     "tracked_count",

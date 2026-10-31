@@ -207,6 +207,15 @@ if (!mainActivity.includes("EXTRA_PREFILL_ACTIVE_PROFILE, true")
     || !loginActivity.includes("if (prefillActive && active != null) fillForm(active, false)")) {
   throw new Error("Explicit logout must prefill the last active connection without auto-resuming it");
 }
+if (!index.includes('id="mobileLogoutBtn"')
+    || index.indexOf('id="mobileLogoutBtn"') > index.indexOf('id="mobileSettingsNavBtn"')
+    || !source.includes("mobileLogoutButton.closest(\".sidebar-settings\")?.classList.add(\"android-session-actions\")")
+    || !source.includes("window.FnAudioNative.logout()")
+    || !nativeBridge.includes("void logout()")
+    || !mainActivity.includes("void logout()")
+    || !mainActivity.includes("store.setActive(\"\")")) {
+  throw new Error("Android mobile navigation must expose logout above settings and clear the active session");
+}
 if (!mainActivity.includes("isFnConnectProfile(candidate)")
     || mainActivity.includes("isStoredRelayProfile(candidate)")) {
   throw new Error("Every stored FN Connect profile must refresh its official endpoint before token recovery");

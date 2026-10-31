@@ -70,7 +70,7 @@ is_fnaudio_server_pid() {
   [ -r "/proc/${candidate}/cmdline" ] || return 1
   cmdline="$(tr '\000' ' ' < "/proc/${candidate}/cmdline" 2>/dev/null)"
   case "${cmdline}" in
-    *"${APP_ROOT}/server.py"*"--port"*) return 0 ;;
+    *"${APP_ROOT}/server.py"*"--port"*|*"/var/apps/fnaudio/"*"server.py"*"--port"*|*"/usr/local/apps/@appcenter/fnaudio/"*"server.py"*"--port"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -108,7 +108,7 @@ cleanup_stale_servers() {
     [ "${candidate}" = "${keep_pid}" ] && continue
     cmdline="$(tr '\000' ' ' < "${proc}/cmdline" 2>/dev/null)"
     case "${cmdline}" in
-      *"@appcenter/fnaudio/"*"server.py"*"--port"*|*"${APP_ROOT}/server.py"*"--port"*)
+      *"@appcenter/fnaudio/"*"server.py"*"--port"*|*"/var/apps/fnaudio/"*"server.py"*"--port"*|*"${APP_ROOT}/server.py"*"--port"*)
         log_msg "Stopping stale fnAudio server PID ${candidate}"
         stop_pid "${candidate}" 10
         ;;

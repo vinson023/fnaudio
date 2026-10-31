@@ -296,10 +296,18 @@ public final class PlaybackService extends MediaSessionService {
         }
         releaseRemoteWakeLock();
         if (httpClient != null) {
-            httpClient.dispatcher().cancelAll();
-            httpClient.dispatcher().executorService().shutdownNow();
-            httpClient.connectionPool().evictAll();
+            OkHttpClient client = httpClient;
             httpClient = null;
+            Thread cleanup = new Thread(() -> {
+                try {
+                    client.dispatcher().cancelAll();
+                    client.connectionPool().evictAll();
+                } finally {
+                    client.dispatcher().executorService().shutdownNow();
+                }
+            }, "fnaudio-playback-http-cleanup");
+            cleanup.setDaemon(true);
+            cleanup.start();
         }
         super.onDestroy();
     }

@@ -247,7 +247,7 @@ test('Mobile sidebar settings stay docked below the scrolling library navigation
   await page.screenshot({path:info.outputPath('sidebar-settings-fixed-mobile.png')});
 });
 
-test('Desktop player puts progress on its top edge and transport before track details', async ({page}, info) => {
+test('Desktop player uses a full-width progress rail and puts time under track details', async ({page}, info) => {
   await load(page, 1440, 900);
   const layout = await page.evaluate(() => {
     const box = selector => {
@@ -260,17 +260,23 @@ test('Desktop player puts progress on its top edge and transport before track de
       elapsed: box('.player #elapsed'),
       seek: box('.player #seek'),
       duration: box('.player #duration'),
+      nowTime: box('.player #nowTime'),
       transport: box('.player .transport'),
       track: box('.player .now-playing'),
       actions: box('.player .player-actions'),
     };
   });
-  expect(Math.abs(layout.progress.top - layout.player.top)).toBeLessThanOrEqual(1);
-  expect(layout.progress.width).toBeLessThan(layout.player.width);
-  expect(layout.elapsed.left).toBeGreaterThan(layout.player.left);
-  expect(layout.duration.right).toBeLessThan(layout.player.right);
-  expect(layout.seek.left).toBeGreaterThan(layout.elapsed.right);
-  expect(layout.seek.right).toBeLessThan(layout.duration.left);
+  expect(Math.abs(layout.progress.bottom - layout.player.top)).toBeLessThanOrEqual(1);
+  expect(layout.progress.left - layout.player.left).toBeGreaterThanOrEqual(0);
+  expect(layout.player.right - layout.progress.right).toBeGreaterThanOrEqual(0);
+  expect(layout.progress.width).toBeGreaterThan(layout.player.width - 48);
+  expect(layout.elapsed.width).toBe(0);
+  expect(layout.duration.width).toBe(0);
+  expect(layout.nowTime.top).toBeGreaterThan(layout.track.top);
+  expect(layout.nowTime.left).toBeGreaterThanOrEqual(layout.track.left);
+  await expect(page.locator('#transportStateUnknown')).toBeHidden();
+  expect(layout.seek.left).toBeGreaterThanOrEqual(layout.progress.left);
+  expect(layout.seek.right).toBeLessThanOrEqual(layout.progress.right);
   expect(layout.transport.left).toBeLessThan(layout.track.left);
   for (const child of [layout.transport, layout.track, layout.actions]) {
     expect(Math.abs((child.top + child.bottom) / 2 - (layout.player.top + layout.player.bottom) / 2)).toBeLessThanOrEqual(1);
@@ -284,6 +290,7 @@ test('Mobile player keeps previous, play and next controls centered', async ({pa
     const player = document.querySelector('.player').getBoundingClientRect();
     const progress = document.querySelector('.player .progress').getBoundingClientRect();
     const transport = document.querySelector('.player .transport').getBoundingClientRect();
+    const nowTime = document.querySelector('#nowTime').getBoundingClientRect();
     const previous = document.querySelector('#prevBtn').getBoundingClientRect();
     const play = document.querySelector('#playBtn').getBoundingClientRect();
     const next = document.querySelector('#nextBtn').getBoundingClientRect();
@@ -292,6 +299,11 @@ test('Mobile player keeps previous, play and next controls centered', async ({pa
       progressLeft: progress.left,
       progressRight: progress.right,
       progressCenter: (progress.left + progress.right) / 2,
+      progressBottom: progress.bottom,
+      playerTop: player.top,
+      playerBottom: player.bottom,
+      transportBottom: transport.bottom,
+      transportTop: transport.top,
       transportCenter: (transport.left + transport.right) / 2,
       previousCenter: (previous.left + previous.right) / 2,
       playCenter: (play.left + play.right) / 2,
@@ -299,17 +311,20 @@ test('Mobile player keeps previous, play and next controls centered', async ({pa
     };
   });
   expect(Math.abs(geometry.transportCenter - geometry.playerCenter)).toBeLessThanOrEqual(2);
+  expect(geometry.playerBottom - geometry.transportBottom).toBeGreaterThanOrEqual(12);
   expect(Math.abs(geometry.progressCenter - geometry.playerCenter)).toBeLessThanOrEqual(1);
-  expect(geometry.progressLeft).toBeGreaterThanOrEqual(16);
-  expect(geometry.progressRight).toBeLessThanOrEqual(359);
+  expect(Math.abs(geometry.progressBottom - geometry.playerTop)).toBeLessThanOrEqual(1);
+  expect(geometry.progressLeft).toBe(0);
+  expect(geometry.progressRight).toBe(375);
   expect(geometry.previousCenter).toBeLessThan(geometry.playCenter);
   expect(geometry.playCenter).toBeLessThan(geometry.nextCenter);
   await page.screenshot({path:info.outputPath('mobile-player-centered-controls.png')});
 });
 
-test('Player progress uses a thin blue rail with time labels below', async ({page}, info) => {
+test('Player progress uses a full-width thin rail with time under song details', async ({page}, info) => {
   await load(page, 375, 812);
   const geometry = await page.evaluate(() => {
+    const player = document.querySelector('.player').getBoundingClientRect();
     const seek = document.querySelector('#seek');
     seek.value = '50';
     updateSeekRail(50);
@@ -321,20 +336,24 @@ test('Player progress uses a thin blue rail with time labels below', async ({pag
     const thumb = getComputedStyle(seek, '::-webkit-slider-thumb');
     return {
       rail: box('#seek'),
+      player,
       elapsed: box('#elapsed'),
       duration: box('#duration'),
+      nowTime: box('#nowTime'),
       trackHeight: track.height,
       thumbWidth: thumb.width,
       fill: seek.style.getPropertyValue('--seek-fill'),
     };
   });
-  // Chromium reports the range's 8px hit target for the pseudo-track; the
-  // source contract above pins the painted rail itself to 4px.
-  expect(geometry.rail.height).toBe(8);
-  expect(geometry.elapsed.top).toBeGreaterThanOrEqual(geometry.rail.top);
-  expect(geometry.duration.top).toBeGreaterThanOrEqual(geometry.rail.top);
-  expect(geometry.elapsed.left).toBeLessThan(geometry.duration.left);
-  expect(geometry.duration.right).toBeLessThanOrEqual(375);
+  expect(geometry.rail.height).toBe(4);
+  expect(geometry.elapsed.width).toBe(0);
+  expect(geometry.duration.width).toBe(0);
+  expect(geometry.nowTime.top).toBeGreaterThanOrEqual(geometry.player.top);
+  expect(geometry.nowTime.bottom).toBeLessThanOrEqual(geometry.player.bottom);
+  expect(Math.abs(geometry.rail.bottom - geometry.player.top)).toBeLessThanOrEqual(1);
+  await expect(page.locator('#transportStateUnknown')).toBeHidden();
+  expect(geometry.rail.left).toBe(0);
+  expect(geometry.rail.right).toBe(375);
   expect(geometry.fill).toBe('50%');
   await screenshot(page, info, 'player-progress-reference-style');
 });

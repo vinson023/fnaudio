@@ -1,6 +1,6 @@
 # fnAudio
 
-fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.2.113`。
+fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebView + 原生媒体服务的轻量 Android 客户端。当前配套版本为 `0.2.129`。
 
 项目同时提供浏览器播放、本机 MPD/ALSA/USB DAC 输出、外部 DLNA 推送，并可作为 DLNA MediaServer 和 MediaRenderer。后端使用 Python 3.12 标准库和 SQLite，前端使用原生 HTML、CSS、JavaScript。
 
@@ -8,7 +8,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 | 项目 | 值 |
 | --- | --- |
-| 版本 | `0.2.113` |
+| 版本 | `0.2.129` |
 | 平台 | fnOS x86；Android 6.0（API 23）及以上 |
 | fnOS 源码 | `C:\path\to\fnAudio\src` |
 | Android 源码 | `C:\path\to\fnAudio\android-client` |
@@ -19,7 +19,7 @@ fnAudio 是面向 fnOS 的本地音乐库与多目标播放器，并提供 WebVi
 
 目录名 `fnaudio-0.1.7` 是历史遗留，不代表当前发布版本。版本判断始终以 `src/manifest` 为准。
 
-项目根目录已初始化为 Git 仓库；`0.2.113` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
+项目根目录已初始化为 Git 仓库；`0.2.129` 同时版本化 fnOS FPK 和 Android APK。FPK、APK、派生检查目录、运行时数据、缓存和嵌套第三方仓库由 `.gitignore` 排除，但其哈希和验证记录进入版本控制。
 
 <img width="1451" height="711" alt="fnAudio 界面" src="https://github.com/user-attachments/assets/59466282-df30-4450-873a-2ebc4568d5e0" />
 
@@ -85,9 +85,9 @@ Windows 本地验证不能替代 fnOS/Android 真机测试。MPD、FFmpeg、ALSA
 
 ## 发布说明
 
-当前发布基线为 `0.2.113`；下方旧版本记录仅用于历史追溯。
+当前发布基线为 `0.2.129`；下方旧版本记录仅用于历史追溯。
 
-当前开发版本为 `0.2.113`。Android 的 FN Connect 可在公网与 P2P 中继间显式选择，并按短 token、longToken、加密保存密码的顺序重建会话。后台元数据抓取与歌曲 Tag 写回是两个独立设置；写回默认关闭。FPK 必须通过 `tools/build_release.ps1` 从唯一的 `src/` 源目录构建；产物位于 `artifacts/0.2.113/`。播放栈对比和限制见 `docs/PLAYBACK_STACK_COMPARISON.md`。
+当前开发版本为 `0.2.129`。Android 的 FN Connect 可在公网与 P2P 中继间显式选择，并按短 token、longToken、加密保存密码的顺序重建会话。后台元数据抓取与歌曲 Tag 写回是两个独立设置；写回默认关闭。FPK 必须通过 `tools/build_release.ps1` 从唯一的 `src/` 源目录构建；产物位于 `artifacts/0.2.129/`。播放栈对比和限制见 `docs/PLAYBACK_STACK_COMPARISON.md`。
 
 当前离线工程状态包括 DLNA 出站网络边界、API scope 授权、结构化可观测性、用户状态并发合并、10 万曲分页基准、ContentDirectory 浏览语义和 WAV/DFF 边缘格式夹具。恢复会话后先运行 `tools/test_offline.ps1`，再依据 `TODO.md` 选择仍未完成的部署或硬件项目。
 

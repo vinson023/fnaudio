@@ -5,12 +5,26 @@ import android.os.Bundle;
 
 import java.io.ByteArrayInputStream;
 import java.security.cert.CertificateFactory;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 
 import okio.ByteString;
 
 public final class CertificatePin {
     private static final String PREFIX = "sha256/";
+
+    public static final class Observation {
+        private volatile String pin = "";
+
+        public void record(X509Certificate certificate) {
+            String observed = CertificatePin.of(certificate);
+            if (!observed.isEmpty()) pin = observed;
+        }
+
+        public String pin() {
+            return pin;
+        }
+    }
 
     private CertificatePin() {
     }
@@ -21,6 +35,15 @@ public final class CertificatePin {
     }
 
     public static String of(X509Certificate certificate) {
+        return of((Certificate) certificate);
+    }
+
+    /**
+     * OkHttp exposes TLS peer certificates as the generic Certificate type.
+     * Do not require the concrete object to be an X509Certificate: Android's
+     * provider may wrap the same X.509 leaf with another Certificate class.
+     */
+    public static String of(Certificate certificate) {
         if (certificate == null) return "";
         try {
             return ofEncoded(certificate.getEncoded());
@@ -32,6 +55,15 @@ public final class CertificatePin {
     static String ofEncoded(byte[] encoded) {
         if (encoded == null || encoded.length == 0) return "";
         return PREFIX + ByteString.of(encoded).sha256().base64();
+    }
+
+    static String firstAvailable(String... candidates) {
+        if (candidates == null) return "";
+        for (String candidate : candidates) {
+            String normalized = normalize(candidate);
+            if (!normalized.isEmpty()) return normalized;
+        }
+        return "";
     }
 
     public static boolean matches(String expected, X509Certificate certificate) {

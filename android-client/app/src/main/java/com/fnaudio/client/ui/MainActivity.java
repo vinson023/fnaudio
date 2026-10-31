@@ -1297,6 +1297,53 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         finish();
     }
 
+    @Override
+    public void logout() {
+        runOnUiThread(() -> {
+            if (destroyed || isFinishing() || isDestroyed()) return;
+            ConnectionProfile signedOutProfile = profile;
+            SecureProfileStore store = new SecureProfileStore(this);
+            try {
+                if (signedOutProfile != null) store.upsert(signedOutProfile.withTokens("", ""), false);
+                store.setActive("");
+            } catch (RuntimeException error) {
+                Log.w("fnAudio", "Could not fully persist logout state", error);
+            }
+            PlaybackRuntimeConfig.activate(null);
+
+            Intent intent = new Intent(this, LoginActivity.class)
+                    .putExtra(LoginActivity.EXTRA_SKIP_AUTO_RESUME, true);
+            if (signedOutProfile != null) {
+                intent.putExtra(LoginActivity.EXTRA_PREFILL_PROFILE_ID, signedOutProfile.id);
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(intent);
+            finish();
+            stopService(new Intent(this, PlaybackService.class));
+            if (signedOutProfile != null) {
+                Thread cookieCleanup = new Thread(() -> clearProfileCookies(signedOutProfile),
+                        "fnaudio-cookie-cleanup");
+                cookieCleanup.setDaemon(true);
+                cookieCleanup.start();
+            }
+        });
+    }
+
+    private void clearProfileCookies(ConnectionProfile target) {
+        CookieManager cookies = CookieManager.getInstance();
+        String currentCookies = cookies.getCookie(target.httpOrigin());
+        if (currentCookies == null || currentCookies.isEmpty()) return;
+        String secure = target.https ? "; Secure" : "";
+        for (String entry : currentCookies.split(";")) {
+            int separator = entry.indexOf('=');
+            if (separator <= 0) continue;
+            String name = entry.substring(0, separator).trim();
+            if (name.isEmpty()) continue;
+            cookies.setCookie(target.httpOrigin(), name + "=; Max-Age=0; Path=/; SameSite=Lax" + secure);
+        }
+        cookies.flush();
+    }
+
     private void installBackHandler() {
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -1420,13 +1467,19 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             OkHttpClient client;
             synchronized (nativeHttpCalls) {
                 client = webResourceClient;
-                for (Call call : nativeHttpCalls.values()) call.cancel();
                 nativeHttpCalls.clear();
                 webResourceClient = null;
             }
-            client.dispatcher().cancelAll();
-            client.connectionPool().evictAll();
-            client.dispatcher().executorService().shutdown();
+            Thread cleanup = new Thread(() -> {
+                try {
+                    client.dispatcher().cancelAll();
+                    client.connectionPool().evictAll();
+                } finally {
+                    client.dispatcher().executorService().shutdown();
+                }
+            }, "fnaudio-http-cleanup");
+            cleanup.setDaemon(true);
+            cleanup.start();
         }
         if (coverCache != null) {
             coverCache.shutdown();

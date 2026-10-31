@@ -1,5 +1,21 @@
 const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放" };
 const $ = (id) => document.getElementById(id);
+const SETTINGS_SAVE_BUTTON_IDS = [
+  "saveLibrarySettingsBtn",
+  "savePlaybackSettingsBtn",
+  "saveRuntimeSettingsBtn",
+  "saveMetadataSettingsBtn",
+  "saveMetadataTagSettingsBtn",
+  "saveMetadataProvidersBtn",
+  "saveDlnaSettingsBtn",
+];
+function normalizeSettingsSaveLabels() {
+  SETTINGS_SAVE_BUTTON_IDS.forEach(id => {
+    const button = $(id);
+    if (button) button.textContent = "保存";
+  });
+}
+normalizeSettingsSaveLabels();
 state.playTargetName = "当前设备";
 const MUSICBRAINZ_PROVIDER_ID = "musicbrainz";
 const METADATA_PROVIDER_SAFE_ORDER = ["netease", "kuwo", "kugou", "migu", "joox", MUSICBRAINZ_PROVIDER_ID];
@@ -7907,7 +7923,7 @@ function ensureMetadataProviderSaveAction() {
     button.type = "button";
     button.className = "secondary-button";
     button.id = "saveMetadataProvidersBtn";
-    button.textContent = "保存数据源设置";
+    button.textContent = "保存";
     actions.append(button);
   }
   button.onclick = saveMetadataProviderPaneSettings;
@@ -8470,7 +8486,6 @@ async function chooseLibraryPath() {
 async function saveSettingsPane(button, statusNode, saveAction, successMessage = "已保存。") {
   if (!button || typeof saveAction !== "function") return false;
   button.disabled = true;
-  const originalText = button.textContent;
   button.textContent = "正在保存...";
   const setStatusClass = (name, enabled) => {
     if (statusNode?.classList && typeof statusNode.classList.toggle === "function") {
@@ -8500,7 +8515,7 @@ async function saveSettingsPane(button, statusNode, saveAction, successMessage =
     return false;
   } finally {
     button.disabled = false;
-    button.textContent = originalText;
+    button.textContent = "保存";
   }
 }
 function saveLibrarySettings() {
@@ -9803,6 +9818,17 @@ function setMobileNavigation(open) {
 }
 $("mobileNavBtn").onclick = () => setMobileNavigation(!document.querySelector(".sidebar")?.classList.contains("mobile-open"));
 $("mobileNavBackdrop").onclick = () => setMobileNavigation(false);
+const mobileLogoutButton = $("mobileLogoutBtn");
+if (mobileLogoutButton && nativeBridgeAvailable()) {
+  mobileLogoutButton.hidden = false;
+  mobileLogoutButton.closest(".sidebar-settings")?.classList.add("android-session-actions");
+  mobileLogoutButton.onclick = () => {
+    setMobileNavigation(false);
+    try { window.FnAudioNative.logout(); } catch (ignore) {}
+  };
+} else {
+  mobileLogoutButton?.remove();
+}
 $("mobileSettingsNavBtn").onclick = () => {
   setMobileNavigation(false);
   openFolderBrowser();

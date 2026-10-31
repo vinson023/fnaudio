@@ -424,7 +424,7 @@ class LibraryChangeMonitor:
             directories[:] = [name for name in directories if not os.path.islink(os.path.join(base, name))]
 
     @staticmethod
-    def _is_own_write_event(path, name):
+    def _is_own_write_event(path, name, mask=0):
         """True for a file event caused by fnAudio writing tags itself.
 
         The writer stages ``song.flac.fnaudio-tagging.flac`` beside the track
@@ -437,6 +437,8 @@ class LibraryChangeMonitor:
         """
         if library_self_write.is_self_write_artifact(name):
             return True
+        if mask & (LibraryChangeMonitor.IN_MOVED_FROM | LibraryChangeMonitor.IN_DELETE | LibraryChangeMonitor.IN_DELETE_SELF):
+            return library_self_write.recent_path(path)
         if not path or not name:
             return False
         try:
@@ -495,7 +497,7 @@ class LibraryChangeMonitor:
                                 self.available = False
                 continue
             if not name or os.path.splitext(name)[1].lower() in SUPPORTED:
-                if not self._is_own_write_event(path, name):
+                if not self._is_own_write_event(path, name, mask):
                     self._mark_dirty()
 
     def _run(self):

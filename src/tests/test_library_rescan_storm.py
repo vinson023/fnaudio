@@ -198,6 +198,21 @@ class OwnWriteEventTests(unittest.TestCase):
         self.assertTrue(library_self_write.record_from_stat(track, os.stat(track)))
         self.assertFalse(self.dirty_after("song.flac"))
 
+    def test_a_recorded_revision_suppresses_replace_delete_event(self):
+        track = os.path.join(self.music, "song.flac")
+        with open(track, "wb") as handle:
+            handle.write(b"written by fnAudio")
+        self.assertTrue(library_self_write.record_from_stat(track, os.stat(track)))
+        self.assertFalse(self.dirty_after("song.flac", self.monitor.IN_MOVED_FROM | self.monitor.IN_DELETE))
+
+    def test_a_real_delete_after_a_self_write_window_still_marks_dirty(self):
+        track = os.path.join(self.music, "song.flac")
+        with open(track, "wb") as handle:
+            handle.write(b"written by fnAudio")
+        self.assertTrue(library_self_write.record_from_stat(track, os.stat(track)))
+        library_self_write.clear()
+        self.assertTrue(self.dirty_after("song.flac", self.monitor.IN_MOVED_FROM | self.monitor.IN_DELETE))
+
     def test_a_change_nobody_recorded_still_dirty_the_monitor(self):
         track = os.path.join(self.music, "other.flac")
         with open(track, "wb") as handle:

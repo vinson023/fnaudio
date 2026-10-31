@@ -71,10 +71,15 @@ public final class FnConnectResolver {
     }
 
     public void resolve(String rawFnId, Callback callback) {
-        resolve(rawFnId, Mode.AUTO, callback);
+        resolve(rawFnId, Mode.AUTO, false, callback);
     }
 
     public void resolve(String rawFnId, Mode mode, Callback callback) {
+        resolve(rawFnId, mode, false, callback);
+    }
+
+    /** Resolves only the transport explicitly selected by the login form. */
+    public void resolve(String rawFnId, Mode mode, boolean useHttps, Callback callback) {
         String fnId = rawFnId == null ? "" : rawFnId.trim().toLowerCase(java.util.Locale.ROOT);
         // Reserve the request generation before constructing the request. A
         // caller can issue two resolves concurrently; the later invocation
@@ -134,12 +139,12 @@ public final class FnConnectResolver {
                         }
                         return;
                     }
-                    ConnectionProfile resolved = choose(fnId, data, generation);
+                    ConnectionProfile resolved = choose(fnId, data, generation, useHttps);
                     if (resolved != null) {
                         finish(call, generation, () -> callback.onResolved(resolved));
                     } else {
-                        ConnectionProfile fallback = fallback(fnId, data);
-                        if (mode == Mode.AUTO && relayConfigClient != null && tunnel != null) {
+                        ConnectionProfile fallback = fallback(fnId, data, useHttps);
+                        if (mode == Mode.AUTO && !useHttps && relayConfigClient != null && tunnel != null) {
                             beginRelay(call, generation, fnId, fallback, callback);
                         } else if (fallback != null) {
                             finish(call, generation, () -> callback.onResolved(fallback));
@@ -313,7 +318,7 @@ public final class FnConnectResolver {
         });
     }
 
-    private ConnectionProfile choose(String fnId, JSONObject data, long generation) {
+    private ConnectionProfile choose(String fnId, JSONObject data, long generation, boolean useHttps) {
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
@@ -327,15 +332,17 @@ public final class FnConnectResolver {
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
         long deadlineElapsedRealtime = SystemClock.elapsedRealtime() + DIRECT_PROBE_BUDGET_MS;
-        ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, generation, deadlineElapsedRealtime);
+        ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps,
+                generation, deadlineElapsedRealtime);
         if (ipv6 != null) return ipv6;
-        ConnectionProfile ipv4 = firstReachable(fnId, ipv4Hosts, false, httpPort, httpsPort, generation, deadlineElapsedRealtime);
+        ConnectionProfile ipv4 = firstReachable(fnId, ipv4Hosts, false, httpPort, httpsPort, useHttps,
+                generation, deadlineElapsedRealtime);
         if (ipv4 != null) return ipv4;
         return null;
     }
 
     @Nullable
-    private ConnectionProfile fallback(String fnId, JSONObject data) {
+    private ConnectionProfile fallback(String fnId, JSONObject data, boolean useHttps) {
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
@@ -348,12 +355,12 @@ public final class FnConnectResolver {
             collect(ipv6Hosts, network, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
-        ConnectionProfile ipv6 = firstPublished(fnId, ipv6Hosts, true, httpPort, httpsPort);
-        return ipv6 != null ? ipv6 : firstPublished(fnId, ipv4Hosts, false, httpPort, httpsPort);
+        ConnectionProfile ipv6 = firstPublished(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps);
+        return ipv6 != null ? ipv6 : firstPublished(fnId, ipv4Hosts, false, httpPort, httpsPort, useHttps);
     }
 
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,
-                                             int httpPort, int httpsPort, long generation,
+                                             int httpPort, int httpsPort, boolean useHttps, long generation,
                                              long deadlineElapsedRealtime) {
         // Keep the service order supplied by FN Connect. A device can expose
         // multiple IPv6 addresses (for example different WAN prefixes); each
@@ -364,7 +371,7 @@ public final class FnConnectResolver {
             if (remainingMs <= 0L) return null;
             String host = normalizeHost(rawHost);
             if (host.isEmpty() || isIpv6(host) != ipv6) continue;
-            for (Endpoint endpoint : endpoints(httpPort, httpsPort)) {
+            for (Endpoint endpoint : endpoints(httpPort, httpsPort, useHttps)) {
                 remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
                 if (remainingMs <= 0L) return null;
                 int timeoutMs = (int) Math.min(DIRECT_PROBE_TIMEOUT_MS, Math.max(1L, remainingMs));
@@ -378,25 +385,24 @@ public final class FnConnectResolver {
     }
 
     private ConnectionProfile firstPublished(String fnId, Set<String> hosts, boolean ipv6,
-                                              int httpPort, int httpsPort) {
+                                              int httpPort, int httpsPort, boolean useHttps) {
         for (String rawHost : hosts) {
             String host = normalizeHost(rawHost);
             if (host.isEmpty() || isIpv6(host) != ipv6) continue;
-            Endpoint endpoint = endpoints(httpPort, httpsPort).get(0);
+            Endpoint endpoint = endpoints(httpPort, httpsPort, useHttps).get(0);
             return ConnectionProfile.create("", "FN Connect - " + fnId, host,
                     endpoint.port, endpoint.https, false, "", "");
         }
         return null;
     }
 
-    private static List<Endpoint> endpoints(int httpPort, int httpsPort) {
+    static List<Endpoint> endpoints(int httpPort, int httpsPort, boolean useHttps) {
         List<Endpoint> endpoints = new ArrayList<>();
-        endpoints.add(new Endpoint(httpPort, false));
-        if (httpsPort != httpPort) endpoints.add(new Endpoint(httpsPort, true));
+        endpoints.add(new Endpoint(useHttps ? httpsPort : httpPort, useHttps));
         return endpoints;
     }
 
-    private static final class Endpoint {
+    static final class Endpoint {
         final int port;
         final boolean https;
         Endpoint(int port, boolean https) { this.port = port; this.https = https; }

@@ -53,6 +53,9 @@ public final class NativePlaybackBridge {
         MediaController controller();
 
         void dispatchWhenReady(ControllerCommand command);
+
+        default void logout() {
+        }
     }
 
     public interface HttpRequestHandler {
@@ -79,6 +82,11 @@ public final class NativePlaybackBridge {
     @JavascriptInterface
     public boolean isAvailable() {
         return true;
+    }
+
+    @JavascriptInterface
+    public void logout() {
+        provider.logout();
     }
 
     /** Switches the native MediaSession to a metadata/control-only remote player. */

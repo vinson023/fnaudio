@@ -17,7 +17,6 @@ import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -72,6 +71,7 @@ public final class FnOsAuthClient {
         private final Callback callback;
         private final AtomicBoolean completed = new AtomicBoolean(false);
         private final AtomicBoolean deliverCallback = new AtomicBoolean(true);
+        private final CertificatePin.Observation tlsObservation = new CertificatePin.Observation();
         private final OkHttpClient client;
         private final Runnable timeoutRunnable = () -> finishError("连接超时，请检查地址、端口和 HTTPS 设置。");
         private ConnectionProfile verifiedProfile;
@@ -85,7 +85,7 @@ public final class FnOsAuthClient {
             this.verifiedProfile = profile;
             this.password = password;
             this.callback = callback;
-            this.client = HttpClientFactory.createAuthenticationClient(context, profile);
+            this.client = HttpClientFactory.createAuthenticationClient(context, profile, tlsObservation);
         }
 
         private void connect() {
@@ -155,10 +155,15 @@ public final class FnOsAuthClient {
                 String observedPin = "";
                 if (response.handshake() != null && !response.handshake().peerCertificates().isEmpty()) {
                     Certificate certificate = response.handshake().peerCertificates().get(0);
-                    if (certificate instanceof X509Certificate) {
-                        observedPin = CertificatePin.of((X509Certificate) certificate);
-                    }
+                    observedPin = CertificatePin.of(certificate);
                 }
+                // Some Android WebSocket stacks omit peerCertificates even
+                // after the pinned trust manager accepted the TLS connection.
+                // A stored pin is safe here because the handshake already
+                // proved the peer matched it; first-use still requires the
+                // trust-manager observation below.
+                observedPin = CertificatePin.firstAvailable(
+                        observedPin, tlsObservation.pin(), profile.certificatePinSha256);
                 if (observedPin.isEmpty()) {
                     finishError("无法读取服务器证书指纹，已拒绝自签名 HTTPS 连接。");
                     return;

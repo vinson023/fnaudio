@@ -116,7 +116,9 @@ assert.match(finalThemeMobileContract, /\.transport\s*\{[\s\S]*?width:\s*max-con
 assert.match(themeCss, /\.progress input,[\s\S]*?#seek\s*\{[\s\S]*?flex:\s*1 1 0\s*!important;[\s\S]*?width:\s*auto\s*!important;[\s\S]*?min-width:\s*0\s*!important;/, "the loaded FNOS theme must let the seek range absorb remaining width without overflow");
 assert.match(themeCss, /\.progress input::-webkit-slider-runnable-track\s*\{[\s\S]*?height:\s*4px\s*!important;[\s\S]*?background:\s*linear-gradient\(/, "the seek rail must use the thin blue and gray visual style");
 assert.match(themeCss, /\.progress input::-webkit-slider-thumb\s*\{[\s\S]*?width:\s*6px\s*!important;[\s\S]*?height:\s*6px\s*!important;[\s\S]*?background:\s*var\(--ui-accent\)\s*!important;/, "the seek rail must use a small, usable progress handle");
-assert.match(themeCss, /\.progress #elapsed,\s*\.progress #duration\s*\{[\s\S]*?font-variant-numeric:\s*tabular-nums/, "progress time labels must remain stable at both ends of the rail");
-assert.match(themeCss, /\.progress\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)\s*!important;[\s\S]*?grid-template-rows:\s*8px\s+12px\s*!important;/, "progress must place its slim rail above the time labels");
+assert.match(themeCss, /\.now-meta #nowTime\s*\{[^}]*display:\s*block\s*!important;/, "the elapsed and total time must appear under the song information");
+assert.match(themeCss, /\.player \.progress #elapsed,\s*\.player \.progress #duration\s*\{[^}]*display:\s*none\s*!important;/, "the time labels must not occupy either end of the progress rail");
+assert.match(themeCss, /\.player \.progress #transportStateUnknown\s*\{[^}]*display:\s*none\s*!important;/, "unknown transport state must remain hidden");
+assert.match(themeCss, /\.player \.progress\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*!important;/, "progress must use one full-width track without time columns");
 
 console.log("Mobile layout regression checks passed.");

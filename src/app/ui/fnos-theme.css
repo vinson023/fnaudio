@@ -1057,6 +1057,22 @@ html.fnaudio-android-client .content {
   }
 }
 
+html.fnaudio-android-client .mobile-settings-nav-item { display: flex !important; }
+html.fnaudio-android-client .sidebar-settings.android-session-actions {
+  height: auto !important;
+  min-height: 0 !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+  padding-block: 4px !important;
+}
+html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item {
+  width: 100% !important;
+  min-height: 40px !important;
+  box-sizing: border-box !important;
+}
+.sidebar-settings .mobile-logout-nav-item[hidden] { display: none !important; }
+
 /* Keep the scrollbar and settings action on the outer edge without wasting a
  * second horizontal gutter inside the sidebar. */
 .sidebar {
@@ -1263,5 +1279,80 @@ html.fnaudio-android-client .content {
   .player .progress input {
     min-width: 0 !important;
     max-width: 100% !important;
+  }
+}
+
+/* Keep timing with the song identity and align the seek rail to the player edge. */
+.now-meta #nowTime {
+  display: block !important;
+  margin-top: 2px !important;
+  color: var(--ui-muted) !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+}
+.player .progress #elapsed,
+.player .progress #duration {
+  display: none !important;
+}
+.player .progress {
+  position: fixed !important;
+  z-index: 60 !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: var(--ui-player-height) !important;
+  transform: none !important;
+  width: auto !important;
+  height: 4px !important;
+  min-width: 0 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: 4px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  gap: 0 !important;
+  background: transparent !important;
+}
+.player .progress input {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  height: 4px !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+}
+.player .progress #transportStateUnknown {
+  display: none !important;
+}
+@media (max-width: 760px), (pointer: coarse) and (min-width: 761px) and (max-width: 1100px) {
+  :root { --ui-player-height: 142px; }
+  .player {
+    grid-template-rows: 58px 16px 50px !important;
+    height: 142px !important;
+  }
+  .player .progress {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: var(--ui-player-height) !important;
+    width: auto !important;
+    height: 4px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .player .progress input {
+    height: 4px !important;
+    width: 100% !important;
+  }
+  .player .transport {
+    grid-column: 1 / -1 !important;
+    grid-row: 3 !important;
+    justify-self: center !important;
+    align-self: center !important;
+    transform: translateY(-14px) !important;
   }
 }

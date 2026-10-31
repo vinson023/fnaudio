@@ -28,6 +28,7 @@ import com.fnaudio.client.network.FnConnectSettings;
 public final class LoginActivity extends AppCompatActivity {
     public static final String EXTRA_SKIP_AUTO_RESUME = "skip_auto_resume";
     public static final String EXTRA_PREFILL_ACTIVE_PROFILE = "prefill_active_profile";
+    public static final String EXTRA_PREFILL_PROFILE_ID = "prefill_profile_id";
     private static final int REQUEST_HISTORY = 701;
     private static final int REQUEST_FN_CONNECT_SETTINGS = 702;
 
@@ -74,10 +75,13 @@ public final class LoginActivity extends AppCompatActivity {
         boolean skipAutoResume = safeBooleanExtra(getIntent(), EXTRA_SKIP_AUTO_RESUME, false);
         boolean prefillActive = safeBooleanExtra(getIntent(), EXTRA_PREFILL_ACTIVE_PROFILE, false);
         ConnectionProfile active = store.active();
+        String prefillProfileId = safeStringExtra(getIntent(), EXTRA_PREFILL_PROFILE_ID);
+        ConnectionProfile prefillProfile = prefillProfileId.isEmpty() ? null : store.find(prefillProfileId);
         // Do not flash or prefill the active FN Connect ID while an existing
         // session is being resumed. A deliberate return to Login uses a blank
         // form; a failed resume fills the saved profile in onError below.
-        if (prefillActive && active != null) fillForm(active, false);
+        if (prefillProfile != null) fillForm(prefillProfile, false);
+        else if (prefillActive && active != null) fillForm(active, false);
         else if (skipAutoResume || active == null) clearFormForNewProfile();
         if (!skipAutoResume && savedInstanceState == null && active != null && (!active.token.isEmpty() || !active.longToken.isEmpty())) {
             loginStatus.postDelayed(() -> {
@@ -178,10 +182,12 @@ public final class LoginActivity extends AppCompatActivity {
         setBusy(true, "正在通过 FN Connect 查找设备...");
         final String fnIdValue = value;
         final String passwordValue = password.getText().toString();
+        final boolean httpsRequested = useHttps.isChecked();
+        final boolean trustSelfSignedRequested = trustSelfSigned.isChecked();
         FnConnectSettings settings = new FnConnectSettings(this);
         String effectiveMode = settings.effectiveMode();
         FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(effectiveMode);
-        fnConnectResolver.resolve(value, connectMode, new FnConnectResolver.Callback() {
+        fnConnectResolver.resolve(value, connectMode, httpsRequested, new FnConnectResolver.Callback() {
             @Override public void onResolved(ConnectionProfile resolved) {
                 if (destroyed) return;
                 setBusy(false, "");
@@ -198,7 +204,7 @@ public final class LoginActivity extends AppCompatActivity {
                 ConnectionProfile profile = ConnectionProfile.create(
                         "fnconnect:" + fnIdValue + ":" + user.toLowerCase(java.util.Locale.ROOT),
                         "FN Connect - " + fnIdValue, resolved.host, resolved.port, resolved.https,
-                        false, user, savePassword.isChecked() ? passwordValue : "")
+                        trustSelfSignedRequested, user, savePassword.isChecked() ? passwordValue : "")
                         .withFnConnectMode(effectiveMode)
                         .withAccessCode(accessCode.getText().toString());
                 authenticate(profile, passwordValue, "正在登录 FN Connect 设备...", false);
@@ -238,7 +244,7 @@ public final class LoginActivity extends AppCompatActivity {
                 && !connectId.isEmpty()) {
             setBusy(true, fnConnectStatus(profile.fnConnectMode));
             FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(profile.fnConnectMode);
-            fnConnectResolver.resolve(connectId, connectMode, new FnConnectResolver.Callback() {
+            fnConnectResolver.resolve(connectId, connectMode, profile.https, new FnConnectResolver.Callback() {
                 @Override public void onResolved(ConnectionProfile route) {
                     if (destroyed) return;
                     ConnectionProfile refreshed = profile.withEndpoint(route.host, route.port, route.https);

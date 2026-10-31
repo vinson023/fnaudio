@@ -518,13 +518,13 @@ class MpdQueueTests(unittest.TestCase):
         self.assertFalse(second.is_alive())
 
     @mock.patch("services.mpd_service.alsa_devices", return_value=[])
-    def test_mpd_output_disables_implicit_resampling(self, _devices):
+    def test_mpd_output_allows_software_resampling_for_pcm(self, _devices):
         service = self.make_service()
         result = service.ensure_config()
         self.assertTrue(result["ok"], result)
         with open(service.config_path, "r", encoding="utf-8") as fh:
             config_text = fh.read()
-        self.assertIn('auto_resample "no"', config_text)
+        self.assertIn('auto_resample "yes"', config_text)
         self.assertIn('auto_format "no"', config_text)
         self.assertIn('auto_channels "no"', config_text)
 
@@ -583,7 +583,7 @@ class MpdQueueTests(unittest.TestCase):
 
     @mock.patch("services.mpd_service.probe_alsa_hw_params")
     @mock.patch.object(MpdService, "_selected_alsa_output")
-    def test_unsupported_pcm_rate_is_rejected(self, selected, probe):
+    def test_unsupported_pcm_rate_is_delegated_to_mpd_resampler(self, selected, probe):
         service = self.make_service()
         selected.return_value = {
             "alsa_id": "hw:CARD=DAC,DEV=0",
@@ -595,8 +595,10 @@ class MpdQueueTests(unittest.TestCase):
             "native_dsd": True,
         }
         result = service.prepare_track_output({"sample_rate": 384000, "is_dsd": False})
-        self.assertFalse(result["ok"])
-        self.assertIn("隐式重采样", result["message"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["resample_required"])
+        self.assertEqual(result["source_rate"], 384000)
+        self.assertEqual(result["supported_rates"], [44100, 352800])
 
         probe.assert_not_called()
 

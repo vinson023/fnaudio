@@ -952,7 +952,15 @@ class MpdService:
         return {"ok": True, "supported": True, "status": self.status()}
 
     def prepare_track_output(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Negotiate source format without implicit DAC conversion."""
+        """Negotiate source format while keeping DSD conversion strict.
+
+        PCM is allowed to use MPD's bounded software resampler when the USB
+        descriptor does not advertise the source rate. Refusing ordinary PCM
+        files here made every incompatible track fail before MPD could play it,
+        and the UI consequently showed a blocking alert on every attempt.
+        DSD remains strict because an implicit DSD-to-PCM conversion would
+        change the user's selected output mode.
+        """
         selected = self._selected_alsa_output()
         if not selected or selected.get("alsa_id") == "default":
             if bool((item or {}).get("is_dsd")):
@@ -967,8 +975,9 @@ class MpdService:
         # sources such as 384 kHz while another track is playing.
         if not bool((item or {}).get("is_dsd")) and source_rate and descriptor_rates and source_rate not in descriptor_rates:
             return {
-                "ok": False,
-                "message": "DAC 不支持源采样率 %s Hz，已阻止隐式重采样" % source_rate,
+                "ok": True,
+                "resample_required": True,
+                "resample_to": min(descriptor_rates, key=lambda rate: (abs(rate - source_rate), rate)),
                 "source_rate": source_rate,
                 "supported_rates": sorted(descriptor_rates),
                 "hw_params": {},
@@ -990,8 +999,9 @@ class MpdService:
             }
         if not bool((item or {}).get("is_dsd")) and source_rate and pcm_rates and source_rate not in pcm_rates:
             return {
-                "ok": False,
-                "message": "DAC 不支持源采样率 %s Hz，已阻止隐式重采样" % source_rate,
+                "ok": True,
+                "resample_required": True,
+                "resample_to": min(pcm_rates, key=lambda rate: (abs(rate - source_rate), rate)),
                 "source_rate": source_rate,
                 "supported_rates": sorted(pcm_rates),
                 "hw_params": hw,
@@ -1075,10 +1085,10 @@ class MpdService:
         output_lines.extend(
             [
                 '    dop "%s"' % dop,
-                # Keep the DAC path bit-perfect.  MPD otherwise silently
-                # resamples unsupported source rates (for example 384 kHz
-                # into a 352.8 kHz-only USB DAC).
-                '    auto_resample "no"',
+                # Ordinary PCM may need software conversion when its source
+                # rate is outside the DAC descriptor. DSD is still gated above
+                # and is never silently converted through this option.
+                '    auto_resample "yes"',
                 '    auto_format "no"',
                 '    auto_channels "no"',
                 "}",
