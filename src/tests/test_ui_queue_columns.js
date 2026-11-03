@@ -194,8 +194,10 @@ console.log("UI queue and album-column regression checks passed.");
 
 (async () => {
   const helper = source.match(/^async function runTrimHostAction\([^]*?^}/m)?.[0];
+  const unavailable = source.match(/^function hostUnavailable\([^]*?^}/m)?.[0];
   const openFolder = source.match(/^async function openContainingFolder\([^]*?^}/m)?.[0];
   assert.ok(helper, "file manager behavior must execute the real host helper");
+  assert.ok(unavailable, "file manager behavior must execute the host-unavailable marker");
   assert.ok(openFolder, "file manager behavior must execute the real folder action");
   let ready = false, locationCalls = 0;
   const opened = [], alerts = [];
@@ -215,7 +217,7 @@ console.log("UI queue and album-column regression checks passed.");
     }, alert: message => alerts.push(message), console: {warn() {}},
   };
   vm.createContext(context);
-  vm.runInContext(`${helper}\n${openFolder}`, context);
+  vm.runInContext(`${unavailable}\n${helper}\n${openFolder}`, context);
   assert.equal(await context.openContainingFolder("selected-track"), true);
   assert.equal(locationCalls, 1);
   assert.deepEqual(opened, [location.folder]);

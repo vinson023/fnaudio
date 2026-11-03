@@ -698,6 +698,14 @@ dialog{background:var(--ui-surface)!important;color:var(--ui-text)!important;bor
 .library-path-row input{min-width:0;background:var(--ui-surface);border:1px solid var(--ui-border);color:var(--ui-text);border-radius:6px;padding:9px 10px;box-shadow:var(--ui-shadow)}
 .library-path-remove{width:34px;height:34px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-surface);color:var(--ui-muted);font-size:18px;line-height:1;display:grid;place-items:center}
 .library-path-remove:hover{color:var(--ui-danger);border-color:var(--ui-danger);background:var(--ui-danger-bg)}
+.library-dir-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.library-dir-toolbar .secondary-button{min-height:34px;padding:0 12px}
+.library-dir-list{display:flex;flex-direction:column;gap:2px;max-height:min(52vh,420px);overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--ui-border);border-radius:8px;padding:4px;margin:4px 0 8px;background:var(--ui-surface)}
+.library-dir-row{display:flex;align-items:center;gap:8px;width:100%;min-height:42px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--ui-text);font-size:14px;text-align:left;overflow-wrap:anywhere}
+.library-dir-row::before{content:"";flex:0 0 6px;width:6px;height:6px;border-radius:2px;background:var(--ui-accent);opacity:.7}
+.library-dir-row:hover{background:var(--ui-hover)}
+.library-dir-row:active{background:var(--ui-selected)}
+@media(max-width:760px){.library-dir-list{max-height:min(46vh,320px)}.library-dir-row{min-height:46px}}
 .diagnostics-list{max-height:min(52dvh,420px);overflow:auto;margin:12px 0;border-top:1px solid var(--ui-line)}
 .diagnostic-entry{padding:10px 2px;border-bottom:1px solid var(--ui-line)}
 .diagnostic-entry>div{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -1658,6 +1666,6 @@ dialog{background:var(--ui-surface)!important;color:var(--ui-text)!important;bor
 @media(max-width:760px){
   .topbar{height:56px!important;grid-template-rows:56px!important}
   .top-actions{display:none!important}
-  .shell,.content{height:calc(100dvh - 56px)!important}
+  .shell,.content{height:100%!important}
   .mobile-settings-nav-item{display:flex!important}
 }

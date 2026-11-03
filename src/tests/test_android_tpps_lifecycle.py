@@ -64,9 +64,9 @@ class AndroidTppsLifecycleTests(unittest.TestCase):
         self.assertIn("if (!CertificatePin.matches(normalizedPin, chain[0]))", source)
         bootstrap = source[source.index("public static OkHttpClient createAuthenticationClient"):source.index("    /**\n     * Creates the media client")]
         self.assertIn("!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()", bootstrap)
-        self.assertIn("trustFirstUseSelfSigned(builder);", bootstrap)
+        self.assertIn("trustFirstUseSelfSigned(builder, observation);", bootstrap)
         auth = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "FnOsAuthClient.java").read_text(encoding="utf-8")
-        self.assertIn("HttpClientFactory.createAuthenticationClient(context, profile)", auth)
+        self.assertIn("HttpClientFactory.createAuthenticationClient(context, profile, tlsObservation)", auth)
 
     def test_resolver_handles_close_race_during_call_submission(self):
         source = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "FnConnectResolver.java").read_text(encoding="utf-8")

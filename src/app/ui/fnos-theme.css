@@ -912,7 +912,11 @@ html.android-app .player-actions { display: none !important; }
     justify-self: center !important;
   }
   .mobile-settings-nav-item { display: flex !important; }
-  .shell, .content { height: calc(100dvh - 56px) !important; }
+  /* Fill the body grid row instead of the whole viewport: row 2 already
+   * excludes the header and the player.  A viewport-minus-header height made
+   * the content 142px taller than its row, so the pagination strip slid under
+   * the player and could not be tapped in the Android client. */
+  .shell, .content { height: 100% !important; }
 }
 
 /* Android WebView owns the same compact header as the fnOS touch page.
@@ -949,7 +953,7 @@ html.fnaudio-android-client .mobile-page-title {
 }
 html.fnaudio-android-client .shell,
 html.fnaudio-android-client .content {
-  height: calc(100dvh - 56px) !important;
+  height: 100% !important;
 }
 
 /* Progress rail: a quiet 4px track with the time labels below it, matching

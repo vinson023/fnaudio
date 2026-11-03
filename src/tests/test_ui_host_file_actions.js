@@ -38,6 +38,9 @@ function harness(sdk) {
     getTrimSdk: async () => sdk,
     collectLibraryPaths: () => ['/vol1/existing'],
     renderLibraryPathInputs: paths => { context.paths = Array.from(paths); },
+    // The server-side directory browser is a separate dialog with its own fetch
+    // path; the picker contract only cares that it is opened, and with which path.
+    openLibraryDirBrowser: path => { context.browsedFrom = path; return true; },
     resolveTrackLocation: async () => ({path: '/vol1/music/song.flac', folder: '/vol1/music'}),
     resetExternalShareDialog: location => { context.state.externalShareLocation = location; },
     alert: message => alerts.push(message), console: {warn() {}},
@@ -48,7 +51,7 @@ function harness(sdk) {
     clearTimeout: id => timers.delete(id),
   };
   vm.createContext(context);
-  for (const name of ['runTrimHostAction', 'chooseLibraryPath', 'openContainingFolder',
+  for (const name of ['hostUnavailable', 'runTrimHostAction', 'chooseLibraryPath', 'openContainingFolder',
     'openExternalShareDetails', 'shareTrack', 'createExternalShareLink']) {
     const source = app.match(new RegExp('^(?:async )?function ' + name + '\\([^]*?^}', 'm'))?.[0];
     if (source) vm.runInContext(source, context);
@@ -181,11 +184,20 @@ test('standalone browser and authorization denial preserve configured roots', as
     calls++; return {code: 5, msg: '授权被拒绝'};
   }};
   const h = harness(sdk);
+  // A standalone browser has no fnOS host at all, so the picker cannot be
+  // offered: the settings pane must hand over to the server-side browser
+  // instead of doing nothing.
   assert.equal(await h.context.chooseLibraryPath(), false);
   assert.equal(calls, 0);
+  assert.equal(h.context.browsedFrom, '', 'standalone browser falls back to the server directory browser');
+  assert.equal(h.context.paths, undefined, 'the fallback must not invent a directory');
   sdk.isStandaloneWeb = false;
+  h.context.browsedFrom = undefined;
   assert.equal(await h.context.chooseLibraryPath(), false);
+  // A denial is a different failure: the host was reached and said no, so it
+  // must be reported rather than papered over by another dialog.
   assert.equal(h.node('librarySettingsStatus').textContent, '授权被拒绝');
+  assert.equal(h.context.browsedFrom, undefined, 'a denial must not open the fallback browser');
   assert.equal(h.context.paths, undefined);
 });
 

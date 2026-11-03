@@ -202,6 +202,38 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"groups": [{"name": name, "count": sum(1 for item in TRACKS if str(item.get(key) or "未分类") == name)} for name in names], "count": len(names)}, head_only=head_only)
         if path == "/api/library/roots":
             return self.send_json({"roots": [{"root": "/fixture/music", "path": "/fixture/music", "name": "测试音乐"}]}, head_only=head_only)
+        if path == "/api/library/dirs":
+            # Deterministic stand-in for the server-side directory browser that
+            # clients without the fnOS host picker fall back to.  The first
+            # level mirrors the fnOS picker: user storage ("我的文件"), never the
+            # volume root that carries @appdata, docker and thumb.
+            requested = str((query.get("path") or [""])[0])
+            home = "/vol1/1000"
+            if not requested:
+                return self.send_json({
+                    "ok": True,
+                    "path": "",
+                    "parent": "",
+                    "entries": [],
+                    "roots": [{"name": "我的文件", "path": home}],
+                    "truncated": False,
+                }, head_only=head_only)
+            tree = {
+                home: ("", [("Music", home + "/Music"), ("Media", home + "/Media")]),
+                home + "/Music": (home, [("Albums", home + "/Music/Albums")]),
+                home + "/Music/Albums": (home + "/Music", []),
+            }
+            if requested not in tree:
+                return self.send_json({"ok": False, "message": "目录不存在或无法访问"}, 400, head_only=head_only)
+            parent, children = tree[requested]
+            return self.send_json({
+                "ok": True,
+                "path": requested,
+                "parent": parent,
+                "entries": [{"name": name, "path": child} for name, child in children],
+                "roots": [{"name": "我的文件", "path": home}],
+                "truncated": False,
+            }, head_only=head_only)
         if path == "/api/library/folders":
             return self.send_json({"folders": [], "count": 0}, head_only=head_only)
         if path == "/api/playback/targets":

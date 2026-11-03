@@ -1043,7 +1043,10 @@ for (const width of [320,375,414,768,1280,1440]) {
     }
     await page.locator(mobile?'#mobileDeviceBtn':'#deviceBtn').click();
     await expect(page.locator('#deviceDialog')).toBeVisible();
-    await expect(page.locator('.dialog-close-button')).toHaveCount(8);
+    // Nine dialogs now carry a close control: the eight settings/device dialogs
+    // plus the server-side music directory browser that clients without the
+    // fnOS host picker fall back to.
+    await expect(page.locator('.dialog-close-button')).toHaveCount(9);
     await expect(page.locator('#closeDialog svg')).toBeVisible();
     await expect(page.locator('#closeDialog')).toHaveAttribute('aria-label','关闭');
     await insideViewport(page,'#scanDevices');

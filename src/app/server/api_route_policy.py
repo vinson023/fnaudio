@@ -47,7 +47,10 @@ def required_scope(method: str, path: str) -> str:
         return "library.read" if method in ("GET", "HEAD") else "settings.write"
     if path.startswith("/api/config/"):
         return "settings.read" if method in ("GET", "HEAD") else "settings.write"
-    if path.startswith("/api/fs/") or path == "/api/library/location":
+    if path.startswith("/api/fs/") or path in ("/api/library/location", "/api/library/dirs"):
+        # Directory browsing exposes the host filesystem layout, so it needs the
+        # same permission as the file manager routes rather than plain library
+        # read access.
         return "files.read" if method in ("GET", "HEAD") else "files.manage"
     if path.startswith(("/api/playback/", "/api/player/", "/api/upnp/", "/api/dac/", "/api/airplay/")):
         return "playback.read" if method in ("GET", "HEAD") else "playback.control"

@@ -262,3 +262,95 @@ test("mobile album detail renders and scrolls its song list", async ({ page }) =
   expect(layout.noHorizontalOverflow).toBeTruthy();
   expect(consoleErrors).toEqual([]);
 });
+
+// R460: the mobile library column used to be sized as "viewport minus header",
+// which is taller than its body-grid row by exactly the player height.  The
+// pagination strip therefore overflowed into the player's row, was painted over
+// by the player, and could not be tapped in the Android client.  Pin the real
+// geometry instead of the CSS text: the strip must sit above the player and its
+// next-page button must be the element that receives the tap.
+test("mobile pagination strip sits above the player and stays tappable", async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.setItem("fnaudio.pageSize", "2"); } catch (_) {}
+  });
+  const consoleErrors = [];
+  page.on("console", message => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  for (const viewport of [{ width: 360, height: 800 }, { width: 390, height: 844 }, { width: 412, height: 915 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".track")).toHaveCount(2);
+    const geometry = await page.evaluate(() => {
+      const pager = document.getElementById("pager");
+      const player = document.querySelector(".player");
+      const next = pager.querySelector('[data-page-step="1"]');
+      const pagerRect = pager.getBoundingClientRect();
+      const playerRect = player.getBoundingClientRect();
+      const nextRect = next.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        Math.round(nextRect.left + nextRect.width / 2),
+        Math.round(nextRect.top + nextRect.height / 2),
+      );
+      return {
+        overlap: Math.max(0, Math.round(pagerRect.bottom - playerRect.top)),
+        hitPageStep: hit ? (hit.closest("button")?.getAttribute("data-page-step") || null) : null,
+        summary: pager.innerText.replace(/\s+/g, " ").trim(),
+      };
+    });
+    expect(geometry.overlap, `pager must not slide under the player at ${viewport.width}x${viewport.height}`).toBe(0);
+    expect(geometry.hitPageStep, `pager button must receive the tap at ${viewport.width}x${viewport.height}`).toBe("1");
+    await page.click('#pager [data-page-step="1"]');
+    await expect(page.locator("#pager")).toContainText("第 2 / 2 页");
+  }
+  expect(consoleErrors).toEqual([]);
+});
+
+// R461: the Android client and any plain browser have no fnOS host, so the
+// "选择音乐目录" button used to fail silently (the message landed below the
+// fold).  It must now fall back to the server directory browser and let the
+// phone add a folder without the fnOS picker.
+test("mobile settings can add a music folder through the server browser", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".track")).toHaveCount(4);
+
+  // Phones reach settings through the navigation drawer; the desktop
+  // #folderBtn is hidden at this width.
+  await page.locator("#mobileNavBtn").click();
+  await page.locator("#mobileSettingsNavBtn").click();
+  await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
+  await page.locator("#chooseLibraryPathBtn").click();
+
+  const browser = page.locator("#libraryDirDialog");
+  await expect(browser).toHaveAttribute("open", "");
+  // The first screen is the user's own storage ("我的文件"), exactly like the
+  // fnOS picker; the volume root with @appdata/docker/thumb is never shown.
+  await expect(browser.locator("#libraryDirList")).toContainText("我的文件");
+  await expect(browser.locator("#libraryDirList")).not.toContainText("@appdata");
+  const statusUnderButton = await page.evaluate(() => {
+    const status = document.getElementById("librarySettingsStatus");
+    const picker = document.getElementById("chooseLibraryPathBtn");
+    if (!status || !picker) return null;
+    return { text: status.textContent, belowButton: status.getBoundingClientRect().top >= picker.getBoundingClientRect().top };
+  });
+  expect(statusUnderButton?.belowButton, "the fallback hint must sit under the button the user just tapped").toBe(true);
+
+  await browser.locator('#libraryDirList [data-dir-path="/vol1/1000"]').click();
+  await expect(browser.locator("#libraryDirPath")).toHaveText("/vol1/1000");
+  // "Up" from the home returns to the root list rather than walking up to /vol1,
+  // which is where @appdata, docker and thumb live.
+  await browser.locator("#libraryDirUpBtn").click();
+  await expect(browser.locator("#libraryDirList")).toContainText("我的文件");
+  await expect(browser.locator("#libraryDirPath")).toHaveText("选择一个磁盘或共享目录");
+  await browser.locator('#libraryDirList [data-dir-path="/vol1/1000"]').click();
+  await expect(browser.locator("#libraryDirPath")).toHaveText("/vol1/1000");
+  await browser.locator('#libraryDirList [data-dir-path="/vol1/1000/Music"]').click();
+  await expect(browser.locator("#libraryDirPath")).toHaveText("/vol1/1000/Music");
+
+  await browser.locator("#libraryDirAddBtn").click();
+  await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
+  await expect(page.locator("#libraryPathList .library-path-input")).toHaveValue("/vol1/1000/Music");
+  await expect(page.locator("#librarySettingsStatus")).toContainText("已添加目录");
+  await expect(browser).not.toHaveAttribute("open", "");
+});

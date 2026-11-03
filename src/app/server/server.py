@@ -70,6 +70,7 @@ from library_paths import (
     apply_library_paths,
     canonical_library_path,
     is_allowed_library_path,
+    list_library_directories,
 )
 from library_query_spec import parse_library_item_ids
 from dlna.control_point import (
@@ -1002,6 +1003,16 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "status": library_connection_pool_status(),
             })
+        if path == "/api/library/dirs":
+            # Fallback for clients without the fnOS host picker (Android client,
+            # plain browser).  Directory names only: the same roots the scanner
+            # may index, never file contents.
+            requested = (query.get("path") or [""])[0]
+            try:
+                listing = list_library_directories(requested)
+            except ValueError as error:
+                return self.send_json({"ok": False, "message": str(error)}, 400)
+            return self.send_json({"ok": True, **listing})
         if path == "/api/config/metadata":
             projected = metadata_provider_settings_payload(self.server.config)
             status = METADATA_SERVICE.status() if METADATA_SERVICE else {}

@@ -1,4 +1,4 @@
-const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放" };
+const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放", libraryDirPath: "", libraryDirParent: "" };
 const $ = (id) => document.getElementById(id);
 const SETTINGS_SAVE_BUTTON_IDS = [
   "saveLibrarySettingsBtn",
@@ -8411,6 +8411,15 @@ function renderLibraryPathInputs(paths = [""]) {
 function collectLibraryPaths() {
   return [...$("libraryPathList").querySelectorAll(".library-path-input")].map(input => input.value.trim()).filter(Boolean);
 }
+function hostUnavailable(message) {
+  // Marks the failures that mean "this environment has no fnOS host at all"
+  // rather than "the host was reached and refused".  Only the former may fall
+  // back to another UI; a denial or a timeout must keep reporting itself,
+  // otherwise the user never learns why the official picker did nothing.
+  const error = new Error(message);
+  error.hostUnavailable = true;
+  return error;
+}
 async function runTrimHostAction(method, args = [], { dialog = null, timeoutMs = 10000 } = {}) {
   let active = true;
   let restoreDialog = false;
@@ -8430,13 +8439,13 @@ async function runTrimHostAction(method, args = [], { dialog = null, timeoutMs =
   try {
     const sdk = await bounded(async () => {
       const host = await getTrimSdk();
-      if (!host) throw new Error("无法连接飞牛宿主，请从飞牛应用入口打开 fnAudio");
+      if (!host) throw hostUnavailable("无法连接飞牛宿主，请从飞牛应用入口打开 fnAudio");
       if (typeof host.ready === "function") await host.ready();
       return host;
     }, 10000);
-    if (sdk.isStandaloneWeb) throw new Error("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开");
+    if (sdk.isStandaloneWeb) throw hostUnavailable("请从飞牛桌面或飞牛 App 的 fnAudio 应用入口打开");
     if (!method) return sdk;
-    if (typeof sdk[method] !== "function") throw new Error("当前飞牛宿主不支持此操作，请更新系统或 App 后重试");
+    if (typeof sdk[method] !== "function") throw hostUnavailable("当前飞牛宿主不支持此操作，请更新系统或 App 后重试");
     // A native modal makes host-injected UI in this document inert. Keep the
     // settings DOM (including unsaved values), and restore it after the picker.
     restoreDialog = dialog?.open === true;
@@ -8477,11 +8486,112 @@ async function chooseLibraryPath() {
     if (status) status.textContent = `已选择 ${selected.length || 1} 个目录，请点击“保存音乐库设置”。`;
     return true;
   } catch (error) {
+    // Only a missing host falls back: the fnOS picker does not exist in the
+    // Android client or in a standalone browser, and silently doing nothing was
+    // the reported bug.  A denial or a timeout keeps its own message.
+    if (error && error.hostUnavailable) {
+      if (status) status.textContent = "当前环境没有飞牛目录选择器，已切换为服务器目录浏览。";
+      openLibraryDirBrowser("");
+      return false;
+    }
     if (status) status.textContent = error.message || "打开目录选择窗口失败";
     return false;
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+function openLibraryDirBrowser(path = "") {
+  const dialog = $("libraryDirDialog");
+  if (!dialog) return false;
+  try { $("folderDialog")?.close(); } catch (_) {}
+  if (!dialog.open) dialog.showModal();
+  state.libraryDirPath = "";
+  state.libraryDirParent = "";
+  void loadLibraryDir(path);
+  return true;
+}
+
+async function loadLibraryDir(path = "") {
+  const list = $("libraryDirList");
+  const pathText = $("libraryDirPath");
+  const status = $("libraryDirStatus");
+  const addButton = $("libraryDirAddBtn");
+  const upButton = $("libraryDirUpBtn");
+  if (status) status.textContent = "";
+  if (pathText) pathText.textContent = path || "选择一个磁盘或共享目录";
+  if (list) list.innerHTML = '<p class="dialog-help">正在读取目录...</p>';
+  if (addButton) addButton.disabled = !path;
+  if (upButton) upButton.disabled = true;
+  try {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    const response = await apiFetch(`api/library/dirs${query}`);
+    const data = await readResponseJsonBounded(response);
+    if (!response.ok || data.ok !== true) throw new Error(data.message || "无法读取目录");
+    renderLibraryDirListing(data);
+  } catch (error) {
+    if (list) list.innerHTML = "";
+    if (status) status.textContent = error.message || "无法读取目录";
+  }
+}
+
+function renderLibraryDirListing(data = {}) {
+  const list = $("libraryDirList");
+  const pathText = $("libraryDirPath");
+  const status = $("libraryDirStatus");
+  const addButton = $("libraryDirAddBtn");
+  const upButton = $("libraryDirUpBtn");
+  const current = typeof data.path === "string" ? data.path : "";
+  const parent = typeof data.parent === "string" ? data.parent : "";
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  const roots = Array.isArray(data.roots) ? data.roots : [];
+  state.libraryDirPath = current;
+  state.libraryDirParent = parent;
+  if (pathText) pathText.textContent = current || "选择一个磁盘或共享目录";
+  if (addButton) addButton.disabled = !current;
+  // A browse root ("我的文件") has no parent on purpose, so walking up can never
+  // reach the volume root with its @appdata/docker/thumb.  The button still has
+  // to work there: it goes back to the root list, which is the only way to pick
+  // another storage space once the first one is open.
+  if (upButton) upButton.disabled = !parent && !current;
+  if (status) status.textContent = "";
+  if (!list) return;
+  const rows = (current ? entries : roots).map(item => {
+    const name = typeof item?.name === "string" ? item.name : "";
+    const value = typeof item?.path === "string" ? item.path : "";
+    if (!value) return "";
+    return `<button class="library-dir-row" type="button" data-dir-path="${escapeHtml(value)}">${escapeHtml(name || value)}</button>`;
+  }).filter(Boolean);
+  const truncated = data.truncated === true ? '<p class="dialog-help">目录过多，只显示前 200 个。</p>' : "";
+  list.innerHTML = rows.length
+    ? rows.join("") + truncated
+    : `<p class="dialog-help">${current ? "这里没有子目录，可以直接添加当前目录。" : "服务器上没有可浏览的音乐目录。"}</p>`;
+  list.querySelectorAll("[data-dir-path]").forEach(row => {
+    row.onclick = () => { void loadLibraryDir(row.dataset.dirPath || ""); };
+  });
+}
+
+function addCurrentLibraryDir() {
+  const path = state.libraryDirPath || "";
+  const status = $("libraryDirStatus");
+  if (!path) {
+    if (status) status.textContent = "请先进入一个目录。";
+    return false;
+  }
+  const current = collectLibraryPaths();
+  if (current.includes(path)) {
+    if (status) status.textContent = "这个目录已经在列表里了。";
+    return false;
+  }
+  renderLibraryPathInputs([...current, path]);
+  try { $("libraryDirDialog")?.close(); } catch (_) {}
+  const dialog = $("folderDialog");
+  if (dialog && !dialog.open) dialog.showModal();
+  ensureSettingsStatusNodes();
+  setSettingsTab("library");
+  const libraryStatus = $("librarySettingsStatus");
+  if (libraryStatus) libraryStatus.textContent = "已添加目录，请点击“保存音乐库设置”。";
+  return true;
 }
 async function saveSettingsPane(button, statusNode, saveAction, successMessage = "已保存。") {
   if (!button || typeof saveAction !== "function") return false;
@@ -10078,6 +10188,9 @@ $("saveMetadataSettingsBtn").onclick = saveMetadataOverviewPaneSettings;
 $("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
 $("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
 $("chooseLibraryPathBtn").onclick = chooseLibraryPath;
+$("closeLibraryDirDialog").onclick = () => $("libraryDirDialog").close();
+$("libraryDirUpBtn").onclick = () => { void loadLibraryDir(state.libraryDirParent || ""); };
+$("libraryDirAddBtn").onclick = addCurrentLibraryDir;
 $("restoreMetadataProvidersBtn").onclick = async () => {
   try {
     await restoreAndSaveRecommendedMetadataProviders();

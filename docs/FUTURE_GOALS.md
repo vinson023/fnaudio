@@ -1,5 +1,7 @@
 # fnAudio 以后的目标（Android 审计面）
 
+> 当前发布清单范围（2026-11-02 · R456）：**47 个文件 / 10,422 行** Java。0.2.125／0.2.129 两次发布未记账，按现盘与发布清单重新取证后补记本行：新增 `PinnedHttpsInstrumentedTest`、`MainActivityWebViewInstrumentedTest` 两枚仪器测试，并在 `HttpClientFactory`／`MainActivity`／`PlaybackService` 等既有面加入证书固定观察者与原生登出。本轮未改 Java 实现，实现审计仍是独立后续目标；下方 R258 的 9,947 行及迁出时快照保留用于追溯。
+
 > 当前发布清单范围（2026-10-22 · R258）：**46 个文件 / 9,947 行** Java。按磁盘与发布清单重新取证，补记此前登录可见性、访问码与 Cookie 修复造成的统计漂移；本轮未改 Java，实现审计仍为独立后续目标。下方 R254 的 9,797 行及迁出时快照保留用于追溯。
 
 > 当前发布清单范围（2026-10-21 · R254）：**46 个文件 / 9,797 行** Java，包含本轮新增的 Cookie 编码与回归测试。下文 44 个文件 / 9,713 行是迁出时的历史快照，保留用于追溯；新增修复不代表重新启动全量 Android 审计。统计按 SOURCE_MANIFEST 范围计算，排除 Gradle 生成文件。
@@ -20,7 +22,7 @@
 | 迁出面 | 现盘登记 | 角色 |
 | --- | --- | --- |
 | `RemotePlaybackPlayer.java`（370 行） | `android-client/app/src/main/java/com/fnaudio/client/playback/` | 投送（远端）播放客户端 |
-| `PlaybackService.java`（1,398 行） | 同上 playback 包 | 前台服务与宿主 MediaSession 桥 |
+| `PlaybackService.java`（1,406 行） | 同上 playback 包 | 前台服务与宿主 MediaSession 桥 |
 | `AuthenticatedBitmapLoader.java`（412 行） | 同上 playback 包 | 带凭据的封面位图加载 |
 | `FnConnectRelayConfigClient.java`（258 行） | `android-client/app/src/main/java/com/fnaudio/client/network/` | 飞牛中转配置客户端 |
 

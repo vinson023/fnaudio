@@ -25,8 +25,10 @@ console.log("Install, settings layout, and Android asset/version contracts passe
 (async () => {
   const source = app.match(/^async function chooseLibraryPath\([^]*?^}/m)?.[0];
   const helper = app.match(/^async function runTrimHostAction\([^]*?^}/m)?.[0];
+  const unavailable = app.match(/^function hostUnavailable\([^]*?^}/m)?.[0];
   assert.ok(source, "test must execute the real directory picker function");
   assert.ok(helper, "test must execute the real host readiness and timeout helper");
+  assert.ok(unavailable, "test must execute the real host-unavailable marker");
   let paths = ["/vol1/music"];
   let selection = {code: 0, data: [" /vol2/music ", "/vol1/music", "", null]};
   let ready = false;
@@ -48,10 +50,12 @@ console.log("Install, settings layout, and Android asset/version contracts passe
       return selection;
     },
   };
+  let browsed;
   const context = {getTrimSdk: async () => sdk, $: id => nodes[id], setTimeout, clearTimeout,
-    collectLibraryPaths: () => paths, renderLibraryPathInputs: values => {paths = [...values];}};
+    collectLibraryPaths: () => paths, renderLibraryPathInputs: values => {paths = [...values];},
+    openLibraryDirBrowser: value => { browsed = value; return true; }};
   vm.createContext(context);
-  vm.runInContext(`${helper}\n${source}`, context);
+  vm.runInContext(`${unavailable}\n${helper}\n${source}`, context);
   assert.equal(await context.chooseLibraryPath(), true);
   assert.deepEqual(paths, ["/vol1/music", "/vol2/music"], "returned paths are merged and deduplicated");
   assert.match(status.textContent, /保存音乐库设置/, "selection must not silently save configuration");
@@ -76,6 +80,9 @@ console.log("Install, settings layout, and Android asset/version contracts passe
   sdk.isStandaloneWeb = true;
   assert.equal(await context.chooseLibraryPath(), false);
   assert.equal(calls, before, "unsupported standalone browser must not call the host-only picker");
-  assert.match(status.textContent, /飞牛桌面或飞牛 App/);
+  // A standalone browser is the environment the phone feedback came from: no
+  // host picker exists, so the settings pane must offer the server browser.
+  assert.equal(browsed, "", "a missing host falls back to the server directory browser");
+  assert.deepEqual(paths, ["/vol1/music", "/vol2/music"], "the fallback must not invent a directory");
   console.log("Official directory picker success, cancellation, errors and host boundary passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});

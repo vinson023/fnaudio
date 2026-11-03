@@ -109,9 +109,11 @@ REMAINDER = re.compile(REMAINDER_ANCHOR + r"[^\d]{0,12}([\d,]+) \u884c")
 DEBT_BEFORE_MOVE_OUT = 18225
 DEBT_AFTER_MOVE_OUT = 8530
 # Frozen on purpose: these two numbers are the arithmetic identity of the move,
-# not a measurement of a living file.
-JAVA_TOTAL_FILES = 46
-JAVA_TOTAL_LINES = 9947
+# not a measurement of a living file.  R456 re-measured them after the two
+# unrecorded 0.2.125/0.2.129 releases grew the tracked surface by one file and
+# 475 lines; the move arithmetic above stays at the historical 9,695/8,530.
+JAVA_TOTAL_FILES = 47
+JAVA_TOTAL_LINES = 10422
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

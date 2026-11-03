@@ -121,4 +121,15 @@ assert.match(themeCss, /\.player \.progress #elapsed,\s*\.player \.progress #dur
 assert.match(themeCss, /\.player \.progress #transportStateUnknown\s*\{[^}]*display:\s*none\s*!important;/, "unknown transport state must remain hidden");
 assert.match(themeCss, /\.player \.progress\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*!important;/, "progress must use one full-width track without time columns");
 
+// R460: the mobile library column must fill the body grid row (header / content /
+// player) instead of the whole viewport.  A viewport-minus-header height is taller
+// than that row by exactly the player height, so the pagination strip overflows into
+// the player's row, gets painted over, and cannot be tapped -- the 0.2.125 Android
+// regression this guard exists to prevent.
+assert.doesNotMatch(css, /height:calc\(100dvh - 56px\)!important/, "the mobile library column must not be sized as viewport minus header");
+assert.doesNotMatch(themeCss, /height:\s*calc\(100dvh - 56px\)\s*!important/, "the FNOS theme must not size the library column as viewport minus header");
+assert.match(themeCss, /\.shell,\s*\.content\s*\{\s*height:\s*100%\s*!important;\s*\}/, "the mobile library column must fill the body grid row so the player keeps its own row");
+assert.match(themeCss, /html\.fnaudio-android-client \.shell,\s*\n?html\.fnaudio-android-client \.content\s*\{\s*\n?\s*height:\s*100%\s*!important;/, "the Android client must inherit the same row-filling height");
+assert.match(finalMobileContract, /\.shell,\.content\{height:100%!important\}/, "the base mobile stylesheet must fill the grid row instead of the viewport");
+
 console.log("Mobile layout regression checks passed.");

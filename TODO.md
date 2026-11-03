@@ -1,4 +1,12 @@
 # fnAudio 待办
+- [x] 2026-11-03 — R462 发布 0.2.130（替代测试机热补丁态，R457–R461 一并入库）：版本 `0.2.129`→`0.2.130`、`versionCode` 387→388，同步 `VERSION`／`src/manifest`／`build.gradle`／`README.md`（6 处）／`ARCHITECTURE.md`／`docs/SOURCE_INVENTORY.md`（2 处）／`android-client/README.md`（2 处）／`RECOVERY.md`；`version.py` 从 manifest 读版本，无需改。FPK 用 `tools/build_release.ps1` 从 `src/` 构建（343 文件，资源戳 `0.2.130-58a38563247b`），产物 `artifacts/0.2.130/`：FPK 5,410,474 字节 SHA-256 `634603807DF4CC1739A5F73050E18AB21644302B9B05A60403955A8136370EF0`，APK 15,486,674 字节 SHA-256 `64EAFEFF7633405BC433E95EA346AAB96DA4ED764C68CD81FB0C0F41F7A12D47`（0.2.130/388，assets 与 `src/app/ui` 逐字节一致）。踩坑记录：① Python 文本模式改写文档把 LF 变 CRLF，门禁红 9 项（`test_source_manifest` 点名 `android-client/README.md`、`test_scope_entry_subsumption` LF 规则全红），按 git 原始行尾回写后转绿；② `appcenter-cli install-fpk` 不能升级已装应用，手工 `upgrade_callback` 会让 App Center 登记停在旧版本且 `cmd/main start` 丢 token，最终必须走 App Center 网页「手动安装 → 从电脑上传 → 同意未验证提示」。门禁 `Ran 3189 tests` / `OK (skipped=6)`；清单 797 条。实机最终 `0.2.130`/`running`，健康 200，目录选择器根仍为「我的文件」。
+- [x] 2026-11-03 — R461 手机端无法选择音乐目录（负责人转述用户反馈「飞牛端可以加载多个文件夹作为音乐源，手机端点不了，选择音乐目录没反应」）：两条原因互相掩盖——① 选择入口只有宿主 SDK 的 `pickUserFile` 一条路，安卓客户端是没有宿主的 WebView 包壳，`getTrimSdk()` 为 null 或 `isStandaloneWeb` 为真，必然抛错，旧 catch 只写一行文字后 `return false`；② 那行文字所在的 `librarySettingsStatus` 被追加在面板末尾，实测 360×640 与 320×568 都在视口外，只有 390×844 可见。按负责人选定的「服务端目录浏览器」实现：新增 `GET /api/library/dirs?path=`（`library_paths.list_library_directories`），只列目录名不读文件内容，根为 `/vol*`／`/mnt`／`/share`／`/volume`／`/var/apps/fnaudio/share` 且全部过 `is_allowed_library_path`，跳过隐藏项、非目录与越界 symlink，单次上限 200 条（扫描 2000 条，超出标 `truncated`），越界或不可读返回 400 中文文案；权限归 `files.read`（与 `/api/fs/*` 同级），`cgi_proxy.py` 已含该 scope。前端新增第 10 个对话框 `libraryDirDialog` 与 `openLibraryDirBrowser`／`loadLibraryDir`／`renderLibraryDirListing`／`addCurrentLibraryDir`，目录名与路径过 `escapeHtml`，添加只并入列表并提示保存、不落库，状态行移到 picker 与保存按钮之间。语义分叉由既有契约测试逼出：新增 `hostUnavailable()` 只标记「无宿主／独立网页／宿主不支持该操作」，仅该类失败降级到服务端浏览器，宿主拒绝授权与超时保留原文案，否则用户拒绝后会静默换界面。测试新增 `test_library_dir_browse.py`（8 项）、`test_library_dir_browse_http.py`（4 项）、`test_ui_library_dir_browser.js`、`test_api_route_policy.py` +1、e2e 目录浏览用例与 fixture 路由；契约同步 `test_ui_dialog_focus`（9→10）、三个 vm 沙箱测试（注入新函数桩并拆出降级／不降级断言）、`fnos-design.spec.js`（关闭按钮 8→9）。清单重生成 797 条；门禁 `Ran 3183 tests` 得 `errors=1, skipped=6`，唯一错误为 `test_metadata_service` 的 `attempt to write a readonly database`（该模块单跑 255 项全绿，R458 已取证的 WAL 噪声），skipped 6 = 基线 5 + 新测试 1 项 POSIX-only；；补齐 `@`／`lost+found` 过滤后重跑完整门禁得 `Ran 3183 tests` / `OK (skipped=6)` 全绿（日志 `artifacts/offline-r461-deploy.log`），反证上一轮那 1 项确为单轮 WAL 噪声而非改动引入。JS 114 项 112 通过（两个既有失败）；e2e 86 项 76 通过、10 失败，10 项全部用 HEAD UI 复现为既有失败（R455/R456 标签与顶栏布局漂移）。**必须同时升级 NAS 端 FPK 与 APK**，只升 APK 会在旧服务端 404。未改 Android 原生代码、未暂存、未提交。随后离线构建 debug APK（`JAVA_HOME=C:/Program Files/Java/jdk-17`、`GRADLE_USER_HOME=tools/gradle-home-jdk17`、`ANDROID_SDK_ROOT=tools/android-sdk`，`./gradlew :app:assembleDebug --offline`，36 秒成功）：`android-client/app/build/outputs/apk/debug/app-debug.apk`，15,650,097 字节，SHA-256 `41AED765E76F1F07DD83AB83572D09EB306C432A9340C11E35E8CD2C156813CF`；解包核验 `assets/index.html`、`assets/app.js`、`assets/app.css`、`assets/fnos-theme.css` 与 `src/app/ui` 逐字节一致，且包内含 `libraryDirDialog`、`openLibraryDirBrowser`、`hostUnavailable`。本机仍无发布 keystore（`FNAUDIO_RELEASE_*` 未设置、`E://secrets` 不存在），故只有 debug 包，与正式包签名身份不同，安装前需先卸载已装正式版。随后在负责人提供的内网测试机（`192.168.5.141`，fnOS 6.18.18，已装 0.2.129）上做真机验证：远端 `server/` 三文件与本地 HEAD 逐字节相同（即机器上确实没有 R461），`/api/library/dirs` 返回 404、同组 `/api/library/roots` 返回 200；把三文件热替换进 `/usr/local/apps/@appcenter/fnaudio/server/`（原文件备份在 `/vol1/1000/fnaudio/server-hotfix/20261103-104901`）并经 `cmd/main` 重启后接口返回 200，根列表为 `vol00`／`vol02`／`vol1`／`mnt`／`share`，`/vol1/1000` 可逐级浏览，中文目录名（`来自：百度网盘`）经 CGI 代理转发后正确解码，`/etc` 与不存在路径均返回 400 与对应中文文案；再用真实 CGI 入口（`cgi_proxy.py` 以 `PATH_INFO=/api/library/dirs` 直跑，即手机走的那条链路）验证返回 200 与同一份 JSON，确认安卓客户端基址 `/cgi/ThirdParty/fnaudio/index.cgi/` 与授权链路成立（`authorize_api_request` 对 `X-Fnaudio-Internal: 1` + 回环短路，代理另附含 `files.read` 的 `X-Fnaudio-Scopes`，双保险）。实机数据同时暴露一处体验缺陷：`/vol1` 首屏被 `@appcenter`、`@appconf`、`@appdata`、`@apphome`、`@appmeta`、`@appshare`、`@apptemp`、`@sysappmeta`、`lost+found` 占满，真正的用户目录 `1000` 被挤到第 10 位；故给列目录加 `BROWSE_HIDDEN_NAMES = {"lost+found"}` 与 `BROWSE_HIDDEN_PREFIXES = (".", "@")` 过滤（`test_lists_directories_only_and_skips_hidden` 同步钉住），重新部署后 `/vol1` 只剩 `1000`、`appcenter-downloads`、`docker`、`mediasrv.transcode`、`thumb`、`vm`。该改动只在服务端，APK 资源不含它，故已构建的 APK 无需重建。**负责人二次反馈「手机端弹出的目录连系统目录都显示出来了，与飞牛桌面端不一致」后的收尾**：以 Playwright 登录门户截取官方选择器为基准（桌面端从「我的文件」=`/vol1/1000` 起，从不显示卷根），把 `library_browse_roots()` 改为以用户主目录为根（`VOLUME_ROOT_PATTERN`／`USER_HOME_PATTERN`／`_volume_root_candidates`／`_user_home_roots`／`_has_visible_child_directory`／`_dedupe_roots`），卷根只作兜底；浏览根 `parent=""`，上行无法到 `/vol1`；实机 `/vol02/1000-0-ab026773` 为空（子目录 0）故在有非空主目录时丢弃，但**全部为空时仍保留主目录、绝不回退卷根**；单一主目录显示「我的文件」，多个显示「我的文件 (1000)」；前端 `upButton.disabled = !parent && !current` 让浏览根时「上一级」返回根列表。测试 12→14 项并同步 `test_ui_library_dir_browser.js`、e2e 上行往返、`test_ui_control_names.js`（100→107）。实机部署后根为 `[{"name":"我的文件","path":"/vol1/1000"}]`，首屏与桌面端同源，`parent=""`。门禁 `Ran 3189 tests` / `OK (skipped=6)`；JS 113/114（1 项既有失败）；e2e 76/86（10 项既有失败）。因 `app.js` 变更，debug APK 已重建：15,553,909 字节，SHA-256 `D33F1481B01C5450E895DABA84A7D5892E73EF7EC736C8A54E73540AE46024BF`。
+- [x] 2026-11-03 — R460 安卓客户端翻页条被播放器遮挡：0.2.125 起 `.shell/.content` 被设为 `calc(100dvh - 56px)`（`app.css` 末段移动块、`fnos-theme.css` 移动块、`html.fnaudio-android-client` 覆盖三处），比 body 三行网格的内容行高出一个播放器高度（142px），溢出部分被 `z-index:50` 的播放器盖住，47px 的翻页条正好在其中，故不可见且不可点。三处改为 `height:100%` 填满内容行；Playwright 实测 390×844 重叠从 142px 降为 0、命中元素从 `playBtn` 变为 `[data-page-step="1"]`、点击可翻到第 2 页，360/390/412/768/980/1024 全部通过。新增 `test_ui_mobile_layout.js` 5 条静态守卫（旧值下转红已验证）与 `tools/browser-e2e/tests/ui.spec.js` 几何用例。重新生成源码清单 794 条并逐条核验通过；`test_ui_control_names.js`、`test_ui_android_bridge.js` 与 e2e 的 8 项 FNOS 布局用例为既有失败（用原始 CSS 复现），未计入本轮。已离线构建 debug APK（`android-client/app/build/outputs/apk/debug/app-debug.apk`，15,484,359 字节，SHA-256 `3AB06790…280C5`，`com.fnaudio.client` / `0.2.129` / 387），解包确认内置 CSS 为修复版；本机无发布 keystore，未出正式签名包，debug 包需先卸载正式版才能安装。未改原生代码、未提交。
+- [x] 2026-11-03 — R459 账本清理轮（负责人指令）：删除 `TODO.md` 中全部 `119` 条 `- [进行中]` 条目，文件 `2,478`→`2,337` 行。仅删该标记开头的单行条目，`- [x]` 记录 `1,800` 条不变、`- [ ]` 开放项删除前后均 `0` 条，`observation-open-count = 0` 锚点不受影响；119 条原文按章节与行号归档到 `docs/TODO_IN_PROGRESS_ARCHIVE_20261103.md`，因此变空的 3 个重复标题 `## 2026-09-04 本轮持续目标进展` 一并移除，删除产生的 9 处连续空行归一。这些条目是 2026-09 每轮自动推进的「持续目标」陈述句，无勾选状态也无关闭条件。读取 `TODO.md` 的 8 个守卫测试逐个复跑全绿；完整门禁 `Ran 3171 tests` 仅 `test_metadata_service` 的 `test_first_lookup_on_a_fresh_database_does_not_wait_on_itself` 失败，该模块连跑 3 轮失败用例每轮不同（`cached_artwork`／`OK`／`explicit_track_lookup`），属已知 WAL 并发噪声，非本次改动引入。未改产品代码、未打包、未部署、未暂存、未提交、未 `git add`。
+- [x] 2026-11-02 — R458 接手复核与账本漂移修复轮：按 `RECOVERY.md` 跑完整离线门禁 `3171` 项，得 `failures=1, errors=1, skipped=5`；真实失败为 `docs/FUTURE_GOALS.md` 第一节表格仍写 `PlaybackService.java`（1,398 行）而现盘为 `1,406` 行（R457 只同步了文件顶部统计行），已改为 `1,406` 并复跑该模块 `6/6` 转绿。其余两项取证为环境噪声：沙箱注入 `HTTP(S)_PROXY=127.0.0.1` 令 socket guard 经回环代理返回 `HTTP 400`（去代理变量即过），以及本机文件系统 WAL 并发写稳定报 `SQLITE_READONLY`（纯 `sqlite3` 复现 WAL+2 线程 `11/15`、WAL+4 线程 `15/15` 失败，rollback journal+4 线程 `0/15`、单线程 `0/15`），故元数据多线程用例在本机间歇失败，与产品代码无关。未改产品运行代码、未改测试迁就本机、未打包、未部署、未暂存、未提交、未 `git add`；源码清单 794 条逐条核验通过。修正后最终复跑（去掉代理变量）`Ran 3171 tests` / `OK (skipped=5)` 全绿，日志 `artifacts/offline-r458-final.log`；WAL 噪声使元数据多线程用例在本机约半数轮次随机转红，单次全绿不构成稳定结论。
+- [x] 2026-11-02 — R457 接手回填与门禁转绿轮：核对 `VERSION`/`src/manifest`/Android `0.2.129`（versionCode 387）一致后跑完整离线门禁，`3171` 项中 `9` 失败 `2` 错误；定位为 `0.2.125`/`0.2.129` 两次发布未记账、未刷新清单所致——补记 R455/R456 两轮，`RECOVERY.md` 基线 `0.2.113`→`0.2.129`，TODO 账本 `PlaybackService.java` 行数 `1,398`→`1,406`，`test_android_audit_scope_moved_out` 受审面常量 `46`/`9,947`→`47`/`10,422` 并同步 `docs/FUTURE_GOALS.md`，tpps 证书固定断言改为 `trustFirstUseSelfSigned(builder, observation)`，重新生成 `SOURCE_MANIFEST.sha256`；未改产品运行代码、未打包、未部署、未暂存、未提交、未 `git add`。剩余 3 项为环境噪声（`E:` 为 RaiDrive FTP 虚拟盘致 shell 解析失败、沙箱注入 `HTTP(S)_PROXY=127.0.0.1` 使 socket guard 放行出网、元数据临时库报 `readonly database`），未改动测试去迁就本机。
+- [x] 2026-10-31 — R456 补记 0.2.129 发布轮（实际落地于 2026-10-31，当轮未在根文档记账，R457 补齐）：服务端 `library_self_write.recent_path` 增加 5 秒自写宽限，`LibraryChangeMonitor._is_own_write_event` 接收 inotify mask，对 `IN_MOVED_FROM`/`IN_DELETE` 只放行自写事件，避免 Tag 原子替换触发全库重扫；`mpd_service` 允许 PCM 在 DAC 未宣告源采样率时使用 MPD 有界软件重采样（返回 `ok`/`resample_required`/`resample_to`），DSD 仍严格拒绝隐式转换；`cmd/main` 的 PID 归属匹配补入 `/var/apps/fnaudio` 与 `/usr/local/apps/@appcenter/fnaudio` 两种路径。Android 侧 `CertificatePin` 引入观察者，`HttpClientFactory` 以 `trustFirstUseSelfSigned(builder, observation)` 传递，新增 `PinnedHttpsInstrumentedTest` 与 `MainActivityWebViewInstrumentedTest`，`MainActivity` 增加原生登出。前端统一设置保存按钮文案为「保存」（`normalizeSettingsSaveLabels`），原生桥下显示 `mobileLogoutBtn`。版本 `0.2.129` / versionCode 387，产物在 `artifacts/0.2.129`。
+- [x] 2026-10-29 — R455 补记 0.2.125 发布轮（实际落地于 2026-10-29，当轮未在根文档记账，R457 补齐）：侧栏拆为可滚动 `.sidebar-scroll` 与底部固定 `.sidebar-settings`，移动端新增设置入口 `mobileSettingsNavBtn`；桌面与移动搜索框各加清除按钮 `searchClearBtn`/`mobileSearchClearBtn`；`index.html` 内联 `critical-icon-sizing` 关键图标尺寸，`fnos-theme.css` 增补 378 行主题规则；`app.js` 新增 `ensurePlaybackSettingsControls`、`updateSearchClearButtons`、`clearSearchInput` 三枚函数。`cmd/main` 新增 `wait_for_configured_port`，`start_process` 改为子 shell 内 `mkdir` 启动锁串行化，避免 fnOS 重叠 start 回调同时通过端口探测。版本 `0.2.125` / versionCode 383。
 - [x] 2026-10-27 — R454 UI 目标范围核对：当前 `TODO.md` 共 `1795` 条已完成、`0` 条未完成，未发现残留 UI/FNOS/Hallmark 待办；结合 R451/R452 的完整离线与浏览器证据，当前 UI 改造进入维护态。本轮无生产代码改动，不打包、部署、暂存、提交或 `git add`；持续目标保持 active。
 - [x] 2026-10-27 — R453 UI 令牌审计：复核生产 CSS 的 `--fn-*`/`--ui-*` 使用与定义，未发现未定义的主题令牌；`--seek-fill`、`--marquee-distance`、`--fnaudio-track-columns` 均为运行时注入变量。本轮无生产代码改动，不打包、部署、暂存、提交或 `git add`；持续目标保持 active。
 - [x] 2026-10-27 — R452 UI 收尾回归：现有 FNOS Playwright `76/76` 通过，覆盖桌面/移动布局、设置与元数据页签、设备弹窗、焦点态、深浅主题、DSD 标签、列宽、曲目编号和主要交互；未发现新的可判别 UI 缺口。本轮仅补充验证记录，不修改生产代码，不打包、部署、暂存、提交或 `git add`；持续目标保持 active。
@@ -362,7 +370,7 @@
 - [x] 2026-09-18：R60 关掉播放条与歌词页封面的轮询重绘。`app.js` 新增 `setCoverArtwork`/`setNowPlayingCover` 去重入口，`#nowCover` 的 6 处与 `#lyricsCover` 的 2 处无条件 `innerHTML` 写入全部改为「同址 no-op」；`onerror` 从「删掉 `<img>`」改为「降级到占位字符」，因为在去重之后删除会留下永久空白框。`updateNowMarquee` 一并改成先测后写，每次调用少一次强制布局。门限 `artifacts/offline-20260918-round63.log` 2141 项全绿（skipped=2，127.570 秒），JS 套件 62 行持平。
 - [x] 2026-09-18：R60 新开：now-playing 其余文本仍每轮询无条件重写。`renderIncomingRendererSession`/`restoreLibraryNowPlaying`/`loadCurrent` 对 `#nowTitle`、`#nowArtist` 的 `textContent` 赋值即使内容相同也会重写（文本重写不销毁图片，代价低一个量级，本轮未动）；`syncNowPlayingTime` 在 `timeupdate`（约 4 Hz）上无条件写文本、`updateSeekRail` 无条件写 `--seek-fill`，同值赋值是否真引发布局失效未经测量。要处理就把 `setCoverArtwork` 的「先比较再写」口径推广过去，或把整个 now-playing 块收敛成一个带签名的渲染函数；先取真机 trace，不凭猜测加去重。 **R99 关闭（已实现 + 机检守住）**：这条要求的口径已经在代码里了 ✓ 取证：app.js 共 79 处 `textContent =` 赋值 ✓ 其中写 `#nowTitle` `#nowArtist` `#nowTime` `#elapsed` `#duration` 的**直接赋值 0 处** ✓ 全部走 `setTextContentIfChanged()`（:5315 ✓ 实现就是 `if (node.textContent !== text)` 再写 ✓）✓ 这条点名的另外两处也在：`syncNowPlayingTime` 用带比较的写入器（:1893 ✓）✓ `updateSeekRail` 用 `setStyleVarIfChanged`（:1902 ✓ 且全文只有这一处出现 `--seek-fill` 字面量 ✓）✓ 所以「先取真机 trace 再决定要不要加去重」的前提已经不成立 —— 去重不是本轮猜着加的 ✓ 它先于本轮存在 ✓ 本轮做的是把它**钉住**：新增 5 条 doesNotMatch （这五个节点不得出现直接 textContent 赋值 ✓）+ 一条「比较必须留在helper里」的结构断言 + 一条 `--seek-fill` 只允许出现一次的 计数断言 ✓ 变异 V6（把复位改成直接写文本 ✓）V7（把 helper 的比较去掉 ✓）V8（让进度条绕过 helper 直接 setProperty ✓）三例全被杀 ✓ 仍未知的部分写在这里不另立项：**这些去重在真实 WebView 上到底省没省布局失效仍未测**（本轮的断言只保证「相同内容不再写 DOM」✓ 不主张性能收益 ✓ 条目原文要的 trace 依然没有 ✓ 因此这一条不得被理解成性能结论 ✓）✓
 - [x] 2026-09-18：R60 补上收尾自查纪律：每轮结束前对着本轮关闭的问题回查 `TODO.md`，确认没有别的 `[ ]` 条目还在替它活着（本轮就是靠这次清点补销了 R57 为 R58 开的那条）。R62 补销：这条口径已经作为规则写进 `PROJECT_CONTEXT.md` 顶部（「关闭问题时要销掉为它开过的所有条目」），本轮接管时正是按它抓到 R59 之后仍挂着的陈旧条目，以及一份晚于上次门限、从未被验证过的工作树改动，故不再作为待办挂着。
-- [x] 2026-09-18：R59 把「还没审计的部分」量化成可排期的清单（替换 2026-09-17 那条只列文件名的范围条目）。离线可验证面总数与命名覆盖：`src/app/server` 的 .py 191 个文件 / 33,648 行，`src/app/ui` 的 .js 59 个文件 / 11,500 行（不含 `vendor`），合计 250 个文件 / 45,148 行，**本轮补记之后三份根记录已经点名到全部 250 个文件**（清点脚本 `%TEMP%/p722.py`，口径是叶子名在三份文档全文里出现）。剩下的是**深读**而非**未登记**：显式欠读清单 6,125 行 = `dlna/service.py` 957 + `app.css` 1,518 + `cover_cache.py` 1,021（R59 只重读了预热与资产两段）+ `dlna/control_point.py` 620 + `playback/core.py` 468 + `dlna/renderer.py` 442 + `state_store.py` 363 + `alsa_player.py` 178（且它本身还是无人调用的孤儿入口）+ `state_projection.py` 231 + `fnos_api.py` 143 + `index.html` 184。另外 `src/app/ui/app.js` 8,096 行只做了分段审计（渲染、封面、队列、中止、槽位、快照复用），正在播行的封面与进度簇仍属欠读；`tools/*.ps1` 9 个脚本本轮点名核对为 0 缺项。按今晚实测节奏（R52 到 R59 共 8 轮、4 小时 42 分，约 35 分钟一轮，含每轮 128 秒上下的离线门限）推算，上述欠读面大致还需要 15 到 20 轮，也就是**两到三个等价工作日**，而不是墙钟意义上的连续天数；真机项与在线 provider 不计入。〔R167 裁定落档：负责人 2026-09-23 明确「把安卓的审核移出本次目标，作为以后的单独目标进行」，并说明安卓代码已全部写完、不需要审查本轮 Android 面。据此本轮 Android 审计面退出逐轮欠读面，落点＝`docs/FUTURE_GOALS.md`（守卫 `src/tests/test_android_audit_scope_moved_out.py` 钉住「移出≠删除≠关闭」）。历史数字按只追加规则原样保留：R166 登记的欠读总量 18,225 行＝`app.js` 8,530 ＋ 已跟踪 Android `.java` 43 文件 9,695，仍是当时真值；移出后剩余欠读总量 8,530 行＝`app.js` 单面（本棒复算 `src/app/ui/app.js` 内容行 8,530 与登记值逐字相符；Android 面复算 43 文件／9,695 行同样逐字相符）。四枚类的点名与 `RemotePlaybackPlayer.java`（370 行）／`PlaybackService.java`（1,398 行）／`AuthenticatedBitmapLoader.java`（412 行）／`FnConnectRelayConfigClient.java`（258 行）登记值一律不删——兄弟守卫 `src/tests/test_scope_entry_subsumption.py` 要求本条继续点名并匹配现盘行数，范围收敛不得表现成名字消失。判据不变——剩余欠读面全部读完才可关闭。〕〔R169 台账外置：本行 R129～R166 共 17 枚逐轮登记原文迁往 `docs/AUDIT_LEDGER.md` 第一节，本行自此只留判据、在册守卫与指向；后续轮的逐轮明细一律写入该文件，不得回本行追加。〕〔R169 判据未改：剩余欠读面全部读完才可关闭；是否读完只由 `tools/audit_coverage.py` 现盘复算判定，本行不登记任何活数字（历史登记数字仍在第一节原文里）。在册守卫＝`src/tests/test_scope_entry_subsumption.py`（本行须继续点名 16 枚面与四枚 Android 类）＋`src/tests/test_android_audit_scope_moved_out.py`（移出≠删除≠关闭）＋`src/tests/test_audit_coverage_queue.py`（队列由工具复算）。〕〔R173 关闭判据达成：本行判据「剩余欠读面全部读完」由 tools/audit_coverage.py 现盘复算证明成立——未点名符号归零、复算队列不再含任何待读面；逐轮读面登记自 R169 起累积在 `docs/AUDIT_LEDGER.md` 第一节与第三节，本行的点名、登记行数与移出记录一律原样保留在册。关闭之后判据继续有效：任何一轮新增声明而未登记，兄弟守卫即转红。〕
+- [x] 2026-09-18：R59 把「还没审计的部分」量化成可排期的清单（替换 2026-09-17 那条只列文件名的范围条目）。离线可验证面总数与命名覆盖：`src/app/server` 的 .py 191 个文件 / 33,648 行，`src/app/ui` 的 .js 59 个文件 / 11,500 行（不含 `vendor`），合计 250 个文件 / 45,148 行，**本轮补记之后三份根记录已经点名到全部 250 个文件**（清点脚本 `%TEMP%/p722.py`，口径是叶子名在三份文档全文里出现）。剩下的是**深读**而非**未登记**：显式欠读清单 6,125 行 = `dlna/service.py` 957 + `app.css` 1,518 + `cover_cache.py` 1,021（R59 只重读了预热与资产两段）+ `dlna/control_point.py` 620 + `playback/core.py` 468 + `dlna/renderer.py` 442 + `state_store.py` 363 + `alsa_player.py` 178（且它本身还是无人调用的孤儿入口）+ `state_projection.py` 231 + `fnos_api.py` 143 + `index.html` 184。另外 `src/app/ui/app.js` 8,096 行只做了分段审计（渲染、封面、队列、中止、槽位、快照复用），正在播行的封面与进度簇仍属欠读；`tools/*.ps1` 9 个脚本本轮点名核对为 0 缺项。按今晚实测节奏（R52 到 R59 共 8 轮、4 小时 42 分，约 35 分钟一轮，含每轮 128 秒上下的离线门限）推算，上述欠读面大致还需要 15 到 20 轮，也就是**两到三个等价工作日**，而不是墙钟意义上的连续天数；真机项与在线 provider 不计入。〔R167 裁定落档：负责人 2026-09-23 明确「把安卓的审核移出本次目标，作为以后的单独目标进行」，并说明安卓代码已全部写完、不需要审查本轮 Android 面。据此本轮 Android 审计面退出逐轮欠读面，落点＝`docs/FUTURE_GOALS.md`（守卫 `src/tests/test_android_audit_scope_moved_out.py` 钉住「移出≠删除≠关闭」）。历史数字按只追加规则原样保留：R166 登记的欠读总量 18,225 行＝`app.js` 8,530 ＋ 已跟踪 Android `.java` 43 文件 9,695，仍是当时真值；移出后剩余欠读总量 8,530 行＝`app.js` 单面（本棒复算 `src/app/ui/app.js` 内容行 8,530 与登记值逐字相符；Android 面复算 43 文件／9,695 行同样逐字相符）。四枚类的点名与 `RemotePlaybackPlayer.java`（370 行）／`PlaybackService.java`（1,406 行）／`AuthenticatedBitmapLoader.java`（412 行）／`FnConnectRelayConfigClient.java`（258 行）登记值一律不删——兄弟守卫 `src/tests/test_scope_entry_subsumption.py` 要求本条继续点名并匹配现盘行数，范围收敛不得表现成名字消失。判据不变——剩余欠读面全部读完才可关闭。〕〔R169 台账外置：本行 R129～R166 共 17 枚逐轮登记原文迁往 `docs/AUDIT_LEDGER.md` 第一节，本行自此只留判据、在册守卫与指向；后续轮的逐轮明细一律写入该文件，不得回本行追加。〕〔R169 判据未改：剩余欠读面全部读完才可关闭；是否读完只由 `tools/audit_coverage.py` 现盘复算判定，本行不登记任何活数字（历史登记数字仍在第一节原文里）。在册守卫＝`src/tests/test_scope_entry_subsumption.py`（本行须继续点名 16 枚面与四枚 Android 类）＋`src/tests/test_android_audit_scope_moved_out.py`（移出≠删除≠关闭）＋`src/tests/test_audit_coverage_queue.py`（队列由工具复算）。〕〔R173 关闭判据达成：本行判据「剩余欠读面全部读完」由 tools/audit_coverage.py 现盘复算证明成立——未点名符号归零、复算队列不再含任何待读面；逐轮读面登记自 R169 起累积在 `docs/AUDIT_LEDGER.md` 第一节与第三节，本行的点名、登记行数与移出记录一律原样保留在册。关闭之后判据继续有效：任何一轮新增声明而未登记，兄弟守卫即转红。〕
 - [x] 2026-09-18：R59 补记立案：`src/app/server/playback_session_contract.py`（139 行）与 `src/app/server/alsa_player.py`（179 行）都没有生产消费者，只有各自的测试在跑。删除或接线之前必须先取证 fpk 打包与设备侧脚本是否按文件名调用它们（`alsa_player.py` 有 shebang 与 CLI，形似被外部拉起；`playback_session_contract.py` 与被使用的 `playback_session_policy.py` 名字极易混淆）。取证后三选一：接回真实调用点、移出发包目录、或删除并连带清理测试；不要凭印象动手。  **R119 关闭（取条目第二路：移出发包目录，逐字节不变）**：先做条目点名的取证——`alsa_player` 与 `playback_session_contract` 两个词在 400 个生产文件的引用语料（`src/app` 全部 + `src/cmd/main` + `src/wizard` + `src/config` + `src/manifest` + `tools` 一层的 .py/.ps1/.sh + `android-client/app/src/main`，排除 `test_*`、`vendor`、`build`、`.gradle`、`runtime`、`apk-analysis`、>3 MB 二进制）里按文件名 0 命中；`git grep alsa_player HEAD` 只命中三份根文档，`playback_session_contract` 在提交态根本不存在；`tools/build_release.ps1` 只递归暂存 `src` 并只断言八个具名 payload 文件，两个名字都不在其中 ✓ **第一路（接回真实调用点）被取证否掉**：同一个总闸扫描在移动前对 `src/app` 下 192 个 .py 只报这 2 个孤儿，也就是说它们从来没被任何调用点接出过，接回去等于凭空新造功能 ✓ **第三路（删除）被两条不可恢复性否掉**：`alsa_player.py` 工作树带未提交改动（HEAD 版 95 行、现在 178 行，`git checkout` 会直接丢掉这 83 行净增长），`playback_session_contract.py` 是未跟踪文件且正是 TODO「Android 等价 MediaSession 持续目标」6 条设备项所等的契约资产 ✓ **于是按第二路整体移入 `src/tests/unwired/`**，sha256 逐字节不变（alsa `AA035E4B1463A1D84725E2EE9B0F65C26677DF6050139A2062942A61CE7F4917`、contract `3E5D3557FA496305451AB9FC55893A8CDD858CD829263200DB4D0A559BD581D5`，与移动前的仓库外备份 `%TEMP%\r119_backup` 逐字节相等）✓ 该目录被 `build_release.ps1:214` 的 `robocopy /E /XD tests __pycache__` 按目录名挡在 payload 外，`build_release.ps1:394-395` 的 payload 拒 `tests` 守卫一字未改，同时仍在 `tools/update_source_manifest.ps1` 覆盖集内，逐文件 sha 审查没丢 ✓ 两支测试改指新路径且用例数不变（`test_alsa_player.py` 10 项、`test_playback_session_contract.py` 7 项）✓ 新增判别测试 `src/tests/test_orphan_module_retirement.py` 10 项（总闸「`src/app` 树里再无零消费者模块」+ 两模块离开发包树 + 手工 CLI 形状仍在 + 契约可载入 + 两支测试跟随 + `/XD` 与 payload 守卫在位 + 无打包/设备脚本点名 + `playback_session_policy`/`_projection` 未被动到 + 清单列新不列旧）；变异 M1～M10 全灭见 CHANGELOG R119 条 ✓ 本轮新立可离线代码项 0 条 ⇒ 代码桶 26 → 25、开放项 90 → 89 ✓ 同一对文件在 L83 的欠读清单里仍列着 `alsa_player.py` 178 行与已删的 `fnos_api.py` 143 行，L541 也仍点名 `alsa_player.py`，属历史快照，按「历史行不改写」保留且保留其文本锚点。
 - [x] 2026-09-18：R59 补记：`if False and` 恒假路由块共 7 处（`server.py:1035/1450/1480`、`cgi_proxy.py:605/611/615/639`），全部围绕飞牛授权目录（shared-folders 与 auth-debug）。它们让 `/api/fnos/*` 走进后续通用分支，读代码的人会误判这些端点可用。需要一次决定：要么把这组功能正式关掉（删块 + 删只被它引用的 `fnos_api.py` 入口与 `test_app_lifecycle_*` 里的相应断言），要么用配置开关代替恒假字面量。本轮未改。  **R118 关闭（取条目第一路：正式关掉＝删块 + 删只被它引用的入口；第二路取证为不可行）**：可行性取证——旧 server.py L132 是 `from fnos_api import FnosApiError, call_trim_api`，块内调用的 `get_shared_accessible_folders`/`del_shared_accessible_folder` 全文命中只在 L1042/1456/1492（三处全在死块里），`call_trim_api` 除导入行外零命中：把恒假字面量换成配置开关，开关置真就是 NameError→500，等于把「读代码的人会误判端点可用」换成「运行时会崩」，所以本轮删。删除量按本轮磁盘前后差实测（行数用 splitlines 口径，行尾无额外空行）：server.py 3390 → 3327（−63＝GET 块 9 + POST 两块 51 行中的 51 与 9 之和按块计为 60，另加死导入行 1 与导入组内 2 个名字）；cgi_proxy.py 727 → 509（−218＝`import socket` 1 + 孤儿常量 4 + `json_object_or_empty`/`response_code` 17 + 四个死函数 143 + 四个 fnos 路由块 53）；src/tests/test_cgi_proxy_auth.py 626 → 477（−149＝8 个只测死函数的测试，40 → 32 项；四支 service_port 测试与三条真活跃前缀测试原地保留）；tools/ui_e2e_fixture.py 322 → 320（−2＝fnos 假分支，`/api/` 兜底仍在）。整文件删除 `src/app/server/fnos_api.py`（143 行）与 `src/tests/test_fnos_api.py`（98 行 / 9 项）；`test_fnos_api.py` 原本未跟踪、删了无法从 git 恢复，故两份备份移到仓库外 `C:\path\to\fnAudio_r118_deleted_backup`（仓库外路径不进 SOURCE_MANIFEST，也不进门禁覆盖集）。删后取证：`if False and` 0 命中（HEAD 版本里两文件共 7 处：server.py 3 + cgi_proxy.py 4，与条目计数一致）、`/api/fnos` 与 `auth-debug` 在 src/tools 的 .py 里 0 命中，`fnos` 只剩 server.py L754/755/1573/1668 四处合法注释与 cgi_proxy L74/L331/L399 三处（L331 是 `"fnos-token"` cookie 名，L74 与 L399 是注释）。**诚实记录出入**：条目点名的「`test_app_lifecycle_*` 里的相应断言」磁盘上不存在——`src/tests/test_app_lifecycle_scripts.py` 全文 23 项，唯一含 fnOS 的是 `test_install_and_upgrade_restore_standard_fnos_target_link`（安装目标软链，与授权目录无关），该半句要求是空集，本轮不宣称删了不存在的东西。判别测试两层：新增 `src/tests/test_fnos_route_retirement.py` 10 项，源扫描 + AST 双向设计——一半拦死代码复活（`if False and` 字面量与 AST 常量假条件、端点字符串、六个死函数名、四个孤儿常量、入口文件与其测试的存在、`fnos_api` 与两个被删导入名），一半拦「删过头」（活链在位：`trim_token`/`normalize_trim_token`/`MAX_TRIM_TOKEN_CHARS`/`service_port`/`local_service_ready`/`wait_for_service`/`write_service_unavailable`/`main`/`fnos-token`，以及 `/api/health`、`/api/config/library`、`/api/playback/targets`、`serve_static` 与 fixture 的 `/api/` 前缀兜底），另把「扫描排除集只允许这个文件自己」和 manifest 覆盖集变化钉成断言；`src/tests/test_http_integration.py` 加 2 项真服务器行为钉（GET `/api/fnos/shared-folders`、`/api/fnos/auth-debug`、`/api/fnos/shared-folders/nested` 全部 404；两条 POST 落 handle_post 尾部 `{"error": "not found"}` 404 且 `commit_config_update` 零调用），文件 1468 → 1498 行、模块 78 → 80 项。仓库外副本 `E:/fnAudio_r118_cp` 控制组先绿（Python Ran 2392 OK skipped=3、69 支 `test_*.js` 逐个 node 退出码全 0），V1～V9 九条变异全灭且逐条命中指名杀手：V1 以活条件复活 GET 路由（源扫描与 404 行为钉同时杀）、V2 复活 `from fnos_api import`、V3/V4 复活 `trim_request`/`response_code`、V7 复活 `MAX_MERGED_LIBRARY_PATHS`、V8 复活 fixture 的 fnos 分支、V9 复活恒假字面量；反向 V5 删活函数 `trim_token`（正向断言 + 7 支既有 cgi 测试杀）、V6 删 `src/cmd/main` 的 `TRIM_API_TOKEN` 转发（`test_main_starts_server_without_second_shell_parsing` 杀）。本轮新立可离线代码项 0 条 ⇒ 代码桶 28 → 27。
 - [x] 2026-09-18：R59 补记完成「从未被记录」清点：10 个生产文件（381 行）逐个读毕并登记（服务端 5 个策略模块、UI 4 个策略模块、1 个第三方压缩产物），判定无缺陷需要修；同时量化 `item_negative_cache.has()` 的每次调用全表裁剪成本（满表 2048 条时约 14.4 微秒/次，120 个 id 的预取批次约 2.4 毫秒）后决定不改，只留数字与触发条件。清点脚本口径：`git status -uall -- src` 并 `git ls-files -- src`，排除 `src/tests/`，按叶子名在三份根文档全文查提及。
@@ -591,13 +599,10 @@
 - [x] 2026-09-06：复核按需元数据链路。后台整库补全保持默认关闭时，显式单曲请求仍可在优先 lane 中完成；本机只读 provider 烟测已返回《七里香 / 周杰伦》的 QQ 候选、专辑和封面 URL。浏览器 E2E 5/5 通过，覆盖元数据局部回填不重建歌曲列表。
 - [x] 2026-09-06：首屏启动快照与后续权威分页在最终可视歌曲行一致时复用已生成的歌曲列表 HTML；不再重复生成模板、整页 DOM 对账、封面调度和布局测量。真实歌曲内容、排序、封面及播放标记变化仍走键控局部更新；Node/UI 回归通过。
 - [x] 2026-09-06：复核元数据后台开关边界：后台整库补全与 Tag 写入默认关闭不影响当前歌曲、歌词页和显式单曲查询。服务及 HTTP 集成回归确认空/瞬态结果仍回投本地信息并保留有限恢复资格。
-- [进行中] 2026-09-06 持续自动目标：优先推进无需真机的首屏歌曲列表加载慢/权威页回填闪烁、按需歌词/封面/专辑元数据恢复；并继续处理发布治理、资源上限与诊断、大曲库查询、前端渲染和可测试模块边界。真实手机、DAC/DSD、DLNA/AirPlay、App Center 与 Android 多机型验收明确排除。
 - [x] 2026-09-06：修复应用层仍只解开三层 metadata 宿主 envelope 的差异；歌词、当前曲目和可见行请求现与策略一致，最多支持四层白名单 `data/result/payload/metadata` 包装，五层仍有界拒绝。定向回归与完整离线门禁通过（Python 1128 项 + 全部 Node/UI 回归）。
 - [x] 2026-09-06：元数据完成后的歌曲行改为局部 patch，不再整行 `replaceWith`；同源封面图片、焦点、选中状态和在途加载得以保留，降低列表权威回填后的闪烁。浏览器夹具覆盖 `pending → completed` 的标题/专辑/封面回投，以及相邻稳定行的 DOM identity。
-- [进行中] 2026-09-06 持续自动目标：只推进可离线验证的首屏 JSON/DOM/封面调度、按需歌词/封面/专辑元数据恢复、资源上限/诊断、大曲库查询和模块边界；持续以浏览器夹具与离线门禁防回归。真实手机、DAC/DSD、DLNA/AirPlay、App Center 与 Android 多机型验收继续排除。
 - [x] 2026-09-06：首屏快照与权威页的非可视行签名漂移不再触发 DOM 替换；最终标记相同时保留已解码封面与行节点，避免列表回填闪烁，新增 UI 回归。
 - [x] 2026-09-06：补齐单曲元数据/歌词显式 `retry=1` 的真实 HTTP 路由回归，确认前端恢复请求可把重试意图传至服务层并解除 provider 冷却短路。
-- [进行中] 2026-09-06 持续自动目标：继续只推进无需真机的首屏歌曲加载、快照/权威页稳定提交、可见封面调度，以及元数据 provider/worker 恢复；真实设备、DAC/DSD、DLNA/AirPlay、App Center 与 Android 多机型验收保持排除。
 - [x] 2026-09-06：加固元数据 job 错误记录边界，完成/重试路径拒绝非文本异常并保持 512 字符上限；新增服务回归。
 - [x] 2026-09-06：抽离并收紧元数据 job 退避策略；指数重试在计算前限制尝试次数，覆盖异常计数与最大延迟回归。
 - [x] 2026-09-06：修复懒加载封面同时触发行内与调度器双重重试的问题；调度器所有者标记与失败回归通过，避免重复请求和闪烁。
@@ -612,17 +617,11 @@
 - [x] 2026-09-06：修复歌词接口未复用统一响应解包的问题；多层宿主 envelope 下仍能正确进入歌词、封面和 pending/失败恢复逻辑；UI 静态回归通过。
 - [x] 2026-09-06：修复首屏可见元数据对 artwork-only 响应的误丢弃；无候选但有合法封面时立即更新行封面，候选/歌词仍按原有恢复语义继续处理；Node/UI 回归通过。
 - [x] 2026-09-06：补齐元数据 worker 丢失后的 stale `running` 任务恢复；仅在无活动 fetch worker 且任务超过 15 分钟时重排为 `retry`，避免误抢占仍在执行的任务；离线回归通过。
-- [进行中] 2026-09-06 持续自动目标：首屏键控协调继续降低 DOM 比较成本；歌曲行已使用稳定签名避开逐行 clone，分组/旧节点保留兼容回退并继续离线验证。
-- [进行中] 2026-09-06 持续自动目标：继续覆盖宿主桥接 envelope 的异常读取与 schema 漂移；本轮已让 `data` 解包安全降级，后续保持 provider/worker 恢复语义不变。
-- [进行中] 2026-09-06 持续自动目标：元数据状态继续区分 pending、no_match 与 provider failed；前端已补充 no_match 可恢复提示，后续继续用离线响应夹具校验状态投影一致性。
-- [进行中] 2026-09-06 持续自动目标：元数据响应投影继续隔离异常 provider 字段；本轮已收紧恢复判定的文本边界，后续继续用离线夹具覆盖 schema 漂移和恢复竞态。
-- [进行中] 2026-09-06 持续自动目标：首屏可见元数据行若仅有本地/文件名候选或 provider 终态失败，必须保留可恢复资格；已补齐页级去重键释放，继续用离线夹具覆盖状态修订与页面切换。
 - [x] 2026-09-06：统一 provider timeout 在无 deadline 场景仍尊重调用方上限，补充短超时/异常输入回归，降低当前歌曲元数据恢复延迟。
 - [x] 2026-09-06：消除 eager 封面重试的空 `src` 中间态，降低旧 WebView 重试时的额外闪烁；UI 回归通过。
 - [x] 2026-09-06：封面下载纳入统一 provider 时间预算，慢/失联封面源会及时释放当前歌曲优先 lane；MetadataService 回归通过。
 - [x] 2026-09-06：补齐 provider 活动、曲目页缓存和 worker 重启计数的安全有界投影，避免内部计数损坏导致元数据状态接口失败；完整离线门禁通过。
 - [x] 2026-09-06：候选缓存状态计数采用 `nonnegative_int` 安全投影并覆盖损坏对象、NaN 与后续命中/未命中递增，避免“元数据无法获取”被诊断接口异常放大；MetadataService 回归通过。
-- [进行中] 2026-09-06 持续自动目标：继续只推进可离线验证的首屏列表闪烁收敛、元数据 provider/worker 恢复、服务端资源上限与大曲库查询；真实设备验收保持独立排除。
 - [x] 2026-09-06：空 `auto/review` 投影修复期间继续回投独立歌词/封面缓存，避免历史缓存修复触发元数据空态；新增 MetadataService 回归。
 - [x] 2026-09-06：修复独立歌词/封面缓存未关联 match 行时的 pending 回投；当前歌曲与首屏列表可立即复用已缓存 artwork/lyrics，不再因 match 行尚未落库而误报元数据不可用。MetadataService 专项回归通过；100,000 首曲库基准证据为 `artifacts/large-library-benchmark-20260906-current.json`。
 - [x] 2026-09-06：封面增量 hydration 回收已脱离 DOM 的在途节点，避免悬挂请求占用并发槽；新增 detached-node 回归。
@@ -642,8 +641,6 @@
 - [x] 2026-09-05：元数据候选与封面投影解耦，补全字段不再遮蔽同批 provider 的封面；新增 UI 策略回归并通过完整离线门禁。
 - [x] 2026-09-05：首屏普通歌曲元数据预取遇到空响应时进入有界重试，避免一次临时网络/代理错误让元数据永久看似不可用；Node/UI 回归通过。
 - [x] 2026-09-05：终态元数据无匹配时优先保留本地 Tag，文件名仅作为无 Tag 歌曲的最后回退；MetadataService 回归通过。
-- [进行中] 2026-09-05 持续自动目标：首屏歌曲列表保持快照优先、桌面默认 96 首、键控行复用和有界封面调度；同一列表根节点已改为增量 hydration，继续以离线回归量化首个权威提交、列表 commit 与封面 hydration，真实 WebView 闪烁留待外部验收。
-- [进行中] 2026-09-05 持续自动目标：元数据按需链路保持本地 Tag 即时投影、当前歌曲优先、provider 失败冷却与 worker 恢复；本地 smoke 已验证部分源可达，继续补 schema/超时/缓存恢复夹具，不把单次网络命中当作全量有效性证明。
 - [x] 2026-09-05：修正桌面首屏默认 96 首对应的 UI 静态回归；源码清单 622 项，离线门禁 1090 项 Python 测试及全部 Node/UI 回归通过。
 - [x] 2026-09-05：收紧 artwork ID 的首屏缺失判断，覆盖损坏缓存引用并加入策略回归，避免坏 ID 让元数据获取被错误跳过。
 - [x] 2026-09-05：分页大小策略完成可测试边界拆分，异常 `localStorage`、非法值、移动/桌面视口及上限均有回归覆盖。
@@ -751,9 +748,6 @@
 - [x] provider 全损坏候选恢复：搜索接口返回非空但全部含替换字符的候选时，不再被记成正常空匹配；现在标记为可恢复 provider 异常并继续后备源，避免长期 `no_match` 遮蔽当前歌曲元数据。
 - [x] 元数据 provider 可观测性：状态/诊断新增受限的成功到达摘要（成功次数、距上次成功秒数），可与失败/冷却摘要区分网络不可达、正常空匹配和损坏响应，且不暴露查询词、曲目、URL 或 payload。
 - [x] 大曲库离线趋势复测：10,000 首/120 首分页下首中尾页保持有界，分页、元数据 overlay、分类浏览与 FTS 搜索缓存均命中；证据 `artifacts/large-library-benchmark-20260905-refresh.json`，不替代真机验收。
-- [进行中] 发布治理、资源上限、大曲库查询与核心模块边界：继续只接受低风险、可离线验证改动；真实设备验收仍独立排除。
-- [进行中] 首屏歌曲列表加载/闪烁：新桌面会话默认首屏已降至 96 首，元数据 burst 已复用可见行索引、活动列和选择刷新，并恢复当前页声明式 markup 供后续状态刷新 no-op，继续覆盖 eager 浏览器加载、懒加载队列、图片失败与 keyed 行复用的交界，避免慢 WebView 出现二次调度或空白帧。
-- [进行中] 元数据按需获取可靠性：后台全库补全保持默认关闭；provider worker 预热期间先回投本地 Tag 候选，再继续 provider/worker 恢复、失败冷却与歌词优先夹具，避免前台误显示“没有元数据”。
 - [x] 2026-09-05：歌词视图主请求生命周期收敛：统一超时、主动取消与 AbortError 中性处理，覆盖切歌、强制轮询和页面卸载；Node UI 回归通过。
 - [x] 2026-09-05：可见行与当前歌曲元数据回填统一完整候选策略，避免稀疏 best 遮蔽封面/专辑；补充 hostile ownKeys 离线回归。
 - [x] 2026-09-05：候选有效性检查改为白名单字段，不再依赖 provider `ownKeys`；无展示字段候选保持空值语义，回归通过。
@@ -764,110 +758,22 @@
 
 ## 2026-09-04 本轮持续目标
 
-- [进行中] 元数据模块边界：worker 不可用时的本地 pending 投影、artwork id/URL 安全投影已抽离为纯策略，继续拆分 provider 结果规范化与任务状态转换。
-- [进行中] 当前歌曲元数据优先级：本地歌词命中时仍补排缺失封面候选，继续覆盖歌词/封面并行完成顺序。
-
-- [进行中] 首屏歌曲列表加载/闪烁：懒加载行现保留占位符直到封面解码，继续用旧 WebView/慢缓存夹具验证图片失败和行替换边界。
-- [进行中] 首屏元数据预取：候选筛选已增加 ID 类型校验与页内去重，继续覆盖重复行、异常 ID 和分页切换边界。
-
-- [进行中] 元数据交互降级：worker 短暂不可用时保留本地 Tag 投影并返回 retryable pending；继续覆盖服务重启、空 Tag 和恢复后的 provider 替换边界。
-- [进行中] 元数据降级协议：曲目与歌词 pending 响应已统一纯策略，继续覆盖空响应、恢复竞态和旧客户端兼容。
-
-- [进行中] 首屏元数据可用性：首屏绘制后对最多 6 首缺少封面/专辑/歌手的歌曲执行可取消的有界按需预取；继续用离线夹具覆盖分页切换、取消和 provider 失败恢复。
-- [进行中] 首屏元数据可用性：pending/retryable 结果已增加每曲 4 次短轮询，继续覆盖慢 provider、失败冷却和页面切换竞态。
-- [进行中] 首屏预取生命周期：去重键已限制为 256 项，继续用长会话夹具覆盖淘汰与页面切换竞态。
-- [进行中] 首屏预取模块边界：候选筛选/重试判定已拆为纯策略，继续补充策略输入异常和旧 WebView 兼容回归。
-- [进行中] 首屏预取资源生命周期：已加入共享 AbortController，继续覆盖取消时序和旧 WebView 不支持 AbortController 的降级路径。
-- [进行中] 首屏预取可观测性：已增加请求/成功/失败计数，继续接入离线首屏证据输出。
-- [进行中] 元数据终态边界：仅文件名候选且 provider 失败时保持 retryable，继续覆盖本地回退与远端候选替换。
-
-- [进行中] 元数据可用性：provider 尚未就绪时先回投文件名候选，继续覆盖 provider 恢复、候选替换和失败冷却边界。
-- [进行中] 元数据失败恢复：历史负缓存已提供本地身份回投，继续验证冷却后 provider 候选替换与 UI 合并。
-- [进行中] 元数据临时候选生命周期：pending 文件名候选已不会抑制 provider 重试，继续覆盖候选替换和封面回投。
-- [进行中] 元数据负缓存恢复：`retryable` 候选已保持有限 provider 重试，继续观察冷却与远端候选替换。
-- [进行中] 元数据响应边界：空失败投影不再绕过 worker 门禁，继续覆盖恢复和状态提示的一致性。
-- [进行中] 文件名兜底字段边界：仅提供标题/歌手，专辑艺术家等待可信 provider 结果。
-- [进行中] 首屏可观测性：新增首次列表提交与首次封面 hydration 时间指标，继续接入离线基准输出。
-- [进行中] 元数据模块边界：文件名候选已抽为纯策略，继续拆分 provider 结果规范化与持久化边界。
 - [x] 100k 曲库最终离线复测：分页、热缓存、引用 hydration 与 FTS 趋势通过；真实 NAS/WebView 仍待单独验收。
-- [进行中] 首屏封面预热 I/O：已优先使用索引文件身份，继续观察索引缺失和文件变更后的缓存失效边界。
-- [进行中] 首屏歌曲列表加载/闪烁：继续以离线 UI 夹具和 100k 曲库基准观察首屏提交次数、封面 hydration 和旧 WebView 兼容性。
-
-- [进行中] 首屏可观测性：新增有界 UI 会话计数，用于量化 render/list commit/cover hydration；待继续接入离线基准报告。
-
-- [进行中] 首屏列表加载/闪烁：冷启动请求只隐藏空状态，不再提交空列表；继续用离线 UI 夹具量化首次权威提交和封面调度。
-- [进行中] 元数据可用性：继续通过字符集、JSONP、schema 漂移、失败恢复夹具验证 provider 链路；真实网络命中率仍不作离线完成证明。
-- [进行中] provider 网络烟测：当前只读样例已确认 QQ 封面、网易云/QQ 歌词可返回；继续依赖离线夹具与脱敏失败计数观察，不把单次命中视为全量可用。
-- [进行中] 大曲库性能：第二次 100k 复测已归档，继续比较尾页 OFFSET、缓存命中和引用列表 hydration 的离线趋势。
-- [进行中] 元数据投影去噪：相同歌词/封面重复提交已不再触发修订号变化；继续覆盖实体、候选和缓存损坏恢复边界。
-- [进行中] 元数据投影去噪：实体与候选重复提交已纳入同一策略，继续验证缓存损坏和状态迁移边界。
-- [进行中] 候选缓存规范化：等价 provider 对象的键序变化不再触发投影校正，继续覆盖缓存损坏和多候选排序变化。
 
 ## 2026-09-04 本轮持续目标
 
-- [进行中] 首屏列表加载/闪烁：状态聚合已让路 120ms 并可在请求切换时取消；继续用旧 WebView 夹具观察实际首屏表现。
-- [进行中] 元数据可用性：曲目终态现带 `retryable` 恢复标记；继续通过 provider 协议夹具和失败计数验证真实命中率，后台补全仍默认关闭。
 - [x] 元数据查询映射兼容：provider 查询策略支持服务端 `sqlite3.Row`，避免字段存在却生成空查询；新增回归并通过离线门禁。
 - [x] 元数据 pending 响应稳定性：已有排队任务在 worker 短暂重启窗口返回 HTTP 200 `pending/retryable`，不再误报 503；HTTP 回归和 1148 项离线门禁通过。
-- [进行中] 发布治理、服务端资源上限、大曲库查询性能与模块边界拆分：本轮完成低风险离线改动，真实设备验收仍排除。
-- [进行中] 首屏状态请求生命周期：延迟聚合已加入 pagehide/beforeunload 取消，继续观察旧 WebView 后台切换时的请求和闪烁。
-- [进行中] 本地封面与元数据恢复：已扩展常见目录封面命名及 WebP 回退，继续用大曲库封面缓存夹具观察命中率和解码成本。
-- [进行中] 引用列表元数据一致性：收藏/歌单/恢复队列已复用曲目页投影，继续观察大队列 hydration 的 SQL 与渲染成本。
 
 ## 2026-09-03 本轮持续目标进展
 
-- [进行中] 元数据即时展示：歌词 pending 响应携带的缓存封面现在会先回投到当前歌曲；继续观察 provider 完成/失败后的字段合并。
-- [进行中] 首屏封面稳定性：继续保持快照优先、键控提交和有界封面调度，真实 WebView 仍待单独验收。
-
 - [x] 2026-09-17 持续审查未完成范围：`dlna/renderer.py`、`dlna/service.py`、`dlna/control_point.py`、`state_store.py`/`state_projection.py` 并发写、`playback/core.py`、`cover_cache.py` 剩余循环、`fnos_api.py`/`alsa_player.py` 常驻循环、Android `RemotePlaybackPlayer`/`PlaybackService`/`AuthenticatedBitmapLoader`/`FnConnectRelayConfigClient`、`app.css`/`index.html` 布局与其余 `tools/*.ps1`。真机与在线 provider 仍受本机阻塞（Gradle loopback/Unix socket），不得以离线门禁宣称全仓库无问题。〔R130 关闭（并入既有条目，不另立新项）：本条正是继任清单 L94 立文时写明「替换」的那条 2026-09-17 只列文件名的范围条目，却始终没有勾选，于是同一份欠读范围在代码桶里被计两次 —— 这就是「目标正文快照 ≠ 真实计数」漂移的一个具体来源。关闭前逐项对账，判据由 `src/tests/test_scope_entry_subsumption.py` 每次从磁盘复算，本条 16 个命名面里：12 面在继任条目逐字在案（`dlna/renderer.py`、`dlna/service.py`、`dlna/control_point.py`、`state_store.py`、`state_projection.py`、`playback/core.py`、`cover_cache.py`、`fnos_api.py`、`alsa_player.py`、`app.css`、`index.html`、`tools/*.ps1`），1 面 `PlaybackService` 在设备段在案，**其余 3 面此前全盘只有本条提及** —— `RemotePlaybackPlayer`、`AuthenticatedBitmapLoader`、`FnConnectRelayConfigClient`，关闭前已先并入继任条目（连同只有本条记录的三个角度：并发写／剩余循环／常驻循环，以及「不得以离线门禁宣称全仓库无问题」这条告诫）。并入完成后本条不再持有任何独有信息，才关闭。〕
-## 2026-09-04 本轮持续目标进展
-
-- [进行中] 首屏列表闪烁：加载中保留已有快照/可见行，避免空 DOM 中间态；继续用旧 WebView 夹具观察封面解码与权威页替换。
-- [进行中] 元数据可用性：后台补全仍默认关闭，当前歌曲按需 lane 保持 worker 懒恢复、失败隔离和有限重试；继续用 provider 协议夹具复核。
-- [进行中] 发布治理、资源上限、查询性能与模块边界拆分：本轮仅做低风险离线改动，真实设备验收继续排除。
-
-## 2026-09-04 本轮持续目标进展
-
-- [进行中] 元数据可用性：懒恢复增加有界 worker 启动确认，降低短暂 503；继续观察 provider 长期稳定性和真实曲库命中率。
-- [进行中] 元数据旧负缓存恢复：缺失 job 记录的旧 `no_match/failed` 结果现在可按 `fetched_at` 冷却后重试。
-- [进行中] 元数据查询消歧：已有专辑信息会作为 provider 附加提示，继续通过离线夹具观察同名歌曲命中率。
-- [进行中] 首屏歌曲列表：快照优先、稳定键控提交和封面调度已完成离线回归，继续关注旧 WebView 实际首屏闪烁。
-
-## 2026-09-04 本轮持续目标进展
-
-- [进行中] 元数据可用性：交互请求失败/无匹配的自动恢复冷却已缩短至 60 秒，继续观察 provider 长期稳定性与真实曲库命中率。
-
 ## 2026-09-04 本轮持续目标
 
-- [进行中] 首屏列表与闪烁：引用曲目 hydration 已合并同帧重绘，元数据接口已优先返回 SQLite 中的已有投影；继续观察部署中的旧 WebView 首屏、封面闪烁和大曲库实际体验。
-- [进行中] 首屏 DOM 稳定性：稳定顺序的键控行不再临时移出列表，继续用离线回归覆盖增删/重排与封面调度边界。
-- [进行中] 启动快照生命周期：权威页到达后已退休旧快照命中标记，继续观察空响应保护与扫描完成后的状态转换。
-- [进行中] 启动快照安全边界：恢复前已限制快照条目数量，继续补充异常条目形状回归。
-- [进行中] 启动快照条目形状：已过滤无稳定 ID 的异常行，继续观察旧快照兼容性。
-- [进行中] hydration 生命周期：视图切换时已释放旧批次待执行动画帧，继续以离线竞态夹具观察取消/重入边界。
-- [进行中] 大曲库查询基线：2026-09-04 100k 离线复测已归档，继续关注尾页 OFFSET、跨视图切换和旧 WebView 绘制成本。
 - [x] 100k 曲库最新离线复测：尾页 OFFSET 0.170 秒、热页缓存约 57.6 倍、FTS 相对 LIKE 约 17.9 倍；证据为 `artifacts/large-library-benchmark-20260904-followup.json`。
 - [x] provider 输入行兼容：MetadataProviders 对服务端 `sqlite3.Row` 做有界物化后再进入适配器，避免合法字段被误判为查询失败；已通过 MetadataProviders 回归。
-- [进行中] 元数据可用性：QQ 链路在当前网络 smoke 可返回封面，组合 provider 可回退；worker 短暂重启时接口会先返回已有缓存投影，不再遮蔽已获取结果；继续通过部署状态、失败计数和受限夹具复核，不将单次网络成功视为全量数据源验收。
-- [进行中] 当前歌曲元数据回投：歌词预取已同步回投合法封面并合并同帧刷新，继续观察 provider 结果和旧 WebView 图片解码体验。
-- [进行中] 当前歌曲封面恢复：已有嵌入歌词但无封面的歌曲不再跳过优先元数据 lane，继续观察缓存命中与 provider 回退。
-- [进行中] 歌词页稳定渲染：预取回投已修复参数丢失，继续观察旧 WebView 的歌词高亮与滚动表现。
-- [进行中] 歌词终态恢复：播放预取已覆盖 `failed/no_match` 的有限 `retry=1` 恢复，继续观察 provider 回退与失败计数。
-- [进行中] 本地歌词探测性能：已加入 256 条有界文件身份缓存，继续观察大曲库轮询 I/O 和旧 WebView 展示成本。
-- [进行中] 本地歌词缓存并发：已增加线程安全单飞保护，继续观察多客户端并发歌词请求。
-- [进行中] 元数据响应边界：缓存/歌词可用性判定已抽为纯策略并有独立回归，继续按可测试边界拆分服务端编排。
-- [进行中] 歌词可用性：本地/SQLite 歌词现在优先于 worker 存活检查，避免已有歌词在服务重启时误报不可用；继续观察 provider 回退和旧 WebView 展示。
-- [进行中] 元数据回投绘制：歌词与候选回投已合并同帧并按曲目隔离，继续观察旧 WebView 的图片解码和投影更新成本。
-
-- [进行中] provider 请求兼容性：已在 JSON/歌词公共请求层补齐默认浏览器身份，防止新适配器遗漏头信息；仍需部署侧观察各来源实际限流、地区限制和结构变动。
 
 ## 持续推进（无需真机）
-
-- [进行中] 2026-09-04 元数据空成功投影与首屏稳定性：已修复历史 `review/auto` 空结果导致当前歌曲元数据长期静默的问题；继续观察部署中的 provider 状态、首屏闪烁和真实曲库表现。
-
-- [进行中] 2026-09-04 provider 延迟复核：MusicBrainz 回退已设置 4 秒交互上限，继续通过离线夹具观察失败隔离和区域 provider 回退，不以单次外网结果判定数据源有效性。
-
-- [进行中] 2026-09-03 首屏加载与元数据可用性复核：离线门禁 1130 项通过；咪咕 HTTPS 端点和显式当前歌曲优先 lane 已确认，继续观察实际部署中的 provider_failures/worker 状态与旧 WebView 首屏闪烁。
 
 - [x] 当前歌曲歌词预取：播放/恢复时按曲目去重预取歌词，歌词页优先复用已返回正文；已通过 UI 静态回归和完整离线门禁。
 
@@ -919,7 +825,6 @@
 - [x] 曲目页投影缓存基础字段指纹：扫描更新同 ID 的 Tag/封面时强制重新投影，避免短缓存显示旧数据；已通过专项与完整离线门禁。
 
 - [x] 歌词服务不可用状态前端收敛：`/api/lyrics` 返回 503/`unavailable` 时显示明确原因并停止无意义轮询；服务恢复后由用户重新打开歌词页触发重试。
-- [进行中] 首屏歌曲列表稳定渲染与封面闪烁继续观察：保持快照优先、增量提交和有限封面调度；列表行更新现在会移动同 URL 的已解码封面节点，继续用离线 UI 回归观察旧 WebView 行替换。
 
 - [x] 跨页/搜索键控行复用：分页、搜索或顺序变化时按稳定 key 移动未变化行，避免整表替换丢失已解码封面；旧行明确移除，已通过 UI 回归。
 
@@ -943,15 +848,12 @@
 - [x] 页面元数据合并策略模块化：抽离为 `library_metadata_merge_policy.js` 并独立回归，降低 UI 核心耦合；已通过完整离线门禁。
 - [x] 元数据来源标记回退：空 `metadata_source` 不再遮蔽缓存中的非空来源信息；已通过策略回归与完整离线门禁。
 
-- [进行中] 首屏与大曲库体验：继续用离线基准审计首屏、收藏/播放列表和分组页面，优先消除重复请求、空列表中间态与无意义 DOM 重建；2026-09-03 已完成最新 100k 曲库趋势复测并归档性能证据。
 - [x] 页面元数据合并后 100k 曲库趋势复测：首屏/尾页、热缓存、FTS5 搜索均未退化；证据 `artifacts/large-library-benchmark-20260903-merge.json`。
 - [x] 首屏状态轮询并行化：音乐库与元数据状态不再串行等待，降低大曲库慢聚合导致的进度停顿；已通过完整离线门禁。
 - [x] 首屏状态并行契约：新增 UI 静态回归锁定 `Promise.all` 请求形状，防止性能优化回退。
 - [x] 首屏状态先行提交：并行请求中先提交音乐库状态，再合并元数据状态，避免慢元数据超时拖住扫描进度；已通过 UI 与完整离线门禁。
  - [x] 播放会话恢复时提升当前曲目元数据：应用/浏览器重启恢复逻辑队列后立即进入当前歌曲优先通道，不再等待下一次播放命令或打开歌词页。
 - [x] 首屏权威页资源让位：冷启动时即便已命中本地快照，恢复队列的批量补水等待权威分页响应完成；已有 UI 回归覆盖，避免与首屏 SQLite/JSON/封面任务竞争。
-- [进行中] 首屏封面稳定绘制：有本地封面的行直接隐藏占位符，失败时再回退音乐符号；首屏前 8 张封面直接设置 `src` 并使用 eager + high priority，其余保持 lazy，继续用慢解码/缓存命中夹具验证无闪烁。
-- [进行中] 元数据可靠性：保持按需歌词优先、严格解码和失败可观测；曲目、实体、歌词和封面现统一使用有界查询策略，曲目候选增加 MusicBrainz recording 回退，并在标题缺失时安全回退文件名检索，继续为各 provider 增加可重复的离线协议/解析回归，不把单次网络未命中判成数据源失效。
 - [x] Kugou provider TLS 端点：搜索与歌词请求改用 HTTPS，降低明文端点被 NAS 代理拦截导致的元数据空结果；已通过离线契约与完整门禁。
 - [x] 当前歌曲专辑元数据优先：后台补全关闭时，播放/歌词页触发的专辑详情与封面任务进入受限优先队列；离线回归已覆盖，避免只补歌曲候选而遗漏专辑信息。
 - [x] 无 Tag 文件名检索增强：对常见“歌手 - 歌名”文件名仅在查询回退阶段拆分歌手与标题，提升无 Tag 歌曲的 provider 命中率且不修改原始展示字段；已通过查询策略回归。
@@ -960,7 +862,6 @@
 - [x] 元数据字段级安全写入：歌词、封面来源/ID及置信度异常值不会中断缓存落库；已通过离线回归。
 - [x] 元数据缓存时间安全读取：历史缓存中的非法、负数或非有限时间不会阻断专辑/曲目元数据响应；已通过离线回归。
 - [x] 实体元数据落库容错：专辑/歌手保存拒绝异常 provider 对象、异常置信度并使用安全 JSON 回退，避免单字段损坏令整项元数据任务失败；已通过离线回归。
-- [进行中] 元数据封面多源回退：歌词任务在网易云/QQ 无结果时复用曲目候选链获取其他来源封面；继续补充 provider schema 与失败恢复回归。
 - [x] 后续候选封面落库：最佳候选无封面时仍保存后续 provider 的首个可用封面，不改变字段匹配优先级；已通过 worker 回归与完整离线门禁。
 - [x] Artwork 重复下载收敛：已有曲目资产时在下载前短路，降低元数据重试的网络与 CPU 开销；已通过服务回归。
 - [x] library status 摘要短缓存：复用 2 秒 SQLite 计数摘要并在索引写入时失效，减少首屏状态轮询开销；已通过缓存回归。
@@ -974,20 +875,13 @@
 - [x] 歌词 provider 失败时保留封面回退：无歌词结果仍允许一次受预算限制的曲目封面/候选查询；有歌词结果则不重复扇出，已通过离线回归。
 - [x] provider 非对象结果隔离：歌词、曲目封面和实体落库对列表/字符串等异常响应安全降级，避免无关任务被错误重试；已通过离线回归。
 - [x] 曲目封面回退字段边界：候选封面、来源和 provider ID 统一使用有界文本投影，异常对象不会中断当前歌曲回退链；已通过离线回归。
-- [进行中] provider 候选字段边界：候选字段投影已拆为纯模块，艺术家、专辑名、封面 URL、JSONP 响应和 provider 路由字段均有界兼容，继续为各数据源补充协议形状与异常值回归。
 - [x] 候选来源字段安全落库：自动匹配的 source/provider ID 使用有界投影后写入，避免异常字段污染缓存；已通过离线回归。
 - [x] 曲目候选置信度容错：候选评分字段异常时安全降级，并在 JSON 持久化前再次规范化；已通过离线回归。
-- [进行中] provider 路由性能：中文曲目优先区域数据源、国际曲目优先 MusicBrainz；继续用离线 fixture 覆盖顺序与失败回退，不以单次外网请求作为可用性结论。
-- [进行中] provider 请求扇出性能：完整高置信候选命中后提前停止后续源请求；继续补充稀疏候选、封面缺失和异常响应回归。
-- [进行中] 元数据失败链路收敛：歌词 provider 已失败时跳过同一任务的二次封面网络扇出，继续补充失败/无匹配边界回归。
 - [x] 协议相对封面地址：`//host/path` 在候选投影和下载入口规范化为 HTTPS，避免可用候选因 URL 形状导致封面获取失败；已通过离线回归。
 - [x] 封面下载输入边界：拒绝非文本 URL，避免异常 provider 对象触发字符串化并中断元数据任务；已通过离线回归。
 - [x] 封面协议限制：下载器仅接受 HTTP/HTTPS，拒绝非网络 scheme；已通过离线回归。
 - [x] 简繁元数据匹配：provider 返回繁体歌名/歌手而本地 Tag 为简体时，候选评分使用有界等价折叠；不改写展示/Tag，自动确认阈值不降低，已通过专项回归与外部源离线探测。
 - [x] 元数据评分异常输入隔离：只接受文本标题/歌手，候选标题缺失时不允许歌手字段单独构成匹配；已通过专项回归。
-- [进行中] 当前歌曲封面优先：完整 Tag 但缺少封面的正在播放歌曲必须进入优先候选链；provider 单源异常应隔离并继续回退链。MusicBrainz recording 候选现在可从有效发行版本生成 Cover Art Archive 封面地址。
-- [进行中] 播放选中与元数据时序：浏览器保存播放队列时同步提升当前歌曲的歌词、封面和候选任务优先级，继续用离线回归覆盖队列保存与元数据 worker 的竞态。
-- [进行中] 元数据自动恢复：终态 provider 失败超过冷却窗口后，在下一次用户查看歌词/候选时有界重置为 pending；不启用全库后台扫描，也不形成紧密重试循环。
 - [x] 曲目候选显式失败恢复：用户点击“重新查询此歌曲”时同时重置 `failed/no_match` 候选缓存；已新增离线回归，仍不触发全库扫描。
 - [x] 陈旧 no_match 自动恢复：与 provider failed 一样，超过 60 秒冷却后在用户可见的歌词/候选请求中重新排队，避免短暂空结果长期阻断元数据；已通过专项与完整离线门禁。
 - [x] 首屏空响应保护：已有快照时对异常空页执行一次短延迟重试，避免网络/代理瞬时空响应造成歌曲列表闪烁；显式刷新不受保护逻辑影响。
@@ -996,7 +890,6 @@
 - [x] 首屏重试视图竞态：延迟重试绑定请求键并在视图切换时失效，避免旧定时器加载错误页面。
 - [x] 首屏快照与用户状态竞态：已有快照而歌曲页仍加载时，用户状态水合不再重复整页渲染；仍立即更新播放器、导航与控制状态，权威页负责最终一次列表提交。
 - [x] 首屏预热入队去同步磁盘检查：缓存命中探测转入后台预热 worker，降低慢存储上的分页响应延迟；已通过封面专项回归。
-- [进行中] 显式歌词页元数据联动：打开歌词页时除歌词任务外，按需补排缺失歌手/专辑/封面的单曲候选任务；保持后台全库补全默认关闭。
 - [x] 首屏空状态闪烁与歌词页封面补排：首个权威列表返回前隐藏空库提示；完整 Tag 但缺封面的歌词页请求会补排单曲候选；已通过专项回归，待完整门禁记录。
 - [x] 专辑艺术家封面回退一致性：歌词接口与专辑任务使用相同的 album_artist 缓存键，避免合辑曲目封面误判缺失；已通过专项回归。
 - [x] 专辑/歌手 provider 异常回退：隔离第三方 schema 漂移并继续后续数据源；已通过专项回归。
@@ -1004,8 +897,6 @@
 - [x] provider 失败与无匹配状态分离：失败不再写入长期 `no_match` 负缓存，保留重试和失败诊断；已通过专项回归。
 - [x] provider 状态判定并发隔离：使用 worker 线程本地失败标记，避免并发任务改变彼此的 `failed/no_match` 结果；已通过专项回归。
 - [x] 冷启动队列补水让位首屏：首次恢复大队列时等待首页分页完成后再批量补水，降低首屏慢加载与闪烁；已通过 UI 回归。
-- [进行中] 歌词无匹配终态：区分 `no_match` 与 `pending`，避免无匹配任务被永久伪装成排队中；重开歌词页可按冷却/显式重试策略恢复。
-- [进行中] 发布治理、资源上限与模块边界：每次源码改动更新清单、运行完整离线门禁并记录可复现性能证据。
 - [x] 元数据 worker 状态策略拆分：最终状态与有限重试判定抽至 `metadata_job_policy.py`，降低线程编排与状态规则耦合；已通过独立及完整离线回归。
 - [x] 元数据数值策略模块化：置信度投影抽至独立纯模块并由四类落库路径复用；已通过独立与完整离线回归。
 - [x] 元数据策略异常值隔离：封面引用和来源字段仅接受有界文本，拒绝对损坏 JSON 值执行任意字符串化；已通过专项与完整离线门禁。
@@ -2113,19 +2004,11 @@
 
 - [x] 首屏/状态刷新列表闪烁：相同曲目 HTML 不再重复替换 `trackList`，避免旧 WebView 重新触发封面解码和滚动重置；982 项离线门禁通过。
 - [x] 手动元数据补全的开关门禁：默认仍关闭后台补全，但点击“重新补全元数据”会显式开启抓取后再入队，避免关闭状态下假成功；UI/服务回归通过。
-- [进行中] 首屏加载继续优化：以现有分页缓存、in-flight 合并、首批优先、无中间重绘和 100k 基准为基线，后续只接受可量化的低风险改动。
 - [x] 冷启动空状态闪烁：无快照时在首个分页请求进入 loading 即隐藏静态空状态，已有列表不重绘；UI 回归已通过。
 - [x] 访问模式探测让路首屏：`api/access` 延迟到首屏提交后执行，分页切换和卸载时取消旧任务；已通过 UI 回归。
-- [进行中] 首屏启动继续观测：已消除用户状态水合导致的空列表二次渲染；后续只针对可证明的请求、DOM 提交或图片解码重复工作优化。
-- [进行中] 首屏封面优先级：IntersectionObserver 之前先启动首屏前 8 张封面，其余继续按可见区域懒加载；后续以离线调度回归和性能证据观察。
-- [进行中] 首屏封面资源竞争：非首屏封面已标记低请求优先级，继续以离线调度回归观察旧 WebView 兼容性。
-- [进行中] 元数据可用性继续观测：本地歌词优先，外部默认保留网易云、酷我、酷狗、咪咕、JOOX 和 MusicBrainz 末位回退链；数据源启用状态与顺序可在设置页调整，MusicBrainz 始终固定最后，外部服务波动时通过逐源测试、状态和失败原因定位。
-- [进行中] 元数据失败诊断继续收敛：provider 错误已采用受限投影，后续仅依据可复现样本补充协议适配，不将单次无匹配误判为数据源失效。
 - [x] 元数据 provider 总等待预算：单任务以线程本地 deadline 限制外部源串行等待，歌词 12 秒、其他任务 15 秒，超时后仍按 failed/retry 链路恢复；已通过专项与完整离线门禁。
-- [进行中] 元数据缓存损坏隔离：曲目候选接口对异常 JSON、置信度和时间字段安全回退，继续补充缓存恢复回归。
 - [x] 元数据候选正缓存纳入规范化查询与文件名身份提示，避免部分 Tag 相同但文件名不同的曲目复用错误的本地候选；新增 MetadataService 回归。
 - [x] 元数据候选缓存身份已抽为独立纯模块，集中约束查询、文件名提示和原始字段的有界投影；新增模块级回归。
-- [进行中] 持续目标（无需真机）：首屏仅接受可量化的低风险加速并保持稳定 DOM；元数据链继续补强受限解析、失败可观测与本地/在线回退，不改变后台补全及 Tag 写回默认关闭状态。
 - [x] Provider smoke 观测（2026-09-01）：本机测试 QQ、咪咕歌词成功，网易云/酷狗/JOOX/千千本次样本未命中；结果归档于 `artifacts/metadata-provider-smoke-20260901.json`，未据此删除数据源。
 - [x] Provider 协议差异复核：对照 `references/music-lib` 记录网易云 weapi 与现有公开 GET 的协议差异，以及酷狗/QQ/咪咕/千千两段式兼容性；详见 `artifacts/metadata-provider-compatibility-20260901.md`。
 - [x] 当前歌曲按需歌词不再受后台补全总开关阻断：默认关闭 `metadata_enabled` 时，用户打开歌词仍可唤醒优先歌词 worker；全库后台补全和 Tag 写回门禁保持不变，已通过完整离线回归。
@@ -2133,10 +2016,6 @@
 - [x] 元数据候选按需入队：首次打开单曲候选时若无缓存记录，现在会创建受限优先任务；后台总开关关闭时仅处理该明确单曲请求，不启动整库扫描。
 - [x] 首屏封面解码延后：曲目行封面使用 `loading=lazy` 与 `decoding=async`，配合现有可见区域调度器降低首屏解码阻塞；已通过 UI 回归。
 
-- [进行中] 工作树与发布治理：保持隔离构建、源码清单和可恢复发布证据；不覆盖正式包。
-- [进行中] 旧版发布证据隔离：0.2.33 主目录已补充 legacy 说明，明确 scratch provenance 不匹配；继续保持严格恢复拒绝不完整证据。
-- [进行中] `artifacts/0.2.33` 仅具备 FPK/SHA256 旧证据，需在下一次正式重建时补齐源码清单与 provenance；当前不得宣称可完整恢复。
-- [进行中] 服务端资源上限与可观测性：继续以脱敏、低开销方式补充查询/扫描瓶颈证据。
 - [x] 可观测性计数增量边界：拒绝任意对象转换并限制单次增量，已通过离线回归。
 - [x] 请求 ID 输入边界：仅接受字符串请求头，避免异常对象字符串化；已通过离线回归。
 - [x] 脱敏日志键/事件边界：非文本值使用占位符，避免诊断路径触发任意字符串转换；已通过离线回归。
@@ -2144,8 +2023,6 @@
 - [x] 并发资源门禁输入边界：限制上限/超时并拒绝异常对象转换，已通过离线回归。
 - [x] 资源配置数值边界：bounded_int 拒绝异常对象转换并安全处理非法配置容器；已通过离线回归。
 - [x] 磁盘保留空间输入边界：非法路径/字节值保守拒绝，避免资源检查异常；已通过离线回归。
-- [进行中] 大音乐库性能：继续优化收藏、歌单与分页的引用曲目补水，先以排序语义和回归为前提。
-- [进行中] 大音乐库性能观测：分页冷/热缓存基准已固化；首屏常规路径未见重复 COUNT(*)，后续优先分析尾页 OFFSET、跨视图缓存命中和引用补水的可量化瓶颈。
 - [x] `random100` 显式刷新绕过服务端短期页缓存，确保刷新重新抽样而不是复用旧随机页；新增 SQLite 回归。
 - [x] 100k 首屏保护回归基准：首屏/中页/尾页分页、缓存、分组和搜索均保持有界；证据已归档至 `artifacts/large-library-benchmark-20260902-empty-response-guard.json`。
 - [x] 100k 曲库缓存/搜索追加复测：分页冷/热、分组/目录、引用补水和 FTS/LIKE 对照已记录；尾页 OFFSET 仍是后续优化候选，未在无证据情况下改写查询结构。
@@ -2165,9 +2042,7 @@
 - [x] HTTP 观测路径长度边界：请求路径限制 8192 字符，避免超长 URL 放大策略开销；已通过离线回归。
 - [x] 诊断键长度上限：脱敏日志键限制 256 字符且不绕过敏感字段识别；已通过离线回归。
 - [x] CUE 时间字段上限：限制各数字分量长度，避免极端文本放大解析开销；已通过离线回归。
-- [进行中] 核心模块边界：扫描控制、元数据展示、常规扫描记录组装及 provider 路由已抽至独立纯模块；后续继续拆分扫描/元数据读取，但不碰真实播放链路。
 - [x] 曲目候选字段安全投影：文本、来源、封面 URL、发行日期和数字 provider ID 统一经过有界纯策略；已通过完整离线门禁。
-- [进行中] 元数据补全判定边界：`needs_track_enrichment` 已抽为独立纯策略，后续继续拆分 provider 结果投影与任务状态转换。
 - [x] CUE 曲目记录构造边界：片段时长与记录字段组装已抽至纯模块并通过离线回归。
 - [x] 扫描数值策略边界：safe_float/safe_int 抽至纯模块并拒绝异常对象转换；已通过离线回归。
 - [x] Tag 文本输入边界：clean_tag 限制长度并拒绝异常对象字符串化；已通过离线回归。
@@ -2378,8 +2253,6 @@
 - [x] 元数据轮询队列公平性：活动中的 track/lyrics job 轮询仅提升优先级，不重置状态、退避和 FIFO 时间戳；离线回归通过。
 # 2026-09-05 本轮持续目标进展
 - [已完成（离线可验证）] 冷启动恢复队列的当前歌曲元数据会在首屏权威页提交后立即重新挂接优先 lane。
-- [进行中] 真实 WebView 的首屏图片解码闪烁仍需设备验收；本轮只收敛 DOM/请求时序，不宣称已消除全部硬件差异。
-- [进行中] provider 可用性与 schema 漂移继续通过离线策略、worker 恢复和响应投影回归覆盖；真实数据源稳定性仍不作全量保证。
 
 ## 2026-09-06 持续目标增量
 
@@ -2391,7 +2264,6 @@
 - [x] 播放启动歌词任务版本闭环：当前歌曲优先任务 payload 保留扫描文件版本，worker 可避免重复 stat；100k 离线基准复测通过。
 - [x] 封面预热入队 I/O 收敛：交互和扫描预热去重阶段不再同步探测未索引文件，后台 worker 承担真实缓存检查；新增 cover cache 回归。
 - [x] 元数据候选评分输入边界：异常本地 Tag 字段不会中断 provider 候选映射或后备源；通过 MetadataProviders 回归。
-- [进行中] 首屏列表/封面闪烁与 provider 真实网络稳定性继续以离线指标和外部验收分别观察。
 - [x] 元数据空响应恢复：服务已启动但单次 `track_match` 返回空值时，接口保留本地 Tag/文件名投影并返回可重试 pending，避免前端误判为元数据永久不可用；HTTP 回归通过。
 - [x] 元数据空投影恢复：`track_match` 返回空对象或缺少状态/候选/封面等投影字段时，同样回投本地信息并保持 retryable pending；HTTP 回归通过。
 - [x] 元数据瞬态异常恢复：单次 SQLite/worker 异常不再返回 opaque HTTP 500，接口保留本地投影并交给有界重试链恢复；HTTP 回归通过。
@@ -2400,13 +2272,11 @@
 - [x] 元数据本地数值边界：pending 投影拒绝 NaN/Infinity 等损坏数值，避免污染歌曲身份和 provider 查询；策略回归通过。
 - [x] 2026-09-06：显式单曲/歌词重试解除 provider 冷却短路；后台限流与失败退避保持不变，离线门禁通过。
 - [x] 2026-09-06：首屏歌曲页已提交而用户状态延迟返回时，只有影响当前列表的列配置、收藏、歌单或队列变化才触发完整渲染；普通控制状态改为局部刷新，避免列表/封面二次闪烁。完整离线门禁 1128 项通过。
-- [进行中] 首屏歌曲列表性能与按需元数据可靠性：持续自动任务已启用；继续以离线夹具验证分页提交次数、封面 hydration 与 `pending/retryable` 元数据恢复，真实 WebView 绘制和第三方 provider 长期网络命中率独立验收。
 
 ## 2026-09-06 首屏元数据与响应兼容
 
 - [x] 可见歌曲元数据启动时序：保持首屏让行但将 750ms 静默窗口收敛至 220ms，现代 WebView 的空闲回调兜底收敛至 450ms；当前歌曲仍走独立立即优先 lane，已通过 Node/UI 回归。
 - [x] 宿主 metadata envelope 兼容：仅对无有效投影的响应支持 `data/result/payload/metadata` 有界解包；四层上限、异常 getter 与数组回退均有离线回归，避免成功结果被误判为空。
-- [进行中] 持续自动任务：继续处理无需真实设备的发布治理、资源上限、100k 曲库查询/渲染、首屏提交与元数据恢复；真实设备/输出协议/外部 provider 稳定性保持独立验收。
 
 ## 2026-09-08 歌词优先 lane 重试闭环
 
@@ -2419,7 +2289,6 @@
 
 - [x] 首屏快照复用可观测性：新增有界 `snapshotMarkupReuses` 与 `listMarkupNoops` 指标；浏览器夹具会校验指标可安全读取，便于区分真正的 DOM 提交、快照复用与 no-op 提交。
 - [x] 按需元数据恢复边界：后台全库补全默认关闭不再影响当前歌曲、歌词页和显式单曲查询；worker 恢复、空响应、宿主 envelope 和短时 provider 冷却均保留本地投影 + 有界 retryable 路径。
-- [进行中] 自动任务保持激活：继续在无需真实设备的范围内量化首屏提交/封面 hydration/元数据延迟，收敛大曲库查询与渲染；真实 WebView 绘制和第三方 provider 的长期网络可用性不以离线结果宣称完成。
 - [x] 发布 FPK 资源上限：构建与证据校验在复制、解包或 SHA-256 前拒绝超过 10 GiB 的稀疏/实体包，避免超大产物进入发布流程；新增离线回归。
 
 ## 2026-09-08 首屏指标补强
@@ -2430,8 +2299,6 @@
 - [x] provider 响应解析边界拆分：gzip/JSONP/编码/Base64 歌词解析抽为无状态有界模块，保留 MetadataService 兼容入口并通过独立回归。
 - [x] provider 基础字段投影边界拆分：文本与数值 schema 投影抽为无状态模块，保留兼容入口并通过独立回归。
 - [x] 2026-09-17：`playback/alsa_output.py:merge_dac_caps()` 是无调用方的死代码，且会把 `empty_dac_caps()` 的默认 192000/24bit 与实测能力做 `max()`，一旦被接线就会用猜测值抬高真实上限；待决定接线方式或直接删除（本轮只读不改）。  **R91 关闭（点名的函数已经不在了，但它担心的事活在另一处，并且这轮不需要真机就修掉了）**：先核对现状：`merge_dac_caps` 在代码里**零引用**（`git grep -l` 只命中 CHANGELOG_AI.md 与 TODO.md 两份文档 ✓），`empty_dac_caps()`（`playback/alsa_output.py:295`）也已改成「未知一律记 0，不记像样的默认值」（:78 那条测试钉着 ✓），所以条目描述的函数与那个 192000/24 的**默认表**都没了。但同一个猜测活在下游：`choose_dac_strategy()` 原来写 `max_rate = safe_int(...) or (max(rates) if rates else 192000)`、`max_bits = safe_int(...) or 24`，只在 `source == "unknown"` 时才保守。实测（`%TEMP%\r91measure.py`）四种 caps 形状对四种源文件的策略：源文件报得出速率的设备给 48000，而**「stream 文件读得到、但一条速率都没解析出来」的设备被判成 192 kHz 器件**——176.4 kHz 的文件直通 176400、384 kHz 的文件给 192000，与全空 caps 的 44100 相差 3 倍。这一形状不是构造出来的：归档项 TODO.md:1831 记着很多驱动打印的是 `Rates  : 0x33 (44100 48000 ...)`，现有两条正则都匹配不到，于是速率恒空；本轮另造一份同样形状的 stream 文件走真解析器复核，`pcm_rates=[]`、`pcm_max_rate=0`、`source` 指向真实路径，结果同上。为什么不必等真机：这个 rate 最终喂给 `aplay -D`（:929），而设备标识是 `hw:CARD=x,DEV=y`（:498/:620/:652）——**`hw:` 不带重采样插件**，多报的天花板不是「保守回退」，是打不开的设备，所以「未知即按源文件直通」这个选项可以直接排除。改法（:810-830）：先只取实测值得到上限，取不到就按与 unknown 完全相同的保守答复（44100），但**驱动真报过的位深要留下**（`Formats: S16_LE S24_LE` 通常读得得到 ✓ 解析在 :354 ✓），否则会把唯一的实测事实也丢掉；没有实测位深时保守取 16。测试：既有 `test_driver_text_without_rates_stays_unmeasured` 原本断言的正是 192000（注释把它称作「仍然保守的上限」），本轮按上面的证据把它改成 44100 并写明理由；新增 `test_an_unmeasured_device_gets_the_same_answer_as_an_unknown_one`，四种源文件逐一比对「没测到」与「unknown」的答复必须相同，同时钉住「报得出速率的设备不许被压到 44100」（176.4k 源 + [44100,48000] 必须仍是 48000），以及「只报格式不报速率」时是 (44100, 24) 而不是 (44100, 16)。变异 8 例（控制组 117 条先绿）：N1（整段保守分支不走）、N2（逐字恢复改前代码）、N3b（把保守误用于「有速率无位深」）、N4（位深仍猜 24）、N6（覆盖掉实测位深）全部由新测试杀死；N3（拿已被默认过的变量做判断）是 no-op、N5（改用速率表判定，因为 :347 处 `pcm_max_rate` 只会等于 `max(rates)`，解析器产生不出「有上限无速率表」）按设计存活；反过来 N7 我本来标成等价，结果被杀——它让默认值 24 冒充实测宽度，说明那两个断言确实各自守着一条承诺。附带排掉一个误判：条目说的「接线方式待定」不成立，没有任何调用方等着它。
-
-
 
 - [x] 2026-10-17：R221：修复元数据补全页显示“读取候选失败”。取证确认设备 0.2.70/0.2.71 的真实响应已得到网易云候选，但服务重建后已有活动任务没有启动 worker，且成功响应缺 `ok:true` 被前端误判失败。`track_match()` 现恢复已有活动任务的 worker；`/api/metadata/track` 所有成功投影统一带 `ok:true`。新增服务层/HTTP 判别测试，0.2.72 已部署到 `192.168.5.141`；真机《퀸카 (Queencard)》显示网易云候选、专辑 `I feel`、88% 可信度。
 - [x] 2026-10-17：R223：修复网易云组合搜索窗口过窄导致“搜索/封面/歌词全部不可用”。设备取证确认网易云接口正常，但 `limit=10` 截断了《双截棍》周杰伦候选；现扩大网易云歌曲搜索到 100 条、详情补全最多 50 个 ID，并新增判别性回归测试。源码修复完成，0.2.73 构建与真机验收待本轮收口。

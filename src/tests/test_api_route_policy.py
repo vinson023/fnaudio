@@ -31,6 +31,9 @@ class ApiRoutePolicyTests(unittest.TestCase):
         self.assertEqual(required_scope("POST", "/api/playback/control"), "playback.control")
         self.assertEqual(required_scope("POST", "/api/config/library"), "settings.write")
         self.assertEqual(required_scope("GET", "/api/library/location"), "files.read")
+        # R461: the fallback directory browser exposes the host filesystem
+        # layout, so it must not ride on plain library read access.
+        self.assertEqual(required_scope("GET", "/api/library/dirs"), "files.read")
 
 
 if __name__ == "__main__":
