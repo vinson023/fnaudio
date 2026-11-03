@@ -1965,13 +1965,12 @@ function updateModeButton() {
 }
 function ensurePlaybackSettingsControls() {
   if ($("settingsDeviceBtn") && $("settingsModeBtn")) return;
-  const pane = $("settings-pane-playback");
-  const status = $("playbackSettingsStatus");
-  if (!pane || !status) return;
-  const controls = document.createElement("div");
-  controls.className = "settings-device-controls";
-  controls.innerHTML = '<button class="secondary-button" id="settingsDeviceBtn" type="button">选择播放设备</button><button class="secondary-button settings-mode-button" id="settingsModeBtn" type="button" aria-pressed="false">MP3 转码：关</button>';
-  status.before(controls);
+  // The output target and the transcode switch act immediately, so they live in
+  // their own "播放输出" section instead of hanging below the Renderer name,
+  // where they looked like fields the save button would submit.
+  const host = $("playbackDeviceControls");
+  if (!host) return;
+  host.innerHTML = '<button class="secondary-button" id="settingsDeviceBtn" type="button">选择播放设备</button><button class="secondary-button settings-mode-button" id="settingsModeBtn" type="button" aria-pressed="false">MP3 转码：关</button>';
   $("settingsDeviceBtn").onclick = openDeviceDialog;
   $("settingsModeBtn").onclick = toggleMp3Transcode;
   updateModeButton();
@@ -7892,7 +7891,11 @@ function ensureMetadataSettingsOverview() {
   const overview = document.createElement("div");
   overview.className = "metadata-settings-overview";
   overview.innerHTML = '<div><span>后台补全</span><strong data-metadata-overview="enabled">未启用</strong></div><div><span>Tag 写回</span><strong data-metadata-overview="tag-write">未启用</strong></div><div><span>数据源</span><strong data-metadata-overview="providers">读取中</strong></div>';
-  pane.prepend(overview);
+  // The cards belong to the "补全概览" heading, not above it: prepending them
+  // left that heading with nothing but its own help text underneath.
+  const heading = pane.querySelector(".settings-section-heading");
+  if (heading) heading.after(overview);
+  else pane.prepend(overview);
 }
 function updateMetadataSettingsOverview() {
   ensureMetadataSettingsOverview();

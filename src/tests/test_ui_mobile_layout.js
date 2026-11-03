@@ -27,6 +27,12 @@ const sidebarSettingsStart = sidebarMarkup.indexOf('<div class="sidebar-settings
 const sidebarSettingsEnd = sidebarMarkup.indexOf('</div>', sidebarSettingsStart);
 assert.ok(sidebarScrollStart >= 0 && sidebarSettingsStart > sidebarScrollStart, "library navigation needs its own scroll container");
 assert.ok(sidebarSettingsEnd > sidebarSettingsStart && sidebarMarkup.indexOf('id="mobileSettingsNavBtn"') > sidebarSettingsStart, "settings must live in the fixed sidebar footer, outside the scrolling navigation");
+// R463: settings is the everyday entry, logout is the last action, so the two
+// swap places in the footer.  Logout also has to read as destructive: it is the
+// only entry painted in the theme's danger colour, including on hover.
+assert.ok(sidebarMarkup.indexOf('id="mobileSettingsNavBtn"') < sidebarMarkup.indexOf('id="mobileLogoutBtn"'), "settings must come before logout in the sidebar footer");
+assert.match(css, /\.nav-item\.mobile-logout-nav-item[^{]*\{[^}]*color:var\(--ui-danger\)/, "logout must use the theme danger colour");
+assert.match(css, /\.nav-item\.mobile-logout-nav-item svg\{[^}]*stroke:currentColor/, "the logout icon must follow the label colour");
 assert.ok(sidebarMarkup.indexOf('id="newPlaylistBtn"') < sidebarSettingsStart, "playlists remain inside the scrolling library navigation");
 assert.doesNotMatch(sidebarMarkup, /sidebar-footer|本地音乐库/, "the retired local-library status row must not remain below settings");
 assert.match(index, /<style id="critical-icon-sizing">[\s\S]*?\.nav-item>svg\{width:18px;height:18px;flex:0 0 18px\}[\s\S]*?\.group-icon>svg\{width:24px;height:24px;flex:0 0 24px\}[\s\S]*?<\/style>/, "first-paint library icons need fixed dimensions before external stylesheets finish loading");
@@ -75,7 +81,7 @@ assert.match(css, /\.pager-inner\{[\s\S]*?width:100%!important;[\s\S]*?justify-c
 assert.match(css, /\.pager-nav\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-page-summary\{flex:0 0 auto!important;/);
 assert.ok(css.includes(".settings-tabs{margin-top:12px!important;flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;scrollbar-width:none!important}"), "mobile settings tabs must stay in one row and scroll when needed");
-assert.ok(css.includes(".settings-tabs button{flex:0 0 auto!important;padding:0 8px!important;white-space:nowrap!important}"), "mobile settings labels must not wrap into uneven tab heights");
+assert.ok(css.includes(".settings-tabs button{flex:0 0 auto!important;padding:0 6px!important;white-space:nowrap!important;font-size:12px!important}"), "mobile settings labels must not wrap into uneven tab heights, and must shrink enough for all five to fit a 390px dialog");
 assert.match(css, /body\.mobile-search-active \.player\{[^}]*position:fixed!important;[^}]*display:grid!important;[^}]*bottom:0!important;[^}]*contain:layout paint!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*position:absolute!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none!important/);
