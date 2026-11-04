@@ -878,32 +878,27 @@ test('FNOS: folder pagination uses semantic surface and divider colors', async (
   });
 });
 
-for (const [width, height, selector] of [
-  [1440, 900, '#modeBtn'],
-  [375, 812, '#mobileModeBtn .mode-mp3-icon'],
+for (const [width, height] of [
+  [1440, 900],
+  [375, 812],
 ]) {
-test(`FNOS ${width}: MP3 mode control keeps the original text treatment`, async ({page}) => {
+test(`FNOS ${width}: the MP3 transcode control lives in settings, not the retired top bar`, async ({page}) => {
   await load(page, width, height);
-  const buttonSelector = width <= 760 ? '#mobileModeBtn' : '#modeBtn';
-  await expect(page.locator(selector)).toBeVisible();
-  await expect(page.locator(`${buttonSelector} svg`)).toHaveCount(0);
-  await expect(page.locator(`${buttonSelector} .mode-wave-icon, ${buttonSelector} .mode-mp3-label`)).toHaveCount(0);
-  await expect(page.locator(selector)).toHaveText(width <= 760 ? 'MP3' : 'MP3 转码：关');
-  const label = page.locator(selector);
-    const metrics = await label.evaluate(element => {
-      const style = getComputedStyle(element);
-      const labelBox = element.getBoundingClientRect();
-      const buttonBox = element.closest('button').getBoundingClientRect();
-      return {
-        fontSize: parseFloat(style.fontSize),
-        height: labelBox.height,
-        inside: labelBox.left >= buttonBox.left && labelBox.right <= buttonBox.right &&
-          labelBox.top >= buttonBox.top && labelBox.bottom <= buttonBox.bottom,
-      };
-    });
-    expect(metrics.fontSize).toBeGreaterThanOrEqual(9);
-    expect(metrics.height).toBeGreaterThanOrEqual(12);
-    expect(metrics.inside).toBe(true);
+  // The whole .top-actions strip is retired: the theme hides it above 761px and
+  // the 760px block hides it below, so every control inside is unreachable at
+  // every breakpoint.  The transcode switch moved into the "播放输出" section,
+  // which is where this test now looks for it.  Asserting the old top-bar node
+  // was visible kept a dead element alive as a test fixture.
+  await expect(page.locator('.top-actions')).toBeHidden();
+  await expect(page.locator('#modeBtn')).toBeHidden();
+  await expect(page.locator('#mobileModeBtn')).toBeHidden();
+  await openSettings(page);
+  await page.locator("[data-settings-tab='playback']").click();
+  const settingsButton = page.locator('#settingsModeBtn');
+  await expect(settingsButton).toBeVisible();
+  await expect(settingsButton).toHaveText(/MP3 转码：(开|关)/);
+  const box = await settingsButton.boundingBox();
+  expect(box.height).toBeGreaterThanOrEqual(38);
 });
 }
 
@@ -946,8 +941,17 @@ for (const [width,height] of [[375,812],[667,375],[900,600]]) {
     await expect(page.locator('#stopBtn')).toHaveCount(0);
     for (const selector of ['#prevBtn','#playBtn','#nextBtn','#seek']) await insideViewport(page,selector);
     if (width===375) {
-      const gap = await page.evaluate(() => document.querySelector('.player').getBoundingClientRect().bottom - document.querySelector('.progress').getBoundingClientRect().bottom);
-      expect(gap).toBeLessThan(20);
+      // The progress strip sits directly above the player, so "player.bottom minus
+      // strip.bottom" is simply the player's own height -- asserting it stays under
+      // 20px never described spacing and could never pass while the bar exists.
+      // The real contract is that the strip touches the bar and the bar stays compact.
+      const geo = await page.evaluate(() => {
+        const player = document.querySelector('.player').getBoundingClientRect();
+        const progress = document.querySelector('.progress').getBoundingClientRect();
+        return {playerHeight: player.height, seam: Math.abs(player.top - progress.bottom)};
+      });
+      expect(geo.seam, 'the progress strip must touch the player').toBeLessThan(2);
+      expect(geo.playerHeight, 'the phone player stays a compact bar').toBeLessThanOrEqual(150);
     }
     await screenshot(page,info,'android-compact-player');
   });
@@ -1041,7 +1045,18 @@ for (const width of [320,375,414,768,1280,1440]) {
       await expect(page.locator('.sidebar')).toBeHidden();
       await expect(page.locator('#mobileNavBtn')).toBeFocused();
     }
-    await page.locator(mobile?'#mobileDeviceBtn':'#deviceBtn').click();
+    if (mobile) {
+      // The top bar is retired on phones, so the device dialog opens from the
+      // settings "播放输出" section.  #mobileDeviceBtn is unreachable at every
+      // breakpoint; keeping it in the click path only ever tested the timeout.
+      await expect(page.locator('#mobileDeviceBtn')).toBeHidden();
+      await page.locator('#mobileNavBtn').click();
+      await page.locator('#mobileSettingsNavBtn').click();
+      await page.locator("[data-settings-tab='playback']").click();
+      await page.locator('#settingsDeviceBtn').click();
+    } else {
+      await page.locator('#deviceBtn').click();
+    }
     await expect(page.locator('#deviceDialog')).toBeVisible();
     // Nine dialogs now carry a close control: the eight settings/device dialogs
     // plus the server-side music directory browser that clients without the
@@ -1539,7 +1554,11 @@ test('FNOS short landscape preserves browsing space and compact transport contro
   const list=await page.locator('#trackList').boundingBox();
   expect(list.height).toBeGreaterThan(100);
   await expect(page.locator('#stopBtn')).toHaveCount(0);
-  for(const selector of ['#prevBtn','#playBtn','#nextBtn','#mobileShuffleBtn','#mobileRepeatBtn','#refreshBtn']) await insideViewport(page,selector);
+  for(const selector of ['#prevBtn','#playBtn','#nextBtn','#mobileShuffleBtn','#mobileRepeatBtn']) await insideViewport(page,selector);
+  // #refreshBtn lives in the retired .top-actions strip, which is hidden at this
+  // width; refreshing the library now happens through the settings scan action.
+  await expect(page.locator('.top-actions')).toBeHidden();
+  await expect(page.locator('#refreshBtn')).toBeHidden();
   await expect(page.locator('.player-actions')).toBeHidden();
   await screenshot(page,info,'landscape');
 });

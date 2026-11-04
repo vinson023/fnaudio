@@ -192,8 +192,11 @@ test("desktop library, context menu, device picker and settings are functional",
 
 test("mobile search, menu, scrolling surface and footer stay usable", async ({ page }) => {
   const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
-  await expect(page.locator("#mobileDeviceBtn")).toBeVisible();
-  await expect(page.locator("#mobileModeBtn")).toBeVisible();
+  // The top bar is retired below 761px: both phone controls are unreachable and
+  // their functions live in the settings "播放输出" section, so asserting them
+  // visible only ever proved the dead strip was still in the DOM.
+  await expect(page.locator("#mobileDeviceBtn")).toBeHidden();
+  await expect(page.locator("#mobileModeBtn")).toBeHidden();
   await expect(page.locator("#deviceBtn")).toBeHidden();
   await expect(page.locator("#mobileShuffleBtn")).toBeVisible();
   await expect(page.locator("#mobileRepeatBtn")).toBeVisible();

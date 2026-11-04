@@ -39,3 +39,34 @@ context.renderLibraryHealth();
 assert.equal(nodes.libraryHealthStatus.textContent, '目录不存在', 'a missing configured directory remains a distinct failure');
 assert.equal(errorFlags().at(-1), true, 'a configured but missing directory must still raise the danger state');
 console.log('Fresh-install setup and missing-directory health states passed');
+
+// A status that never arrived is a third state, distinct from both "no directory
+// configured" and "the configured directory is gone".  The server always sends
+// library_paths (an array, possibly empty), so a payload without it means the
+// request failed or has not answered yet.  Counting its paths as zero used to
+// print "0 configured directories, supports 0 formats" under a danger fill.
+context.state.libraryStatus = null;
+context.renderLibraryHealth();
+assert.equal(nodes.libraryHealthStatus.textContent, '音乐库状态未就绪',
+  'a status that never arrived must not be described as an empty library');
+assert.match(nodes.libraryHealthDetail.textContent, /还没有读取到音乐库状态/,
+  'a pending status must say so instead of counting zero paths');
+assert.equal(errorFlags().at(-1), false,
+  'a request that has not answered is not a fault: no danger fill');
+assert.equal(nodes.libraryScanNowBtn.disabled, true,
+  'scanning is meaningless before the status has been read');
+
+// The failed-request shape is an empty object rather than null, and it must land
+// in the same state: neither the danger fill nor the zero-path sentence.
+context.state.libraryStatus = {};
+context.renderLibraryHealth();
+assert.equal(nodes.libraryHealthStatus.textContent, '音乐库状态未就绪',
+  'an empty payload object is the same pending state, not a configured library');
+assert.equal(errorFlags().at(-1), false,
+  'an empty payload object must not paint the danger fill');
+assert.doesNotMatch(nodes.libraryHealthDetail.textContent, /0 个配置目录/,
+  'the zero-path sentence belongs to a real payload with an empty list, not to a missing one');
+
+// The real payload with an empty list keeps the first-run wording and the
+// "configured but missing" case keeps the danger fill, both pinned above.
+console.log('Pending-status health state passed');

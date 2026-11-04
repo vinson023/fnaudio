@@ -40,7 +40,7 @@ assert.match(html, /data-view="genres"[\s\S]*?data-view="random100"[\s\S]*?nav-t
 
 // P2: an empty install is a setup state, not a failure; and "0 个配置目录" told
 // the user nothing when the fix was simply to pick a directory.
-assert.match(app, /classList\.toggle\("is-error", !unconfigured &&/, "an unconfigured library must not use the danger fill");
+assert.match(app, /classList\.toggle\("is-error", hasPayload && !unconfigured &&/, "an unconfigured or not-yet-loaded library must not use the danger fill");
 assert.match(app, /还没有配置音乐目录，选择目录后即可扫描并收录歌曲。/, "the unconfigured card must explain the next step");
 
 // P2: the placeholder row is not a directory, so it must not offer "remove".

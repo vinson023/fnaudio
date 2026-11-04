@@ -1998,30 +1998,38 @@ function renderLibraryHealth() {
   const status = state.libraryStatus || {};
   const health = $("libraryHealth");
   if (!health) return;
+  // A status that never arrived is not an empty library.  The server always sends
+  // library_paths (an array, possibly empty) and a string library_path, so a
+  // payload with neither is a failed or still-pending request.  Counting its
+  // paths as zero used to print "0 configured directories, supports 0 formats"
+  // and raise the danger fill, which told the user their directory had vanished
+  // when in fact nothing had been read yet.
+  const hasPayload = Array.isArray(status.library_paths) || typeof status.library_path === "string";
   const exists = status.exists === true;
   const readable = status.readable === true;
   const scanning = status.scanning === true;
   // Treat a missing library_path the same as an empty one as long as the server
   // did send the list: older payloads omit the singular field.
-  const unconfigured = !status.library_path && Array.isArray(status.library_paths) && status.library_paths.length === 0;
-  const stateText = unconfigured ? "尚未配置音乐目录" : (scanning ? scanProgressText() || "正在扫描音乐库" : (!exists ? "目录不存在" : (!readable ? "目录不可读" : (status.last_error ? "最近一次扫描有错误" : "目录正常"))));
+  const unconfigured = hasPayload && !status.library_path && Array.isArray(status.library_paths) && status.library_paths.length === 0;
+  const stateText = !hasPayload ? "音乐库状态未就绪" : (unconfigured ? "尚未配置音乐目录" : (scanning ? scanProgressText() || "正在扫描音乐库" : (!exists ? "目录不存在" : (!readable ? "目录不可读" : (status.last_error ? "最近一次扫描有错误" : "目录正常")))));
   const pathText = displayText(status.library_path || (status.library_paths || []).join(", ") || "未配置");
   const count = Math.max(0, Number(status.count || status.found || 0));
   const lastScan = Number(status.last_scan || 0);
   const lastScanText = Number.isFinite(lastScan) && lastScan > 0 ? new Date(lastScan * 1000).toLocaleString("zh-CN", { hour12: false }) : "尚未扫描";
-  const detail = status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : (unconfigured ? "还没有配置音乐目录，选择目录后即可扫描并收录歌曲。" : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`));
+  const detail = !hasPayload ? "还没有读取到音乐库状态，稍候会自动重试。" : (status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : (unconfigured ? "还没有配置音乐目录，选择目录后即可扫描并收录歌曲。" : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`)));
   setTextContentIfChanged($("libraryHealthStatus"), stateText);
   setTextContentIfChanged($("libraryHealthPath"), pathText);
   setTextContentIfChanged($("libraryHealthCount"), `${count} 首`);
   setTextContentIfChanged($("libraryHealthLastScan"), lastScanText);
   setTextContentIfChanged($("libraryHealthDetail"), detail);
-  // "No directory configured yet" is a first-run state, not a fault: painting it
-  // with the danger fill and border made an empty install look broken.
-  health.classList.toggle("is-error", !unconfigured && (!exists || !readable || Boolean(status.last_error)));
+  // Two states stay out of the danger fill: "no directory configured yet" is a
+  // first-run state, and "no payload yet" is a request that has not answered.
+  // Painting either one red made a healthy install look broken.
+  health.classList.toggle("is-error", hasPayload && !unconfigured && (!exists || !readable || Boolean(status.last_error)));
   health.classList.toggle("is-scanning", scanning);
   const button = $("libraryScanNowBtn");
   if (button) {
-    button.disabled = scanning || unconfigured;
+    button.disabled = !hasPayload || scanning || unconfigured;
     button.textContent = scanning ? "扫描中..." : "立即扫描";
   }
 }
