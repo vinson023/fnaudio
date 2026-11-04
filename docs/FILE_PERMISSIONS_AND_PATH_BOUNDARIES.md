@@ -15,7 +15,8 @@ Python 私有写入使用同目录临时文件、`fsync` 和原子替换。媒�
 
 ## 路径边界
 
-- Linux 配置曲库路径使用 `realpath`，只允许 fnOS 音乐共享目录前缀；Windows 开发环境保留 `abspath`，避免 8.3 短路径与 SQLite root 字符串不一致。
+- Linux 配置曲库路径使用 `realpath`，只允许 fnOS 音乐共享目录前缀，或某个已挂载的远程共享之内；Windows 开发环境保留 `abspath`，避免 8.3 短路径与 SQLite root 字符串不一致。
+- 远程共享按 `/proc/mounts` 判定，不按路径前缀：`cifs`/`smb3`/`nfs`/`nfs4`/`davfs`/`glusterfs`/`ceph`/`9p`/`trim_nfs`/`trim_ftp` 与 `fuse.<backend>`（本地 FUSE 后端如 lxcfs、gvfsd-fuse 除外），以及 source 形如 `//host/share` 或 `host:/path` 的挂载。挂载点位置由平台或运维决定（fnOS 自带远程挂载放在系统目录，手工 `fstab` 可以落在任何地方），前缀表无法穷举，因此判据是「这个路径落在某个远程挂载点之内」，而不是「这个路径长得像哪一类前缀」。`/`、`/proc`、`/sys`、`/dev` 下的挂载永不入选。
 - 扫描、CUE `FILE`、真实路径查询和媒体记录均验证解析后的文件仍位于配置曲库根目录。
 - 指向曲库外的音频、CUE 或 sidecar 封面符号链接被拒绝。
 - 共享目录删除需要 `files.manage` scope，且目标必须等于当前已配置根目录的真实路径。

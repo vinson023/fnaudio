@@ -50,6 +50,7 @@ from library_paths import (
     MAX_LIBRARY_PATH_TEXT,
     normalize_library_paths,
     relative_folder_for_path,
+    remote_mount_paths,
 )
 from library_cache_payload import project_legacy_cache
 from scan_control import ScanCancelled, ScanDeadline, ScanTimedOut, check_scan_deadline as _check_scan_deadline
@@ -1065,6 +1066,11 @@ def browsable_roots():
         if re.match(r"^/vol\d+$", path) or path in ("/mnt", "/share", "/volume"):
             if os.path.isdir(path):
                 roots.append(path)
+    # Mounted shares live outside every one of the roots above, so the legacy
+    # listing needs them appended explicitly to reach a remote library.
+    for mount in remote_mount_paths():
+        if mount not in roots and os.path.isdir(mount):
+            roots.append(mount)
     return roots
 
 def list_music_directories(path):
@@ -1722,9 +1728,9 @@ def query_library_page(config, params):
         use_fts=use_fts,
     )
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    # A folder page is scoped to a subtree, so its total is read beside the
-    # page instead of through a window over the whole subtree.
-    folder_subtree_page = view == "folders"
+    # A folder page is scoped to one directory, so its total is read beside the
+    # page instead of through a window over every row that directory holds.
+    folder_scoped_page = view == "folders"
     with library_db_connect(config) as conn:
         # The unfiltered library view is the hottest pagination path.  Scans
         # already commit an exact track count alongside the index metadata,
@@ -1741,10 +1747,11 @@ def query_library_page(config, params):
             if cursor:
                 count = conn.execute("SELECT COUNT(*) FROM tracks" + where_sql, args).fetchone()[0]
                 rows = _cursor_page_rows(conn, where, args, page_query, cursor, limit)
-            elif folder_subtree_page:
-                # ``COUNT(*) OVER()`` has to visit every subtree row to attach its
-                # total, which cancels the index seek the page itself just made;
-                # two statements keep the same isolation and the same answer.
+            elif folder_scoped_page:
+                # ``COUNT(*) OVER()`` has to visit every row of the directory to
+                # attach its total, which cancels the index seek the page itself
+                # just made; two statements keep the same isolation and the same
+                # answer.
                 rows, count = counted_page_rows(conn, page_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args)
             else:
                 rows, count = paged_rows_with_total(conn, window_sql, args + [limit + 1, offset], "SELECT COUNT(*) FROM tracks" + where_sql, args, page_sql, args + [limit + 1, offset])

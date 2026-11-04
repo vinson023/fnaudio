@@ -1,11 +1,15 @@
-"""Shared folder-scope semantics for the SQLite and the memory library reader.
+"""Folder browse scope: one directory page, or one directory *and below*.
 
-``tracks.folder`` stores the leaf directory a file sits in, while the folder
-browser lists containers whose ``track_count`` covers the whole subtree beneath
-them.  Both query engines therefore need one rule for "is this row inside that
-container": an exact ``folder = ?`` matched zero rows for every container that
-only holds subdirectories, and the resulting empty page used to fall through to
-a Python filter-and-sort over the entire library.
+``tracks.folder`` stores the leaf directory a file sits in, and the folder
+browser lists containers one level at a time.  Opening a container therefore
+shows the files that sit *directly* in it: the subdirectories are separate rows
+on the same page, so folding their tracks into the page as well listed the same
+file twice and buried a small album under the contents of its own subfolders.
+
+Acting on a folder row as a whole -- queueing it, playing it -- still means
+everything beneath it, which is the one request that asks for a subtree.  Both
+rules share this module so the SQLite predicate and the memory reader can never
+drift apart.
 """
 
 from __future__ import annotations
@@ -26,6 +30,9 @@ def folder_scope(value):
     A scope reaching above its root (``..``) can never exist in the index, so it
     is returned verbatim and the predicate simply matches nothing instead of
     silently widening the scope.
+
+    An empty result is not an error here: it is the library root itself, where
+    the files that sit directly in the root carry ``folder = ''``.
     """
     if not isinstance(value, str) or not value:
         return ""

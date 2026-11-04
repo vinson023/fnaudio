@@ -108,6 +108,10 @@ class LibraryPageQuery:
     sort_key: str
     sort_dir: str
     cursor: str
+    # ``view=folders`` lists one directory; ``subtree=1`` widens that one
+    # request to the directory and everything below it, which is what queueing
+    # or playing a folder row as a whole means.
+    subtree: bool = False
 
     @property
     def sql_sort_dir(self):
@@ -130,7 +134,7 @@ class LibraryPageQuery:
 
     @property
     def cache_values(self):
-        return (self.view, self.group, self.album, self.folder, self.root, self.search, self.sort_key, self.sql_sort_dir, self.limit, self.offset, self.cursor)
+        return (self.view, self.group, self.album, self.folder, self.root, self.search, self.sort_key, self.sql_sort_dir, self.limit, self.offset, self.cursor, self.subtree)
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,7 @@ def parse_library_page_query(params):
         sort_key=param_text(params, "sort", "title", maximum=64, strip=True) or "title",
         sort_dir="desc" if param_text(params, "dir", "asc", maximum=16, strip=True, lower=True) == "desc" else "asc",
         cursor=param_text(params, "cursor", maximum=768, strip=True),
+        subtree=param_text(params, "subtree", "", maximum=8, strip=True, lower=True) in ("1", "true", "yes", "on"),
     )
 
 

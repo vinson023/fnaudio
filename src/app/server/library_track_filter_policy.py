@@ -33,19 +33,28 @@ def build_track_filters(page_query, *, search_condition, group_condition, use_ft
         where.append(condition)
         args.extend(values)
     elif view == "folders":
-        # A folder row is a container: ``tracks.folder`` only stores the leaf
-        # directory, so the scope has to cover the container itself plus every
-        # directory below it.  Matching ``folder = ?`` exactly (and ``folder = ''``
-        # for a root) returned zero rows for containers holding only
-        # subdirectories, which then fell through to a full Python scan.
+        # Opening a folder shows the files that sit directly in it.  Its
+        # subdirectories are separate rows on the same page, so widening the
+        # predicate to the whole subtree listed those files twice and made a
+        # small album look like it contained everything its subfolders held.
+        # ``tracks.folder`` holds the leaf directory, so the page is an exact
+        # match on the normalized scope -- including the empty scope, which is
+        # the files that sit directly in the library root.
         if root:
             where.append("root = ?")
             args.append(root)
         scope = folder_scope(folder)
-        if scope:
-            condition, values = folder_subtree_clause(scope)
-            where.append(condition)
-            args.extend(values)
+        if bool(_safe_attr(page_query, "subtree", False)):
+            # Queueing or playing a folder row means everything beneath it, so
+            # that one request asks for the subtree.  An empty scope has no
+            # narrower form: it is the whole root.
+            if scope:
+                condition, values = folder_subtree_clause(scope)
+                where.append(condition)
+                args.extend(values)
+        else:
+            where.append("folder = ?")
+            args.append(scope)
     elif view == "dsd":
         where.append("is_dsd = 1")
     if view in ("artists", "composers") and group and album:

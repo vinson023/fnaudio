@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 
 ALLOWED_LIBRARY_PREFIXES = ("/vol", "/volume", "/mnt", "/share", "/var/apps/fnaudio/share")
@@ -30,6 +31,128 @@ def _safe_path_text(value):
         return ""
 
 
+# --- Remote mounts ----------------------------------------------------------
+# fnOS keeps mounted shares outside the user home: the platform's own 远程挂载
+# feature parks them in a system directory beside @appdata rather than inside
+# 我的文件, and a share mounted by hand through /etc/fstab can land anywhere at
+# all.  Walking 我的文件 therefore never reached a mounted library, so a share
+# that the fnOS file manager displayed was simply missing from the music
+# directory picker.  The mount table is the only place that knows where a share
+# really is, so it is read directly instead of guessing a path convention that
+# differs per fnOS release and per mount type.
+REMOTE_FILESYSTEM_TYPES = frozenset({
+    "9p", "afs", "ceph", "cifs", "davfs", "davfs2", "glusterfs",
+    "nfs", "nfs4", "smb3", "smbfs", "trim_ftp", "trim_nfs", "webdav",
+})
+# ``fuse.<backend>`` covers rclone (cloud drives), sshfs, smbnetfs and the
+# davfs/curlftpfs helpers.  These backends are local-only FUSE filesystems that
+# never hold a share, so they stay hidden even though they share the prefix.
+LOCAL_FUSE_BACKENDS = frozenset({"fuseblk", "gvfs", "gvfsd-fuse", "lxcfs", "portal", "snapfuse"})
+# Nothing under these trees is ever a share a user would pick as a library.
+REMOTE_MOUNT_SKIP_PREFIXES = ("/proc", "/sys", "/dev")
+MAX_REMOTE_MOUNTS = 32
+MOUNT_TABLE_PATH = "/proc/mounts"
+# ``is_allowed_library_path`` runs once per directory entry while browsing, so
+# the table is read once per window instead of once per entry.  A share that
+# appears while a listing is open shows up on the next refresh.
+REMOTE_MOUNT_CACHE_SECONDS = 2.0
+_REMOTE_MOUNT_CACHE = {"read_at": None, "paths": []}
+
+
+def _decode_mount_field(value):
+    """Undo the octal escapes ``/proc/mounts`` uses for space, tab and newline."""
+    if "\\" not in value:
+        return value
+    decoded = []
+    index = 0
+    length = len(value)
+    while index < length:
+        char = value[index]
+        if char == "\\" and index + 3 < length:
+            digits = value[index + 1:index + 4]
+            if all(digit in "01234567" for digit in digits):
+                decoded.append(chr(int(digits, 8)))
+                index += 4
+                continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def _looks_like_network_source(source):
+    """True for ``//host/share`` and ``host:/export`` style mount sources."""
+    if source.startswith("//"):
+        return True
+    return ":" in source and not source.startswith("/")
+
+
+def is_remote_filesystem(fstype, source=""):
+    """True when a mount is backed by another machine or a network protocol."""
+    if not isinstance(fstype, str):
+        return False
+    name = fstype.strip().lower()
+    if name in REMOTE_FILESYSTEM_TYPES:
+        return True
+    if name.startswith("fuse."):
+        return name[5:] not in LOCAL_FUSE_BACKENDS
+    return _looks_like_network_source(source if isinstance(source, str) else "")
+
+
+def remote_mount_paths(mount_table=None):
+    """Return the mount points of remote shares, innermost duplicates dropped.
+
+    ``mount_table`` accepts the text of a mount table so the parser can be
+    tested without a real share; the default reads this process's table.
+    """
+    if mount_table is None:
+        try:
+            with open(MOUNT_TABLE_PATH, "r", encoding="utf-8", errors="replace") as handle:
+                mount_table = handle.read(1 << 20)
+        except OSError:
+            return []
+    if not isinstance(mount_table, str):
+        return []
+    paths = []
+    seen = set()
+    for line in mount_table.splitlines():
+        fields = line.split(" ")
+        if len(fields) < 3:
+            continue
+        source, mountpoint, fstype = (_decode_mount_field(field) for field in fields[:3])
+        if not mountpoint.startswith("/") or mountpoint == "/":
+            continue
+        if any(mountpoint == prefix or mountpoint.startswith(prefix + "/") for prefix in REMOTE_MOUNT_SKIP_PREFIXES):
+            continue
+        if not is_remote_filesystem(fstype, source):
+            continue
+        normalized = mountpoint.rstrip("/") or "/"
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+    # A share mounted inside another share is already reachable by walking the
+    # outer one; offering both would list the same files twice.
+    paths = [path for path in paths if not any(path != other and path.startswith(other + "/") for other in paths)]
+    paths.sort()
+    return paths[:MAX_REMOTE_MOUNTS]
+
+
+def reset_remote_mount_cache():
+    _REMOTE_MOUNT_CACHE["read_at"] = None
+    _REMOTE_MOUNT_CACHE["paths"] = []
+
+
+def cached_remote_mount_paths():
+    now = time.monotonic()
+    read_at = _REMOTE_MOUNT_CACHE["read_at"]
+    if read_at is not None and now - read_at < REMOTE_MOUNT_CACHE_SECONDS:
+        return _REMOTE_MOUNT_CACHE["paths"]
+    paths = remote_mount_paths()
+    _REMOTE_MOUNT_CACHE["read_at"] = now
+    _REMOTE_MOUNT_CACHE["paths"] = paths
+    return paths
+
+
 def is_allowed_library_path(path):
     value = bounded_library_path_text(path)
     if not value:
@@ -39,7 +162,14 @@ def is_allowed_library_path(path):
     root = os.path.realpath(os.path.abspath(os.path.expanduser(value)))
     if re.match(r"^/vol\d+(/|$)", root):
         return True
-    return any(root == prefix or root.startswith(prefix + os.sep) for prefix in ALLOWED_LIBRARY_PREFIXES)
+    if any(root == prefix or root.startswith(prefix + os.sep) for prefix in ALLOWED_LIBRARY_PREFIXES):
+        return True
+    # A mounted share is storage the user deliberately attached to this host,
+    # so it is library material wherever the mount point happens to live.
+    for mount in cached_remote_mount_paths():
+        if root == mount or root.startswith(mount + os.sep):
+            return True
+    return False
 
 
 def canonical_library_path(path):
@@ -293,6 +423,22 @@ def _dedupe_roots(entries):
     return roots
 
 
+def _unique_root_name(roots, name, path):
+    """Return a label no other root already uses.
+
+    Two shares are routinely mounted under the same folder name (``music`` on
+    two different servers), and a picker listing the same word twice gives the
+    user no way to tell them apart.
+    """
+    if all(entry["name"] != name for entry in roots):
+        return name
+    parent = os.path.basename(os.path.dirname(path.rstrip(os.sep))) or path
+    candidate = "%s (%s)" % (name, parent)
+    if all(entry["name"] != candidate for entry in roots):
+        return candidate
+    return "%s (%s)" % (name, path)
+
+
 def library_browse_roots():
     """Return the directories a phone or browser may start browsing from.
 
@@ -300,6 +446,10 @@ def library_browse_roots():
     only screen, extra mounts appear only when they hold something, and the bare
     volume roots are a last resort so a NAS with no detected home is never left
     with an empty picker.
+
+    Remote shares are appended last because they are not reachable by walking
+    我的文件: fnOS mounts them outside the user home, so without this they were
+    invisible here even though the platform file manager listed them.
 
     A home with no visible directory is dropped as long as another home can be
     offered instead: fnOS gives every volume its own user space
@@ -332,6 +482,16 @@ def library_browse_roots():
         for extra in _dedupe_roots([prefix]):
             if all(entry["path"] != extra for entry in roots):
                 roots.append({"name": os.path.basename(extra.rstrip(os.sep)) or extra, "path": extra})
+    for mount in cached_remote_mount_paths():
+        # A share that already sits inside an offered root is reachable by
+        # walking down to it, so promoting it again would only duplicate the
+        # same files under a second name.
+        if any(mount == entry["path"] or mount.startswith(entry["path"].rstrip(os.sep) + os.sep) for entry in roots):
+            continue
+        for extra in _dedupe_roots([mount]):
+            if all(entry["path"] != extra for entry in roots):
+                base = os.path.basename(extra.rstrip(os.sep)) or extra
+                roots.append({"name": _unique_root_name(roots, base, extra), "path": extra})
     return roots
 
 

@@ -1,12 +1,12 @@
-"""Folder browse scope: one subtree rule for SQLite and memory, no memory fallback on empty scopes.
+"""Folder browse scope: one directory page lists only the files that sit in it.
 
-A folder row in the browser is a container and its ``track_count`` covers the
-whole subtree, while ``tracks.folder`` only stores the leaf directory of a file.
-Exact equality therefore answered "0 tracks" for every container that holds
-subdirectories, and each of those legitimate empty results used to be re-answered
-by filtering and sorting the entire library in Python -- several seconds per
-click on a 60,000-track collection.  These tests pin the subtree semantics, the
-agreement between the two query engines, and the closed fallback.
+A folder row in the browser is a container whose ``track_count`` covers the
+whole subtree, but opening it shows its subdirectories as separate rows on the
+same page.  Widening the track predicate to the subtree therefore listed every
+descendant file twice -- once under its own folder row and once inside the page
+-- and a small album looked like it held everything its subfolders held.  These
+tests pin the one-directory rule, the agreement between the SQLite and memory
+engines, and the closed empty-result fallback.
 """
 
 import os
@@ -21,8 +21,9 @@ sys.path.insert(0, "app/server")
 
 import library
 from library import query_library_folders, query_library_page, save_items_to_sqlite
-from library_folder_scope import folder_in_subtree, folder_scope, folder_subtree_clause
+from library_folder_scope import folder_scope
 from library_memory_query import filter_memory_page
+from library_track_filter_policy import build_track_filters
 
 # '' is a file that sits directly in the library root.
 FOLDER_CORPUS = [
@@ -41,8 +42,6 @@ FOLDER_CORPUS = [
     "未整理",
     "未整理/HIRES/DSD/album",
 ]
-
-FOLDER_CLAUSE = "(folder = ? OR (folder > ? AND folder < ?))"
 
 
 def _path_under(path, root):
@@ -72,19 +71,47 @@ class FolderScopeNormalizationTests(unittest.TestCase):
         self.assertEqual(folder_scope("../secret"), "../secret")
         self.assertEqual(folder_scope("DSD/../DSD2"), "DSD/../DSD2")
 
-    def test_empty_scope_is_rejected_by_the_clause_builder(self):
-        for value in ("", "/", "."):
-            with self.assertRaises(ValueError):
-                folder_subtree_clause(value)
 
-    def test_clause_arguments_are_the_bounded_range(self):
-        clause, args = folder_subtree_clause("DSD/自然")
-        self.assertEqual(clause, FOLDER_CLAUSE)
-        self.assertEqual(args, ["DSD/自然", "DSD/自然/", "DSD/自然0"])
+class FolderFilterClauseTests(unittest.TestCase):
+    def _query(self, **overrides):
+        values = {
+            "view": "folders", "group": "", "album": "", "search": "",
+            "folder": "", "root": "", "group_column": "album",
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def _filters(self, **overrides):
+        return build_track_filters(
+            self._query(**overrides),
+            search_condition=lambda *args, **kwargs: ("", []),
+            group_condition=lambda *args: ("", []),
+        )
+
+    def test_a_folder_page_matches_the_leaf_directory_exactly(self):
+        where, args = self._filters(folder="/DSD/自然/", root="/music")
+        self.assertEqual(where, ["root = ?", "folder = ?"])
+        self.assertEqual(args, ["/music", "DSD/自然"])
+
+    def test_the_root_scope_matches_files_sitting_in_the_root_itself(self):
+        # An empty scope is the library root, not "everything": the files there
+        # carry ``folder = ''`` and their subdirectories are separate rows.
+        where, args = self._filters(folder="", root="/music")
+        self.assertEqual(where, ["root = ?", "folder = ?"])
+        self.assertEqual(args, ["/music", ""])
+
+    def test_a_traversal_scope_still_adds_a_predicate_that_matches_nothing(self):
+        where, args = self._filters(folder="../secret")
+        self.assertEqual(where, ["folder = ?"])
+        self.assertEqual(args, ["../secret"])
+
+    def test_other_views_are_untouched(self):
+        self.assertEqual(self._filters(view="all")[0], [])
+        self.assertEqual(self._filters(view="dsd")[0], ["is_dsd = 1"])
 
 
 class FolderPredicateParityTests(unittest.TestCase):
-    """The SQLite range and the Python prefix must select exactly the same rows."""
+    """The SQLite predicate and the Python mirror must select the same rows."""
 
     def _sql_ids(self, scope):
         conn = sqlite3.connect(":memory:")
@@ -92,8 +119,14 @@ class FolderPredicateParityTests(unittest.TestCase):
             conn.execute("CREATE TABLE tracks (id TEXT PRIMARY KEY, folder TEXT)")
             for index, folder in enumerate(FOLDER_CORPUS):
                 conn.execute("INSERT INTO tracks VALUES (?, ?)", ("t%02d" % index, folder))
-            clause, args = folder_subtree_clause(scope)
-            rows = conn.execute("SELECT id FROM tracks WHERE %s ORDER BY id" % clause, args).fetchall()
+            where, args = build_track_filters(
+                SimpleNamespace(view="folders", folder=scope, root="", group="", album="", search="", group_column="album"),
+                search_condition=lambda *a, **k: ("", []),
+                group_condition=lambda *a: ("", []),
+            )
+            rows = conn.execute(
+                "SELECT id FROM tracks WHERE %s ORDER BY id" % " AND ".join(where), args
+            ).fetchall()
             return sorted(row[0] for row in rows)
         finally:
             conn.close()
@@ -119,36 +152,77 @@ class FolderPredicateParityTests(unittest.TestCase):
         return sorted(item["id"] for item in page)
 
     def test_both_engines_select_the_same_rows_for_every_scope(self):
-        for scope in ("DSD", "DS", "x", "未整理", "DSD/自然", "DSD.txt", "DSD2"):
+        for scope in ("DSD", "DS", "x", "未整理", "DSD/自然", "DSD.txt", "DSD2", "", "DSD/自然/天地的回声/live"):
             with self.subTest(scope=scope):
                 expected = [
                     "t%02d" % index
                     for index, folder in enumerate(FOLDER_CORPUS)
-                    if folder_in_subtree(folder, scope)
+                    if folder == folder_scope(scope)
                 ]
                 self.assertEqual(self._sql_ids(scope), sorted(expected), scope)
                 self.assertEqual(self._memory_ids(scope), sorted(expected), scope)
 
-    def test_container_itself_and_only_real_descendants_match(self):
-        self.assertEqual(
-            self._sql_ids("DSD"),
-            sorted(["t%02d" % FOLDER_CORPUS.index(folder) for folder in (
-                "DSD", "DSD/自然", "DSD/自然/天地的回声", "DSD/自然/天地的回声/live",
-            )]),
+    def test_only_the_directory_itself_matches(self):
+        self.assertEqual(self._sql_ids("DSD"), ["t01"])
+        self.assertEqual(self._memory_ids("DSD"), ["t01"])
+        self.assertEqual(self._sql_ids(""), ["t00"])
+        self.assertEqual(self._memory_ids(""), ["t00"])
+
+    def test_a_directory_whose_name_prefixes_another_never_leaks_into_it(self):
+        # 'DSD' must not drag in 'DSD2/album', 'DSD!x', 'DSD-x', 'DSD.txt',
+        # 'DSD0zero' or 'x/DSD', and 'DS' must not drag in 'DSD'.
+        for sibling in ("DSD2/album", "DSD!x", "DSD-x", "DSD.txt", "DSD0zero", "x/DSD", "未整理/HIRES/DSD/album"):
+            with self.subTest(sibling=sibling):
+                self.assertNotIn(
+                    "t%02d" % FOLDER_CORPUS.index(sibling), self._sql_ids("DSD")
+                )
+        self.assertNotIn("t01", self._sql_ids("DS"))
+
+    def _subtree_sql_ids(self, scope):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE tracks (id TEXT PRIMARY KEY, folder TEXT)")
+            for index, folder in enumerate(FOLDER_CORPUS):
+                conn.execute("INSERT INTO tracks VALUES (?, ?)", ("t%02d" % index, folder))
+            where, args = build_track_filters(
+                SimpleNamespace(view="folders", folder=scope, root="", group="", album="", search="", subtree=True),
+                search_condition=lambda *a, **k: ("", []),
+                group_condition=lambda *a: ("", []),
+            )
+            rows = conn.execute(
+                "SELECT id FROM tracks WHERE %s ORDER BY id" % " AND ".join(where), args
+            ).fetchall()
+            return sorted(row[0] for row in rows)
+        finally:
+            conn.close()
+
+    def _subtree_memory_ids(self, scope):
+        rows = [
+            {"id": "t%02d" % index, "title": "T%02d" % index, "folder": folder,
+             "path": "/music/" + folder + "/file.flac"}
+            for index, folder in enumerate(FOLDER_CORPUS)
+        ]
+        query = SimpleNamespace(
+            view="folders", group="", album="", search="", folder=scope, root="/music", subtree=True,
+            sort_key="title", sort_dir="asc", group_column="album", limit=len(FOLDER_CORPUS), offset=0,
         )
+        page, count = filter_memory_page(rows, query, ["/music"], "未分类", _path_under, lambda value: 0)
+        self.assertEqual(count, len(page), scope)
+        return sorted(item["id"] for item in page)
 
-    def test_sibling_directories_that_sort_next_to_the_prefix_never_leak(self):
-        for sibling in ("DSD!x", "DSD-x", "DSD.txt", "DSD0zero", "DSD2/album", "DS", "x/DSD", "未整理/HIRES/DSD/album"):
-            self.assertFalse(folder_in_subtree(sibling, "DSD"), sibling)
-            self.assertNotIn("t%02d" % FOLDER_CORPUS.index(sibling), self._sql_ids("DSD"))
+    def test_the_subtree_request_agrees_between_both_engines(self):
+        for scope in ("DSD", "DS", "未整理", "DSD/自然", "DSD.txt"):
+            with self.subTest(scope=scope):
+                expected = [
+                    "t%02d" % index
+                    for index, folder in enumerate(FOLDER_CORPUS)
+                    if folder == scope or folder.startswith(scope + "/")
+                ]
+                self.assertEqual(self._subtree_sql_ids(scope), sorted(expected), scope)
+                self.assertEqual(self._subtree_memory_ids(scope), sorted(expected), scope)
 
-    def test_memory_predicate_treats_an_empty_scope_as_unfiltered(self):
-        self.assertTrue(folder_in_subtree("DSD/自然", ""))
-        self.assertTrue(folder_in_subtree("", ""))
-        self.assertFalse(folder_in_subtree(None, "DSD"))
 
-
-class FolderSubtreePageTests(unittest.TestCase):
+class FolderPageTests(unittest.TestCase):
     """End to end: what one click on a folder row actually asks and gets."""
 
     def setUp(self):
@@ -163,7 +237,7 @@ class FolderSubtreePageTests(unittest.TestCase):
         self.old_items = library.MUSIC_CACHE["items"]
         self.addCleanup(self._restore_memory_cache)
         # A hydrated cache is exactly the condition that used to turn a legal
-        # empty scope into a full Python scan, so it stays populated throughout.
+        # empty answer into a full Python scan, so it stays populated throughout.
         library.MUSIC_CACHE["items"] = [
             {"id": "ghost-%d" % index, "path": os.path.join(self.music, "ghost%d.flac" % index), "title": "Ghost"}
             for index in range(120)
@@ -205,50 +279,75 @@ class FolderSubtreePageTests(unittest.TestCase):
         save_items_to_sqlite(self.config, items, "folder-scope")
         return items
 
-    def test_container_page_returns_its_own_files_and_every_descendant(self):
+    def test_container_page_returns_only_its_own_files(self):
         self._build()
         page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album", "limit": "50"})
+        self.assertEqual(page["count"], 1, page)
+        self.assertEqual([item["id"] for item in page["items"]], ["album-own"])
+        self.assertNotIn("fallback", page)
+
+    def test_a_container_holding_only_subdirectories_answers_empty_not_its_subtree(self):
+        self._build()
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "Album/Live/Backstage", "limit": "50"})
+        self.assertEqual([item["id"] for item in page["items"]], ["album-live-deep"])
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "Album/Live/Backstage/none", "limit": "50"})
+        self.assertEqual(page["count"], 0, page)
+        self.assertEqual(page["items"], [])
+
+    def test_child_counts_and_the_page_add_up_to_the_container_total(self):
+        # This is what keeps the row's "N 首" honest once the page stopped
+        # folding the subtree in: every child folder's count plus the files that
+        # sit directly in the container is exactly what the row promises.
+        self._build()
+        listing = query_library_folders(self.config, "", self.music, "asc", 50, 0)
+        container = {row["path"]: row for row in listing["folders"]}
+        self.assertEqual(container["Album"]["track_count"], 4, listing)
+        children = query_library_folders(self.config, "Album", self.music, "asc", 50, 0)
+        child_total = sum(row["track_count"] for row in children["folders"])
+        self.assertEqual([row["path"] for row in children["folders"]], ["Album/Live"])
+        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album", "limit": "50"})
+        self.assertEqual(child_total + page["count"], container["Album"]["track_count"])
+
+    def test_root_scope_lists_only_the_files_sitting_in_the_root(self):
+        self._build()
+        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "", "limit": "50"})
+        self.assertEqual(page["count"], 1, page)
+        self.assertEqual([item["id"] for item in page["items"]], ["root-file"])
+
+    def test_absolute_and_slash_wrapped_scopes_address_the_same_container(self):
+        self._build()
+        expected = {"/Album/": 1, "Album/": 1, "./Album": 1, "Album//Live": 2}
+        for folder, want in expected.items():
+            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": folder, "limit": "50"})
+            self.assertEqual(page["count"], want, folder)
+
+    def test_sibling_directory_that_sorts_next_to_the_name_is_not_included(self):
+        self._build()
+        for folder, item_id in (("AlbumX", "album-sibling"), ("Album!x", "album-bang")):
+            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": folder, "limit": "50"})
+            self.assertEqual([item["id"] for item in page["items"]], [item_id], folder)
+
+    def test_queueing_a_folder_row_still_covers_its_subtree(self):
+        # The page lists one directory, but the row itself stands for the whole
+        # container: queueing it must not silently drop the subfolders.
+        self._build()
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "Album", "subtree": "1", "limit": "50"})
         self.assertEqual(page["count"], 4, page)
         self.assertEqual(
             sorted(item["id"] for item in page["items"]),
             ["album-live-1", "album-live-2", "album-live-deep", "album-own"],
         )
-        self.assertNotIn("fallback", page)
 
-    def test_container_count_equals_the_browsed_folder_track_count(self):
+    def test_queueing_a_root_row_covers_every_file_of_that_root(self):
         self._build()
-        listing = query_library_folders(self.config, "", self.music, "asc", 50, 0)
-        container = [row for row in listing["folders"] if row["path"] == "Album"]
-        self.assertEqual(len(container), 1, listing)
-        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album", "limit": "50"})
-        self.assertEqual(page["count"], container[0]["track_count"])
-
-    def test_deep_container_is_scoped_to_its_branch(self):
-        self._build()
-        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album/Live", "limit": "50"})
-        self.assertEqual(sorted(item["id"] for item in page["items"]), ["album-live-1", "album-live-2", "album-live-deep"])
-        self.assertEqual(page["count"], 3)
-
-    def test_sibling_directory_that_sorts_next_to_the_prefix_is_not_included(self):
-        self._build()
-        for folder in ("AlbumX", "Album!x"):
-            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": folder, "limit": "50"})
-            self.assertEqual([item["id"] for item in page["items"]], ["album-sibling" if folder == "AlbumX" else "album-bang"], folder)
-
-    def test_root_scope_lists_the_whole_root_subtree(self):
-        self._build()
-        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "", "limit": "50"})
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "", "subtree": "1", "limit": "50"})
         self.assertEqual(page["count"], 7, page)
         self.assertNotIn("other-root", [item["id"] for item in page["items"]])
         self.assertNotIn("other-child", [item["id"] for item in page["items"]])
-
-    def test_absolute_and_slash_wrapped_scopes_address_the_same_container(self):
-        self._build()
-        # The nested form is a different container, not a noisier spelling.
-        expected = {"/Album/": 4, "Album/": 4, "./Album": 4, "Album//Live": 3}
-        for folder, want in expected.items():
-            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": folder, "limit": "50"})
-            self.assertEqual(page["count"], want, folder)
 
     def test_missing_container_answers_empty_without_touching_the_memory_scan(self):
         self._build()
@@ -258,23 +357,23 @@ class FolderSubtreePageTests(unittest.TestCase):
         self.assertNotIn("fallback", page)
         self.assertNotIn("Album", [item.get("title") for item in page["items"]])
 
-    def test_blank_folder_scope_does_not_list_the_whole_table(self):
+    def test_search_stays_inside_the_opened_directory(self):
         self._build()
-        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "//", "limit": "50"})
-        self.assertEqual(page["count"], 7, page)
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "Album", "search": "live", "limit": "50"})
+        self.assertEqual(page["items"], [], page)
+        self.assertEqual(page["count"], 0)
+        page = query_library_page(
+            self.config, {"view": "folders", "root": self.music, "folder": "Album/Live", "search": "live", "limit": "50"})
+        self.assertEqual(sorted(item["id"] for item in page["items"]), ["album-live-1", "album-live-2"])
+        self.assertEqual(page["count"], 2)
 
-    def test_search_combined_with_a_folder_scope_stays_in_the_subtree(self):
-        self._build()
-        page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album", "search": "live", "limit": "50"})
-        self.assertEqual(sorted(item["id"] for item in page["items"]), ["album-live-1", "album-live-2", "album-live-deep"], page)
-        self.assertEqual(page["count"], 3)
-
-    def test_cursor_pagination_walks_the_subtree_without_gaps_or_repeats(self):
+    def test_cursor_pagination_walks_the_directory_without_gaps_or_repeats(self):
         self._build()
         seen = []
         cursor = ""
         for _ in range(10):
-            params = {"view": "folders", "root": self.music, "folder": "Album", "sort": "title", "dir": "asc", "limit": "1"}
+            params = {"view": "folders", "root": self.music, "folder": "Album/Live", "sort": "title", "dir": "asc", "limit": "1"}
             if cursor:
                 params["cursor"] = cursor
             page = query_library_page(self.config, params)
@@ -286,7 +385,7 @@ class FolderSubtreePageTests(unittest.TestCase):
             self.assertTrue(cursor, page)
         else:
             self.fail("cursor walk did not terminate")
-        self.assertEqual(sorted(seen), ["album-live-1", "album-live-2", "album-live-deep", "album-own"])
+        self.assertEqual(sorted(seen), ["album-live-1", "album-live-2"])
         self.assertEqual(len(seen), len(set(seen)), seen)
 
     def test_genuinely_empty_index_still_falls_back_to_the_memory_library(self):
@@ -300,7 +399,7 @@ class FolderSubtreePageTests(unittest.TestCase):
         page = query_library_page(self.config, {"view": "folders", "root": "", "folder": "", "limit": "500"})
         self.assertEqual(page.get("fallback"), "memory", page)
 
-    def test_folder_page_counts_beside_the_page_instead_of_over_the_subtree(self):
+    def test_folder_page_counts_beside_the_page_instead_of_over_the_directory(self):
         self._build()
         calls = []
         real_counted = library.counted_page_rows
@@ -317,9 +416,9 @@ class FolderSubtreePageTests(unittest.TestCase):
         with mock.patch.object(library, "counted_page_rows", counted), \
              mock.patch.object(library, "paged_rows_with_total", window):
             del calls[:]
-            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album", "limit": "2"})
+            page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Album/Live", "limit": "1"})
             self.assertEqual(calls, ["counted"], page)
-            self.assertEqual(page["count"], 4)
+            self.assertEqual(page["count"], 2)
             del calls[:]
             group = query_library_page(self.config, {"view": "artists", "group": "Artist", "limit": "2"})
             self.assertEqual(calls, ["window"], group)
@@ -344,9 +443,8 @@ class FolderSubtreePageTests(unittest.TestCase):
         self.assertNotIn("fallback", page, page)
         self.assertEqual(page["count"], 0, page)
 
-
     def test_the_emptiness_probe_only_reports_a_table_with_no_rows(self):
-        # This is what keeps a legal empty folder scope out of the Python scan.
+        # This is what keeps a legal empty folder page out of the Python scan.
         conn = sqlite3.connect(":memory:")
         try:
             conn.execute("CREATE TABLE tracks (folder TEXT)")

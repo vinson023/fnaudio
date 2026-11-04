@@ -4429,8 +4429,11 @@ async function resolveSelectedGroupTracks(groupKey = "") {
   const creatorView = state.view;
   const creatorName = isCreatorView() ? currentCreatorName() : "";
   const querySnapshot = { params: currentQueryParams().toString(), pageSize: state.pageSize };
+  // A folder row stands for the whole container, so queueing or playing it
+  // covers everything beneath it even though opening it only lists the files
+  // that sit directly in it.
   const pool = fnAudioBatchRequestPool(groups, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, group => group.type === "folder"
-    ? fetchAllTracksForCurrentView({ view: "folders", root: group.root, folder: group.path }, querySnapshot)
+    ? fetchAllTracksForCurrentView({ view: "folders", root: group.root, folder: group.path, subtree: 1 }, querySnapshot)
     : creatorName && group.view === "albums"
       ? fetchAllTracksForCurrentView({ view: creatorView, group: creatorName, album: group.name }, querySnapshot)
       : fetchAllTracksForCurrentView({ view: group.view, group: group.name }, querySnapshot));

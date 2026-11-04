@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import heapq
 
-from library_folder_scope import folder_in_subtree
+from library_folder_scope import folder_in_subtree, folder_scope
 
 MAX_MEMORY_ITEMS = 200000
 MAX_MEMORY_ROOTS = 64
@@ -244,8 +244,15 @@ def iter_filtered_memory_items(items, page_query, roots, unclassified, path_unde
         elif view == "folders":
             if root:
                 matches = memory_item_root(item, roots, path_under) == root
-            if matches and folder:
-                matches = folder_in_subtree(memory_text(memory_field(item, "folder")), folder)
+            if matches:
+                # Same rule as the SQLite predicate: one folder page lists the
+                # files that sit directly in it, and only a "queue the whole
+                # folder" request asks for the subtree.
+                value = memory_text(memory_field(item, "folder"))
+                if bool(getattr(page_query, "subtree", False)):
+                    matches = folder_in_subtree(value, folder)
+                else:
+                    matches = value == folder_scope(folder)
         if matches and view in ("artists", "composers") and group and album:
             matches = (memory_text(memory_field(item, "album")) or unclassified) == album
         if matches and not memory_matches_search(item, search):

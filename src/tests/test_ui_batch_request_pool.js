@@ -238,9 +238,9 @@ function setupGroups(request, groups = null) {
   ordinary.state.view = "all";
   assert.deepEqual(Array.from(await ordinary.run(), item => item.id), ["disc", "release"]);
   assert.deepEqual(JSON.parse(JSON.stringify(ordinaryQueries)), [
-    { view: "folders", root: "/music", folder: "disc" },
+    { view: "folders", root: "/music", folder: "disc", subtree: 1 },
     { view: "albums", group: "release" },
-  ], "folder and ordinary album requests must keep their existing query contracts");
+  ], "a folder row covers its whole subtree while an album row keeps its existing query contract");
   const empty = setupGroups(() => { throw new Error("empty selection must not fetch"); }, []);
   assert.equal((await empty.run()).length, 0);
   console.log("Selected group batch cleanup and context regression checks passed.");
