@@ -907,11 +907,11 @@ test(`FNOS ${width}: MP3 mode control keeps the original text treatment`, async 
 });
 }
 
-test('FNOS: lyrics control keeps the original Chinese text treatment', async ({page}) => {
+test('FNOS: lyrics control uses the shared line-icon treatment', async ({page}) => {
   await load(page);
-  await expect(page.locator('#lyricsBtn .lyric-symbol')).toBeVisible();
-  await expect(page.locator('#lyricsBtn .lyric-symbol')).toHaveText('词');
-  await expect(page.locator('#lyricsBtn svg')).toHaveCount(0);
+  await expect(page.locator('#lyricsBtn svg.lyric-symbol')).toBeVisible();
+  await expect(page.locator('#lyricsBtn svg.lyric-symbol')).toHaveCount(1);
+  await expect(page.locator('#lyricsBtn')).not.toHaveText('词');
 });
 
 for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {
@@ -1401,7 +1401,11 @@ test('FNOS dark palette applies across library, player and settings without whit
   await page.locator('#closeDialog').click();
   await openSettings(page);
   expect(await page.locator('#folderDialog h2').evaluate(el=>getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
+  // The fixture library is healthy, so the danger tint is forced here: the point
+  // of the check is that the error surface is dark, not that the card is in error.
+  await page.evaluate(() => document.getElementById('libraryHealth').classList.add('is-error'));
   expect(await page.locator('.library-health').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgba(219, 56, 44, 0.12)');
+  await page.evaluate(() => document.getElementById('libraryHealth').classList.remove('is-error'));
   await screenshot(page,info,'dark-library-health');
   await page.locator('#settings-tab-metadata').click();
   await page.locator('#metadata-settings-tab-providers').click();

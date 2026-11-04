@@ -183,7 +183,7 @@ test("desktop library, context menu, device picker and settings are functional",
   await expect(page.locator("#deviceCurrentTarget")).toContainText("当前设备");
   await page.locator("#closeDialog").click();
 
-  await page.locator("#folderBtn").click();
+  await page.locator("#mobileSettingsNavBtn").click();
   await expect(page.locator("#folderDialog")).toBeVisible();
   await expect(page.locator("[data-settings-tab='metadata']")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBeTruthy();
@@ -315,8 +315,7 @@ test("mobile settings can add a music folder through the server browser", async 
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await expect(page.locator(".track")).toHaveCount(4);
 
-  // Phones reach settings through the navigation drawer; the desktop
-  // #folderBtn is hidden at this width.
+  // Phones reach settings through the navigation drawer.
   await page.locator("#mobileNavBtn").click();
   await page.locator("#mobileSettingsNavBtn").click();
   await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
@@ -350,7 +349,9 @@ test("mobile settings can add a music folder through the server browser", async 
 
   await browser.locator("#libraryDirAddBtn").click();
   await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
-  await expect(page.locator("#libraryPathList .library-path-input")).toHaveValue("/vol1/1000/Music");
+  // The fixture already ships one configured root, so the newly added folder is
+  // the last row rather than the only one.
+  await expect(page.locator("#libraryPathList .library-path-input").last()).toHaveValue("/vol1/1000/Music");
   await expect(page.locator("#librarySettingsStatus")).toContainText("已添加目录");
   await expect(browser).not.toHaveAttribute("open", "");
 });

@@ -65,7 +65,10 @@ assert.match(app, /function updateMobilePagerVisibility\(\)/);
 assert.match(css, /\.content\{\s*display:flex!important;\s*flex-direction:column!important;/);
 assert.match(css, /\.library-scroll\{\s*display:flex!important;\s*flex:1 1 auto!important;/);
 assert.match(css, /\.library-scroll \.track-list\{\s*flex:1 1 auto!important;[\s\S]*?overflow-y:auto!important;/);
-assert.match(css, /\.pager\{\s*display:block!important;\s*flex:0 0 52px!important;/);
+// The 52px strip is the contract. `display` is not: the same media block hides
+// the pager and re-shows it through `.pager.mobile-visible` further down, so a
+// `display:block` on the sizing rule would be overridden anyway.
+assert.match(css, /\.pager\{\s*flex:0 0 52px!important;\s*min-height:52px!important;/, "the mobile pager must reserve a 52px strip");
 assert.match(css, /\.lyrics-view\{[\s\S]*?grid-template-rows:48px minmax\(0,1fr\)!important;/);
 assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:52px minmax\(0,1fr\) 52px!important;[\s\S]*?min-height:48px!important;[\s\S]*?padding:0 8px!important;/);
 assert.match(css, /\.lyrics-close\{\s*position:static!important;/);
@@ -88,7 +91,10 @@ assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none
 assert.doesNotMatch(css, /body\.mobile-search-active \.content\{height:calc\(100dvh - 60px\)!important/);
 assert.match(css, /body\.mobile-search-active \.now-playing \.is-overflowing\{animation-play-state:paused!important;/);
 assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
-assert.match(css, /\.player\{grid-template-columns:1fr!important;grid-template-rows:44px 24px 52px!important;height:144px!important/);
+// Guard the rule that actually renders: the 136px three-row footer is the one
+// that wins inside the 760px block, so pinning the retired 144px variant would
+// have protected nothing.
+assert.match(css, /\.player\{grid-template-columns:1fr!important;grid-template-rows:44px 24px 50px!important;height:136px!important/, "the mobile footer must stay a fixed 136px three-row grid");
 assert.match(css, /\.player-actions\{display:none!important\}/, "the base mobile stylesheet must not restore the footer action row");
 const finalMobileContract = css.slice(css.lastIndexOf("/* Mobile navigation owns settings"));
 assert.match(css, /\.player-actions\{display:none!important\}/, "the mobile stylesheet must hide the footer action row");
@@ -137,5 +143,32 @@ assert.doesNotMatch(themeCss, /height:\s*calc\(100dvh - 56px\)\s*!important/, "t
 assert.match(themeCss, /\.shell,\s*\.content\s*\{\s*height:\s*100%\s*!important;\s*\}/, "the mobile library column must fill the body grid row so the player keeps its own row");
 assert.match(themeCss, /html\.fnaudio-android-client \.shell,\s*\n?html\.fnaudio-android-client \.content\s*\{\s*\n?\s*height:\s*100%\s*!important;/, "the Android client must inherit the same row-filling height");
 assert.match(finalMobileContract, /\.shell,\.content\{height:100%!important\}/, "the base mobile stylesheet must fill the grid row instead of the viewport");
+
+// R467: the app renders its own clear button (#mobileSearchClearBtn). The WebKit
+// cancel button used to be only dimmed, so typing produced two ✕ for one action.
+assert.match(css, /\.mobile-library-search input::-webkit-search-cancel-button\{display:none!important\}/,
+  "the native search cancel button must stay hidden next to #mobileSearchClearBtn");
+
+// R467: settings is one dialog with five panes of very different lengths. Sizing
+// the frame from its content made the whole window jump by up to 446px per tab,
+// so desktop pins the height, widens the frame and scrolls the active pane.
+assert.doesNotMatch(css, /#folderDialog\{width:min\(620px/, "the settings dialog must not keep the cramped 620px frame");
+assert.match(css, /#folderDialog\{width:min\(760px,calc\(100vw - 48px\)\)!important\}/,
+  "the settings dialog must use the widened desktop frame");
+assert.match(themeCss, /@media \(min-width: 761px\) \{\s*#folderDialog\[open\] \{[^}]*grid-template-rows: auto auto minmax\(0, 1fr\) !important;[^}]*height: min\(680px, calc\(100dvh - 48px\)\) !important;/,
+  "the desktop settings dialog must pin its height instead of following the active pane");
+assert.match(themeCss, /#folderDialog > \.settings-pane\[hidden\] \{ display: none !important; \}/,
+  "the flex pane rule outranks [hidden], so inactive panes need an explicit guard");
+assert.match(themeCss, /#folderDialog > \.settings-pane > \.settings-pane-actions \{\s*margin-top: auto !important;/,
+  "each pane must pin its action bar to the bottom edge of the frame");
+assert.match(themeCss, /#folderDialog > \.settings-pane > \.metadata-settings-subpane > \.settings-pane-actions \{\s*margin-top: auto !important;/,
+  "the nested metadata sub-panes must pin their action bars the same way");
+
+// The dark header's sort arrow is the only cue for which column is sorted; the
+// accent alone reaches just 3.24:1 on the dark header surface.
+assert.match(themeCss, /:root\[data-theme="dark"\] \.track-sort-indicator \{ filter: brightness\(1\.6\); \}/,
+  "the dark sort indicator must be brightened above the non-text contrast floor");
+assert.match(themeCss, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\) \.track-sort-indicator \{ filter: brightness\(1\.6\); \}/,
+  "the system-dark variant must brighten the sort indicator too");
 
 console.log("Mobile layout regression checks passed.");

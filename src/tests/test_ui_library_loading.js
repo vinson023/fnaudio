@@ -184,7 +184,9 @@ assert.match(app, /暂未匹配（可稍后重试）/, "Metadata no-match status
 assert.match(app, /const missingProjection = !Object\.prototype\.hasOwnProperty\.call\(data, "status"\)/, "Generic HTTP 200 metadata envelopes must remain retryable");
 assert.match(app, /firstListCommitMs = Math\.min\(3600000/, "First list commit timing must remain bounded");
 assert.match(app, /firstCoverHydrationMs = Math\.min\(3600000/, "First cover timing must remain bounded");
-assert.match(css, /\.track\{[^}]*content-visibility:auto;contain-intrinsic-size:68px/, "Large library rows should use progressive content-visibility optimization");
+// The hint lives in one shared selector group; assert that `.track` is part of
+// it rather than pinning the exact spelling of the rule that carries it.
+assert.match(css, /\.track[,{][^}]*content-visibility:auto;contain-intrinsic-size:68px/, "Large library rows should use progressive content-visibility optimization");
 assert.match(app, /function renderTrackRows\(items = \[\]\)/, "Track lists should build one shared column configuration per page");
 assert.match(app, /const columns = activeTrackColumns\(\);\s*const rows = Array\.isArray\(items\) \? items : \[\];/, "Page rows must reuse one scoped column array instead of recalculating it per song");
 assert.match(app, /const cacheKey = state\.view === "queue" \? "" : `\$\{trackColumnScope\(\)\}\|\$\{columns\.join\("\|"\)\}`;/, "Non-queue pages should reuse markup only for the same visible column scope");

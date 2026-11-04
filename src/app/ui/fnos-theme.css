@@ -45,29 +45,10 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
   padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--ui-radius-sm) !important;
   background: transparent !important; color: var(--ui-secondary) !important; box-shadow: none !important;
 }
-.top-actions #folderBtn, .top-actions #refreshBtn { width: auto !important; padding-inline: var(--ui-space-3) !important; }
-.top-actions .settings-entry-button:hover,
-.top-actions .settings-entry-button:focus-visible {
-  color: var(--ui-accent) !important;
-  background: var(--ui-selected) !important;
-}
-.top-actions .settings-entry-button:focus-visible {
-  outline: 2px solid var(--ui-accent) !important;
-  outline-offset: 2px !important;
-}
-.top-actions .settings-entry-button.is-open {
-  color: var(--ui-on-accent) !important;
-  background: var(--ui-accent) !important;
-}
-.top-actions .settings-entry-button.is-open:hover,
-.top-actions .settings-entry-button.is-open:focus-visible {
-  color: var(--ui-on-accent) !important;
-  background: var(--ui-accent-hover) !important;
-}
+.top-actions #refreshBtn { width: auto !important; padding-inline: var(--ui-space-3) !important; }
 .top-actions .tool-label { display: inline !important; font-size: 13px !important; }
 .top-actions .top-icon-button svg { width: 20px !important; height: 20px !important; }
 .top-actions .mode-mp3-icon { display: grid !important; width: 25px; height: 22px; place-items: center; color: currentColor; font-size: 12px; font-weight: 750; line-height: 1; letter-spacing: 0; }
-.top-actions #folderBtn .settings-menu-icon { display: block !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.75 !important; stroke-linecap: round !important; }
 .top-actions #playAllBtn { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
 .top-actions .mobile-top-control, .mobile-pagebar { display: none !important; }
 .shell { grid-row: 2; display: grid !important; grid-template-columns: var(--ui-sidebar-width) minmax(0, 1fr) !important; height: 100% !important; min-height: 0 !important; background: var(--ui-canvas) !important; }
@@ -114,6 +95,13 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 /* Match the number text to the header's column edge, including after sorting. */
 .track-cell-track_no { text-align: left !important; }
 .track-sort-indicator { color: var(--ui-accent) !important; }
+/* The accent only reaches 3.24:1 on the dark header background - past the 3:1
+ * floor for a non-text graphic, but dim for the only cue that says which column
+ * is sorted. Brightening the glyph keeps the brand hue without adding a token. */
+:root[data-theme="dark"] .track-sort-indicator { filter: brightness(1.6); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .track-sort-indicator { filter: brightness(1.6); }
+}
 [data-track-column="track_no"] .track-head-button,
 [data-track-column="track_no"] .track-head-label { padding-inline: 0 !important; }
 .track { min-height: 64px !important; padding-block: var(--ui-space-2) !important; padding-inline: var(--ui-space-4) !important; background: transparent !important; border-color: var(--ui-line) !important; }
@@ -198,8 +186,9 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .player-actions .action-button, .player-actions .device-button { width: 36px !important; height: 36px !important; min-width: 36px !important; padding: var(--ui-space-2) !important; border: 0 !important; }
 .player-actions svg { width: 20px !important; height: 20px !important; }
 .player-actions #lyricsBtn .lyric-symbol {
-  display: grid !important; place-items: center !important; width: 20px !important; height: 20px !important;
-  color: currentColor !important; font-size: 14px !important; font-weight: 700 !important; line-height: 1 !important;
+  display: block !important; width: 20px !important; height: 20px !important;
+  fill: none !important; stroke: currentColor !important; stroke-width: 1.9 !important;
+  stroke-linecap: round !important; stroke-linejoin: round !important;
 }
 .active-control, .favorite-current.active-control, .top-actions .active-control, .player-actions .active-control { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
 .volume-control { position: relative !important; display: inline-grid !important; place-items: center !important; }
@@ -216,6 +205,49 @@ dialog {
   background: var(--ui-raised) !important; color: var(--ui-text) !important; box-shadow: var(--ui-shadow) !important;
 }
 dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: none !important; }
+/* Settings is one dialog with five panes of very different lengths. Sizing the
+ * frame by its content made the whole window jump by up to 446px on every tab
+ * change, so both breakpoints pin the frame and scroll the active pane instead.
+ * The pane rules stay outside the query because the phone frame is pinned too. */
+#folderDialog > .settings-pane {
+  grid-row: 3;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+/* The flex display above outranks `.settings-pane[hidden]`, so the inactive
+ * panes have to be hidden again explicitly. */
+#folderDialog > .settings-pane[hidden] { display: none !important; }
+/* Every pane keeps its action bar on the frame's bottom edge. Without this the
+ * save button floated 338px above the edge on the short DLNA pane while
+ * sitting at the very bottom on the tall metadata pane. */
+#folderDialog > .settings-pane > .settings-pane-actions {
+  margin-top: auto !important;
+}
+/* The metadata tab nests its action bars one level deeper, inside the active
+ * sub-pane, so that sub-pane has to fill the pane for the same pinning. */
+#folderDialog > .settings-pane > .metadata-settings-subpane {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+#folderDialog > .settings-pane > .metadata-settings-subpane[hidden] { display: none !important; }
+#folderDialog > .settings-pane > .metadata-settings-subpane > .settings-pane-actions {
+  margin-top: auto !important;
+}
+@media (min-width: 761px) {
+  #folderDialog[open] {
+    display: grid !important;
+    grid-template-rows: auto auto minmax(0, 1fr) !important;
+    height: min(680px, calc(100dvh - 48px)) !important;
+    max-height: calc(100dvh - 48px) !important;
+    overflow: hidden !important;
+  }
+}
 .dialog-close-button { display: inline-grid !important; place-items: center !important; flex: 0 0 36px !important; width: 36px !important; height: 36px !important; padding: 0 !important; color: var(--ui-secondary) !important; }
 .dialog-close-button svg, .library-path-remove svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .library-path-remove { display: inline-grid !important; place-items: center !important; }
@@ -404,11 +436,10 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .mobile-page-title span { color: var(--ui-muted) !important; }
   #mobileNavBtn { color: var(--ui-secondary) !important; width: 44px !important; height: 44px !important; }
   .top-actions { width: 100% !important; flex-wrap: nowrap !important; justify-content: space-between !important; gap: 0 !important; }
-  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn { display: inline-flex !important; width: 44px !important; min-width: 44px !important; height: 44px !important; padding: 0 !important; }
+  .top-actions .top-icon-button, .top-actions #refreshBtn { display: inline-flex !important; width: 44px !important; min-width: 44px !important; height: 44px !important; padding: 0 !important; }
   .top-actions #modeBtn { display: none !important; }
   .top-actions .tool-label { display: none !important; }
-  .player-actions #lyricsBtn .lyric-symbol { width: 20px !important; height: 20px !important; font-size: 15px !important; }
-  .top-actions .settings-entry-button.is-open { background: var(--ui-accent) !important; }
+  .player-actions #lyricsBtn .lyric-symbol { width: 20px !important; height: 20px !important; }
   .shell { display: block !important; }
   .sidebar {
     position: fixed !important; inset: 0 auto 0 0 !important; z-index: 70 !important;
@@ -416,9 +447,16 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
     transform: translateX(-100%) !important; padding: var(--ui-space-4) !important; box-shadow: none !important;
   }
   .sidebar.mobile-open { visibility: visible !important; transform: none !important; box-shadow: var(--ui-shadow) !important; }
+  .sidebar-head { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: var(--ui-space-2) !important; padding: 0 0 var(--ui-space-2) !important; margin: 0 0 var(--ui-space-1) !important; border-bottom: 1px solid var(--ui-line) !important; }
+  .sidebar-head-title { color: var(--ui-text) !important; font-size: 15px !important; }
+  .sidebar-close { width: 36px !important; height: 36px !important; min-width: 36px !important; border-radius: var(--ui-radius-sm) !important; }
+  .sidebar-close:hover, .sidebar-close:focus-visible { color: var(--ui-text) !important; background: var(--ui-hover) !important; }
   .mobile-nav-backdrop:not([hidden]) { display: block !important; background: var(--ui-backdrop) !important; }
   .sidebar .library-search { display: none !important; }
   .nav-item { min-height: 44px !important; }
+  /* Every other control on the phone surface is a 44px target; the settings
+   * buttons were still 38px, which is below the minimum tap size. */
+  .settings-pane .secondary-button { min-height: 44px !important; }
   .mobile-library-search { display: flex !important; flex: 0 0 44px !important; margin: var(--ui-space-2) var(--ui-space-3) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
   .mobile-library-search:focus-within { border-color: var(--ui-accent) !important; box-shadow: none !important; }
   .mobile-library-search input { font-size: 14px !important; }
@@ -515,7 +553,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   body { grid-template-columns: minmax(0,1fr) 248px; grid-template-rows: 60px minmax(0,1fr); }
   .topbar { grid-column: 1 / -1; grid-template-columns: minmax(0,1fr) auto !important; grid-template-rows: 44px !important; align-content: center; gap: var(--ui-space-2) !important; }
   .top-actions { width: auto !important; }
-  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn { width: 36px !important; min-width: 36px !important; }
+  .top-actions .top-icon-button, .top-actions #refreshBtn { width: 36px !important; min-width: 36px !important; }
   .mobile-page-title strong { font-size: 16px !important; }
   .shell { grid-column: 1 !important; grid-row: 2 !important; }
   .player, body.mobile-search-active .player { grid-column: 2 !important; grid-row: 2 !important; height: 100% !important; align-content: center; border-top: 0 !important; border-left: 1px solid var(--ui-line) !important; }
@@ -870,7 +908,7 @@ html.android-app .player-actions { display: none !important; }
     max-width: 100% !important; margin-inline: auto !important; display: flex !important;
     flex-wrap: nowrap !important; justify-content: center !important; gap: var(--ui-space-2) !important;
   }
-  .top-actions .top-icon-button, .top-actions #folderBtn, .top-actions #refreshBtn {
+  .top-actions .top-icon-button, .top-actions #refreshBtn {
     display: inline-flex !important; width: 44px !important; min-width: 44px !important;
     height: 44px !important; padding: 0 !important;
   }

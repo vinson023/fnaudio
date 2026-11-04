@@ -194,7 +194,20 @@ class FixtureHandler(BaseHTTPRequestHandler):
             wanted = {value for value in str((query.get("ids") or [""])[0]).split(",") if value}
             return self.send_json({"items": [item for item in TRACKS if item["id"] in wanted]}, head_only=head_only)
         if path == "/api/library/status":
-            return self.send_json({"scanning": False, "found": len(TRACKS), "scanned": len(TRACKS), "message": "音乐库已就绪"}, head_only=head_only)
+            # Mirror the server payload: the health card reads library_paths /
+            # exists / readable / supported_formats, so a fixture that omits
+            # them makes every install look like a missing directory.
+            return self.send_json({
+                "scanning": False,
+                "found": len(TRACKS),
+                "scanned": len(TRACKS),
+                "message": "音乐库已就绪",
+                "library_path": "/fixture/music",
+                "library_paths": ["/fixture/music"],
+                "exists": True,
+                "readable": True,
+                "supported_formats": ["DFF", "DSF", "FLAC", "MP3"],
+            }, head_only=head_only)
         if path == "/api/library/groups":
             view = str((query.get("view") or ["albums"])[0])
             key = {"artists": "artist", "albums": "album", "genres": "genre", "composers": "composer"}.get(view, "album")

@@ -30,14 +30,12 @@ for (const [needle, label] of [
 }
 assert.doesNotMatch(css, /metadata-provider-move[^\n]*content:\s*["'](?:↑|↓)["']/,
   "legacy metadata provider arrow pseudo-elements must not remain in the base stylesheet");
-assert.doesNotMatch(css, /#folderBtn:before|#folderBtn::before/,
-  "settings must use the real SVG icon instead of a duplicate folderBtn pseudo-element");
 assert.doesNotMatch(css, /metadata-settings-tabs button\.active:after|metadata-settings-tabs button\.active::after/,
   "metadata settings tabs must not retain the retired underline pseudo-element");
 assert.doesNotMatch(css, /settings-tabs button\.active:after|settings-tabs button\.active::after/,
   "settings tabs must use the FNOS selected surface instead of the retired underline pseudo-element");
-assert.match(html, /id="folderBtn"[^>]*>[\s\S]*class="settings-menu-icon"[^>]*aria-hidden="true"[\s\S]*M4 6h16M4 12h16M4 18h16/,
-  "settings button must use the approved three-line menu SVG icon");
+assert.match(html, /id="mobileSettingsNavBtn"[^>]*>[\s\S]*aria-hidden="true"[\s\S]*M4 6h16M4 12h16M4 18h16/,
+  "the sidebar settings entry must use the approved three-line menu SVG icon");
 assert.match(html, /id="shuffleBtn"[^>]*aria-label="乱序播放"/,
   "shuffle control must expose a stable accessible name");
 assert.match(html, /id="deviceBtn"[^>]*title="播放设备"[^>]*aria-label="播放设备"/,
@@ -60,8 +58,8 @@ assert.doesNotMatch(css, /\.top-mode-button svg\b/,
   "text MP3 mode control must not retain retired SVG-only styling");
 assert.match(css, /\.track-sort-indicator svg\{[^}]*stroke-width:2/,
   "sort direction indicators must use the shared line SVG treatment");
-assert.match(html, /id="lyricsBtn"[^>]*>[\s\S]*class="lyric-symbol"[^>]*>词<\//,
-  "lyrics must retain the approved Chinese text button");
+assert.match(html, /id="lyricsBtn"[^>]*>[\s\S]*class="lyric-symbol"[^>]*viewBox="0 0 24 24"[\s\S]*<\/svg>/,
+  "lyrics must use the shared line-icon treatment instead of a text glyph");
 assert.match(html, /id="modeBtn"[^>]*aria-label="MP3 转码：关"[^>]*>MP3 转码：关<\//,
   "MP3 transcode control must retain the original state text button");
 const modeButton = html.match(/<button\b[^>]*id="modeBtn"[^>]*>[\s\S]*?<\/button>/i)?.[0] || "";

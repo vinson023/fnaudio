@@ -49,7 +49,7 @@ const fn = name => {
     assert.equal((await c.fetchLibraryResponse(url, '读取失败'))[key].length, 1, 'valid nonempty documents remain usable');
   }
   const nodes = Object.fromEntries(['libraryLoadError', 'libraryLoadErrorText', 'allCount', 'dsdCount', 'recentCount', 'serverPortValue', 'emptyText'].map(id => [id, {hidden: true, textContent: ''}]));
-  Object.assign(c, {$: id => nodes[id], renderLibraryHealth() {}, libraryCount: x => x || 0, setTextContentIfChanged(node, value) {if (node) node.textContent = String(value);}, scanProgressText: () => ''});
+  Object.assign(c, {$: id => nodes[id], renderLibraryHealth() {}, libraryCount: x => x || 0, setTextContentIfChanged(node, value) {if (node) node.textContent = String(value);}, scanProgressText: () => '', currentQueryText: () => ''});
   vm.runInContext(fn('updateLibraryStatusDecorations'), c);
   c.state.libraryStatus = {count: 0, message: '音乐库已就绪'};
   c.state.libraryLoadError = '登录已失效，请重新登录';

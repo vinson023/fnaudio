@@ -9,13 +9,19 @@ const SETTINGS_SAVE_BUTTON_IDS = [
   "saveMetadataProvidersBtn",
   "saveDlnaSettingsBtn",
 ];
-function normalizeSettingsSaveLabels() {
+// Each pane writes a different slice of the configuration, so five buttons that
+// all read "保存" say nothing about what is about to be written.  Keep the label
+// the markup already carries ("保存音乐库设置") and remember it, so the transient
+// "正在保存..." state can be undone without flattening the pane's own wording.
+function captureSettingsSaveLabels() {
   SETTINGS_SAVE_BUTTON_IDS.forEach(id => {
     const button = $(id);
-    if (button) button.textContent = "保存";
+    if (!button) return;
+    const label = (button.textContent || "").trim();
+    if (label) button.dataset.saveLabel = label;
   });
 }
-normalizeSettingsSaveLabels();
+captureSettingsSaveLabels();
 state.playTargetName = "当前设备";
 const MUSICBRAINZ_PROVIDER_ID = "musicbrainz";
 const METADATA_PROVIDER_SAFE_ORDER = ["netease", "kuwo", "kugou", "migu", "joox", MUSICBRAINZ_PROVIDER_ID];
@@ -1995,19 +2001,23 @@ function renderLibraryHealth() {
   const exists = status.exists === true;
   const readable = status.readable === true;
   const scanning = status.scanning === true;
-  const unconfigured = status.library_path === "" && Array.isArray(status.library_paths) && status.library_paths.length === 0;
+  // Treat a missing library_path the same as an empty one as long as the server
+  // did send the list: older payloads omit the singular field.
+  const unconfigured = !status.library_path && Array.isArray(status.library_paths) && status.library_paths.length === 0;
   const stateText = unconfigured ? "尚未配置音乐目录" : (scanning ? scanProgressText() || "正在扫描音乐库" : (!exists ? "目录不存在" : (!readable ? "目录不可读" : (status.last_error ? "最近一次扫描有错误" : "目录正常"))));
   const pathText = displayText(status.library_path || (status.library_paths || []).join(", ") || "未配置");
   const count = Math.max(0, Number(status.count || status.found || 0));
   const lastScan = Number(status.last_scan || 0);
   const lastScanText = Number.isFinite(lastScan) && lastScan > 0 ? new Date(lastScan * 1000).toLocaleString("zh-CN", { hour12: false }) : "尚未扫描";
-  const detail = status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`);
+  const detail = status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : (unconfigured ? "还没有配置音乐目录，选择目录后即可扫描并收录歌曲。" : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`));
   setTextContentIfChanged($("libraryHealthStatus"), stateText);
   setTextContentIfChanged($("libraryHealthPath"), pathText);
   setTextContentIfChanged($("libraryHealthCount"), `${count} 首`);
   setTextContentIfChanged($("libraryHealthLastScan"), lastScanText);
   setTextContentIfChanged($("libraryHealthDetail"), detail);
-  health.classList.toggle("is-error", !exists || !readable || Boolean(status.last_error));
+  // "No directory configured yet" is a first-run state, not a fault: painting it
+  // with the danger fill and border made an empty install look broken.
+  health.classList.toggle("is-error", !unconfigured && (!exists || !readable || Boolean(status.last_error)));
   health.classList.toggle("is-scanning", scanning);
   const button = $("libraryScanNowBtn");
   if (button) {
@@ -5115,7 +5125,11 @@ function renderLyrics(lines) {
   // Every line node below is replaced, so whatever the highlight projection
   // remembers about the previous set describes nodes that no longer exist.
   state.lyricsActiveLine = null;
-  $("lyricsLines").innerHTML = lines.length
+  const box = $("lyricsLines");
+  // A single placeholder in a 720px-wide column looks stranded in the top-left
+  // corner; the empty state is centred instead of left-aligned like real lyrics.
+  box.classList.toggle("is-empty", !lines.length);
+  box.innerHTML = lines.length
     ? lines.map((line, index) => `<p data-lyric="${index}">${escapeHtml(line.text)}</p>`).join("")
     : `<p class="muted-line">没有找到歌词。可以把同名 .lrc 文件放到歌曲目录。</p>`;
   updateLyricHighlight();
@@ -5127,6 +5141,7 @@ function showLyricsMessage(message) {
   state.lyricsActiveLine = null;
   const lines = $("lyricsLines");
   lines.scrollTop = 0;
+  lines.classList.add("is-empty");
   lines.innerHTML = `<p class="muted-line">${escapeHtml(message)}</p>`;
 }
 function cancelLyricsPoll() {
@@ -5930,13 +5945,21 @@ function updateLibraryStatusDecorations() {
   const emptyTitle = $("emptyTitle");
   const emptyText = $("emptyText");
   const currentView = String(state.view || "");
-  const emptyContext = currentView.startsWith("playlist:")
-    ? { title: "播放列表为空", text: "从歌曲操作菜单中选择“加入播放列表”，或返回全部音乐选择歌曲。" }
-    : currentView === "favorites"
-      ? { title: "还没有收藏歌曲", text: "在歌曲操作菜单或播放器中收藏歌曲后，会显示在这里。" }
-      : currentView === "queue"
-        ? { title: "当前队列为空", text: "播放歌曲或使用“播放全部”后，歌曲会出现在当前队列。" }
-        : null;
+  // A search that matches nothing is not an empty library: saying "还没有音乐"
+  // there tells the user their library is gone when only the query missed.
+  const query = currentQueryText();
+  const emptyContext = query
+    ? {
+        title: "没有找到歌曲",
+        text: `没有与“${query.length > 30 ? `${query.slice(0, 30)}…` : query}”匹配的歌曲，换个关键词试试，或清空搜索查看全部歌曲。`,
+      }
+    : currentView.startsWith("playlist:")
+      ? { title: "播放列表为空", text: "从歌曲操作菜单中选择“加入播放列表”，或返回全部音乐选择歌曲。" }
+      : currentView === "favorites"
+        ? { title: "还没有收藏歌曲", text: "在歌曲操作菜单或播放器中收藏歌曲后，会显示在这里。" }
+        : currentView === "queue"
+          ? { title: "当前队列为空", text: "播放歌曲或使用“播放全部”后，歌曲会出现在当前队列。" }
+          : null;
   if (emptyTitle) setTextContentIfChanged(emptyTitle, emptyContext?.title || "还没有音乐");
   if (emptyText && emptyContext) {
     setTextContentIfChanged(emptyText, emptyContext.text);
@@ -7374,16 +7397,9 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   render();
   return true;
 }
-function setSettingsButtonOpen(open) {
-  const button = $("folderBtn");
-  if (!button) return;
-  button.classList.toggle("is-open", Boolean(open));
-  button.setAttribute("aria-expanded", open ? "true" : "false");
-}
 
 async function openFolderBrowser(path = "") {
   ensurePlaybackSettingsControls();
-  setSettingsButtonOpen(true);
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
@@ -8401,7 +8417,7 @@ function renderLibraryPathInputs(paths = [""]) {
   $("libraryPathList").innerHTML = values.map(value => `
     <div class="library-path-row">
       <input class="library-path-input" value="${escapeHtml(value)}" placeholder="请选择音乐目录" readonly>
-      <button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      ${value ? `<button class="library-path-remove" type="button" title="删除此目录" aria-label="删除此目录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>` : ""}
     </div>
   `).join("");
   $("libraryPathList").querySelectorAll(".library-path-remove").forEach(button => {
@@ -8628,7 +8644,7 @@ async function saveSettingsPane(button, statusNode, saveAction, successMessage =
     return false;
   } finally {
     button.disabled = false;
-    button.textContent = "保存";
+    button.textContent = button.dataset?.saveLabel || "保存";
   }
 }
 function saveLibrarySettings() {
@@ -9931,6 +9947,7 @@ function setMobileNavigation(open) {
 }
 $("mobileNavBtn").onclick = () => setMobileNavigation(!document.querySelector(".sidebar")?.classList.contains("mobile-open"));
 $("mobileNavBackdrop").onclick = () => setMobileNavigation(false);
+$("mobileNavCloseBtn").onclick = () => setMobileNavigation(false);
 const mobileLogoutButton = $("mobileLogoutBtn");
 if (mobileLogoutButton && nativeBridgeAvailable()) {
   mobileLogoutButton.hidden = false;
@@ -10066,7 +10083,6 @@ function toggleMp3Transcode() {
 }
 $("modeBtn").onclick = toggleMp3Transcode;
 $("mobileModeBtn").onclick = toggleMp3Transcode;
-$("folderBtn").onclick = () => openFolderBrowser();
 function openDeviceDialog() {
   $("deviceDialog").showModal();
   loadDevices();
@@ -10154,7 +10170,6 @@ $("deviceDialog").addEventListener("close", () => {
   state.deviceRefreshTimer = null;
 });
 $("closeFolderDialog").onclick = () => $("folderDialog").close();
-$("folderDialog").addEventListener("close", () => setSettingsButtonOpen(false));
 bindSettingsTabs();
 bindMetadataSettingsTabs();
 $("dlnaDiagnosticsBtn").onclick = openDlnaDiagnostics;

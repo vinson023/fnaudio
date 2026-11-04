@@ -17,7 +17,7 @@ function harness(t, view, respond, configuredRoots = []) {
   const timers = new Set();
   const nodes = Object.fromEntries([
     'libraryLoadError', 'libraryLoadErrorText', 'retryLibraryLoadBtn', 'empty',
-    'serverPortValue', 'allCount', 'dsdCount', 'recentCount', 'emptyText', 'searchInput',
+    'serverPortValue', 'allCount', 'dsdCount', 'recentCount', 'emptyText', 'emptyTitle', 'searchInput',
   ].map(id => [id, { hidden: true, textContent: '', value: '' }]));
   const state = {
     view, page: 1, pageSize: 60, folderPage: 1, folderPageSize: 60,
@@ -205,3 +205,22 @@ for (const [label, rootRow, configured] of [
     assert.equal(h.requests.filter(request => request.pathname === '/api/library').length, 1);
   });
 }
+
+// A search that matches nothing used to reuse the library-level empty copy, which
+// told the user the library itself was empty while the query was the only reason
+// the list had no rows.
+test('a search with no matches explains the query instead of an empty library', t => {
+  const h = harness(t, 'all', () => ({ items: [], count: 0, paged: true, limit: 60, offset: 0 }));
+  h.state.libraryStatus = { library_path: '', message: '音乐库已就绪' };
+  h.nodes.searchInput.value = 'zzzz';
+  h.c.updateLibraryStatusDecorations();
+  assert.equal(h.nodes.emptyTitle.textContent, '没有找到歌曲');
+  assert.match(h.nodes.emptyText.textContent, /zzzz/);
+  assert.doesNotMatch(h.nodes.emptyText.textContent, /音乐库已就绪/);
+
+  h.nodes.searchInput.value = '';
+  h.c.updateLibraryStatusDecorations();
+  assert.equal(h.nodes.emptyTitle.textContent, '还没有音乐',
+    'clearing the query must fall back to the library-level copy');
+  assert.match(h.nodes.emptyText.textContent, /音乐库已就绪/);
+});

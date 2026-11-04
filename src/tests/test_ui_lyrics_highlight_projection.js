@@ -74,6 +74,12 @@ function setup(options = {}) {
     scrollTop: 0,
     clientHeight: 300,
     innerHTML: "",
+    // renderLyrics() also marks the box as the placeholder state so the empty
+    // message can be centred; the projection itself never touches the class.
+    classList: {
+      toggle(name, value) { box.writes.push(`class:${name}=${Boolean(value)}`); },
+      add(name) { box.writes.push(`class+:${name}`); },
+    },
     scrollTo(position) { box.writes.push(`scrollTo(${Math.round(position.top)},${position.behavior})`); },
   };
   const view = tracked({ hidden: options.hidden === true });
