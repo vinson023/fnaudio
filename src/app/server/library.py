@@ -1604,6 +1604,10 @@ def query_library_page(config, params):
         page_query.view, page_query.group, page_query.album, page_query.folder,
         page_query.root, page_query.search, page_query.sort_key,
         page_query.sql_sort_dir, page_query.limit, offset, page_query.cursor,
+        # One directory and its subtree answer different pages from the same
+        # folder scope, so the flag has to be part of the key; without it the
+        # first request wins and queueing a folder silently replays the page.
+        page_query.subtree,
     ) + ((search_cache_token,) if search_cache_token else ())
     # A random page's explicit refresh means "draw another sample".  The
     # browser response cache and the scan refresh queue remain independent,

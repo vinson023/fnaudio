@@ -132,10 +132,6 @@ class LibraryPageQuery:
     def group_column(self):
         return GROUP_TRACK_COLUMNS.get(self.view, "")
 
-    @property
-    def cache_values(self):
-        return (self.view, self.group, self.album, self.folder, self.root, self.search, self.sort_key, self.sql_sort_dir, self.limit, self.offset, self.cursor, self.subtree)
-
 
 @dataclass(frozen=True)
 class LibraryPageWindow:

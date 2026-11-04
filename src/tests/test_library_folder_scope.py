@@ -349,6 +349,19 @@ class FolderPageTests(unittest.TestCase):
         self.assertNotIn("other-root", [item["id"] for item in page["items"]])
         self.assertNotIn("other-child", [item["id"] for item in page["items"]])
 
+    def test_the_page_and_the_subtree_request_never_share_a_cache_entry(self):
+        # Both answers come from the same folder scope and differ only by the
+        # flag, so a cache key that forgot it would replay whichever arrived
+        # first -- and queueing a folder would silently copy the page.
+        self._build()
+        params = {"view": "folders", "root": self.music, "folder": "Album", "limit": "50"}
+        first = query_library_page(self.config, params)
+        self.assertEqual(first["count"], 1, first)
+        subtree = query_library_page(self.config, dict(params, subtree="1"))
+        self.assertEqual(subtree["count"], 4, subtree)
+        again = query_library_page(self.config, params)
+        self.assertEqual(again["count"], 1, again)
+
     def test_missing_container_answers_empty_without_touching_the_memory_scan(self):
         self._build()
         page = query_library_page(self.config, {"view": "folders", "root": self.music, "folder": "Ghost", "limit": "50"})
