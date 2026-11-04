@@ -24,7 +24,7 @@ from transcode import find_ffmpeg
 from resource_limits import bounded_int
 from file_permissions import atomic_write_json, secure_directory, secure_directory_on_drift, secure_file, secure_sqlite_files
 from config import DEFAULT_PORT
-from library_connection_pool import LibraryConnectionPool
+from library_connection_pool import LibraryConnectionPool, database_identity
 from library_query_cache import LibraryQueryCache
 from library_query_cache_key import MAX_CACHE_KEY_VALUES
 from library_cache_failure_policy import describe_failure, increment_failure, project_failures
@@ -2309,11 +2309,7 @@ def _forget_library_schema(config):
 
 
 def _library_database_identity(path):
-    try:
-        stat = os.stat(path)
-        return (int(stat.st_dev), int(stat.st_ino))
-    except OSError:
-        return None
+    return database_identity(path)
 
 
 def _library_database_cache_identity(path):

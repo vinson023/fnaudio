@@ -32,6 +32,7 @@ from library import (
     read_cover,
     read_id3_cover,
 )
+from library_connection_pool import LibraryConnectionPool, database_identity
 from cover_media_type import SNIFF_PREFIX_BYTES, safe_image_media_type
 from id3_parser import iter_id3_frames
 from library_rows import decode_item_payload
@@ -212,6 +213,7 @@ DEFAULT_ORPHAN_GRACE = 7 * 24 * 60 * 60
 METADATA_CACHE_VERSION = "3"
 ARTWORK_ID_SANITIZE_VERSION = "1"
 TAG_WRITE_BACKFILL_VERSION = "1"
+TAG_WRITE_PURGE_VERSION = "1"
 TAG_WRITE_BACKFILL_BATCH_SIZE = 64
 MAX_ALBUM_TAG_WRITE_TRACKS = 2048
 INTERACTIVE_SEARCH_MAX_REQUESTS = 2
@@ -224,6 +226,17 @@ MAX_TAG_WRITE_STDERR_BYTES = 64 * 1024
 SQLITE_LOCK_RETRY_DELAYS = (0.05, 0.15, 0.45)
 MAX_ENTITY_RAW_JSON_BYTES = 64 * 1024
 TAG_WRITABLE_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ape", ".wav", ".dsf"}
+
+# Idle metadata handles, so a lane does not open and close a connection per
+# operation.  That churn is what made concurrent writes fail with
+# SQLITE_READONLY: SQLite unlinks the WAL `-shm` sidecar when the *last*
+# connection to a database closes, and a lane that closed last pulled the
+# sidecar out from under a peer that was still mid-transaction.  Sized for the
+# widest lane pool (six fetch workers plus the tag writer and the priority
+# lane).  `_connect` drains it whenever no lane is alive, so it never pins the
+# index files for a service that has nothing concurrent to serve.
+METADATA_CONNECTION_POOL = LibraryConnectionPool(max_idle_per_database=8, max_idle_total=8)
+
 RUNNING_JOB_STALE_SECONDS = 15 * 60
 # `/api/health`, `/api/diagnostics` and the metadata page can ask for the
 # same aggregate in a single UI refresh. Keep this deliberately short: it
@@ -2280,6 +2293,9 @@ class MetadataService:
         # named `fnaudio-metadata-fetch-recovery-0` and a thread dump could not say
         # which round started which worker.  Guarded by `_lifecycle_lock`.
         self._recovery_serial = 0
+        # True only while `start()` is creating the lane pool; see the drain
+        # condition in `_connect`.
+        self._starting = False
         # Lyrics polling can hit this path every ~900ms while a provider job
         # is pending. Cache the bounded local probe by file identity so an
         # embedded-tag extraction/sidecar read is not repeated for every poll.
@@ -2514,19 +2530,29 @@ class MetadataService:
     def _connect(self):
         path = library_db_path(self.config)
         secure_directory(os.path.dirname(path))
-        conn = sqlite3.connect(path, timeout=20)
+        database = os.path.abspath(path)
+        identity = database_identity(path)
+        conn = METADATA_CONNECTION_POOL.borrow(database, identity)
+        borrowed = conn is not None
+        if conn is None:
+            # `check_same_thread=False` because a released handle is lent to
+            # whichever lane needs it next; the pool never hands one out twice.
+            conn = sqlite3.connect(path, timeout=20, check_same_thread=False)
+            METADATA_CONNECTION_POOL.note_created()
         failed = False
         inside = False
         try:
             secure_sqlite_files(path)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            secure_sqlite_files(path)
-            conn.execute("PRAGMA synchronous=NORMAL")
-            # Library scans acquire BEGIN IMMEDIATE for their persistence window.
-            # Match that writer's wait budget so a short scan does not turn a
-            # metadata state update into a false provider failure.
-            conn.execute("PRAGMA busy_timeout=15000")
+            if not borrowed:
+                conn.execute("PRAGMA journal_mode=WAL")
+                secure_sqlite_files(path)
+                conn.execute("PRAGMA synchronous=NORMAL")
+                # Library scans acquire BEGIN IMMEDIATE for their persistence
+                # window. Match that writer's wait budget so a short scan does
+                # not turn a metadata state update into a false provider
+                # failure.
+                conn.execute("PRAGMA busy_timeout=15000")
             # From here on this thread holds a database scope, and any write below
             # or on the borrowed connection stays uncommitted until the scope exits.
             _lane_release.depth += 1
@@ -2544,32 +2570,37 @@ class MetadataService:
                 pass
             raise
         finally:
-            if failed:
+            keep = False
+            if not failed and isinstance(conn, sqlite3.Connection):
+                stored = identity if identity is not None else database_identity(path)
+                keep = METADATA_CONNECTION_POOL.release(database, stored, conn)
+            if not keep:
                 try:
                     conn.close()
                 except Exception:
                     pass
-                try:
-                    secure_sqlite_files(path)
-                except Exception:
-                    pass
-            else:
-                try:
-                    conn.close()
-                finally:
-                    # A successful metadata transaction must remain a success
-                    # even when post-close permission repair is unavailable.
-                    # The next lifecycle pass can retry that housekeeping.
-                    try:
-                        secure_sqlite_files(path)
-                    except Exception:
-                        pass
+            # A successful metadata transaction must remain a success even when
+            # post-close permission repair is unavailable; the next lifecycle
+            # pass can retry that housekeeping.
+            try:
+                secure_sqlite_files(path)
+            except Exception:
+                pass
             if inside:
                 _lane_release.depth -= 1
                 if _lane_release.depth == 0:
+                    # The pool exists to keep the WAL sidecar attached while
+                    # concurrent lanes are writing. With no lane alive nothing
+                    # competes for it, so an idle handle would only pin the
+                    # index files -- and on Windows block removing the cache
+                    # directory. `_starting` covers the window in which the
+                    # lanes have not been created yet.
+                    if not self._starting and not self._has_live_workers():
+                        METADATA_CONNECTION_POOL.drop(database)
                     # This scope's transaction is finished and its handle is
-                    # closed, so a lane the body deferred can now start without
-                    # competing with a writer that can only commit after the fact.
+                    # released, so a lane the body deferred can now start
+                    # without competing with a writer that can only commit
+                    # after the fact.
                     self._release_deferred_lanes()
 
     def _release_deferred_lanes(self):
@@ -2698,11 +2729,33 @@ class MetadataService:
                     "INSERT OR REPLACE INTO metadata_state(key,value) VALUES ('tag_write_backfill_version',?)",
                     (TAG_WRITE_BACKFILL_VERSION,),
                 )
+            # Opting back in invalidates the disable-time purge marker. Clearing
+            # it here is what lets a later opt-out drain the queue again; the
+            # probe keeps the steady state write-free.
+            if conn.execute(
+                "SELECT 1 FROM metadata_state WHERE key='tag_write_purge_version'"
+            ).fetchone():
+                conn.execute("DELETE FROM metadata_state WHERE key='tag_write_purge_version'")
         else:
             # Tag writeback is opt-in. A previous opt-in session may have left
             # durable jobs behind; with the feature disabled they can never be
             # claimed, so remove them at the schema/config boundary.
-            conn.execute("DELETE FROM metadata_jobs WHERE job_type='tag_write'")
+            #
+            # This runs inside `_connect`, i.e. on every connection, so it must
+            # not be an unconditional write: a DELETE here turns every read into
+            # a writer, and concurrent writers then race the WAL `-shm` rebuild
+            # and fail with SQLITE_READONLY (busy_timeout cannot absorb it). The
+            # version marker confines the purge to the first connection after an
+            # opt-out, leaving the hot path read-only afterwards.
+            purge = conn.execute(
+                "SELECT value FROM metadata_state WHERE key='tag_write_purge_version'"
+            ).fetchone()
+            if not purge or str(purge["value"] or "") != TAG_WRITE_PURGE_VERSION:
+                conn.execute("DELETE FROM metadata_jobs WHERE job_type='tag_write'")
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata_state(key,value) VALUES ('tag_write_purge_version',?)",
+                    (TAG_WRITE_PURGE_VERSION,),
+                )
 
     def start(self):
         with self._lifecycle_lock:
@@ -2739,7 +2792,17 @@ class MetadataService:
             # generation of workers.  Without this, a restarted service
             # creates threads that exit immediately on an already-set event.
             self.stop_event.clear()
-            self._start_workers()
+            # The lanes do not exist yet while `_start_workers` opens its own
+            # recovery connection, so "no live workers" is briefly true.  That
+            # must not drain the idle pool: the handle it keeps is what stops
+            # the lanes' first burst of connections from racing the WAL
+            # sidecar.  A service that is never started still drains on every
+            # connection, so nothing is pinned for a caller that only reads.
+            self._starting = True
+            try:
+                self._start_workers()
+            finally:
+                self._starting = False
 
     def _start_workers(self):
         with self._connect() as conn:
@@ -2943,6 +3006,20 @@ class MetadataService:
             self._invalidate_status_cache()
         return recovered
 
+    def release_idle_connections(self):
+        """Close this database's pooled handles without stopping the workers.
+
+        The pool is keyed by database path, not by service instance, because
+        several ``MetadataService`` objects legitimately share one library
+        file.  That makes its lifetime process-wide, so something has to own
+        the release.  ``shutdown`` is the normal owner; this hook exists for
+        the callers that must let go of the index files while the service is
+        still considered running -- a reconfigured library path, or a test
+        that faked a worker and therefore never satisfies the opportunistic
+        drain in ``_connect`` (which only fires once no lane is alive).
+        """
+        METADATA_CONNECTION_POOL.drop(os.path.abspath(library_db_path(self.config)))
+
     def shutdown(self):
         # Keep shutdown and restart mutually exclusive.  Clearing
         # ``stop_event`` while an old worker is still joining would let that
@@ -2987,6 +3064,10 @@ class MetadataService:
                 join(worker)
             join(self.tag_thread)
             join(self.priority_thread)
+            # Every lane has been joined, so no handle is in flight: release the
+            # idle ones instead of keeping the index files pinned for a service
+            # that is winding down.
+            self.release_idle_connections()
             return not self._has_live_workers()
 
     def _active_job_ends_at(self):

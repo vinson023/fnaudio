@@ -2,7 +2,13 @@
  * Evidence: references/FNAPP/_analysis_fnos_1.33.4_run2/resources/res/values/colors.xml
  * (dark from values-night). Values must stay identical with
  * ui-prototype-hallmark-fnos/tokens.css so the shipped UI matches the
- * approved design. Do not add new --fn-* or --ui-* literal values here. */
+ * approved design, with one deliberate exception: light-theme
+ * --fn-text-third is one step darker than FNOS ships. At rgba(0,0,0,.5) the
+ * muted tier measured 3.98:1 against #ffffff, below the WCAG AA 4.5:1 floor for
+ * normal text; rgba(0,0,0,.6) measures 5.74:1 on #ffffff and 5.56:1 on the
+ * #f3f3f3 canvas, which leaves headroom if a surface token ever shifts. The
+ * prototype file keeps the original value as evidence of what FNOS ships.
+ * Do not add new --fn-* or --ui-* literal values here. */
 
 :root{
   color-scheme: light;
@@ -15,7 +21,7 @@
   --fn-bg-overlay:rgba(0,0,0,.5);
   --fn-text-default:#0b0b0c;
   --fn-text-secondary:rgba(0,0,0,.75);
-  --fn-text-third:rgba(0,0,0,.5);
+  --fn-text-third:rgba(0,0,0,.6);
   --fn-text-disabled:rgba(0,0,0,.25);
   --fn-text-accent:#0066ff;
   --fn-text-warn:#db382c;

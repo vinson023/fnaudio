@@ -133,7 +133,6 @@ test('FNOS: touch WebViews with a wide CSS viewport retain mobile geometry', asy
       pagebarJustify:getComputedStyle(document.querySelector('.mobile-pagebar')).justifyContent,
       pagebarTitleLeft:document.querySelector('.mobile-page-title').getBoundingClientRect().left,
       pagebarButtonRight:document.querySelector('#mobileNavBtn').getBoundingClientRect().right,
-      topActions:rect('.top-actions'),
       player:rect('.player'),
       transport:rect('.transport'),
       elapsed:rect('#elapsed'),
@@ -143,7 +142,7 @@ test('FNOS: touch WebViews with a wide CSS viewport retain mobile geometry', asy
     expect(geometry.headerHeight, JSON.stringify(geometry)).toBe('56px');
   expect(geometry.pagebarJustify, JSON.stringify(geometry)).toBe('flex-start');
   expect(geometry.pagebarTitleLeft).toBeGreaterThan(geometry.pagebarButtonRight);
-    await expect(page.locator('.top-actions')).toBeHidden();
+    await expect(page.locator('.top-actions')).toHaveCount(0);
     await expect(page.locator('.mobile-pagebar')).toBeVisible();
   expect(Math.abs(geometry.transport.center-geometry.viewport/2)).toBeLessThanOrEqual(1);
   expect(geometry.elapsed.left).toBeGreaterThanOrEqual(0);
@@ -166,19 +165,19 @@ test('Android WebView class keeps the header left-aligned outside media-query wi
       titleTextAlign: getComputedStyle(title).textAlign,
       titleLeft: title.getBoundingClientRect().left,
       menuRight: menu.getBoundingClientRect().right,
-      topActionsDisplay: getComputedStyle(document.querySelector('.top-actions')).display,
+      topActionsCount: document.querySelectorAll('.top-actions').length,
     };
   });
   expect(layout.pagebarDisplay).toBe('flex');
   expect(layout.pagebarJustify).toBe('flex-start');
   expect(layout.titleTextAlign).toBe('left');
   expect(layout.titleLeft).toBeGreaterThanOrEqual(layout.menuRight);
-  expect(layout.topActionsDisplay).toBe('none');
+  expect(layout.topActionsCount).toBe(0);
 });
 
 test('Desktop actions are hidden and sidebar settings stay fixed while library nav scrolls', async ({page}) => {
   await load(page, 1440, 900);
-  await expect(page.locator('.top-actions')).toBeHidden();
+  await expect(page.locator('.top-actions')).toHaveCount(0);
   await expect(page.locator('.sidebar-footer')).toHaveCount(0);
   await expect(page.locator('.sidebar')).toHaveCSS('width', '188px');
   await page.locator('#pager').evaluate(element => {
@@ -884,14 +883,12 @@ for (const [width, height] of [
 ]) {
 test(`FNOS ${width}: the MP3 transcode control lives in settings, not the retired top bar`, async ({page}) => {
   await load(page, width, height);
-  // The whole .top-actions strip is retired: the theme hides it above 761px and
-  // the 760px block hides it below, so every control inside is unreachable at
-  // every breakpoint.  The transcode switch moved into the "播放输出" section,
-  // which is where this test now looks for it.  Asserting the old top-bar node
-  // was visible kept a dead element alive as a test fixture.
-  await expect(page.locator('.top-actions')).toBeHidden();
-  await expect(page.locator('#modeBtn')).toBeHidden();
-  await expect(page.locator('#mobileModeBtn')).toBeHidden();
+  // The .top-actions strip and its five buttons are gone from the markup, so
+  // these nodes must stay absent.  The transcode switch moved into the
+  // "播放输出" section, which is where this test now looks for it.
+  await expect(page.locator('.top-actions')).toHaveCount(0);
+  await expect(page.locator('#modeBtn')).toHaveCount(0);
+  await expect(page.locator('#mobileModeBtn')).toHaveCount(0);
   await openSettings(page);
   await page.locator("[data-settings-tab='playback']").click();
   const settingsButton = page.locator('#settingsModeBtn');
@@ -1009,7 +1006,7 @@ for (const width of [320,375,414,768,1280,1440]) {
       await expect(page.locator('.player-actions')).toBeHidden();
     } else {
       await insideViewport(page,'#mobileSettingsNavBtn');
-      await expect(page.locator('.top-actions')).toBeHidden();
+      await expect(page.locator('.top-actions')).toHaveCount(0);
       for (const selector of ['#lyricsBtn','#favoriteCurrentBtn','#queueBtn','#volumeBtn']) await insideViewport(page,selector);
     }
     if (width < 560 && viewportHeight > 540) {
@@ -1047,9 +1044,9 @@ for (const width of [320,375,414,768,1280,1440]) {
     }
     if (mobile) {
       // The top bar is retired on phones, so the device dialog opens from the
-      // settings "播放输出" section.  #mobileDeviceBtn is unreachable at every
-      // breakpoint; keeping it in the click path only ever tested the timeout.
-      await expect(page.locator('#mobileDeviceBtn')).toBeHidden();
+      // settings "播放输出" section.  #mobileDeviceBtn no longer exists; keeping
+      // it in the click path only ever tested the timeout.
+      await expect(page.locator('#mobileDeviceBtn')).toHaveCount(0);
       await page.locator('#mobileNavBtn').click();
       await page.locator('#mobileSettingsNavBtn').click();
       await page.locator("[data-settings-tab='playback']").click();
@@ -1555,10 +1552,10 @@ test('FNOS short landscape preserves browsing space and compact transport contro
   expect(list.height).toBeGreaterThan(100);
   await expect(page.locator('#stopBtn')).toHaveCount(0);
   for(const selector of ['#prevBtn','#playBtn','#nextBtn','#mobileShuffleBtn','#mobileRepeatBtn']) await insideViewport(page,selector);
-  // #refreshBtn lives in the retired .top-actions strip, which is hidden at this
-  // width; refreshing the library now happens through the settings scan action.
-  await expect(page.locator('.top-actions')).toBeHidden();
-  await expect(page.locator('#refreshBtn')).toBeHidden();
+  // #refreshBtn was removed together with the .top-actions strip; refreshing
+  // the library now happens through the settings scan action.
+  await expect(page.locator('.top-actions')).toHaveCount(0);
+  await expect(page.locator('#refreshBtn')).toHaveCount(0);
   await expect(page.locator('.player-actions')).toBeHidden();
   await screenshot(page,info,'landscape');
 });

@@ -347,7 +347,11 @@ if (!mainActivity.includes("MAX_NATIVE_HTTP_CALLS = 32")
   throw new Error("Native HTTP calls must bound in-flight memory and cancel request-id replacements");
 }
 if (!mainActivity.includes("if (destroyed) return;\n        String serialized = payload.toString();")
-    || !/for \(Call call : nativeHttpCalls\.values\(\)\) call\.cancel\(\);\s*nativeHttpCalls\.clear\(\);/.test(mainActivity)) {
+    || !/synchronized \(nativeHttpCalls\) \{\s*client = webResourceClient;\s*nativeHttpCalls\.clear\(\);/.test(mainActivity)
+    || !mainActivity.includes("client.dispatcher().cancelAll();")) {
+  // Teardown drops the response path first (the `destroyed` guard runs before
+  // serialization), then empties the tracking map under its lock and cancels
+  // every call still in flight through the shared dispatcher.
   throw new Error("Native HTTP responses must be dropped after Activity teardown and calls cancelled before cleanup");
 }
 if (!mainActivity.includes("MAX_NATIVE_HTTP_HEADERS_BYTES = 64 * 1024")
@@ -817,10 +821,10 @@ if (!historyActivity.includes("RESULT_NEW_PROFILE") || !historyActivity.includes
     || !loginActivity.includes("clearFormForNewProfile()") || !historyLayout.includes('android:id="@+id/historyAddButton"')) {
   throw new Error("Connection history must provide an explicit new-connection action");
 }
-if (!source.includes('$("mobileModeBtn").onclick = toggleMp3Transcode')
+if (!source.includes('$("settingsModeBtn").onclick = toggleMp3Transcode')
     || !source.includes('function toggleMp3Transcode()')
     || !source.includes('writeStoredPreference("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0")')) {
-  throw new Error("Mobile top bar must expose the persisted MP3 transcoding control");
+  throw new Error("The playback-output settings section must expose the persisted MP3 transcoding control");
 }
 
 console.log("Android bridge and CGI auth regression checks passed.");

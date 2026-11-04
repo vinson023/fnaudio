@@ -54,18 +54,16 @@ for (const legacyClass of [
 }
 assert.doesNotMatch(theme, /repeat-mode-mark|repeat-mode-label/,
   "retired repeat badge styles must not remain in the FNOS theme");
-assert.doesNotMatch(css, /\.top-mode-button svg\b/,
-  "text MP3 mode control must not retain retired SVG-only styling");
 assert.match(css, /\.track-sort-indicator svg\{[^}]*stroke-width:2/,
   "sort direction indicators must use the shared line SVG treatment");
 assert.match(html, /id="lyricsBtn"[^>]*>[\s\S]*class="lyric-symbol"[^>]*viewBox="0 0 24 24"[\s\S]*<\/svg>/,
   "lyrics must use the shared line-icon treatment instead of a text glyph");
-assert.match(html, /id="modeBtn"[^>]*aria-label="MP3 转码：关"[^>]*>MP3 转码：关<\//,
-  "MP3 transcode control must retain the original state text button");
-const modeButton = html.match(/<button\b[^>]*id="modeBtn"[^>]*>[\s\S]*?<\/button>/i)?.[0] || "";
+assert.match(app, /id="settingsModeBtn"[^>]*aria-pressed="false">MP3 转码：关<\//,
+  "the playback-output section must render the MP3 control as a state-text button");
+const modeButton = app.match(/<button\b[^>]*id="settingsModeBtn"[^>]*>[\s\S]*?<\/button>/i)?.[0] || "";
 assert.doesNotMatch(modeButton, /<svg\b/i,
   "MP3 transcode control must not regress to an icon-only button");
-assert.match(app, /desktopButton\.textContent = state\.mp3Transcode \? "MP3 转码：开" : "MP3 转码：关"/,
+assert.match(app, /settingsButton\.textContent = state\.mp3Transcode \? "MP3 转码：开" : "MP3 转码：关"/,
   "MP3 transcode control must update its visible state text");
 assert.match(app, /function groupActionButton\(label, action, disabled = false\)/,
   "dynamic group actions must share one button builder");

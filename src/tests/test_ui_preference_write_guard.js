@@ -131,7 +131,7 @@ const optionsHost = topLevelFunction("updateSortOptions", "function compareTrack
 }
 
 // ---- C. toggleMp3Transcode: the flag flip must survive into the repaint ----
-const transcodeHost = topLevelFunction("toggleMp3Transcode", '$("modeBtn")');
+const transcodeHost = topLevelFunction("toggleMp3Transcode", "function openDeviceDialog(");
 
 {
   const state = { mp3Transcode: false };
@@ -183,7 +183,7 @@ const transcodeHost = topLevelFunction("toggleMp3Transcode", '$("modeBtn")');
 for (const [name, after, host] of [
   ["applyTrackSort", "function columnDragIcon", sortHost],
   ["updateSortOptions", "function compareTrackValue", optionsHost],
-  ["toggleMp3Transcode", '$("modeBtn")', transcodeHost],
+  ["toggleMp3Transcode", "function openDeviceDialog(", transcodeHost],
 ]) {
   assert.doesNotMatch(host, /localStorage\s*\./,
     name + " must persist through the guarded writer instead of touching storage directly");

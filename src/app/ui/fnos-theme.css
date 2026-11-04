@@ -38,28 +38,15 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .topbar-library-title h1 { margin: 0 !important; font-size: 24px !important; line-height: 1.3 !important; font-weight: 650 !important; }
 .topbar-library-title p { margin: 0 !important; color: var(--ui-muted) !important; font-size: 12px !important; }
 .topbar-library-note { display: none !important; }
-.top-actions { display: flex !important; flex-wrap: wrap; gap: var(--ui-space-1) !important; }
-.top-actions .top-icon-button {
-  display: inline-flex !important; align-items: center !important; justify-content: center !important;
-  gap: var(--ui-space-2) !important; height: 36px !important; width: 36px !important; min-width: 36px !important;
-  padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--ui-radius-sm) !important;
-  background: transparent !important; color: var(--ui-secondary) !important; box-shadow: none !important;
-}
-.top-actions #refreshBtn { width: auto !important; padding-inline: var(--ui-space-3) !important; }
-.top-actions .tool-label { display: inline !important; font-size: 13px !important; }
-.top-actions .top-icon-button svg { width: 20px !important; height: 20px !important; }
-.top-actions .mode-mp3-icon { display: grid !important; width: 25px; height: 22px; place-items: center; color: currentColor; font-size: 12px; font-weight: 750; line-height: 1; letter-spacing: 0; }
-.top-actions #playAllBtn { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
-.top-actions .mobile-top-control, .mobile-pagebar { display: none !important; }
+.mobile-pagebar { display: none !important; }
 .shell { grid-row: 2; display: grid !important; grid-template-columns: var(--ui-sidebar-width) minmax(0, 1fr) !important; height: 100% !important; min-height: 0 !important; background: var(--ui-canvas) !important; }
 .sidebar {
   position: static !important; width: auto !important; height: 100% !important; min-height: 0 !important;
   display: flex !important; flex-direction: column !important; padding: var(--ui-space-4) var(--ui-space-3) !important;
-  background: var(--ui-sidebar) !important; border-right: 1px solid var(--ui-line) !important;
-  overflow: auto !important; transform: none !important; box-shadow: none !important; transition: none !important;
+  background: var(--ui-sidebar) !important; border-right: 1px solid var(--ui-line) !important; transform: none !important; box-shadow: none !important; transition: none !important;
 }
-.library-search { display: flex !important; gap: var(--ui-space-2) !important; min-height: 36px !important; margin: 0 0 var(--ui-space-6) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
-.library-search input, .mobile-library-search input { width: 100% !important; border: 0 !important; background: transparent !important; outline-offset: -2px !important; }
+.library-search { margin: 0 0 var(--ui-space-6) !important; }
+.library-search input, .mobile-library-search input { border: 0 !important; background: transparent !important; outline-offset: -2px !important; }
 #searchInput, #mobileSearchInput { border: 0 !important; border-radius: 0 !important; background: transparent !important; }
 .nav-title { padding: 0 var(--ui-space-3) var(--ui-space-2) !important; font-size: 12px !important; letter-spacing: 0 !important; color: var(--ui-muted) !important; }
 .nav-title.secondary { margin-top: var(--ui-space-6) !important; }
@@ -79,7 +66,7 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
   :root:not([data-theme="light"]) .nav-item.active b { color: var(--ui-on-accent) !important; opacity: .86; }
 }
 .new-playlist { border: 1px dashed var(--ui-border) !important; margin-top: var(--ui-space-3) !important; }
-.sidebar-footer { margin-top: auto !important; padding: var(--ui-space-6) var(--ui-space-3) 0 !important; color: var(--ui-muted) !important; }
+.sidebar-footer { color: var(--ui-muted) !important; }
 .pulse { background: var(--ui-success) !important; box-shadow: none !important; animation: none !important; }
 .content { width: 100% !important; max-width: none !important; height: 100% !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; background: var(--ui-surface) !important; overflow: hidden !important; }
 .library-scroll { min-height: 0 !important; flex: 1 1 auto !important; background: var(--ui-surface) !important; }
@@ -154,7 +141,6 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .pager-page-button.is-current { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
 .empty { max-width: 48ch; padding: var(--ui-space-6); color: var(--ui-muted) !important; }
 .empty-icon { color: var(--ui-accent) !important; }
-.library-load-error { background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; border-color: var(--ui-danger) !important; }
 
 /* Player: every real control stays in the DOM and has a reachable counterpart. */
 .player {
@@ -173,15 +159,10 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .player-button, .icon-button, .device-button { color: var(--ui-secondary) !important; background: transparent !important; border-radius: var(--ui-radius-sm) !important; box-shadow: none !important; }
 .player-button { width: 40px !important; height: 40px !important; }
 .player-button.play-button { width: 44px !important; height: 44px !important; border-radius: 50% !important; background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
-.progress { position: static !important; inset: auto !important; grid-column: 2 !important; grid-row: 2 !important; display: flex !important; height: 24px !important; padding: 0 !important; gap: var(--ui-space-2) !important; background: transparent !important; color: var(--ui-muted) !important; }
-.progress #elapsed, .progress #duration { display: inline !important; font-variant-numeric: tabular-nums; font-size: 12px !important; }
+.progress { position: static !important; inset: auto !important; grid-column: 2 !important; grid-row: 2 !important; padding: 0 !important; gap: var(--ui-space-2) !important; background: transparent !important; color: var(--ui-muted) !important; }
 .progress #transportStateUnknown { position: static !important; inset: auto !important; font-size: 11px !important; padding: 0 var(--ui-space-1) !important; background: var(--ui-warning-bg) !important; color: var(--ui-warning) !important; box-shadow: none !important; }
-.progress input { height: 24px !important; width: 100% !important; min-width: 0 !important; margin: 0 !important; background: transparent !important; border: 0 !important; }
-.progress input::-webkit-slider-runnable-track { height: 4px !important; background: linear-gradient(to right, var(--ui-accent) var(--seek-fill, 0%), var(--ui-line) var(--seek-fill, 0%)) !important; border-radius: 2px !important; }
-.progress input::-webkit-slider-thumb { width: 12px !important; height: 12px !important; margin-top: -4px !important; background: var(--ui-surface) !important; border: 2px solid var(--ui-accent) !important; box-shadow: none !important; }
-.progress input::-moz-range-track { background: var(--ui-line) !important; }
-.progress input::-moz-range-progress { background: var(--ui-accent) !important; }
-.progress input::-moz-range-thumb { background: var(--ui-surface) !important; border-color: var(--ui-accent) !important; box-shadow: none !important; }
+.progress input { margin: 0 !important; }
+.progress input::-moz-range-thumb { border-color: var(--ui-accent) !important; box-shadow: none !important; }
 .player-actions { grid-column: 3 !important; grid-row: 1 / 3 !important; display: flex !important; gap: var(--ui-space-1) !important; justify-content: end !important; justify-self: stretch !important; width: 100% !important; align-items: center !important; }
 .player-actions .action-button, .player-actions .device-button { width: 36px !important; height: 36px !important; min-width: 36px !important; padding: var(--ui-space-2) !important; border: 0 !important; }
 .player-actions svg { width: 20px !important; height: 20px !important; }
@@ -190,7 +171,7 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
   fill: none !important; stroke: currentColor !important; stroke-width: 1.9 !important;
   stroke-linecap: round !important; stroke-linejoin: round !important;
 }
-.active-control, .favorite-current.active-control, .top-actions .active-control, .player-actions .active-control { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
+.active-control, .favorite-current.active-control, .player-actions .active-control { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
 .volume-control { position: relative !important; display: inline-grid !important; place-items: center !important; }
 .volume-panel { position: absolute !important; right: 0 !important; bottom: calc(100% + 8px) !important; transform: none !important; display: grid !important; place-items: center !important; width: 48px !important; height: 144px !important; padding: var(--ui-space-3) 0 !important; z-index: 90 !important; background: var(--ui-raised) !important; border: 1px solid var(--ui-border) !important; box-shadow: var(--ui-shadow) !important; border-radius: var(--ui-radius) !important; }
 .volume-panel::after { display: none !important; }
@@ -295,12 +276,11 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .metadata-settings-overview strong { font-size: 16px !important; overflow-wrap: anywhere; }
 .metadata-settings-overview strong, .metadata-toggle strong { color: var(--ui-text) !important; }
 .metadata-settings-overview span, .metadata-toggle small, .metadata-provider-capabilities { color: var(--ui-muted) !important; }
-.metadata-core-controls .metadata-toggle { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius-sm) !important; }
+.metadata-core-controls .metadata-toggle { border-radius: var(--ui-radius-sm) !important; }
 .metadata-settings-grid label, .metadata-probe-query label { color: var(--ui-secondary) !important; }
 .metadata-provider-list { gap: var(--ui-space-2) !important; padding-bottom: calc(var(--ui-space-5) + 56px) !important; }
-.metadata-provider-row, .metadata-provider-row.is-fixed-last { display: grid; grid-template-columns: minmax(0, 1fr) !important; gap: var(--ui-space-2) !important; padding: var(--ui-space-3) !important; background: var(--ui-surface) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; box-shadow: none !important; }
+.metadata-provider-row, .metadata-provider-row.is-fixed-last { display: grid; grid-template-columns: minmax(0, 1fr) !important; gap: var(--ui-space-2) !important; padding: var(--ui-space-3) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; box-shadow: none !important; }
 .metadata-provider-header { display: grid !important; grid-template-columns: minmax(0,1fr) auto !important; gap: var(--ui-space-2) !important; }
-.metadata-provider-toggle span { color: var(--ui-text) !important; }
 .metadata-provider-toggle input, .metadata-toggle input { accent-color: var(--ui-accent) !important; }
 .metadata-provider-actions { grid-column: 2 !important; grid-row: 1 / 3 !important; gap: var(--ui-space-1) !important; }
 .metadata-provider-actions button { min-height: 36px !important; background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; }
@@ -308,11 +288,9 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .metadata-provider-actions .metadata-provider-move::before { content: none !important; }
 .metadata-provider-actions .metadata-provider-move svg { width: 17px !important; height: 17px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
 .metadata-provider-actions .metadata-provider-test { min-width: 60px; }
-.metadata-provider-result { grid-column: 1 / -1 !important; min-width: 0 !important; background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border-color: var(--ui-line) !important; overflow-wrap: anywhere; }
+.metadata-provider-result { grid-column: 1 / -1 !important; min-width: 0 !important; border-color: var(--ui-line) !important; overflow-wrap: anywhere; }
 .metadata-provider-result strong { color: var(--ui-text) !important; }
 .metadata-provider-result[data-state="error"], .metadata-provider-result.is-failed { color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; }
-.metadata-provider-result.is-ok { color: var(--ui-success) !important; background: var(--ui-success-bg) !important; }
-.metadata-provider-result small { color: inherit !important; }
 .metadata-provider-save-actions { display: flex !important; align-items: center !important; justify-content: flex-end !important; gap: var(--ui-space-3) !important; position: sticky !important; bottom: calc(-1 * var(--ui-space-6)) !important; z-index: 2 !important; margin: var(--ui-space-3) calc(-1 * var(--ui-space-3)) calc(-1 * var(--ui-space-2)) !important; padding: var(--ui-space-3) var(--ui-space-3) var(--ui-space-2) !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-raised) !important; }
 .metadata-provider-save-actions button { min-width: 132px !important; }
 .metadata-settings-status, .metadata-tag-jobs, .metadata-tag-job { background: var(--ui-sidebar) !important; color: var(--ui-secondary) !important; border-color: var(--ui-line) !important; }
@@ -320,22 +298,19 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .metadata-tag-job.is-running { background: var(--ui-selected) !important; color: var(--ui-accent) !important; border-left-color: var(--ui-accent) !important; }
 .metadata-tag-job.is-retry, .metadata-tag-job.is-no_match { background: var(--ui-warning-bg) !important; color: var(--ui-warning) !important; border-left-color: var(--ui-warning) !important; }
 .metadata-tag-job.is-failed { background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; border-left-color: var(--ui-danger) !important; }
-.metadata-candidate-dialog { width: min(800px, calc(100% - 32px)) !important; padding: var(--ui-space-6) !important; background: var(--ui-raised) !important; }
-.metadata-candidate-source-bar { grid-template-columns: minmax(0,1fr) auto !important; padding: var(--ui-space-3) !important; gap: var(--ui-space-3) !important; background: var(--ui-sidebar) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; }
-.metadata-candidate-source-bar small, .metadata-candidate-source-bar label { color: var(--ui-muted) !important; }
-.metadata-candidate-dialog #metadataCandidateStatus { margin: var(--ui-space-3) 0 !important; padding: var(--ui-space-3) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-selected) !important; color: var(--ui-secondary) !important; }
+.metadata-candidate-dialog { width: min(800px, calc(100% - 32px)) !important; padding: var(--ui-space-6) !important; }
+.metadata-candidate-source-bar { grid-template-columns: minmax(0,1fr) auto !important; padding: var(--ui-space-3) !important; gap: var(--ui-space-3) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius) !important; }
+.metadata-candidate-dialog #metadataCandidateStatus { margin: var(--ui-space-3) 0 !important; padding: var(--ui-space-3) !important; border: 1px solid var(--ui-line) !important; border-radius: var(--ui-radius-sm) !important; }
 .metadata-candidate-dialog .track-action-choice {
   border-color: var(--ui-accent) !important;
   background: var(--ui-accent) !important;
   color: var(--ui-on-accent) !important;
 }
 .metadata-candidate-results { max-height: 40dvh !important; margin: 0 !important; padding: var(--ui-space-3) 0 !important; overflow: auto !important; }
-.metadata-candidate-choice { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius) !important; }
+.metadata-candidate-choice { border-radius: var(--ui-radius) !important; }
 .metadata-candidate-choice:has(input:checked) { background: var(--ui-selected) !important; border-color: var(--ui-accent) !important; }
-.metadata-candidate-choice strong { color: var(--ui-text) !important; }
-.metadata-candidate-choice small { color: var(--ui-muted) !important; }
-.metadata-candidate-search { padding: var(--ui-space-4) 0 0 !important; gap: var(--ui-space-2) !important; background: transparent !important; border-top: 1px solid var(--ui-line) !important; }
-.metadata-candidate-dialog #metadataCandidateSearchStatus { background: transparent !important; padding: var(--ui-space-2) 0 0 !important; color: var(--ui-muted) !important; }
+.metadata-candidate-search { padding: var(--ui-space-4) 0 0 !important; gap: var(--ui-space-2) !important; border-top: 1px solid var(--ui-line) !important; }
+.metadata-candidate-dialog #metadataCandidateSearchStatus { padding: var(--ui-space-2) 0 0 !important; }
 .library-health, .library-health-grid > div, .diagnostics-list, .diagnostics-row { background: var(--ui-sidebar) !important; border-color: var(--ui-line) !important; color: var(--ui-secondary) !important; box-shadow: none !important; }
 .library-health strong, .library-health-grid strong { color: var(--ui-text) !important; }
 .library-health-heading p, .library-health-detail, .library-health-grid span { color: var(--ui-muted) !important; }
@@ -357,7 +332,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .device-dialog-footer { border-color: var(--ui-line) !important; background: var(--ui-sidebar) !important; }
 .device-dialog-footer span { color: var(--ui-muted) !important; }
 .device-dialog-footer .secondary-button { background: var(--ui-surface) !important; color: var(--ui-text) !important; border-color: var(--ui-border) !important; }
-.track-context-menu { max-width: calc(100% - 16px) !important; background: var(--ui-raised) !important; border-color: var(--ui-line) !important; border-radius: var(--ui-radius) !important; box-shadow: var(--ui-shadow) !important; }
+.track-context-menu { max-width: calc(100% - 16px) !important; border-radius: var(--ui-radius) !important; }
 .track-context-actions .track-action-choice, .track-action-choice { color: var(--ui-text) !important; background: var(--ui-surface) !important; }
 .track-action-choice { display: flex !important; align-items: center !important; gap: var(--ui-space-2) !important; }
 .track-action-choice .track-action-icon { width: 18px !important; height: 18px !important; flex: 0 0 18px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
@@ -381,11 +356,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .column-move-button { background: transparent !important; color: var(--ui-secondary) !important; }
 .column-move-button svg { width: 16px !important; height: 16px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
 .external-share-detail, .external-share-footer, .native-delete-footer { border-color: var(--ui-line) !important; }
-.native-delete-confirm { background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; border-color: var(--ui-accent) !important; }
-.native-delete-outline { color: var(--ui-danger) !important; }
 .native-delete-icon { color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; }
-.native-delete-status { color: var(--ui-danger) !important; }
-.native-delete-title h2 { color: var(--ui-text) !important; }
 
 /* Lyrics shares the workbench surface; cover art remains real library content. */
 .lyrics-view { inset: 0 0 var(--ui-player-height) !important; width: 100% !important; max-width: 100% !important; background: var(--ui-canvas) !important; color: var(--ui-text) !important; }
@@ -410,7 +381,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .nav-item:hover:not(.active), .track:hover:not(.is-selected), .track.is-current:not(.is-selected):hover,
   .group-row:hover, .track-list.group-mode .group-row:hover, .album-group-row:hover,
   .artist-all-songs-entry:hover,
-  .top-actions .top-icon-button:hover, .top-actions #modeBtn:hover, .player-button:hover:not(.play-button),
+  .player-button:hover:not(.play-button),
   .player-actions button:hover, .secondary-button:hover:not(:disabled), .track-action-choice:hover,
   .settings-tabs button:hover:not(.active), .metadata-settings-tabs button:hover:not(.active),
   .metadata-candidate-choice:hover, .device-row:hover { background: var(--ui-hover) !important; color: var(--ui-text) !important; }
@@ -435,15 +406,10 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .mobile-page-title strong { color: var(--ui-text) !important; font-size: 18px !important; }
   .mobile-page-title span { color: var(--ui-muted) !important; }
   #mobileNavBtn { color: var(--ui-secondary) !important; width: 44px !important; height: 44px !important; }
-  .top-actions { width: 100% !important; flex-wrap: nowrap !important; justify-content: space-between !important; gap: 0 !important; }
-  .top-actions .top-icon-button, .top-actions #refreshBtn { display: inline-flex !important; width: 44px !important; min-width: 44px !important; height: 44px !important; padding: 0 !important; }
-  .top-actions #modeBtn { display: none !important; }
-  .top-actions .tool-label { display: none !important; }
   .player-actions #lyricsBtn .lyric-symbol { width: 20px !important; height: 20px !important; }
   .shell { display: block !important; }
   .sidebar {
-    position: fixed !important; inset: 0 auto 0 0 !important; z-index: 70 !important;
-    width: min(84%, 288px) !important; height: 100dvh !important; visibility: hidden !important;
+    position: fixed !important; inset: 0 auto 0 0 !important; z-index: 70 !important; height: 100dvh !important; visibility: hidden !important;
     transform: translateX(-100%) !important; padding: var(--ui-space-4) !important; box-shadow: none !important;
   }
   .sidebar.mobile-open { visibility: visible !important; transform: none !important; box-shadow: var(--ui-shadow) !important; }
@@ -457,7 +423,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   /* Every other control on the phone surface is a 44px target; the settings
    * buttons were still 38px, which is below the minimum tap size. */
   .settings-pane .secondary-button { min-height: 44px !important; }
-  .mobile-library-search { display: flex !important; flex: 0 0 44px !important; margin: var(--ui-space-2) var(--ui-space-3) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; border-radius: var(--ui-radius-sm) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
+  .mobile-library-search { display: flex !important; flex: 0 0 44px !important; margin: var(--ui-space-2) var(--ui-space-3) !important; padding: 0 var(--ui-space-3) !important; border: 1px solid var(--ui-border) !important; background: var(--ui-surface) !important; color: var(--ui-muted) !important; box-shadow: none !important; }
   .mobile-library-search:focus-within { border-color: var(--ui-accent) !important; box-shadow: none !important; }
   .mobile-library-search input { font-size: 14px !important; }
   .table-head { display: none !important; }
@@ -552,8 +518,6 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   :root { --ui-header-height: 60px; }
   body { grid-template-columns: minmax(0,1fr) 248px; grid-template-rows: 60px minmax(0,1fr); }
   .topbar { grid-column: 1 / -1; grid-template-columns: minmax(0,1fr) auto !important; grid-template-rows: 44px !important; align-content: center; gap: var(--ui-space-2) !important; }
-  .top-actions { width: auto !important; }
-  .top-actions .top-icon-button, .top-actions #refreshBtn { width: 36px !important; min-width: 36px !important; }
   .mobile-page-title strong { font-size: 16px !important; }
   .shell { grid-column: 1 !important; grid-row: 2 !important; }
   .player, body.mobile-search-active .player { grid-column: 2 !important; grid-row: 2 !important; height: 100% !important; align-content: center; border-top: 0 !important; border-left: 1px solid var(--ui-line) !important; }
@@ -593,21 +557,7 @@ html.android-app .player-actions { display: none !important; }
   outline: 2px solid var(--ui-accent) !important;
   outline-offset: 2px !important;
 }
-.top-icon-button .tool-label {
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
-}
 .player-button .transport-icon { display: block; width: 20px; height: 20px; fill: currentColor !important; stroke: none !important; }
-.top-icon-button:has(.tool-label) {
-  width: auto !important;
-  min-width: 72px;
-  padding-inline: var(--ui-space-3) !important;
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
-  gap: var(--ui-space-2);
-}
 .nav-item > svg,
 .library-search > svg,
 .mobile-library-search > svg {
@@ -622,13 +572,8 @@ html.android-app .player-actions { display: none !important; }
 }
 .nav-item > svg { color: currentColor; }
 .nav-item.active > svg { stroke-width: 2; }
-.empty-icon { display: grid; place-items: center; color: var(--ui-accent); }
+.empty-icon { display: grid; place-items: center; }
 .empty-icon svg { width: 42px; height: 42px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.library-search:focus-within,
-.mobile-library-search:focus-within {
-  border-color: var(--ui-accent) !important;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 18%, transparent) !important;
-}
 .track-cover img,
 .cover img,
 .album-detail-cover img {
@@ -702,9 +647,7 @@ html.android-app .player-actions { display: none !important; }
 .player-actions #favoriteCurrentBtn.active-control,
 .player-actions #lyricsBtn.active-control,
 .player-actions #queueBtn.active-control,
-.player-actions #deviceBtn.active-control,
-.top-actions #modeBtn.active-control,
-.top-actions #mobileModeBtn.active-control {
+.player-actions #deviceBtn.active-control {
   color: var(--ui-accent) !important;
   background: var(--ui-selected) !important;
   border-color: var(--ui-border) !important;
@@ -715,9 +658,7 @@ html.android-app .player-actions { display: none !important; }
 .player-actions #shuffleBtn:hover:not(:disabled),
 .player-actions #queueBtn:hover:not(:disabled),
 .player-actions #favoriteCurrentBtn:hover:not(:disabled),
-.player-actions #volumeBtn:hover:not(:disabled),
-.top-actions #modeBtn:hover:not(:disabled),
-.top-actions #mobileModeBtn:hover:not(:disabled) {
+.player-actions #volumeBtn:hover:not(:disabled) {
   color: var(--ui-text) !important;
   background: var(--ui-hover) !important;
   border-color: transparent !important;
@@ -780,7 +721,6 @@ html.android-app .player-actions { display: none !important; }
 .native-delete-cancel:hover:not(:disabled){background:var(--ui-hover)!important;color:var(--ui-text)!important}
 .native-delete-confirm{border-color:var(--ui-danger)!important;background:var(--ui-danger)!important;color:var(--ui-on-accent)!important}
 .native-delete-confirm:hover:not(:disabled){border-color:var(--ui-danger)!important;background:var(--ui-danger)!important}
-
 
 /* Category detail headers are rendered by the library view, but their legacy
  * white surface bypassed the FNOS theme when entering a group in dark mode. */
@@ -849,17 +789,6 @@ html.android-app .player-actions { display: none !important; }
     box-sizing: border-box !important;
   }
 
-  .top-actions {
-    width: max-content !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    margin-inline: auto !important;
-    display: flex !important;
-    flex-wrap: nowrap !important;
-    justify-content: center !important;
-    gap: var(--ui-space-2) !important;
-  }
-
   .transport {
     width: max-content !important;
     max-width: 100% !important;
@@ -903,16 +832,6 @@ html.android-app .player-actions { display: none !important; }
   }
   .topbar-library { display: none !important; }
   .mobile-pagebar { display: flex !important; gap: var(--ui-space-2) !important; }
-  .top-actions {
-    grid-column: 1 !important; grid-row: 2 !important; width: max-content !important;
-    max-width: 100% !important; margin-inline: auto !important; display: flex !important;
-    flex-wrap: nowrap !important; justify-content: center !important; gap: var(--ui-space-2) !important;
-  }
-  .top-actions .top-icon-button, .top-actions #refreshBtn {
-    display: inline-flex !important; width: 44px !important; min-width: 44px !important;
-    height: 44px !important; padding: 0 !important;
-  }
-  .top-actions #modeBtn, .top-actions .tool-label { display: none !important; }
   .shell { display: block !important; height: 100% !important; }
   .sidebar { position: fixed !important; }
   .content { width: 100% !important; max-width: none !important; height: 100% !important; padding: 0 !important; margin: 0 !important; }
@@ -942,7 +861,6 @@ html.android-app .player-actions { display: none !important; }
     grid-template-rows: 56px !important;
     gap: 0 !important;
   }
-  .top-actions { display: none !important; }
   .mobile-pagebar {
     display: flex !important;
     align-items: center !important;
@@ -975,9 +893,6 @@ html.fnaudio-android-client .topbar {
   box-sizing: border-box !important;
 }
 html.fnaudio-android-client .topbar-library {
-  display: none !important;
-}
-html.fnaudio-android-client .top-actions {
   display: none !important;
 }
 html.fnaudio-android-client .mobile-pagebar {
@@ -1079,18 +994,14 @@ html.fnaudio-android-client .content {
 }
 
 /* Desktop actions move out of the header; settings stay below the scrollable library nav. */
-@media (min-width: 761px) {
-  .top-actions { display: none !important; }
-}
 .sidebar { overflow: hidden !important; }
 .sidebar-scroll { min-height: 0 !important; flex: 1 1 auto !important; overflow-y: auto !important; overflow-x: hidden !important; overscroll-behavior: contain !important; }
-.sidebar-settings { flex: 0 0 auto !important; display: flex !important; align-items: center !important; min-height: 56px !important; padding: var(--ui-space-2) 0 !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-sidebar) !important; }
+.sidebar-settings { flex: 0 0 auto !important; display: flex !important; align-items: center !important; padding: var(--ui-space-2) 0 !important; border-top: 1px solid var(--ui-line) !important; background: var(--ui-sidebar) !important; }
 .sidebar-settings .nav-item { display: flex !important; margin: 0 !important; }
 .sidebar-footer { flex: 0 0 auto !important; margin-top: 0 !important; padding: var(--ui-space-3) var(--ui-space-3) 0 !important; }
 @media (max-width: 760px) {
   .sidebar { overflow: hidden !important; }
   .sidebar-scroll { flex: 1 1 auto !important; overflow-y: auto !important; overflow-x: hidden !important; }
-  .sidebar-settings { min-height: 56px !important; }
   .sidebar-footer { margin-top: 0 !important; }
 }
 
@@ -1317,7 +1228,6 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
  * time labels to the same inset rather than stretching to the viewport edge. */
 @media (max-width: 760px), (pointer: coarse) and (min-width: 761px) and (max-width: 1100px) {
   .player .progress {
-    width: auto !important;
     min-width: 0 !important;
     margin-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)) !important;
     justify-self: stretch !important;

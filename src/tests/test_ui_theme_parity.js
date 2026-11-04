@@ -75,8 +75,6 @@ assert.doesNotMatch(
   /#(?:12b8a8|0ca99b|079d91|55d6bc|0aa89d|e8f9f6|e8fbf9|edf8f6|eef9f7|f6fbfa|dff7f3|bdebe4|bdebe7|9bded6|d9f5f0)/i,
   "app.css must not retain retired teal literals",
 );
-assert.match(appCss, /\.top-mode-button:hover\{background:var\(--ui-hover\)/,
-  "top mode hover must use the shared FNOS hover token");
 assert.match(appCss, /\.track-actions button:hover\{background:var\(--ui-hover\)!important/,
   "track action hover must use the shared FNOS hover token");
 assert.match(theme, /\.record-placeholder\s*\{[^}]*stroke-width:\s*1\.5/);
@@ -88,12 +86,12 @@ assert.match(theme, /\.lyrics-cover:not\(:has\(img\)\)\s*\{[^}]*display:\s*grid/
 assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /class="lyrics-cover"[\s\S]*class="record-placeholder"/);
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /node\.classList\.toggle\("has-artwork", Boolean\(next\)\)/);
 assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /id="lyricsFavoriteBtn"[^>]*aria-label="收藏当前歌曲"/);
-assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /id="modeBtn"[^>]*aria-label="MP3 转码：关"[^>]*>MP3 转码：关<\//,
-  "desktop MP3 control must retain the original state text");
-assert.doesNotMatch(fs.readFileSync("app/ui/app.css", "utf8"), /#modeBtn\s+svg/,
-  "base CSS must not retain SVG-only rules for the text MP3 control");
-assert.doesNotMatch(theme, /#modeBtn\s+svg/,
-  "FNOS theme must not retain SVG-only rules for the text MP3 control");
+assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /id="settingsModeBtn"[^>]*aria-pressed="false">MP3 转码：关<\//,
+  "the playback-output MP3 control must retain the original state text");
+assert.doesNotMatch(fs.readFileSync("app/ui/app.css", "utf8"), /#modeBtn\b/,
+  "base CSS must not retain rules for the retired top-bar MP3 control");
+assert.doesNotMatch(theme, /#modeBtn\b/,
+  "FNOS theme must not retain rules for the retired top-bar MP3 control");
 assert.match(appCss, /\.player-actions #favoriteCurrentBtn:not\(.active-control\):hover,[\s\S]*?background:var\(--ui-hover\)!important;[\s\S]*?color:var\(--ui-secondary\)!important;[\s\S]*?border-color:var\(--ui-border\)!important;/,
   "non-active player hover guard must use FNOS color tokens");
 assert.match(appCss, /\.metadata-candidate-dialog\{[^}]*background:var\(--ui-canvas\)/,
@@ -123,7 +121,7 @@ assert.match(theme, /\.dialog-close-button svg, \.library-path-remove svg\s*\{/)
 assert.match(theme, /\.settings-tabs\s*\{\s*display:\s*flex !important;\s*flex-wrap:\s*nowrap !important;[\s\S]*?overflow-x:\s*auto !important;/, "mobile settings tabs must stay in one horizontally scrollable row");
 assert.match(theme, /\.settings-tabs button\s*\{\s*flex:\s*0 0 auto !important;\s*white-space:\s*nowrap !important;/, "mobile settings tab labels must not wrap");
 assert.match(theme, /\.switch-control input:focus-visible \+ span\s*\{[^}]*outline:2px solid var\(--ui-accent\)[^}]*outline-offset:2px/, "custom switches must expose a visible keyboard focus ring");
-assert.match(theme, /\.top-actions \.mode-mp3-icon\s*\{[\s\S]*?font-size:\s*12px;/, "MP3 control must retain the original text treatment");
+assert.doesNotMatch(theme, /mode-mp3-icon/, "the retired MP3 badge must not remain in the FNOS theme");
 assert.match(theme, /prefers-color-scheme:\s*dark[\s\S]*?\.player-actions #deviceBtn[\s\S]*?color:\s*var\(--ui-secondary\) !important;/,
   "dark inactive player controls must use the readable secondary token");
 assert.match(theme, /\.track-cell-format\s*\{[\s\S]*?color:\s*var\(--ui-secondary\) !important;[\s\S]*?background:\s*var\(--ui-sidebar\) !important;/,

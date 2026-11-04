@@ -102,13 +102,14 @@ assert.match(css, /\.transport\{[^}]*width:100%!important;[^}]*min-width:0!impor
 assert.match(css, /\.progress\{[^}]*box-sizing:border-box!important;[^}]*width:100%!important;[^}]*max-width:100%!important;[^}]*min-width:0!important;[^}]*overflow:hidden!important;/, "the mobile seek container must stay inside the viewport");
 assert.ok(css.includes('.progress input{box-sizing:border-box!important;display:block!important;width:100%!important;max-width:100%!important;min-width:0!important}'), "the mobile seek input must not widen its grid track");
 assert.match(finalMobileContract, /\.topbar\{height:56px!important;grid-template-rows:56px!important\}/, "the final mobile header must occupy only one visible row");
-assert.match(finalMobileContract, /\.top-actions\{display:none!important\}/, "the mobile menu must own the hidden top actions");
+assert.doesNotMatch(index, /class="top-actions"/, "the header must not carry the retired top-action row");
+assert.doesNotMatch(finalMobileContract, /\.top-actions/, "the mobile contract must not re-declare the retired top-action row");
 assert.match(css, /#favoriteCurrentBtn:not\(\.active-control\):hover/);
 assert.match(css, /#shuffleBtn:not\(\.active-control\):hover/);
 assert.match(css, /@media \(hover:none\)/, "Touch devices must not retain a false active-looking hover state");
 
 const finalThemeMobileContract = themeCss.slice(themeCss.lastIndexOf("/* The compact mobile header"));
-assert.match(themeCss, /@media\s*\(min-width:\s*761px\)\s*\{\s*\.top-actions\s*\{\s*display:\s*none\s*!important;/, "desktop must hide the complete top-right action row");
+assert.doesNotMatch(themeCss, /\.top-actions/, "the retired top-action row must not be re-declared at any breakpoint");
 assert.match(themeCss, /\.sidebar-scroll\s*\{[^}]*flex:\s*1 1 auto\s*!important;[^}]*overflow-y:\s*auto\s*!important;/, "only library navigation should scroll");
 assert.match(themeCss, /\.sidebar-settings\s*\{[^}]*flex:\s*0 0 auto\s*!important;[^}]*border-top:/, "settings must remain in a fixed sidebar row");
 assert.match(themeCss, /\.sidebar\s*\{[^}]*overflow:\s*hidden\s*!important;/, "the sidebar itself must not scroll settings away");
@@ -120,10 +121,10 @@ assert.match(themeCss, /\.sidebar-scroll\s*\{[^}]*scrollbar-width:\s*thin\s*!imp
 assert.match(themeCss, /\.sidebar-settings\s*\{[^}]*height:\s*44px\s*!important;[^}]*min-height:\s*44px\s*!important;[^}]*padding-block:\s*2px\s*!important;[^}]*box-sizing:\s*border-box\s*!important;/, "desktop settings row must match the 44px pager height");
 assert.match(themeCss, /#pager:empty\s*\{\s*display:\s*none\s*!important;/, "an empty pager must not reserve a blank strip beside sidebar settings");
 assert.match(finalThemeMobileContract, /:root\s*\{\s*--ui-header-height:\s*56px\s*;/, "the compact mobile header must update the body grid row as well as its visible height");
-assert.match(finalThemeMobileContract, /\.top-actions\s*\{\s*display:\s*none\s*!important;/, "the compact mobile layout must hide the legacy top controls");
+assert.doesNotMatch(finalThemeMobileContract, /\.top-actions/, "the compact mobile contract must not re-declare the retired top-action row");
 assert.match(finalThemeMobileContract, /\.mobile-pagebar\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*flex-start\s*!important;/, "the compact mobile navigation must preserve the original left-aligned layout");
 assert.match(themeCss, /html\.fnaudio-android-client \.mobile-pagebar\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?justify-content:\s*flex-start\s*!important;[\s\S]*?text-align:\s*left\s*!important;/, "Android WebView must keep the header content left-aligned even when it reports a wide CSS viewport");
-assert.match(themeCss, /html\.fnaudio-android-client \.top-actions\s*\{[\s\S]*?display:\s*none\s*!important;/, "Android WebView must use the compact header instead of the legacy desktop action row");
+assert.doesNotMatch(themeCss, /html\.fnaudio-android-client \.top-actions/, "Android WebView must not carry a desktop action row");
 assert.match(finalThemeMobileContract, /\.transport\s*\{[\s\S]*?width:\s*max-content\s*!important;[\s\S]*?margin-inline:\s*auto\s*!important;[\s\S]*?justify-self:\s*center\s*!important;/, "the loaded FNOS theme must keep transport controls centered");
 assert.match(themeCss, /\.progress input,[\s\S]*?#seek\s*\{[\s\S]*?flex:\s*1 1 0\s*!important;[\s\S]*?width:\s*auto\s*!important;[\s\S]*?min-width:\s*0\s*!important;/, "the loaded FNOS theme must let the seek range absorb remaining width without overflow");
 assert.match(themeCss, /\.progress input::-webkit-slider-runnable-track\s*\{[\s\S]*?height:\s*4px\s*!important;[\s\S]*?background:\s*linear-gradient\(/, "the seek rail must use the thin blue and gray visual style");

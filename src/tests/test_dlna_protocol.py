@@ -1086,7 +1086,16 @@ class DlnaProtocolTests(unittest.TestCase):
         self.assertEqual(self.renderer.snapshot()["uri"], "http://example.test/second.flac")
         self.assertEqual(self.renderer.snapshot()["next_uri"], "")
         self.assertTrue(self._wait_for(lambda: self.loads == [("http://example.test/second.flac", 0.0)]))
-        self.assertEqual(self.renderer.snapshot()["transport"], "PLAYING")
+        # `play` publishes TRANSITIONING first and only flips to PLAYING after the
+        # backend load returns, while `loads` is recorded on the way *into* that
+        # load. Asserting PLAYING right after the load is seen therefore reads the
+        # state the worker has not reached yet, and a busy suite widens that gap.
+        # Waiting for the settled state keeps the meaning ("next must end up
+        # playing") without racing the worker.
+        self.assertTrue(
+            self._wait_for(lambda: self.renderer.snapshot()["transport"] == "PLAYING"),
+            "next must settle on PLAYING, not stay in TRANSITIONING",
+        )
 
     def test_next_notifications_do_not_hold_renderer_lock(self):
         entered = threading.Event()

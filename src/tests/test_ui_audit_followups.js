@@ -10,8 +10,9 @@ const css = fs.readFileSync("app/ui/app.css", "utf8");
 const theme = fs.readFileSync("app/ui/fnos-theme.css", "utf8");
 
 // P2: the header settings button was unreachable at every breakpoint (the whole
-// .top-actions row is display:none on desktop, phones and the Android client),
-// so it only existed as a 0x0 node duplicating the sidebar entry.
+// .top-actions row was display:none on desktop, phones and the Android client,
+// and the row itself has since been removed), so it only existed as a 0x0 node
+// duplicating the sidebar entry.
 assert.doesNotMatch(html, /id="folderBtn"/, "the unreachable header settings button must stay deleted");
 assert.doesNotMatch(app, /folderBtn/, "no script may keep binding the deleted header settings button");
 assert.match(html, /id="mobileSettingsNavBtn"[\s\S]*?M4 6h16M4 12h16M4 18h16/,

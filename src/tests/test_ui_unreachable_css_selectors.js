@@ -140,7 +140,7 @@ assert.match(
   /\.transport \.mobile-transport-control\{display:grid!important/,
   "shuffle and repeat stay reachable from the transport row on phones"
 );
-for (const id of ["mobileShuffleBtn", "mobileRepeatBtn", "mobileNavBtn", "mobileDeviceBtn", "mobileModeBtn"]) {
+for (const id of ["mobileShuffleBtn", "mobileRepeatBtn", "mobileNavBtn"]) {
   assert.ok(reachable.has(id) && markupIds(index).has(id), `${id} must exist for the mobile layout`);
 }
 

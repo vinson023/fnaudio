@@ -2960,6 +2960,68 @@ class MetadataServiceTests(unittest.TestCase):
             self.assertEqual(version, "1")
             self.assertEqual(status_after_second_open, "done")
 
+    def test_disabled_tag_write_purge_is_versioned_so_later_connections_leave_rows_alone(self):
+        """`_connect` runs `_ensure_schema` on every call, so the opt-out purge
+        has to be a one-shot. An unconditional DELETE would turn every read into
+        a writer, and concurrent WAL writers then race the `-shm` rebuild and
+        fail with SQLITE_READONLY."""
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            config["metadata_tag_write_enabled"] = False
+            service = MetadataService(config)
+
+            # The first connection after the opt-out drains the queue and
+            # records the generation marker.
+            with service._connect() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO metadata_jobs(
+                        job_key,job_type,entity_key,payload_json
+                    ) VALUES ('tag:one','tag_write','one','{}')"""
+                )
+
+            with service._connect() as conn:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM metadata_jobs WHERE job_type='tag_write'"
+                ).fetchone()[0]
+                marker = conn.execute(
+                    "SELECT value FROM metadata_state WHERE key='tag_write_purge_version'"
+                ).fetchone()
+
+            self.assertEqual(remaining, 1, "a later connection must not repeat the purge")
+            self.assertEqual(marker["value"], metadata_service.TAG_WRITE_PURGE_VERSION)
+
+    def test_reenabling_tag_writes_lets_the_next_opt_out_purge_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            config["metadata_tag_write_enabled"] = False
+            service = MetadataService(config)
+
+            with service._connect():
+                pass
+
+            config["metadata_tag_write_enabled"] = True
+            with service._connect() as conn:
+                stale = conn.execute(
+                    "SELECT value FROM metadata_state WHERE key='tag_write_purge_version'"
+                ).fetchone()
+            self.assertIsNone(stale, "opting back in must invalidate the purge marker")
+
+            # A job left behind by the opt-in session has to disappear when the
+            # user opts out again, even though one purge already ran earlier.
+            with service._connect() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO metadata_jobs(
+                        job_key,job_type,entity_key,payload_json
+                    ) VALUES ('tag:two','tag_write','two','{}')"""
+                )
+
+            config["metadata_tag_write_enabled"] = False
+            with service._connect() as conn:
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM metadata_jobs WHERE job_type='tag_write'"
+                ).fetchone()[0]
+            self.assertEqual(remaining, 0)
+
     def test_tag_write_backfill_pages_cached_albums_in_bounded_batches(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))
@@ -4239,24 +4301,33 @@ class MetadataServiceTests(unittest.TestCase):
     def test_dead_local_tag_writer_requeues_only_its_own_claimed_job(self):
         with tempfile.TemporaryDirectory() as root:
             service = MetadataService(self._config(root))
-            service.config["metadata_fetch_workers"] = 1
-            with service._connect() as conn:
-                service._upsert_job(conn, "tag:one", "tag_write", "one", {}, 200)
-            claimed = service._claim_job(tag_writes_only=True)
-            service._mark_job_active(claimed["job_key"], int(claimed["attempts"]) + 1)
-            service.fetch_threads = [type("AliveFetch", (), {"is_alive": lambda _self: True})()]
-            service.thread = service.fetch_threads[0]
-            service.priority_thread = type("AlivePriority", (), {"is_alive": lambda _self: True})()
-            service.tag_thread = type("DeadTag", (), {"is_alive": lambda _self: False})()
-            with patch.object(threading.Thread, "start"):
-                self.assertTrue(service.ensure_workers("fetch"))
-            with service._connect() as conn:
-                row = conn.execute(
-                    "SELECT status,next_attempt_at,last_error FROM metadata_jobs WHERE job_key='tag:one'"
-                ).fetchone()
-            self.assertEqual(row[0], "retry")
-            self.assertEqual(row[1], 0)
-            self.assertEqual(row[2], "tag writer recovered")
+            # The stand-ins below report themselves alive forever, so the
+            # opportunistic pool drain in `_connect` -- which only fires once no
+            # lane is alive -- never runs here. Release the pooled handle
+            # explicitly, otherwise it keeps `library.sqlite3` open and the temp
+            # directory cannot be removed on Windows; that cleanup error would
+            # also replace whatever assertion actually failed.
+            try:
+                service.config["metadata_fetch_workers"] = 1
+                with service._connect() as conn:
+                    service._upsert_job(conn, "tag:one", "tag_write", "one", {}, 200)
+                claimed = service._claim_job(tag_writes_only=True)
+                service._mark_job_active(claimed["job_key"], int(claimed["attempts"]) + 1)
+                service.fetch_threads = [type("AliveFetch", (), {"is_alive": lambda _self: True})()]
+                service.thread = service.fetch_threads[0]
+                service.priority_thread = type("AlivePriority", (), {"is_alive": lambda _self: True})()
+                service.tag_thread = type("DeadTag", (), {"is_alive": lambda _self: False})()
+                with patch.object(threading.Thread, "start"):
+                    self.assertTrue(service.ensure_workers("fetch"))
+                with service._connect() as conn:
+                    row = conn.execute(
+                        "SELECT status,next_attempt_at,last_error FROM metadata_jobs WHERE job_key='tag:one'"
+                    ).fetchone()
+                self.assertEqual(row[0], "retry")
+                self.assertEqual(row[1], 0)
+                self.assertEqual(row[2], "tag writer recovered")
+            finally:
+                service.release_idle_connections()
 
     def test_dead_tag_writer_does_not_requeue_another_service_claim(self):
         with tempfile.TemporaryDirectory() as root:

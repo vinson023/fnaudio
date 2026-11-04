@@ -1947,19 +1947,9 @@ function effectiveProfile() {
 }
 function updateModeButton() {
   const title = state.mp3Transcode ? "关闭 MP3 转码" : "开启 MP3 转码";
-  const desktopButton = $("modeBtn");
-  desktopButton.textContent = state.mp3Transcode ? "MP3 转码：开" : "MP3 转码：关";
-  desktopButton.classList.toggle("active-control", state.mp3Transcode);
-  desktopButton.title = title;
-  desktopButton.setAttribute("aria-label", desktopButton.textContent);
-  desktopButton.setAttribute("aria-pressed", String(state.mp3Transcode));
-  const mobileButton = $("mobileModeBtn");
-  if (mobileButton) {
-    mobileButton.classList.toggle("active-control", state.mp3Transcode);
-    mobileButton.title = title;
-    mobileButton.setAttribute("aria-label", title);
-    mobileButton.setAttribute("aria-pressed", String(state.mp3Transcode));
-  }
+  // The header row that used to host the desktop and mobile switches was
+  // retired at every breakpoint, so the "播放输出" section's switch is the only
+  // surface left to repaint.
   const settingsButton = $("settingsModeBtn");
   if (settingsButton) {
     settingsButton.textContent = state.mp3Transcode ? "MP3 转码：开" : "MP3 转码：关";
@@ -2042,12 +2032,6 @@ function updateDeviceLabel() {
   const label = isRemoteTarget() ? state.playTargetName : "当前设备";
   const desktopButton = $("deviceBtn");
   if (desktopButton && desktopButton.title !== label) desktopButton.title = label;
-  const mobileButton = $("mobileDeviceBtn");
-  if (mobileButton) {
-    const ariaLabel = `播放设备：${label}`;
-    if (mobileButton.title !== label) mobileButton.title = label;
-    if (mobileButton.getAttribute("aria-label") !== ariaLabel) mobileButton.setAttribute("aria-label", ariaLabel);
-  }
 }
 function remoteDeviceId() { return isRemoteTarget() ? state.playTarget : ""; }
 function isIncomingRendererSession() {
@@ -10033,7 +10017,6 @@ if (mobileSearchInput) {
 $("searchClearBtn")?.addEventListener("click", () => clearSearchInput("searchInput"));
 $("mobileSearchClearBtn")?.addEventListener("click", () => clearSearchInput("mobileSearchInput"));
 updateSearchClearButtons();
-$("playAllBtn").onclick = playAll;
 normalizeDialogCloseControls();
 normalizeButtonTypes();
 installDialogFocusManagement();
@@ -10082,21 +10065,17 @@ $("trackList").addEventListener("scroll", () => {
   closeTrackContextMenu();
   updateMobilePagerVisibility();
 }, { passive: true });
-$("refreshBtn").onclick = () => requestLibraryLoad(1, true);
 function toggleMp3Transcode() {
   state.mp3Transcode = !state.mp3Transcode;
   writeStoredPreference("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0");
   updateModeButton();
   if (currentItem() && !isRemoteTarget()) loadCurrent();
 }
-$("modeBtn").onclick = toggleMp3Transcode;
-$("mobileModeBtn").onclick = toggleMp3Transcode;
 function openDeviceDialog() {
   $("deviceDialog").showModal();
   loadDevices();
 }
 $("deviceBtn").onclick = openDeviceDialog;
-$("mobileDeviceBtn").onclick = openDeviceDialog;
 function closeLyrics() {
   $("lyricsView").hidden = true;
   // Closing the lyrics surface is a user cancellation boundary. Keep the

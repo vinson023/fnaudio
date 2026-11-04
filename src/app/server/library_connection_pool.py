@@ -22,11 +22,28 @@ already committed when it came back.
 
 from __future__ import annotations
 
+import os
 import threading
 
 
 DEFAULT_MAX_IDLE_PER_DATABASE = 4
 DEFAULT_MAX_IDLE_TOTAL = 8
+
+
+def database_identity(path):
+    """Fingerprint the file a handle was opened against.
+
+    The pool stores handles under this value and refuses to lend one whose
+    fingerprint no longer matches, so a replaced or deleted index can never be
+    read through a stale descriptor.  Returns ``None`` when the file cannot be
+    stat'ed, which the pool treats as "not verifiable" and therefore not
+    reusable.
+    """
+    try:
+        info = os.stat(path)
+        return (int(info.st_dev), int(info.st_ino))
+    except OSError:
+        return None
 
 
 def _close_quietly(connections):
@@ -182,4 +199,5 @@ __all__ = [
     "DEFAULT_MAX_IDLE_PER_DATABASE",
     "DEFAULT_MAX_IDLE_TOTAL",
     "LibraryConnectionPool",
+    "database_identity",
 ]

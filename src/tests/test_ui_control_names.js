@@ -93,7 +93,7 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 107, "index.html declares 107 visible form controls, including independent metadata and DLNA save actions and the R461 directory browser");
+assert.equal(controls.length, 102, "index.html declares 102 visible form controls, including independent metadata and DLNA save actions and the R461 directory browser");
 assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
 
 const nameless = controls.filter((control) => !control.name).map((control) => control.attr.id || control.tag);
