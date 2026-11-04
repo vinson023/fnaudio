@@ -1,0 +1,23 @@
+[
+  {"sheet": "app.css", "selector": ".content", "prop": "display"},
+  {"sheet": "app.css", "selector": ".content", "prop": "flex-direction"},
+  {"sheet": "app.css", "selector": ".library-scroll", "prop": "display"},
+  {"sheet": "app.css", "selector": ".lyrics-lines.is-empty", "prop": "display"},
+  {"sheet": "app.css", "selector": ".lyrics-lines.is-empty", "prop": "place-items"},
+  {"sheet": "app.css", "selector": ".settings-inline-feedback", "prop": "display"},
+  {"sheet": "app.css", "selector": ".settings-inline-feedback", "prop": "align-items"},
+  {"sheet": "app.css", "selector": ".settings-inline-feedback", "prop": "min-height"},
+  {"sheet": "app.css", "selector": ".progress input", "prop": "display"},
+  {"sheet": "app.css", "selector": ".settings-tabs button", "prop": "font-size"},
+  {"sheet": "app.css", "selector": ".transport", "prop": "margin"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-head", "prop": "display"},
+  {"sheet": "fnos-theme.css", "selector": "#folderDialog[open]", "prop": "grid-template-rows"},
+  {"sheet": "fnos-theme.css", "selector": ".progress input,.progress #seek", "prop": "flex"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-scroll", "prop": "scrollbar-gutter"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-scroll", "prop": "scrollbar-width"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-settings", "prop": "height"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-settings", "prop": "min-height"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-settings", "prop": "box-sizing"},
+  {"sheet": "fnos-theme.css", "selector": ".sidebar-settings", "prop": "flex"},
+  {"sheet": "fnos-theme.css", "selector": ".metadata-settings-tabs button", "prop": "flex"}
+]
