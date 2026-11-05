@@ -447,6 +447,40 @@ test('Player progress uses a full-width thin rail with time under song details',
   await screenshot(page, info, 'player-progress-reference-style');
 });
 
+test('Player keeps readable transport glyphs when the theme layer is unavailable', async ({page}) => {
+  // The theme layer is the last sheet and restyles the player, but the page has
+  // to stay readable without it: a stale cache, a blocked request or an older
+  // WebView can all leave app.css as the only sheet that applies.  In that
+  // state the transport glyphs used to fall back to the SVG default black fill,
+  // which painted a black triangle inside the blue play button, and the phone
+  // seek rail fell back to the native #efefef control.
+  await page.emulateMedia({colorScheme: 'dark'});
+  await load(page, 375, 812);
+  await page.evaluate(() => {
+    for (const link of document.querySelectorAll('link[rel=stylesheet]')) {
+      if (link.href.includes('fnos-theme.css')) link.disabled = true;
+    }
+  });
+  const bare = await page.evaluate(() => {
+    const fillOf = id => getComputedStyle(document.getElementById(id).querySelector('svg')).fill;
+    const seek = document.getElementById('seek');
+    return {
+      play: fillOf('playBtn'),
+      prev: fillOf('prevBtn'),
+      next: fillOf('nextBtn'),
+      seekAppearance: getComputedStyle(seek).appearance,
+      seekHeight: seek.getBoundingClientRect().height,
+    };
+  });
+  expect(bare.play, 'the play triangle must stay white on the accent disc').toBe('rgb(255, 255, 255)');
+  for (const [name, fill] of [['prev', bare.prev], ['next', bare.next]]) {
+    expect(fill, `${name} must not fall back to the black SVG default`).not.toBe('rgb(0, 0, 0)');
+    expect(fill, `${name} must take the button colour`).toBe('rgba(255, 255, 255, 0.75)');
+  }
+  expect(bare.seekAppearance, 'the phone seek must not fall back to the native control').toBe('none');
+  expect(bare.seekHeight).toBe(8);
+});
+
 test('FNOS: every dialog close control uses the shared line icon', async ({page}) => {
   await load(page);
   const ids = [

@@ -201,9 +201,32 @@ body{background:var(--fn-bg)!important;color:var(--fn-text)!important;overflow:h
 .pager-inner{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--ui-muted);font-size:13px;min-height:40px;max-width:540px!important;margin:0 auto!important}
 .player{height:var(--fn-player-height)!important;padding:0 24px!important;background:var(--ui-surface)!important;border-top:1px solid var(--fn-line)!important;box-shadow:none!important;grid-template-columns:minmax(210px,1fr) auto minmax(150px,1.15fr) max-content!important;grid-template-rows:1fr!important;gap:12px!important}
 .cover{display:grid;place-items:center;font-size:23px;overflow:hidden;flex:0 0 50px;width:54px!important;height:54px!important;max-width:54px!important;max-height:54px!important;flex-basis:54px!important;border-radius:6px!important;background:var(--ui-selected)!important;color:var(--ui-accent)!important}
+/* Same contract as the transport glyphs: the missing-artwork record is a
+ * stroked outline with a solid spindle, and both were declared only in the
+ * theme layer.  Without it the fallback cover painted a black disc. */
+.record-placeholder{display:block;width:58%;height:58%;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.record-placeholder-center{fill:currentColor;stroke:none}
 .now-playing strong{color:var(--ui-text)!important;font-size:14px!important}.now-playing span{color:var(--ui-muted)!important}
 .transport{display:flex;align-items:center;justify-content:center;min-width:184px!important;gap:7px!important}.player-button{border:0;display:grid;place-items:center;border-radius:50%;line-height:1;width:38px!important;height:38px!important;background:transparent!important;color:var(--ui-secondary)!important}.player-button:hover{background:var(--ui-hover)!important;color:var(--ui-accent-hover)!important}.play-button{width:42px!important;height:42px!important;background:var(--ui-accent)!important;color:var(--ui-on-accent)!important}
+/* Transport glyphs are solid shapes, so they need a fill of their own.  This
+ * used to live only in the theme layer while every other icon group here
+ * (action-button, device-button, the mobile transport controls) already
+ * declared its own paint.  When the theme layer did not reach this rule the
+ * three glyphs fell back to the SVG default of black: a black triangle on the
+ * blue play button, black prev/next on a dark bar.  The base sheet has to be
+ * able to paint them on its own. */
+.player-button svg{display:block;width:20px;height:20px;fill:currentColor;stroke:none}
 .progress{display:flex;align-items:center;gap:9px;font-size:11px;min-width:0;color:var(--ui-muted)!important}.progress input{width:100%;min-width:0;accent-color:var(--ui-accent)!important}
+/* Phone seek rail, same reason as the transport glyphs above: without the theme
+ * layer the input fell back to the native control, which paints a full-width
+ * #efefef track with a fat solid thumb on a dark bar.  Mirroring the rail here
+ * keeps the phone player readable even when only the base sheet applies. */
+@media(max-width:760px){
+  .progress input{-webkit-appearance:none!important;appearance:none!important;height:8px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important}
+  .progress input::-webkit-slider-runnable-track{height:4px!important;border:0!important;border-radius:0!important;background:linear-gradient(to right,var(--ui-accent) var(--seek-fill,0%),var(--ui-line) var(--seek-fill,0%))!important}
+  .progress input::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:6px!important;height:6px!important;margin-top:-1px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important;box-shadow:none!important}
+  .progress input::-moz-range-track{height:4px!important;border:0!important;background:var(--ui-line)!important}
+  .progress input::-moz-range-thumb{width:6px!important;height:6px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important}
+}
 .player-actions{min-width:0;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:2px!important}.player-actions #deviceBtn,.player-actions #lyricsBtn,.player-actions #favoriteCurrentBtn,.player-actions #repeatBtn,.player-actions #shuffleBtn,.player-actions #queueBtn,.player-actions #volumeBtn{width:36px!important;height:36px!important;min-width:36px!important;flex-basis:36px!important;border-radius:6px!important}.player-actions #deviceBtn:hover,.player-actions #lyricsBtn:hover,.player-actions #favoriteCurrentBtn:hover,.player-actions #repeatBtn:hover,.player-actions #shuffleBtn:hover,.player-actions #queueBtn:hover,.player-actions #volumeBtn:hover{background:var(--ui-hover)!important;color:var(--ui-accent-hover)!important}
 dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surface)!important;color:var(--ui-text)!important;border:0!important;border-radius:8px!important;box-shadow:var(--ui-shadow)!important}dialog::backdrop{background:var(--ui-backdrop)!important}.dialog-head h2{font-size:18px;margin:0;color:var(--ui-text)!important}.dialog-help{font-size:13px;color:var(--ui-muted)!important}.device-row small{margin-top:4px;color:var(--ui-muted)!important}.device-row-radio{border-color:var(--ui-border)!important;color:var(--ui-on-accent)!important}.device-row.is-current .device-row-radio{background:var(--ui-accent)!important;border-color:var(--ui-accent)!important}.device-section .device-row:last-child{border-bottom:1px solid var(--fn-line)!important}
 
