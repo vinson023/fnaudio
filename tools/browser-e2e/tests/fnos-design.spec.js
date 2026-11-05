@@ -327,6 +327,34 @@ test('Desktop player keeps the transport on the centre line when the window narr
   await page.screenshot({path:info.outputPath('desktop-player-centered-narrow.png')});
 });
 
+test('Desktop player action row keeps one pitch on both sides of the 1180px breakpoint', async ({page}) => {
+  // The volume control is a wrapper around a button.  When the wrapper and the
+  // button disagree on width the row's last gap grows by the difference, so
+  // resizing the window silently changes the spacing: below 1180px both were
+  // 34px and the row looked even, above it the wrapper was 40px against a 36px
+  // button and the gap before the speaker read 2px wider than the rest.
+  const measure = () => page.evaluate(() => {
+    const ids = ['deviceBtn', 'lyricsBtn', 'favoriteCurrentBtn', 'repeatBtn', 'shuffleBtn', 'queueBtn', 'volumeBtn'];
+    const boxes = ids.map(id => document.getElementById(id).getBoundingClientRect());
+    const gaps = [];
+    for (let k = 1; k < boxes.length; k += 1) gaps.push(+(boxes[k].left - boxes[k - 1].right).toFixed(1));
+    return {gaps, widths: boxes.map(box => +box.width.toFixed(1))};
+  });
+
+  const rows = [];
+  for (const width of [1111, 1192, 1440]) {
+    await load(page, width, 900);
+    rows.push({width, ...(await measure())});
+  }
+  for (const row of rows) {
+    expect(new Set(row.widths).size, `action buttons differ in size at ${row.width}: ${row.widths.join(',')}`).toBe(1);
+    expect(new Set(row.gaps).size, `action gaps are uneven at ${row.width}: ${row.gaps.join(',')}`).toBe(1);
+  }
+  // The pitch must not change when the window crosses the breakpoint.
+  expect(rows[1].gaps, 'the row re-spaced itself across 1180px').toEqual(rows[0].gaps);
+  expect(rows[2].gaps).toEqual(rows[0].gaps);
+});
+
 test('Mobile player keeps previous, play and next controls centered', async ({page}, info) => {
   await load(page, 375, 812);
   const geometry = await page.evaluate(() => {

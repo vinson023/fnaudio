@@ -341,7 +341,11 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 @media(min-width:761px){
       .transport{grid-row:1!important;gap:8px!important}
     .player-actions{grid-row:1!important;position:relative;min-width:max-content!important;display:flex!important;align-items:center!important;justify-content:flex-end!important;}
-.volume-control{position:relative!important;display:inline-grid!important;place-items:center!important;width:40px;height:40px;flex:0 0 40px}
+/* The wrapper has to be exactly as wide as the button it holds.  It used to be
+ * 40px against a 36px button, so the row's last gap grew by 2px the moment the
+ * window crossed the 1180px breakpoint (below it both are 34px, so the row only
+ * looked even when the window was narrow). */
+.volume-control{position:relative!important;display:inline-grid!important;place-items:center!important;width:36px;height:36px;flex:0 0 36px}
 .volume-button{display:inline-grid!important}
 .volume-panel[hidden]{display:none!important}
 }
