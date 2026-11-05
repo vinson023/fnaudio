@@ -899,11 +899,11 @@ test(`FNOS ${width}: the MP3 transcode control lives in settings, not the retire
 });
 }
 
-test('FNOS: lyrics control uses the shared line-icon treatment', async ({page}) => {
+test('FNOS: lyrics control renders the 词 glyph in its icon slot', async ({page}) => {
   await load(page);
   await expect(page.locator('#lyricsBtn svg.lyric-symbol')).toBeVisible();
   await expect(page.locator('#lyricsBtn svg.lyric-symbol')).toHaveCount(1);
-  await expect(page.locator('#lyricsBtn')).not.toHaveText('词');
+  await expect(page.locator('#lyricsBtn')).toHaveText('词');
 });
 
 for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {

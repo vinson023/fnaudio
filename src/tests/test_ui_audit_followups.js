@@ -47,11 +47,15 @@ assert.match(app, /还没有配置音乐目录，选择目录后即可扫描并�
 // P2: the placeholder row is not a directory, so it must not offer "remove".
 assert.match(app, /\$\{value \? `<button class="library-path-remove"/, "an empty path row must not render a remove button");
 
-// P2: the lyrics control was the only text glyph among the transport icons.
-assert.match(html, /id="lyricsBtn"[\s\S]*?class="lyric-symbol"[^>]*viewBox="0 0 24 24"/, "lyrics must use an SVG icon");
-assert.doesNotMatch(html, /class="lyric-symbol">词</, "the 词 glyph must not come back");
-assert.match(theme, /\.player-actions #lyricsBtn \.lyric-symbol \{[\s\S]*?stroke: currentColor !important;/,
-  "the lyrics icon must inherit the shared stroke treatment");
+// R469 read the 词 glyph as the odd one out among the line icons and swapped it
+// for a note symbol; the operator has since asked for the glyph back, which is
+// what R346 did too.  It keeps the svg wrapper and viewBox the icon guards look
+// for, but it has to paint with fill — the shared 1.75px stroke would render the
+// character as an outline.
+assert.match(html, /id="lyricsBtn"[\s\S]*?class="lyric-symbol"[^>]*viewBox="0 0 24 24"[\s\S]*?<text[^>]*>词<\/text>/,
+  "the lyrics control must render 词 inside its svg");
+assert.match(theme, /\.player-actions #lyricsBtn \.lyric-symbol \{[\s\S]*?fill: currentColor !important;[\s\S]*?stroke: none !important;/,
+  "the 词 glyph must paint with fill instead of the shared stroke");
 
 // P1-7: a single placeholder line in a 720px column looked anchored to the corner.
 assert.match(css, /\.lyrics-lines\.is-empty\{display:grid!important;place-items:center!important/, "the empty lyrics state must be centred");

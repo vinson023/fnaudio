@@ -158,10 +158,22 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .player-actions { grid-column: 3 !important; grid-row: 1 / 3 !important; display: flex !important; gap: var(--ui-space-1) !important; justify-content: end !important; justify-self: stretch !important; width: 100% !important; align-items: center !important; }
 .player-actions .action-button, .player-actions .device-button { width: 36px !important; height: 36px !important; min-width: 36px !important; padding: var(--ui-space-2) !important; border: 0 !important; }
 .player-actions svg { width: 20px; height: 20px; }
+/* The lyrics control is a glyph, not a line icon.  "词" reads as lyrics without
+ * anyone having to decode a note symbol, which is the operator's call (R346, and
+ * again here).  It keeps the svg wrapper and class the icon guards look for, but
+ * it has to paint with fill: the shared 1.75px stroke would render the strokes of
+ * the character as an outline instead of a solid glyph. */
 .player-actions #lyricsBtn .lyric-symbol {
   display: block !important; width: 20px !important; height: 20px !important;
-  fill: none !important; stroke: currentColor !important; stroke-width: 1.9 !important;
-  stroke-linecap: round !important; stroke-linejoin: round !important;
+  fill: currentColor !important; stroke: none !important;
+}
+.player-actions #lyricsBtn .lyric-symbol text {
+  font-family: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  font-size: 21px;
+  font-weight: 500;
+  fill: currentColor !important;
+  stroke: none !important;
 }
 .active-control, .favorite-current.active-control, .player-actions .active-control { color: var(--ui-accent) !important; background: var(--ui-selected) !important; }
 .volume-control { position: relative !important; display: inline-grid !important; place-items: center !important; }
@@ -1333,19 +1345,17 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
   }
 }
 
-/* One stroke weight across the footer action row.  app.css pins the seven
- * action icons to 2px and the lyric symbol to 1.9px, so the row rendered as
- * three different weights beside the 1.75px controls everywhere else in the
- * shell.  These selectors repeat app.css's specificity on purpose: the sheet
- * loads later, so an equal-specificity !important wins without raising it. */
+/* One stroke weight across the footer action row.  app.css pins these six icons
+ * to 2px, so the row rendered as three different weights beside the 1.75px
+ * controls everywhere else in the shell.  These selectors repeat app.css's
+ * specificity on purpose: the sheet loads later, so an equal-specificity
+ * !important wins without raising it.  The lyrics control is a filled glyph now
+ * and is handled above, so it is deliberately not in this list. */
 .player-actions #deviceBtn svg,
 .player-actions #favoriteCurrentBtn svg,
 .player-actions #repeatBtn svg,
 .player-actions #shuffleBtn svg,
 .player-actions #queueBtn svg,
 .player-actions #volumeBtn svg {
-  stroke-width: 1.75 !important;
-}
-.player-actions #lyricsBtn .lyric-symbol {
   stroke-width: 1.75 !important;
 }
