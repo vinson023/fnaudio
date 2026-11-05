@@ -480,11 +480,10 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .lyrics-view { inset: 0 0 var(--ui-player-height) !important; width: 100% !important; max-width: 100% !important; background: var(--ui-canvas) !important; color: var(--ui-text) !important; }
 .lyrics-bg { opacity: .08 !important; filter: blur(40px); }
 .lyrics-shade { background: var(--ui-canvas) !important; opacity: .88 !important; }
-.lyrics-header { background: var(--ui-surface) !important; border-color: var(--ui-line) !important; backdrop-filter: none !important; }
 .lyrics-cover { position: relative; background: var(--ui-hover); color: var(--ui-accent); box-shadow: none !important; }
 .lyrics-cover:not(:has(img)) { display: grid; place-items: center; font-size: 0 !important; }
-.lyrics-header-meta strong, .lyrics-meta strong { color: var(--ui-text) !important; }
-.lyrics-header-meta span, .lyrics-meta span { color: var(--ui-muted) !important; }
+.lyrics-meta strong { color: var(--ui-text) !important; }
+.lyrics-meta span { color: var(--ui-muted) !important; }
 .lyrics-lines, .lyrics-lines p, .lyrics-lines button { color: var(--ui-muted) !important; }
 .lyrics-lines .active { color: var(--ui-accent) !important; }
 .lyrics-lines p.active { color: var(--ui-accent) !important; }

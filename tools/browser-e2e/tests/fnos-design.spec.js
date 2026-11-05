@@ -985,16 +985,16 @@ for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {
       await openLyrics();
     });
     await expect(page.locator('#lyricsView')).toBeVisible();
-    await expect(page.locator('#lyricsHeaderTitle')).toHaveText('晨光');
+    await expect(page.locator('#lyricsTitle')).toHaveText('晨光');
     await expect(page.locator('#lyricsLines')).toContainText('E2E lyric six');
     for (const selector of ['#lyricsCover', '#lyricsLines']) {
       await insideViewport(page, selector);
     }
-    // The header is the title and nothing else now: closing lives in the player
-    // bar (词 toggles) and on Escape, favouriting on the player bar too (R489).
+    // No header bar: it printed the same title and artist the artwork caption
+    // prints below it, and the player bar names the track again (R489).
+    await expect(page.locator('.lyrics-header')).toHaveCount(0);
     await expect(page.locator('#lyricsClose')).toHaveCount(0);
     await expect(page.locator('#lyricsFavoriteBtn')).toHaveCount(0);
-    await expect(page.locator('.lyrics-header-actions')).toHaveCount(0);
     await expect(page.locator('#lyricsCover .record-placeholder')).toBeVisible();
     await screenshot(page, info, `lyrics-${width}`);
   });

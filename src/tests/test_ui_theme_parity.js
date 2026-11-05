@@ -85,6 +85,7 @@ assert.match(theme, /\.device-row-radio svg\s*\{[^}]*stroke-width:\s*2/);
 // header, so neither the theme nor the markup may carry rules for them (R489).
 assert.doesNotMatch(theme, /\.lyrics-close|\.lyrics-favorite/, "the lyrics header has no buttons to style");
 assert.doesNotMatch(theme, /\.lyrics-header-actions/, "the lyrics header has no action group to lay out");
+assert.doesNotMatch(theme, /\.lyrics-header\b/, "the lyrics page has no header bar: it repeated the artwork caption");
 assert.match(theme, /\.lyrics-cover:not\(:has\(img\)\)\s*\{[^}]*display:\s*grid/);
 assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /class="lyrics-cover"[\s\S]*class="record-placeholder"/);
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /node\.classList\.toggle\("has-artwork", Boolean\(next\)\)/);

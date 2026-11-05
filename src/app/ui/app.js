@@ -5118,7 +5118,6 @@ function commitSeek(value = $("seek").value) {
 }
 function updateLyricsMeta(item = currentItem()) {
   const title = item ? displayTrackTitle(item) : "未选择曲目";
-  const artist = item ? displayText(item.artist) : "歌词";
   const detailArtist = item ? (displayText(item.artist) || "未知歌手") : "未知歌手";
   const album = item ? (displayText(item.album) || "未知专辑") : "未知专辑";
   $("lyricsTitle").textContent = title;
@@ -5131,8 +5130,6 @@ function updateLyricsMeta(item = currentItem()) {
   // artwork printed "Heat Waves" twice.  The line only earns its place when it
   // says something the title did not (R489).
   $("lyricsMetaAlbum").hidden = album === title;
-  $("lyricsHeaderTitle").textContent = title;
-  $("lyricsHeaderArtist").textContent = artist;
   if (!item) {
     $("lyricsBg").style.backgroundImage = "";
     setCoverArtwork($("lyricsCover"), "");
