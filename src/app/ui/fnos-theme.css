@@ -374,7 +374,12 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 }
 
 @media (min-width: 761px) and (max-width: 1100px) {
-  :root { --ui-player-height: 132px; --ui-sidebar-width: 208px; }
+  /* The player row is sized by --ui-player-height, so this breakpoint may only
+   * narrow the sidebar.  It used to raise the player to 132px for a two-row
+   * layout that app.css has since replaced with the single desktop row; keeping
+   * the taller token reserved 132px while the bar painted 76px and left 56px of
+   * canvas showing underneath. */
+  :root { --ui-sidebar-width: 208px; }
   .player { grid-template-columns: minmax(180px,1fr) minmax(280px,1fr) !important; grid-template-rows: 52px 40px !important; gap: var(--ui-space-2) var(--ui-space-4) !important; padding: var(--ui-space-3) var(--ui-space-4) !important; }
   .now-playing { grid-column: 1 !important; grid-row: 1 !important; }
   .transport { grid-column: 2 !important; grid-row: 1 !important; }
@@ -1160,8 +1165,14 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
  * transport controls and track information share one vertically centered row.
  * Mobile keeps its separate centered transport layout below. */
 @media (min-width: 761px) {
+  /* The token is what the body grid uses to size the player row, so it has to
+   * equal the height this block gives the bar.  It read 88px from the design
+   * tokens while the desktop bar has been 76px since the seek rail moved to its
+   * top edge, and the 12px difference showed up as a strip of canvas peeking
+   * out below the player on every desktop window. */
+  :root { --ui-player-height: 76px; }
   .player {
-    height: 76px !important;
+    height: var(--ui-player-height) !important;
     grid-template-columns: max-content minmax(0, 1fr) max-content !important;
     grid-template-rows: 1fr !important;
     align-items: center !important;
