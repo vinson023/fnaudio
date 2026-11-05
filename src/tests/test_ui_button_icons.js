@@ -87,9 +87,12 @@ for (const [needle, label] of [
   ['<button type="button" class="device-row', "device rows"],
   ['<button type="button" class="playlist-choice"', "playlist choices"],
   ['<button type="button" class="track-action-choice ${danger', "track actions"],
-  ['<button type="button" class="track-action-choice" data-apply-track-metadata=', "metadata apply action"],
 ]) {
   assert.ok(app.includes(needle), `${label} must explicitly use type=button`);
 }
+// The confirm control moved into the dialog footer, so its semantics are a
+// markup fact rather than a template string (R494).
+assert.match(html, /<button class="primary-button" id="applyMetadataCandidateBtn" type="button"/,
+  "the metadata confirm button must stay a plain, non-submit button");
 
 console.log(`button icon semantics: ${iconButtons.length} static icon buttons and dynamic chrome verified`);

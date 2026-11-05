@@ -8,6 +8,14 @@ function code(name) {
   assert.ok(match, name);
   return match[0];
 }
+// The preview table lives at module scope, so the sandbox needs the same tables
+// the shipped file uses rather than a second copy that can drift (R494).
+function candidateTables() {
+  const fields = app.match(/const METADATA_CANDIDATE_FIELDS = \[[\s\S]*?\];/);
+  const placeholders = app.match(/const METADATA_CANDIDATE_PLACEHOLDERS = new Set\(\[[\s\S]*?\]\);/);
+  assert.ok(fields && placeholders, "candidate field tables must stay extractable");
+  return fields[0] + "\n" + placeholders[0] + "\n";
+}
 function harness(respond = async () => ({response:{ok:true}, data:{ok:true,search_id:'search-fixture',candidates:[{title:'New Song',source:'netease'}]}, bodyStatus:'parsed'})) {
   const nodes = {
     metadataCandidateSearchInput:{value:'New Song'}, metadataCandidateSearchStatus:{textContent:''},
@@ -34,7 +42,8 @@ function harness(respond = async () => ({response:{ok:true}, data:{ok:true,searc
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../app/ui/metadata_response_policy.js'), 'utf8'), context);
   vm.runInContext(code('unwrapMetadataResponsePayload'), context);
   if (/function cancelMetadataCandidateLookup\(/.test(app)) vm.runInContext(code('cancelMetadataCandidateLookup'),context);
-  vm.runInContext(['metadataCandidateDialogNode','metadataCandidateResultsNode','metadataCandidateStatusNode',
+  vm.runInContext(candidateTables() + ['metadataCandidateDialogNode','metadataCandidateResultsNode','metadataCandidateStatusNode',
+    'metadataCandidateFieldChange','metadataCandidateChanges','renderMetadataCandidatePreview',
     'searchTrackMetadataManually','openMetadataCandidateDialog'].map(code).join('\n'),context);
   return {nodes,state,oldController,requests,search:()=>context.searchTrackMetadataManually(),open:()=>context.openMetadataCandidateDialog('t1')};
 }
@@ -96,16 +105,21 @@ function harness(respond = async () => ({response:{ok:true}, data:{ok:true,searc
   const running=late.search(); late.state.metadataCandidateSearchToken++; late.nodes.metadataCandidateSearchStatus.textContent='已选择其他数据源';
   resolve({response:{ok:true},data:{ok:true,candidates:[]},bodyStatus:'parsed'}); await running;
   assert.equal(late.nodes.metadataCandidateSearchStatus.textContent,'已选择其他数据源');
-  const apply={disabled:false}; let applied;
-  const list={innerHTML:'',querySelector:selector=>selector.includes(':checked')?{value:'0'}:apply};
+  const apply={disabled:false,textContent:''}; let applied;
+  const list={innerHTML:'',querySelectorAll:()=>[],querySelector:selector=>selector.includes(':checked')?{value:'0'}:apply};
   const ctx={state:{actionTrackId:'t1'},AbortController,Number,JSON,String,Error,
     escapeHtml:String,metadataCandidateSourceLabel:()=>'',
+    itemById:()=>({id:'t1',title:'Visible choice'}),
+    $:id=>id==='applyMetadataCandidateBtn'?apply:undefined,
     fnAudioMetadataCandidatePresentationPolicy:{confidencePercent:()=>''},
     apiFetch:async(url,options)=>{applied=JSON.parse(options.body);return {ok:true};},
     readResponseJsonBounded:async()=>({ok:true}),clearLibraryResponseCaches:()=>{}};
-  vm.createContext(ctx); vm.runInContext(code('renderMetadataCandidateChoices'),ctx);
+  vm.createContext(ctx); vm.runInContext(candidateTables() + ['renderMetadataCandidateChoices',
+    'metadataCandidateConfidenceValue','metadataCandidateConfidenceLabel','metadataCandidateFieldChange',
+    'metadataCandidateChanges','renderMetadataCandidatePreview','syncMetadataCandidateSelection',
+    'applySelectedMetadataCandidate','metadataCandidateResultsNode','metadataCandidateStatusNode'].map(code).join('\n'),ctx);
   ctx.renderMetadataCandidateChoices(list,[{title:'Visible choice'}],'t1','review','immutable-search-b');
-  await apply.onclick();
+  await ctx.applySelectedMetadataCandidate();
   assert.equal(applied.search_id,'immutable-search-b','apply must bind to the visible search response');
   console.log('Interactive metadata search state/transport regression checks passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -120,6 +134,7 @@ function applyFailureHarness(withAbort = true) {
     get textContent() { return this._text; },
     set textContent(value) { this._text = value; this._html = ""; writes.push(["text", value]); },
     querySelector: selector => selector.includes(":checked") ? { value: "0" } : apply,
+    querySelectorAll: () => [],
     insertAdjacentHTML: (where, html) => { errors.push(html); writes.push([where, html]); },
   };
   const nodes = {
@@ -130,6 +145,7 @@ function applyFailureHarness(withAbort = true) {
     metadataCandidateSearchStatus: { textContent: "" },
     metadataCandidateStatus: { textContent: "" },
     metadataCandidateProviderSelect: { value: "kuwo" },
+    applyMetadataCandidateBtn: { disabled: true, textContent: "" },
   };
   let reject, resolve;
   const response = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -152,12 +168,15 @@ function applyFailureHarness(withAbort = true) {
     clearTimeout() {},
   };
   vm.createContext(context);
-  vm.runInContext(["renderMetadataCandidateChoices", "renderMetadataCandidateSearchResults",
+  vm.runInContext(candidateTables() + ["renderMetadataCandidateChoices", "renderMetadataCandidateSearchResults",
     "metadataCandidateDialogNode", "metadataCandidateResultsNode", "metadataCandidateStatusNode",
-    "cancelMetadataCandidateLookup", "closeTrackActionDialog", "searchTrackMetadataManually"].map(code).join("\n"), context);
+    "cancelMetadataCandidateLookup", "closeTrackActionDialog", "searchTrackMetadataManually",
+    'metadataCandidateConfidenceValue', 'metadataCandidateConfidenceLabel', 'metadataCandidateFieldChange',
+    'metadataCandidateChanges', 'renderMetadataCandidatePreview', 'syncMetadataCandidateSelection',
+    "applySelectedMetadataCandidate"].map(code).join("\n"), context);
   context.renderMetadataCandidateChoices(list, [{ title: "old candidate" }], "t1", "review", "old-search");
   return { context, nodes, state, writes, errors, list, reject, resolve,
-    start: () => apply.onclick(), clears: () => cacheClears, loads: () => libraryLoads };
+    start: () => context.applySelectedMetadataCandidate(), clears: () => cacheClears, loads: () => libraryLoads };
 }
 (async () => {
   const failures = [];
@@ -197,9 +216,12 @@ function applyFailureHarness(withAbort = true) {
   const result = current.start();
   current.reject(new Error("current confirmation failed"));
   await result;
-  assert.equal(current.errors.length, 1, "a current confirmation failure must remain visible and retryable");
-  assert.match(current.errors[0], /current confirmation failed/);
-  assert.equal(current.list.querySelector("apply").disabled, false);
+  // The failure is reported on the footer line, which is always on screen, instead
+  // of being appended to a results list the user may have scrolled away from.
+  assert.equal(current.errors.length, 0, "a failure must not scribble into the result list");
+  assert.match(current.nodes.metadataCandidateStatus.textContent, /current confirmation failed/,
+    "a current confirmation failure must remain visible and retryable");
+  assert.equal(current.nodes.applyMetadataCandidateBtn.disabled, false);
   assert.equal(current.state.metadataCandidateController, null);
   const overlap = applyFailureHarness();
   const oldApply = overlap.start();
@@ -213,7 +235,7 @@ function applyFailureHarness(withAbort = true) {
   await oldApply;
   assert.equal(overlap.writes.length, before);
   assert.equal(overlap.state.metadataCandidateController, owner, "old finally must not release a newer apply controller");
-  assert.equal(overlap.list.querySelector("apply").disabled, true);
+  assert.equal(overlap.nodes.applyMetadataCandidateBtn.disabled, true);
   overlap.state.pageItems = [{ id: 't1' }];
   overlap.state.libraryLoading = false;
   resolveNew({ ok: true });

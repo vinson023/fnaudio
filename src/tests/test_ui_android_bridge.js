@@ -408,7 +408,7 @@ requireText("const refreshing = data.refreshing === true", "Device refresh state
 requireText("state.libraryStatus?.scanning === true", "Library scanning state must not truthiness-coerce response flags");
 requireText("data.available === true", "DLNA availability must not truthiness-coerce response flags");
 requireText("data.pending === true", "Lyrics pending state must not truthiness-coerce response flags");
-requireText("data.tag_write_in_progress === true", "Metadata write state must not truthiness-coerce response flags");
+requireText("state.metadataStatus.tag_write_in_progress === true", "Metadata write state must not truthiness-coerce response flags");
 requireText("snapshot.available !== true", "Native playback state must reject non-boolean availability");
 requireText("state.hostPlaybackSession?.available === true", "Host playback activation must reject non-boolean availability");
 requireText("currentItem()?.cue_track === true", "Remote cue detection must reject non-boolean cue flags");

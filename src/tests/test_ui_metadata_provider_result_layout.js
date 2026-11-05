@@ -18,6 +18,16 @@ class Element {
     this.children = [];
     this.hidden = false;
   }
+  // The renderer tags the fixed fallback row's order pair through classList.
+  get classList() {
+    const owner = this;
+    return {
+      add(name) { if (!owner.className.split(" ").includes(name)) owner.className = `${owner.className} ${name}`.trim(); },
+      remove(name) { owner.className = owner.className.split(" ").filter(item => item && item !== name).join(" "); },
+      toggle(name, force) { force ? this.add(name) : this.remove(name); },
+      contains(name) { return owner.className.split(" ").includes(name); },
+    };
+  }
   append(...nodes) {
     for (const node of nodes) {
       node.parentElement = this;
@@ -55,7 +65,7 @@ function fixture() {
     "metadataProviderFallbackEntries", "normalizeMetadataProviderEntries",
     "metadataProviderLabel", "metadataProviderDisplayName", "metadataProviderCapabilityText",
     "metadataProviderResultMark", "metadataProviderResultText", "metadataProviderResultDetails",
-    "metadataProviderStatusNode", "metadataProviderResultFor",
+    "metadataProviderStatusNode", "metadataProviderResultFor", "metadataProviderGripMarkup",
     "renderMetadataProviderTestResult", "renderMetadataProviders",
   ]) {
     const source = app.match(new RegExp(`^function ${name}\\b[\\s\\S]*?^}`, "m"));
@@ -136,14 +146,27 @@ function style(node, width) {
   return result;
 }
 
-for (const width of [1280, 761, 760, 375, 320]) {
-  test(`provider results occupy a full row below the header at ${width}px`, () => {
+// R494 turned the row into one flex line (grip, name/capabilities, order pair,
+// test, switch) with the test result on its own line underneath.  The invariants
+// that still matter: the name block keeps a real minimum width, the result takes
+// a full line, and long provider errors wrap instead of widening the card.
+for (const width of [1280, 761, 760, 560, 375, 320]) {
+  test(`provider results keep their own line without squeezing the name at ${width}px`, () => {
     const { list, sandbox } = fixture();
     for (const row of list.children) {
-      const [header, result] = row.children;
-      assert.equal(row.children.length, 2, "there is no leading icon/gutter element");
-      assert.equal(style(row, width)["grid-template-columns"], "minmax(0,1fr)", "no phantom gutter may squeeze the result into 30px");
-      assert.equal(style(header, width)["grid-column"], "1");
+      assert.equal(row.children.length, 6, "each row is grip, name block, order pair, test, switch, result");
+      const [, body, , , , result] = row.children;
+      assert.equal(body.className, "metadata-provider-body", "name and capabilities share one block");
+      const rowFlow = style(row, width);
+      if (width <= 560) {
+        assert.equal(rowFlow.display, "grid", "a phone row moves to named cells instead of wrapping five controls");
+        assert.match(String(rowFlow["grid-template-areas"]), /sw/, "the switch keeps a named cell beside the name");
+        assert.match(String(rowFlow["grid-template-areas"]), /move/, "the order pair drops to its own line");
+      } else {
+        assert.equal(rowFlow.display, "flex", "one line holds the whole row");
+      }
+      const minWidth = Number(String(style(body, width)["min-width"]).replace("px", ""));
+      assert.ok(minWidth >= 100, `the name block may not shrink to a gutter: ${minWidth}px`);
       assert.equal(style(result, width).display, "none", "untested sources must not show an empty result strip");
       for (const ok of [true, false]) {
         sandbox.renderMetadataProviderTestResult(row, {
@@ -156,16 +179,17 @@ for (const width of [1280, 761, 760, 375, 320]) {
         const resolved = style(result, width);
         assert.equal(result.hidden, false);
         assert.equal(resolved.display, "grid");
-        assert.equal(resolved["grid-column"], "1/-1", "result must span the card beneath its header");
+        if (width <= 560) {
+          assert.equal(resolved["grid-column"], "1/-1",
+            "on a phone the result spans the named grid instead of a squeezed column");
+        } else {
+          assert.match(String(resolved.flex ?? ""), /100%/,
+            "the result must take a full line beneath the row instead of a squeezed column");
+        }
         assert.equal(resolved["min-width"], "0");
         assert.equal(resolved["overflow-wrap"], "anywhere", "long errors/URLs must not widen the card");
         assert.equal(style(result.children[1], width)["white-space"], "normal", "details must wrap instead of disappearing into ellipsis");
       }
-      const [, capabilities, actions] = header.children;
-      assert.equal(style(capabilities, width)["grid-column"], "1");
-      assert.equal(style(capabilities, width)["grid-row"], "2");
-      assert.equal(style(actions, width)["grid-column"], width <= 760 ? "1" : "2");
-      assert.equal(style(actions, width)["grid-row"], width <= 760 ? "3" : "1/3", "actions must not overlap capabilities");
     }
   });
 }

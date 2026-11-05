@@ -80,7 +80,7 @@ assert.match(appCss, /\.track-actions button:hover\{background:var\(--ui-hover\)
 assert.match(theme, /\.record-placeholder\s*\{[^}]*stroke-width:\s*1\.5/);
 assert.match(theme, /\.record-placeholder-center\s*\{[^}]*fill:\s*currentColor/);
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /function recordPlaceholderMarkup\(\)[\s\S]*?class="record-placeholder"/);
-assert.match(theme, /\.device-row-radio svg\s*\{[^}]*stroke-width:\s*2/);
+assert.match(theme, /\.device-row-radio svg\s*\{[^}]*stroke-width:\s*2\.6/);
 // The lyrics page is read-only: no back button and no favourite button in its
 // header, so neither the theme nor the markup may carry rules for them (R489).
 assert.doesNotMatch(theme, /\.lyrics-close|\.lyrics-favorite/, "the lyrics header has no buttons to style");
@@ -101,12 +101,21 @@ assert.doesNotMatch(theme, /#modeBtn\b/,
   "FNOS theme must not retain rules for the retired top-bar MP3 control");
 assert.match(appCss, /\.player-actions #favoriteCurrentBtn:not\(.active-control\):hover,[\s\S]*?background:var\(--ui-hover\)!important;[\s\S]*?color:var\(--ui-secondary\)!important;[\s\S]*?border-color:var\(--ui-border\)!important;/,
   "non-active player hover guard must use FNOS color tokens");
-assert.match(appCss, /\.metadata-candidate-dialog\{[^}]*background:var\(--ui-canvas\)/,
-  "metadata candidate dialog must use the FNOS canvas token");
-assert.match(appCss, /\.metadata-candidate-source-bar\{[^}]*border-bottom:1px solid var\(--ui-line\);background:var\(--ui-sidebar\)/,
-  "metadata candidate source bar must use FNOS surface tokens");
-assert.match(appCss, /\.metadata-candidate-choice:hover\{border-color:var\(--ui-accent\);background:var\(--ui-selected\)/,
-  "metadata candidate hover must use FNOS selection tokens");
+// The dialog rule is scoped to [open] and the guard pins the qualifier with the
+// token: a bare `display:flex!important` on the base selector outranks the UA's
+// `dialog:not([open]){display:none}` and leaves a dismissed dialog on screen, so
+// the token was never the whole contract (R495).
+assert.match(appCss, /\.metadata-candidate-dialog\[open\]\{[^}]*background:var\(--ui-canvas\)/,
+  "metadata candidate dialog must use the FNOS canvas token under an [open] qualifier");
+assert.match(appCss, /\.metadata-candidate-preview\{[^}]*background:var\(--ui-surface\)/,
+  "the change preview must sit on the FNOS surface token");
+assert.match(appCss, /\.metadata-candidate-footer\{[^}]*border-top:1px solid var\(--ui-line\);background:var\(--ui-surface\)/,
+  "the fixed action bar must use FNOS line and surface tokens");
+// Hover stays quieter than selection: a hovered row must not read as chosen.
+assert.match(appCss, /\.metadata-candidate-choice:hover\{border-color:var\(--ui-border\)!important;background:var\(--ui-hover\)!important\}/,
+  "metadata candidate hover must use the shared hover token");
+assert.match(appCss, /\.metadata-candidate-choice\.is-selected\{border-color:var\(--ui-accent\)!important;background:var\(--ui-selected\)!important\}/,
+  "the chosen candidate must use FNOS selection tokens");
 assert.match(appCss, /\.external-share-dialog\{[^}]*color:var\(--ui-text\)!important;background:var\(--ui-raised\)!important\}/,
   "external share dialog must use FNOS surface tokens");
 assert.match(appCss, /\.external-share-detail input,\.external-share-result input\{[^}]*border:1px solid var\(--ui-border\)[^}]*color:var\(--ui-text\)[^}]*background:var\(--ui-surface\)/,

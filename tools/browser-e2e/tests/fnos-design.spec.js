@@ -770,11 +770,29 @@ test('FNOS: metadata groups draw one divider each, not two', async ({page}) => {
   await openSettingsGroup(page, 'metadata');
   const providerGroup = page.locator('[data-settings-block="metadata-providers"]');
   await expect(providerGroup).toBeVisible();
-  // The group separator is the only rule above the provider list; the inner
-  // heading block used to add a second one when the sub-tabs were still there.
+  // The group separator is the only rule above the provider list.  Everything the
+  // pane stacks between that rule and the list -- the heading row and the fixed
+  // probe sample -- has to stay borderless, otherwise a second rule appears right
+  // under the first.  R495 replaced the old combined heading block with these two,
+  // so the guard names the elements that exist now instead of the retired class.
   await expect.poll(() => providerGroup.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('1px');
-  const heading = page.locator('[data-settings-block="metadata-providers"] .metadata-provider-heading');
-  await expect.poll(() => heading.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px');
+  const aboveList = page.locator(
+    '[data-settings-block="metadata-providers"] > .settings-group-head,'
+    + ' [data-settings-block="metadata-providers"] > .metadata-probe-sample',
+  );
+  await expect(aboveList).toHaveCount(2);
+  const aboveStyles = await aboveList.evaluateAll(elements => elements.map(element => {
+    const style = getComputedStyle(element);
+    return { width: style.borderTopWidth, line: style.borderTopStyle };
+  }));
+  // The heading row draws no rule at all; the sample is a dashed card, which reads
+  // as a box rather than as a second divider.  What this guard is here to catch is
+  // a solid rule appearing under the group separator -- so the style is asserted,
+  // not just the width.
+  expect(aboveStyles).toEqual([
+    { width: '0px', line: 'none' },
+    { width: '1px', line: 'dashed' },
+  ]);
 });
 
 test('FNOS: service pane keeps one heading per group', async ({page}) => {
@@ -796,9 +814,15 @@ for (const [width, height] of [[320, 568], [375, 667], [320, 900], [1440, 900]])
 
     const list = page.locator('#metadataProviderList');
     await expect(list).toBeVisible();
-    const toggle = list.locator('[data-metadata-provider-toggle]').first();
+    // The checkbox itself is visually hidden behind its track (opacity 0 plus
+    // pointer-events none), so what a user clicks is the switch; the input only
+    // carries the state and must follow (R495).
+    const checkbox = list.locator('[data-metadata-provider-toggle]').first();
+    const wasOn = await checkbox.isChecked();
+    const toggle = list.locator('.metadata-provider-switch').first();
     await toggle.scrollIntoViewIfNeeded();
     await toggle.click();
+    await expect.poll(() => checkbox.isChecked()).toBe(!wasOn);
 
     const save = page.locator('#settingsSaveBtn');
     await expect(save).toBeVisible();
@@ -815,21 +839,24 @@ for (const [width, height] of [[320, 568], [375, 667], [320, 900], [1440, 900]])
       const geometry = await page.evaluate(() => {
         const pane = document.querySelector('#settings-pane-metadata');
         const row = document.querySelector('#metadataProviderList .metadata-provider-row:last-child');
-        const actions = row.querySelector('.metadata-provider-actions');
-        const control = actions.querySelector('button:last-child');
+        // The row no longer wraps its controls in a trailing actions group: the
+        // switch is the last control in the grid, so the edge it has to respect
+        // is the row's own content edge (R495).
+        const control = row.querySelector('.metadata-provider-switch');
         const controlBox = control.getBoundingClientRect();
+        const rowBox = row.getBoundingClientRect();
         const hit = document.elementFromPoint(controlBox.left + controlBox.width / 2, controlBox.top + controlBox.height / 2);
         return {
           paneOverflowY: getComputedStyle(pane).overflowY,
           paneScrolls: pane.scrollHeight > pane.clientHeight,
-          rowRight: row.getBoundingClientRect().right,
-          actionsRight: actions.getBoundingClientRect().right,
+          rowRight: rowBox.right,
+          controlRight: controlBox.right,
           hitIsControl: hit === control || control.contains(hit),
         };
       });
       expect(geometry.paneOverflowY, 'the active settings pane must own mobile content scrolling').toBe('auto');
       expect(geometry.paneScrolls, 'settings content must overflow its fixed mobile pane').toBeTruthy();
-      expect(geometry.rowRight - geometry.actionsRight, 'mobile provider actions must align to the card content edge').toBeLessThanOrEqual(16);
+      expect(geometry.rowRight - geometry.controlRight, 'mobile provider controls must sit inside the card content edge').toBeLessThanOrEqual(16);
       expect(geometry.hitIsControl, 'the save bar must not cover the last provider control').toBeTruthy();
     }
     await screenshot(page, info, `settings-save-bar-${width}x${height}`);
@@ -1090,6 +1117,316 @@ for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {
   });
 }
 
+// R494: every device row answers the same three questions in the same order —
+// what kind of device (icon), what it is called (name + capability), and whether
+// it can be reached right now (state word + one radio).  The old row hung a 3px
+// left bar, a tick and a repeated group title on the current device, printed
+// nothing at all for an offline device, and showed a search box on every list.
+const PICKER_TARGETS = {
+  ok: true,
+  current_target: 'dlna:living-room',
+  current_target_name: '客厅音箱',
+  refreshing: false,
+  targets: [
+    {id: 'local', name: '这台电脑', kind: 'local'},
+    {id: 'dac:usb', name: 'USB DAC（XMOS）', kind: 'dac', caps: {sample_rate: 96000, bits: 24, channels: 2}},
+    {id: 'dlna:living-room', name: '客厅音箱', kind: 'dlna_push'},
+    {id: 'dlna:study', name: '书房 Sonos One', kind: 'dlna_push'},
+    {id: 'dlna:bedroom', name: '卧室电视', kind: 'dlna_push', online: false, message: '设备不在线'},
+    {id: 'dlna:kitchen', name: '厨房 HomePod mini', kind: 'dlna_push'},
+    {id: 'dlna:balcony', name: '阳台 Beosound A1', kind: 'dlna_push'},
+    {id: 'dlna:hall', name: '玄关 Echo', kind: 'dlna_push'},
+    {id: 'dlna:attic', name: '阁楼音箱', kind: 'dlna_push'},
+  ],
+};
+for (const [width, height] of [[1440, 900], [390, 844]]) {
+  test(`FNOS ${width}: device picker states kind, name and reachability per row`, async ({page}, info) => {
+    await page.route('**/api/playback/targets*', route => route.fulfill({json: PICKER_TARGETS}));
+    await load(page, width, height);
+    if (width <= 760) {
+      // Phones hide the player-bar button and reach the picker through settings.
+      await page.locator('#mobileNavBtn').click();
+      await page.locator('#mobileSettingsNavBtn').click();
+      await page.locator('[data-settings-tab="playback"]').click();
+      await page.locator('#settingsDeviceBtn').click();
+    } else {
+      await page.locator('#deviceBtn').click();
+    }
+    await expect(page.locator('#deviceDialog')).toBeVisible();
+    await expect(page.locator('.device-row')).toHaveCount(PICKER_TARGETS.targets.length);
+
+    // The header answers "where is the sound going" before any row is read.
+    const header = page.locator('#deviceCurrentTarget');
+    await expect(header).toContainText('客厅音箱');
+    expect(await header.evaluate(node => getComputedStyle(node.querySelector('b')).color))
+      .toBe(await page.locator('.device-row.is-current .device-row-icon').evaluate(node => getComputedStyle(node).backgroundColor));
+
+    const geometry = await page.evaluate(() => {
+      const current = document.querySelector('.device-row.is-current');
+      const icon = current.querySelector('.device-row-icon').getBoundingClientRect();
+      const radio = current.querySelector('.device-row-radio').getBoundingClientRect();
+      const offline = document.querySelector('.device-row.is-offline');
+      const statuses = [...document.querySelectorAll('.device-row-status')].map(node => node.textContent);
+      return {
+        columns: getComputedStyle(current).gridTemplateColumns.split(' ').filter(Boolean).length,
+        icon: {width: icon.width, height: icon.height},
+        radio: {width: radio.width, height: radio.height},
+        iconPlate: getComputedStyle(current.querySelector('.device-row-icon')).backgroundColor,
+        afterWidth: getComputedStyle(current, '::after').width,
+        statuses,
+        offline: offline ? {
+          disabled: offline.disabled,
+          opacity: Number(getComputedStyle(offline).opacity),
+          status: offline.querySelector('.device-row-status').textContent,
+        } : null,
+        footer: document.querySelector('#deviceRefreshStatus').textContent,
+      };
+    });
+    expect(geometry.columns, 'a row is icon / text / state, nothing else').toBe(3);
+    expect(geometry.icon).toEqual({width: 32, height: 32});
+    expect(geometry.radio).toEqual({width: 18, height: 18});
+    expect(geometry.afterWidth, 'the current row no longer draws a left accent bar').toBe('auto');
+    expect(geometry.statuses).toContain('正在播放');
+    expect(geometry.statuses.filter(status => status === '正在播放')).toHaveLength(1);
+    // The dimming itself comes from the app-wide disabled-button rule, so only the
+    // direction is asserted here: an unreachable device never looks selectable.
+    expect(geometry.offline.disabled, 'an unreachable device cannot be picked').toBe(true);
+    expect(geometry.offline.status, 'and it says why').toBe('离线');
+    expect(geometry.offline.opacity).toBeLessThan(0.7);
+    expect(geometry.footer).toMatch(/台可用|正在扫描局域网/);
+
+    // Search only appears once the room outgrows a glance, and it narrows the list.
+    const search = page.locator('#deviceSearchWrap');
+    await expect(search).toBeVisible();
+    await page.locator('#deviceSearchInput').fill('房');
+    await expect(page.locator('.device-row')).toHaveCount(2);
+    await expect(page.locator('.device-section h3')).toHaveCount(1);
+    await page.locator('#deviceSearchInput').fill('');
+    await expect(page.locator('.device-row')).toHaveCount(PICKER_TARGETS.targets.length);
+    const layout = await page.evaluate(() => {
+      const dialog = document.querySelector('#deviceDialog').getBoundingClientRect();
+      const list = document.querySelector('.device-list-wrap');
+      return {
+        width: dialog.width,
+        bottom: dialog.bottom,
+        scroller: getComputedStyle(list).overflowY,
+        overflows: list.scrollHeight > list.clientHeight + 1,
+        viewport: {width: innerWidth, height: innerHeight},
+      };
+    });
+    expect(layout.width).toBeLessThanOrEqual(layout.viewport.width);
+    expect(layout.bottom, 'the picker never leaves the viewport').toBeLessThanOrEqual(layout.viewport.height + 1);
+    expect(layout.scroller, 'the device list is the only thing that scrolls').toBe('auto');
+    // A phone screen is tall enough for this room; the desktop panel is not, and
+    // that is exactly where the list has to carry the scroll instead of the page.
+    if (width > 760) expect(layout.overflows, 'a room taller than the panel scrolls inside the list').toBeTruthy();
+    await screenshot(page, info, `device-picker-${width}`);
+  });
+}
+
+// R494: the candidate dialog answers "what will be written" before anything is
+// confirmed.  One search bar replaces the source bar + status strip + separate
+// manual-search form, and the confirm button sits in a fixed footer instead of
+// scrolling away at the end of the result list.
+const CANDIDATE_RESPONSE = {
+  ok: true,
+  search_id: 'e2e-search',
+  candidates: [
+    {title: '晨光', artist: '陈婧霏', album: '呼吸', date: '2021', track_no: '3', genre: '流行', source: 'netease', confidence: 0.96, image_url: 'https://example.invalid/a.jpg'},
+    {title: '晨光 (Live)', artist: '陈婧霏', album: '夜航西飞', date: '2022', source: 'netease', confidence: 0.72},
+    {title: '晨光', artist: '陈婧霏', album: '呼吸', source: 'musicbrainz', confidence: 0.61},
+  ],
+};
+for (const [width, height] of [[1440, 950], [390, 844]]) {
+  test(`FNOS ${width}: metadata candidates preview the fields that will change`, async ({page}, info) => {
+    const applied = [];
+    await page.route('**/api/metadata/track/search', route => route.fulfill({json: CANDIDATE_RESPONSE}));
+    await page.route('**/api/metadata/track/apply', async route => {
+      applied.push(JSON.parse(route.request().postData() || '{}'));
+      await route.fulfill({json: {ok: true}});
+    });
+    await load(page, width, height);
+    await page.evaluate(() => openMetadataCandidateDialog(state.items[0].id));
+    await expect(page.locator('.metadata-candidate-choice')).toHaveCount(3);
+
+    // One row: plain radio, title/subtitle, and a confidence readout with a bar.
+    const row = page.locator('.metadata-candidate-choice').first();
+    expect(await row.evaluate(node => {
+      const bar = node.querySelector('.metadata-candidate-bar i');
+      return {
+        columns: getComputedStyle(node).gridTemplateColumns.split(' ').filter(Boolean).length,
+        percent: node.querySelector('.metadata-candidate-conf b').textContent,
+        barWidth: bar ? bar.style.width : '',
+      };
+    })).toEqual({columns: 3, percent: '96%', barWidth: '96%'});
+    expect(await page.locator('.metadata-candidate-choice.is-selected')).toHaveCount(1);
+
+    // The preview names every field and says whether it is filled or kept.
+    const preview = await page.evaluate(() => [...document.querySelectorAll('.metadata-candidate-change')].map(node => ({
+      field: node.dataset.field,
+      state: node.className.match(/is-(fill|replace|keep)/)?.[1],
+      text: node.textContent,
+    })));
+    expect(preview.find(entry => entry.field === 'title').state).toBe('keep');
+    expect(preview.find(entry => entry.field === 'album').state).toBe('replace');
+    expect(preview.find(entry => entry.field === 'genre').state).toBe('fill');
+    expect(preview.find(entry => entry.field === 'genre').text).toContain('流行');
+    // `+` marks a field that gains a value; the arrow marks a replacement.
+    expect(await page.locator('.metadata-candidate-change.is-fill .metadata-candidate-next').first()
+      .evaluate(node => getComputedStyle(node, '::before').content)).toContain('+');
+    expect(await page.locator('.metadata-candidate-change.is-replace .metadata-candidate-arrow').first()
+      .evaluate(node => node.textContent)).toBe('→');
+
+    // The footer is the fix: it stays put and counts what the button will do.
+    const footer = page.locator('.metadata-candidate-footer');
+    await expect(footer).toBeVisible();
+    const apply = page.locator('#applyMetadataCandidateBtn');
+    await expect(apply).toBeEnabled();
+    const label = await apply.textContent();
+    expect(label).toMatch(/确认(并写入 \d+ 项|匹配)/);
+    expect(await footer.evaluate(node => {
+      const dialog = node.closest('dialog').getBoundingClientRect();
+      const bar = node.getBoundingClientRect();
+      return Math.abs(bar.bottom - dialog.bottom) <= 1;
+    }), 'the action bar is pinned to the bottom of the dialog').toBeTruthy();
+    await insideViewport(page, '#applyMetadataCandidateBtn');
+    await insideViewport(page, '#cancelMetadataCandidateBtn');
+
+    // Choosing another candidate rewrites the preview without a new query.
+    const before = await page.locator('.metadata-candidate-preview').textContent();
+    await page.locator('.metadata-candidate-choice').nth(1).click();
+    await expect(page.locator('.metadata-candidate-choice.is-selected')).toHaveCount(1);
+    expect(await page.locator('.metadata-candidate-preview').textContent()).not.toBe(before);
+    expect(await page.locator('.metadata-candidate-change.is-replace').count(),
+      'the live version replaces the album instead of filling it').toBeGreaterThan(0);
+
+    await apply.click();
+    await expect(page.locator('#metadataCandidateStatus')).toContainText('已确认');
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toMatchObject({candidate_index: 1, search_id: 'e2e-search'});
+    await screenshot(page, info, `metadata-candidate-${width}`);
+    await page.locator('#cancelMetadataCandidateBtn').click();
+    await expect(page.locator('#metadataCandidateDialog')).toBeHidden();
+  });
+}
+
+// R494: the provider list is part of the settings page now.  It used to carry
+// its own max-height + overflow inside a pane that scrolls too, and every row
+// mixed a checkbox with three buttons.
+for (const [width, height] of [[1440, 1000], [390, 844]]) {
+  test(`FNOS ${width}: metadata sources keep one row per provider and one scrollbar`, async ({page}, info) => {
+    await load(page, width, height);
+    await openSettingsGroup(page, 'metadata');
+    const list = page.locator('#metadataProviderList');
+    await expect(list.locator('.metadata-provider-row')).toHaveCount(6);
+    const box = await list.evaluate(el => {
+      const style = getComputedStyle(el);
+      return {overflowY: style.overflowY, scroll: el.scrollHeight, client: el.clientHeight};
+    });
+    expect(box.overflowY, 'the list must not own a second scrollbar').not.toBe('auto');
+    expect(box.overflowY).not.toBe('scroll');
+    expect(box.scroll, 'nothing is clipped inside the list').toBeLessThanOrEqual(box.client + 1);
+
+    const first = list.locator('.metadata-provider-row').first();
+    for (const selector of ['.metadata-provider-grip', '.metadata-provider-name', '.metadata-provider-capabilities',
+      '.metadata-provider-test', '.metadata-provider-switch']) {
+      await expect(first.locator(selector), selector).toHaveCount(1);
+    }
+    await expect(first.locator('.metadata-provider-move button')).toHaveCount(2);
+    // Dragging is a pointer affordance: the handle must not enter the focus order
+    // or be announced as a control, and the arrows are the keyboard path.
+    const grip = first.locator('.metadata-provider-grip svg');
+    await expect(grip).toHaveAttribute('aria-hidden', 'true');
+    await expect(grip).toHaveAttribute('focusable', 'false');
+    // The fixed fallback entry cannot be reordered, so its arrows are hidden but
+    // still occupy their column.
+    const last = list.locator('.metadata-provider-row').last();
+    await expect(last.locator('.metadata-provider-move')).toHaveClass(/is-placeholder/);
+
+    // One control cluster: at desktop width the test button and the switch sit on
+    // the name line; on a phone the switch stays beside the name and the rest
+    // drops below instead of squeezing five controls into 390px.
+    const layout = await first.evaluate(el => {
+      const box = selector => el.querySelector(selector).getBoundingClientRect();
+      const name = box('.metadata-provider-name');
+      const caps = box('.metadata-provider-capabilities');
+      const test = box('.metadata-provider-test');
+      const sw = box('.metadata-provider-switch');
+      const body = box('.metadata-provider-body');
+      return {nameRight: body.right, testLeft: test.left, testTop: test.top,
+              swLeft: sw.left, swTop: sw.top, capsBottom: caps.bottom, capsTop: caps.top};
+    });
+    // The switch is always beside the name; only the test button moves.
+    expect(layout.swLeft, JSON.stringify(layout)).toBeGreaterThan(layout.nameRight - 1);
+    expect(layout.swTop, JSON.stringify(layout)).toBeLessThan(layout.capsBottom);
+    expect(layout.testLeft, JSON.stringify(layout)).toBeGreaterThan(layout.nameRight - 1);
+    if (width > 760) {
+      expect(layout.testTop, 'desktop keeps the whole cluster on one line').toBeLessThan(layout.capsBottom);
+    } else {
+      expect(layout.testTop, 'phone drops the test button below the name').toBeGreaterThan(layout.capsTop);
+    }
+
+    await expect(page.locator('#restoreMetadataProvidersBtn')).toHaveCount(0);
+    await expect(page.locator('[data-scope="probe-input"]')).toHaveCount(0);
+    await expect(page.locator('#metadataProbeTitleInput')).toHaveCount(0);
+    await expect(page.locator('.metadata-probe-sample')).toContainText('双截棍');
+
+    // Background work is one live line plus counters, not a paragraph.
+    await expect(page.locator('#metadataTaskHeadline')).toHaveText('正在补全');
+    await expect(page.locator('#metadataTaskStats span')).toHaveCount(4);
+    await expect(page.locator('#metadataTaskStats')).toContainText('96');
+    const statsBox = await page.locator('#metadataStatusText').boundingBox();
+    expect(statsBox.height, 'the old running commentary must stay out of the pane').toBeLessThan(40);
+
+    await page.locator('#metadataLogBtn').click();
+    await expect(page.locator('#metadataLogDialog')).toBeVisible();
+    await expect(page.locator('#metadataLogSummary')).toContainText('队列 102 项');
+    await expect(page.locator('#metadataLogList .metadata-log-row')).toHaveCount(1);
+    await page.locator('[data-metadata-log-filter="issue"]').click();
+    await expect(page.locator('#metadataLogList .metadata-log-row')).toHaveCount(0);
+    await page.locator('[data-metadata-log-filter="all"]').click();
+    await expect(page.locator('#metadataLogList .metadata-log-row')).toHaveCount(1);
+    await page.locator('#closeMetadataLogBtn').click();
+    await expect(page.locator('#metadataLogDialog')).toBeHidden();
+    await screenshot(page, info, `metadata-sources-${width}`);
+  });
+}
+
+// R494: the artwork and its caption are one block, so the free space above and
+// below it must be equal however tall the window is.  A window too short to hold
+// the block falls back to the top edge (scrollable) instead of clipping it.
+for (const [height, centred] of [[1100, true], [900, true], [620, true], [420, false]]) {
+  test(`FNOS 1440x${height}: lyrics artwork block sits against the lyric column`, async ({page}) => {
+    await load(page, 1440, height);
+    await page.route('**/api/lyrics**', route => route.fulfill({json: {
+      lyrics: '[00:00.00]E2E lyric one\n[00:04.00]E2E lyric two\n[00:08.00]E2E lyric three',
+      source: 'fixture',
+      pending: false,
+    }}));
+    await page.evaluate(async () => {
+      state.queue = [...state.items];
+      state.index = 0;
+      await openLyrics();
+    });
+    await expect(page.locator('#lyricsView')).toBeVisible();
+    const gaps = await page.evaluate(() => {
+      const side = document.querySelector('.lyrics-side').getBoundingClientRect();
+      const stack = document.querySelector('.lyrics-side-stack').getBoundingClientRect();
+      const lines = document.querySelector('.lyrics-lines').getBoundingClientRect();
+      return {above: stack.top - side.top, below: side.bottom - stack.bottom, stackHeight: stack.height,
+              sideHeight: side.height, linesTop: lines.top, linesHeight: lines.height};
+    });
+    expect(gaps.above, 'the block must never be pushed above its column').toBeGreaterThanOrEqual(-1);
+    if (centred) {
+      expect(Math.abs(gaps.above - gaps.below), `top/bottom gutters differ at ${height}px: ${JSON.stringify(gaps)}`).toBeLessThanOrEqual(2);
+      expect(gaps.stackHeight, 'the block should fit without scrolling').toBeLessThan(gaps.sideHeight);
+      expect(gaps.linesHeight, 'the lyric column still fills the panel').toBeGreaterThan(gaps.stackHeight);
+    } else {
+      expect(gaps.above, 'a short window keeps the block flush with the top edge').toBeLessThanOrEqual(2);
+    }
+  });
+}
+
 for (const [width,height] of [[375,812],[667,375],[900,600]]) {
   test(`Requested UI: Android ${width} hides footer actions and preserves transport`, async ({page},info) => {
     await page.addInitScript(() => { window.FnAudioNative = {isAvailable: () => true}; });
@@ -1246,10 +1583,10 @@ for (const width of [320,375,414,768,1280,1440]) {
       await page.locator('#deviceBtn').click();
     }
     await expect(page.locator('#deviceDialog')).toBeVisible();
-    // Nine dialogs now carry a close control: the eight settings/device dialogs
-    // plus the server-side music directory browser that clients without the
-    // fnOS host picker fall back to.
-    await expect(page.locator('.dialog-close-button')).toHaveCount(9);
+    // Ten dialogs now carry a close control: the eight settings/device dialogs,
+    // the server-side music directory browser that clients without the fnOS host
+    // picker fall back to, and the metadata task log added in R495.
+    await expect(page.locator('.dialog-close-button')).toHaveCount(10);
     await expect(page.locator('#closeDialog svg')).toBeVisible();
     await expect(page.locator('#closeDialog')).toHaveAttribute('aria-label','关闭');
     await insideViewport(page,'#scanDevices');
@@ -1360,27 +1697,34 @@ for(const width of [320,768,1440]) {
       await expect(group).toBeVisible();
     }
     if (width < 761) {
+      // The three manual probe inputs are gone for good: what used to be an
+      // optional form the phone had to scroll past is now one fixed sample line
+      // that sits above the source list (R495).
+      await expect(page.locator('#metadataProbeTitleInput, #metadataProbeArtistInput, #metadataProbeAlbumInput, .metadata-probe-query')).toHaveCount(0);
+      const sampleBottom = await page.locator('.metadata-probe-sample').evaluate(el=>el.getBoundingClientRect().bottom);
       const providerTop = await page.locator('#metadataProviderList').evaluate(el=>el.getBoundingClientRect().top);
-      const probeTop = await page.locator('.metadata-probe-query').evaluate(el=>el.getBoundingClientRect().top);
-      expect(providerTop, 'mobile source management must precede optional provider test inputs').toBeLessThan(probeTop);
+      expect(sampleBottom, 'the fixed sample must sit above the source list, not inside it').toBeLessThanOrEqual(providerTop + 1);
     }
     const testButton=page.locator('[data-metadata-provider-test]').first();
     await testButton.scrollIntoViewIfNeeded();
     await expect(testButton).toBeVisible();
-    await page.locator('#metadataProbeTitleInput').fill('晨光');
     // Browser fixtures supply probe results; no provider credentials/network.
-    await page.route('**/api/metadata/provider-test',route=>route.fulfill({json:{ok:true,result:{ok:true,provider_id:'netease',response_ms:125,search:{available:true,supported:true,title:'晨光'},cover:{available:true,supported:true},lyrics:{available:true,supported:true}}}}));
+    // The body is captured so the fixed sample is measured, not assumed.
+    let probeBody=null;
+    await page.route('**/api/metadata/provider-test',route=>{probeBody=route.request().postDataJSON();return route.fulfill({json:{ok:true,result:{ok:true,provider_id:'netease',response_ms:125,search:{available:true,supported:true,title:'双截棍'},cover:{available:true,supported:true},lyrics:{available:true,supported:true}}}});});
     await testButton.click();
     const result=page.locator('[data-metadata-provider-result]:visible').first();
     await expect(result).toBeVisible();
     await expect(result).toContainText('125 ms');
+    expect(probeBody, 'every probe asks the one fixed sample').toMatchObject({title:'双截棍',artist:'周杰伦'});
     expect(await result.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBeTruthy();
     await screenshot(page,info,'provider-result');
 
     // Probing is read-only, so nothing may be queued for the footer yet.
     await expect(page.locator('#settingsSaveBtn')).toBeHidden();
-    // Toggling a source is the metadata edit that has to summon it.
-    await page.locator('[data-metadata-provider-toggle]').first().click();
+    // Toggling a source is the metadata edit that has to summon it.  The input is
+    // hidden behind its track, so the switch is what gets clicked (R495).
+    await page.locator('.metadata-provider-switch').first().click();
     const save = page.locator('#settingsSaveBtn');
     await expect(save).toBeVisible();
     const saveBounds = await save.evaluate(el => {
@@ -1439,16 +1783,16 @@ for(const width of [320,1440]) {
     await page.locator('.metadata-candidate-choice').last().click();
     await expect(page.locator('input[name="metadataCandidate"]').last()).toBeChecked();
     expect(await page.locator('input[name="metadataCandidate"]').last().evaluate(element => getComputedStyle(element).accentColor)).toBe('rgb(0, 102, 255)');
-    const confirmStyle = await page.locator('.metadata-candidate-dialog .track-action-choice').evaluate(button => {
+    // The confirm control lives in the dialog footer now, not at the end of the list.
+    const confirmStyle = await page.locator('#applyMetadataCandidateBtn').evaluate(button => {
       const style = getComputedStyle(button);
       return { color: style.color, background: style.backgroundColor, borderColor: style.borderColor };
     });
     expect(confirmStyle).toEqual({ color: 'rgb(255, 255, 255)', background: 'rgb(0, 102, 255)', borderColor: 'rgb(0, 102, 255)' });
-    const selectedCandidateStyle = await page.locator('.metadata-candidate-choice').last().evaluate(element => {
-      const style = getComputedStyle(element);
-      return { background: style.backgroundColor, borderColor: style.borderColor };
-    });
-    expect(selectedCandidateStyle).toEqual({ background: 'rgba(0, 102, 255, 0.15)', borderColor: 'rgb(0, 102, 255)' });
+    // The row cross-fades between states, so the colour is polled instead of read
+    // once from the middle of the transition.
+    await expect(page.locator('.metadata-candidate-choice').last()).toHaveCSS('background-color', 'rgba(0, 102, 255, 0.15)');
+    await expect(page.locator('.metadata-candidate-choice').last()).toHaveCSS('border-color', 'rgb(0, 102, 255)');
     await page.locator('#metadataCandidateSearchInput').fill('另一首歌曲');
     await page.locator('#metadataCandidateSearchForm button').click();
     await expect(page.locator('.metadata-candidate-choice')).toHaveCount(2);
@@ -1587,11 +1931,13 @@ test('FNOS dark palette applies across library, player and settings without whit
   expect(await page.locator('#deviceDialog h2').evaluate(el=>getComputedStyle(el).color)).toBe('rgb(255, 255, 255)');
   await expect(page.locator('.device-row.is-current')).toHaveCount(1);
   expect(await page.locator('.device-row.is-current').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgba(0, 102, 255, 0.25)');
+  // The footer is a recessed strip under a raised dialog: one step darker than the
+  // panel it belongs to, the same way the picker's search field sits (R494).
   expect(await page.locator('.device-dialog-footer').evaluate(el => ({
     background: getComputedStyle(el).backgroundColor,
     border: getComputedStyle(el).borderTopColor,
   }))).toEqual({
-    background: 'rgb(35, 35, 38)',
+    background: 'rgb(30, 30, 33)',
     border: 'rgba(255, 255, 255, 0.08)',
   });
   await screenshot(page,info,'dark-devices');

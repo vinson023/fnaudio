@@ -62,9 +62,10 @@ assert.match(css, /\.lyrics-lines\.is-empty\{display:grid!important;place-items:
 assert.match(app, /box\.classList\.toggle\("is-empty", !lines\.length\)/, "rendering lyrics must clear the empty state");
 assert.match(app, /lines\.classList\.add\("is-empty"\)/, "a lyrics message must restore the empty state");
 
-// P2: metadata inputs were 231x34 in the probe row and 349x38 everywhere else.
-assert.match(css, /\.metadata-probe-query\{display:grid;grid-template-columns:1fr 1fr;gap:8px\}/,
-  "the probe row must use the same two-column grid as the rest of the pane");
-assert.match(css, /\.metadata-probe-query input\{width:100%;min-width:0;height:38px/, "probe inputs must share the 38px height");
+// P2 -> R494: the 231x34 probe inputs are gone entirely; one read-only sample
+// line replaced three fields that were shorter than every other input.
+assert.doesNotMatch(css, /\.metadata-probe-query/,
+  "the probe input row must not come back: the sample track is fixed now");
+assert.match(css, /\.metadata-probe-sample\{[^}]*display:flex/, "the sample line is a single read-only row");
 
 console.log("UI audit follow-up contracts verified");

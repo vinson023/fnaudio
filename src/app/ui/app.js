@@ -29,6 +29,16 @@ state.metadataProviders = [];
 state.metadataProviderRecommended = [];
 state.metadataProviderResults = Object.create(null);
 state.metadataProvidersLoaded = false;
+state.metadataStatus = {};
+// Session-only event log for the settings page.  The service keeps queue counts,
+// not per-track history, so this log can only promise what actually exists.
+state.metadataLog = [];
+state.metadataLogFilter = "all";
+// Last provider-alert string written to the log, so a status poll that keeps
+// reporting the same cooling-down provider does not fill the log with copies.
+state.metadataProviderAlert = "";
+state.deviceSearchQuery = "";
+state.deviceTargetsRendered = [];
 state.metadataProviderDragId = "";
 state.metadataProviderTestInFlight = "";
 const audio = $("audio");
@@ -171,6 +181,9 @@ state.metadataCandidateController = null;
 state.metadataCandidateSearchController = null;
 state.metadataCandidateSearchToken = 0;
 state.metadataCandidateProviderId = "";
+// Which candidate the preview describes: the apply button lives in the dialog
+// footer now, so the choice has to survive outside the result list (R494).
+state.metadataCandidateSelection = null;
 // Track-level metadata prefetches are started when playback begins, rather
 // than waiting for the user to open the candidate dialog.  Keep one token per
 // song so rapid next/previous actions cannot apply a stale response to the
@@ -7225,47 +7238,82 @@ async function validateRestoredPlaybackTarget() {
   }
   return receivedTargets ? recoverUnavailablePlaybackTarget(false, restoredTarget) : true;
 }
+// One row = icon, name/capabilities, state + one radio.  The old row used a 3px
+// left bar AND a tick to mean "current", printed no offline word, and repeated
+// the group title inside the row (R494).
+const DEVICE_TARGET_ICONS = {
+  host: '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.4"/><path d="M10.4 18.4h3.2"/></svg>',
+  dac: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 14.2v-2a8 8 0 0 1 16 0v2"/><rect x="2.6" y="13.2" width="4.8" height="6.8" rx="2"/><rect x="16.6" y="13.2" width="4.8" height="6.8" rx="2"/></svg>',
+  network: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 9.4a13 13 0 0 1 18 0"/><path d="M6.4 12.9a8.6 8.6 0 0 1 11.2 0"/><path d="M9.7 16.3a4 4 0 0 1 4.6 0"/><circle cx="12" cy="19.2" r="1.2" fill="currentColor" stroke="none"/></svg>',
+};
+function deviceTargetGroupKey(target) {
+  if (target.id === "local") return "host";
+  return target.kind === "dlna_push" ? "network" : "host";
+}
+function deviceTargetKindLabel(target) {
+  if (target.id === "local") return "浏览器播放";
+  return target.kind === "dlna_push" ? "UPnP / DLNA" : "USB DAC";
+}
+function deviceTargetIsOnline(target) {
+  return target.online === true || target.online === undefined;
+}
+function deviceTargetStatusText(target, isCurrent) {
+  if (!deviceTargetIsOnline(target)) return "离线";
+  return isCurrent ? "正在播放" : "可用";
+}
+function deviceTargetDetail(target) {
+  const message = displayText(target.message || "");
+  const caps = target.caps ? dacCapsText(target.caps) : "";
+  const kind = deviceTargetKindLabel(target);
+  if (message) return message;
+  return caps ? `${kind} · ${caps}` : kind;
+}
 function renderDeviceTargets(targets, currentTarget) {
   targets = globalThis.fnAudioDeviceTargetPresentation.projectTargets(targets);
   const signature = JSON.stringify({
     currentTarget,
+    query: state.deviceSearchQuery || "",
     targets: targets.map(target => ({
       id: target.id,
       name: displayText(target.name || ""),
       kind: target.kind || "",
-      online: target.online === undefined || target.online === true,
-      detail: target.message || (target.caps ? dacCapsText(target.caps) : ""),
+      online: deviceTargetIsOnline(target),
+      detail: deviceTargetDetail(target),
       selected: target.selected === true,
     })),
   });
+  state.deviceTargetsRendered = targets;
   if (signature === state.deviceTargetsSignature) return;
   state.deviceTargetsSignature = signature;
   const current = targets.find(target => target.id === currentTarget);
-  const currentName = displayText(current?.name || (currentTarget === "local" ? "当前设备" : state.playTargetName || "播放设备"));
-  $("deviceCurrentTarget").textContent = `当前：${currentName}`;
-  const groups = new Map([
-    ["browser", { title: "当前设备", targets: [] }],
-    ["dac", { title: "USB DAC", targets: [] }],
-    ["dlna", { title: "DLNA / UPnP", targets: [] }],
-  ]);
-  targets.forEach(target => {
-    const key = target.id === "local" ? "browser" : (target.kind === "dlna_push" ? "dlna" : "dac");
-    groups.get(key).targets.push(target);
-  });
-  const rows = targets.map(target => {
+  const currentName = displayText(current?.name || (currentTarget === "local" ? "这台设备" : state.playTargetName || "播放设备"));
+  // The name carries the accent so the answer is readable without scanning rows.
+  $("deviceCurrentTarget").innerHTML = `正在通过 <b>${escapeHtml(currentName)}</b> 播放`;
+  const searchWrap = $("deviceSearchWrap");
+  if (searchWrap) searchWrap.hidden = targets.length <= 8;
+  const query = displayText(state.deviceSearchQuery || "").trim().toLowerCase();
+  const visible = query
+    ? targets.filter(target => `${displayText(target.name || "")} ${deviceTargetDetail(target)}`.toLowerCase().includes(query))
+    : targets;
+  const rows = new Map(visible.map(target => {
     const isCurrent = target.id === currentTarget;
-    const kind = target.kind === "dlna_push" ? "UPnP / DLNA" : (target.kind === "mpd" ? "本机 USB DAC" : "浏览器播放");
-    const caps = target.caps ? dacCapsText(target.caps) : "";
-    const detail = target.message || (caps || kind);
-    const disabled = target.online === true || target.online === undefined ? "" : " disabled";
-  return `<button type="button" class="device-row${isCurrent ? " is-current" : ""}" data-target="${escapeHtml(target.id)}" data-target-name="${escapeHtml(displayText(target.name || "播放设备"))}" aria-pressed="${isCurrent}"${disabled}><span class="device-row-radio" aria-hidden="true">${isCurrent ? '<svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3.2 3.2L13 4.5"/></svg>' : ""}</span><span class="device-row-text"><strong>${escapeHtml(displayText(target.name || "播放设备"))}</strong><small>${escapeHtml(detail)}</small></span></button>`;
-  });
-  const rowById = new Map(targets.map((target, index) => [String(target.id), rows[index]]));
-  const groupedRows = [...groups.values()]
-    .filter(group => group.targets.length)
-    .map(group => `<section class="device-section"><h3>${group.title}</h3>${group.targets.map(target => rowById.get(String(target.id))).join("")}</section>`)
-    .join("");
-  $("deviceList").innerHTML = groupedRows || `<p class="dialog-help">没有找到可用的播放目标。</p>`;
+    const online = deviceTargetIsOnline(target);
+    const group = deviceTargetGroupKey(target);
+    const detail = deviceTargetDetail(target);
+    const status = deviceTargetStatusText(target, isCurrent);
+    return [String(target.id), `<button type="button" class="device-row${isCurrent ? " is-current" : ""}${online ? "" : " is-offline"}" data-target="${escapeHtml(target.id)}" data-target-name="${escapeHtml(displayText(target.name || "播放设备"))}" aria-pressed="${isCurrent}"${online ? "" : " disabled"}><span class="device-row-icon is-${group}" aria-hidden="true">${DEVICE_TARGET_ICONS[group]}</span><span class="device-row-text"><strong>${escapeHtml(displayText(target.name || "播放设备"))}</strong><small>${escapeHtml(detail)}</small></span><span class="device-row-state"><span class="device-row-status">${status}</span><span class="device-row-radio" aria-hidden="true">${isCurrent ? '<svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3.2 3.2L13 4.5"/></svg>' : ""}</span></span></button>`];
+  }));
+  const groups = [
+    { key: "host", title: "本机与 USB" },
+    { key: "network", title: "网络播放器 · DLNA / UPnP" },
+  ];
+  const groupedRows = groups.map(group => {
+    const items = visible.filter(target => deviceTargetGroupKey(target) === group.key);
+    if (!items.length) return "";
+    return `<section class="device-section"><h3>${group.title}</h3>${items.map(target => rows.get(String(target.id))).join("")}</section>`;
+  }).join("");
+  $("deviceList").innerHTML = groupedRows
+    || `<p class="dialog-help">${query ? "没有匹配的设备，换个关键词试试。" : "没有找到可用的播放目标。"}</p>`;
   document.querySelectorAll("[data-target]").forEach(button => {
     button.onclick = () => selectPlaybackTarget(button.dataset.target, button.dataset.targetName || "当前设备");
   });
@@ -7276,9 +7324,11 @@ function markCurrentDeviceTarget(targetId, switching = false) {
     button.classList.toggle("is-current", isCurrent);
     button.classList.toggle("is-switching", switching && isCurrent);
     button.setAttribute("aria-pressed", String(isCurrent));
-    button.disabled = switching;
+    button.disabled = switching || button.classList.contains("is-offline");
     const radio = button.querySelector(".device-row-radio");
     if (radio) radio.innerHTML = isCurrent ? '<svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3.2 3.2L13 4.5"/></svg>' : "";
+    const status = button.querySelector(".device-row-status");
+    if (status && !button.classList.contains("is-offline")) status.textContent = isCurrent ? "正在播放" : "可用";
   });
 }
 function scheduleDeviceRefresh() {
@@ -7355,8 +7405,14 @@ async function loadDevices(forceRefresh = false) {
     const scanButton = $("scanDevices");
     const refreshing = data.refreshing === true;
     scanButton.disabled = refreshing;
-    scanButton.textContent = refreshing ? "正在搜索..." : "重新搜索设备";
-    $("deviceRefreshStatus").textContent = refreshing ? "正在刷新局域网设备..." : "设备会按类别显示";
+    scanButton.textContent = refreshing ? "正在扫描…" : "重新扫描";
+    const status = $("deviceRefreshStatus");
+    if (status) {
+      status.classList.toggle("is-busy", refreshing);
+      status.textContent = refreshing
+        ? `正在扫描局域网 · 已发现 ${Math.max(0, targets.length - 1)} 台`
+        : `上次刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · ${Math.max(0, targets.length - 1)} 台可用`;
+    }
     if (refreshing && $("deviceDialog").open) scheduleDeviceRefresh();
   } catch (error) {
     if (token === state.deviceLoadRequestToken && state.deviceLoadController === controller
@@ -7873,43 +7929,6 @@ async function savePlaybackSettings() {
   }
   return data;
 }
-function metadataStatusSummary(data = {}) {
-  const jobs = data.jobs || {};
-  const pending = Number(jobs.pending || 0) + Number(jobs.retry || 0) + Number(jobs.running || 0);
-  const progress = pending
-    ? `后台剩余 ${pending} 项`
-    : (data.enabled === true ? "后台队列已完成" : "后台补全未开启（播放/歌词页仍可按需获取）");
-  const failed = Number(jobs.failed || 0);
-  const noMatchJobs = Number(jobs.no_match || 0);
-  const writeStatus = failed ? ` · ${failed} 项任务失败，可查看数据源原因后重试` : "";
-  const noMatchStatus = noMatchJobs ? ` · ${noMatchJobs} 项暂未匹配（可稍后重试）` : "";
-  const workers = Number(data.fetch_workers || 0);
-  const average = Number(data.tag_write_average_seconds || 0);
-  const types = data.job_types || {};
-  const fetching = ["lyrics", "track", "album", "artist", "composer"].reduce((total, type) => total + Number(types[type]?.pending || 0), 0);
-  const writing = Number(types.tag_write?.pending || 0);
-  const tagState = data.tag_write_enabled === true
-    ? `Tag ${data.tag_write_in_progress === true ? "写入中" : "空闲"}（待写入 ${writing}）${average ? `，平均 ${average.toFixed(1)} 秒/首` : ""}`
-    : `Tag 写回已关闭（待写入 ${writing}）`;
-  const pipeline = workers ? ` · 抓取 ${workers} 并发（待抓取 ${fetching}）· ${tagState}` : ` · ${tagState}`;
-  const matches = data.track_matches || {};
-  const review = Number(matches.review || 0);
-  const matched = Number(matches.auto || 0) + Number(matches.confirmed || 0);
-  const matchStatus = (matched || review) ? ` · 曲目匹配 ${matched} 项${review ? `，待确认 ${review} 项` : ""}` : "";
-  const providerFailures = data.provider_failures && typeof data.provider_failures === "object"
-    ? Object.entries(data.provider_failures).filter(([, value]) => Number(value?.count || 0) > 0).slice(0, 2)
-    : [];
-  const providerStatus = providerFailures.length
-    ? ` · 数据源异常：${providerFailures.map(([name, value]) => {
-      const cooldown = Math.max(0, Math.min(60, Number(value?.cooldown_seconds || 0)));
-      const error = typeof value?.last_error === "string"
-        ? value.last_error.replace(/[\r\n]+/g, " ").trim().slice(0, 96)
-        : "";
-      return `${name}×${Number(value?.count || 0)}${cooldown ? `（冷却${cooldown}s）` : ""}${error ? `：${error}` : ""}`;
-    }).join("、")}`
-    : "";
-  return `元数据数据源 · ${progress} · 已缓存 ${Number(data.entities || 0)} 项分类资料、${Number(data.lyrics || 0)} 首歌词${matchStatus}${pipeline}${writeStatus}${noMatchStatus}${providerStatus}`;
-}
 function metadataProviderFallbackEntries(recommended = []) {
   const source = Array.isArray(recommended) && recommended.length === METADATA_PROVIDER_SAFE_ORDER.length
     ? recommended
@@ -8116,18 +8135,10 @@ function updateMetadataSettingsOverview() {
   if (writeNode) writeNode.textContent = tagWrite ? "已启用" : "未启用";
   if (providersNode) providersNode.textContent = `${enabledCount} 个已启用`;
 }
+// The markup owns the source picker now: it sits in the search bar next to the
+// query, so the dialog no longer grows a second toolbar at runtime (R494).
 function ensureMetadataCandidateProviderPicker() {
-  const dialog = metadataCandidateDialogNode();
-  if (!dialog) return;
-  let bar = dialog.querySelector(".metadata-candidate-source-bar");
-  if (!bar) {
-    bar = document.createElement("div");
-    bar.className = "metadata-candidate-source-bar";
-    bar.innerHTML = '<label><span>查询数据源</span><select id="metadataCandidateProviderSelect"><option value="">自动匹配（按设置顺序）</option></select></label><small>单独选择数据源不会改变全局排序。</small>';
-    const status = metadataCandidateStatusNode();
-    dialog.insertBefore(bar, status || dialog.firstChild);
-  }
-  const select = bar.querySelector("select");
+  const select = $("metadataCandidateProviderSelect");
   if (!select || select.dataset.bound === "1") return;
   select.dataset.bound = "1";
   select.addEventListener("change", () => {
@@ -8136,7 +8147,9 @@ function ensureMetadataCandidateProviderPicker() {
     try { state.metadataCandidateSearchController?.abort(); } catch (_) {}
     state.metadataCandidateProviderId = select.value;
     const statusNode = metadataCandidateStatusNode();
-    if (statusNode) statusNode.textContent = select.value ? `已选择${select.options[select.selectedIndex]?.textContent || "指定数据源"}，请点击搜索开始查询。` : "将按设置页顺序自动尝试数据源。";
+    if (statusNode) statusNode.textContent = select.value
+      ? `已选择${select.options[select.selectedIndex]?.textContent || "指定数据源"}，请点击搜索开始查询。`
+      : "将按设置页顺序自动尝试数据源。";
   });
 }
 function renderMetadataCandidateProviderPicker() {
@@ -8148,6 +8161,9 @@ function renderMetadataCandidateProviderPicker() {
   entries.forEach(entry => select.append(new Option(metadataProviderDisplayName(entry.id), entry.id)));
   select.value = state.metadataCandidateProviderId || "";
 }
+function metadataProviderGripMarkup() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+}
 function renderMetadataProviders() {
   const list = $("metadataProviderList");
   if (!list) return;
@@ -8156,10 +8172,15 @@ function renderMetadataProviders() {
   state.metadataProviders = entries;
   updateMetadataSettingsOverview();
   entries.forEach((entry, index) => {
+    // One row = handle, name/capabilities, order pair, test, switch.  The old row
+    // carried three full-size buttons plus a checkbox and read as a toolbar; the
+    // order pair is the only part that may be hidden, and only for the fixed
+    // fallback entry (R494).
+    const fixed = entry.id === MUSICBRAINZ_PROVIDER_ID;
     const row = document.createElement("article");
-    row.className = `metadata-provider-row${entry.id === MUSICBRAINZ_PROVIDER_ID ? " is-fixed-last" : ""}`;
+    row.className = `metadata-provider-row${fixed ? " is-fixed-last" : ""}${entry.enabled === true ? "" : " is-off"}`;
     row.dataset.providerId = entry.id;
-    row.draggable = entry.id !== MUSICBRAINZ_PROVIDER_ID;
+    row.draggable = !fixed;
     if (row.draggable) {
       row.addEventListener("dragstart", event => {
         state.metadataProviderDragId = entry.id;
@@ -8184,48 +8205,46 @@ function renderMetadataProviders() {
       renderMetadataProviders();
       updateMetadataProviderDirtyStatus();
     });
-    const header = document.createElement("div");
-    header.className = "metadata-provider-header";
-    const toggle = document.createElement("label");
-    toggle.className = "metadata-toggle metadata-provider-toggle";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = entry.enabled === true;
-    checkbox.dataset.metadataProviderToggle = entry.id;
-    checkbox.addEventListener("change", () => {
-      const target = state.metadataProviders.find(item => item.id === entry.id);
-      if (target) target.enabled = checkbox.checked === true;
-      state.metadataProviderDirty = true;
-      updateMetadataProviderDirtyStatus();
-      updateMetadataSettingsOverview();
-    });
+    const grip = document.createElement("span");
+    grip.className = "metadata-provider-grip";
+    grip.setAttribute("aria-hidden", "true");
+    grip.innerHTML = metadataProviderGripMarkup();
+    const body = document.createElement("span");
+    body.className = "metadata-provider-body";
     const name = document.createElement("span");
+    name.className = "metadata-provider-name";
     name.textContent = metadataProviderDisplayName(entry.id);
-    toggle.append(checkbox, name);
+    if (fixed) {
+      const tag = document.createElement("em");
+      tag.textContent = "兜底";
+      name.append(tag);
+    }
     const capabilities = document.createElement("small");
     capabilities.className = "metadata-provider-capabilities";
     capabilities.textContent = metadataProviderCapabilityText(entry);
-    header.append(toggle, capabilities);
-    const actions = document.createElement("div");
-    actions.className = "metadata-provider-actions";
+    body.append(name, capabilities);
+    const move = document.createElement("span");
+    move.className = "metadata-provider-move";
     const up = document.createElement("button");
     up.type = "button";
-    up.className = "secondary-button metadata-provider-move";
+    up.className = "metadata-provider-move-button";
     up.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>';
     up.title = "上移";
     up.setAttribute("aria-label", "上移");
     up.dataset.metadataProviderMove = "up";
-    up.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index === 0;
+    up.disabled = fixed || index === 0;
     up.addEventListener("click", () => moveMetadataProvider(entry.id, -1));
     const down = document.createElement("button");
     down.type = "button";
-    down.className = "secondary-button metadata-provider-move";
+    down.className = "metadata-provider-move-button";
     down.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg>';
     down.title = "下移";
     down.setAttribute("aria-label", "下移");
     down.dataset.metadataProviderMove = "down";
-    down.disabled = entry.id === MUSICBRAINZ_PROVIDER_ID || index >= entries.length - 2;
+    down.disabled = fixed || index >= entries.length - 2;
     down.addEventListener("click", () => moveMetadataProvider(entry.id, 1));
+    if (fixed) move.classList.add("is-placeholder");
+    move.append(up, down);
     const test = document.createElement("button");
     test.type = "button";
     test.className = "secondary-button metadata-provider-test";
@@ -8233,13 +8252,30 @@ function renderMetadataProviders() {
     test.disabled = Boolean(state.metadataProviderTestInFlight);
     test.dataset.metadataProviderTest = entry.id;
     test.addEventListener("click", () => testMetadataProvider(entry.id));
-    actions.append(up, down, test);
-    header.append(actions);
+    const toggle = document.createElement("label");
+    toggle.className = "switch-control metadata-provider-switch";
+    toggle.title = entry.enabled === true ? "已启用，点击关闭" : "已关闭，点击启用";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = entry.enabled === true;
+    checkbox.dataset.metadataProviderToggle = entry.id;
+    checkbox.setAttribute("aria-label", `启用 ${metadataProviderDisplayName(entry.id)}`);
+    checkbox.addEventListener("change", () => {
+      const target = state.metadataProviders.find(item => item.id === entry.id);
+      if (target) target.enabled = checkbox.checked === true;
+      state.metadataProviderDirty = true;
+      updateMetadataProviderDirtyStatus();
+      updateMetadataSettingsOverview();
+      renderMetadataProviders();
+    });
+    const track = document.createElement("span");
+    track.setAttribute("aria-hidden", "true");
+    toggle.append(checkbox, track);
     const result = document.createElement("div");
     result.className = "metadata-provider-result";
     result.dataset.metadataProviderResult = entry.id;
     result.hidden = true;
-    row.append(header, result);
+    row.append(grip, body, move, test, toggle, result);
     list.append(row);
     const previous = metadataProviderResultFor(entry.id);
     if (previous) renderMetadataProviderTestResult(row, previous);
@@ -8255,31 +8291,13 @@ function updateMetadataProviderDirtyStatus() {
   if (saveButton) saveButton.disabled = state.metadataProviderDirty !== true;
   status.textContent = state.metadataProviderDirty === true
     ? "数据源配置已修改，点击底部“保存更改”后生效。"
-    : "拖动或使用上移/下移调整顺序，可单独测试或启用数据源。";
+    : "拖动左侧手柄调整顺序，或用箭头逐格移动；关闭的项目不参与查询。";
 }
 function moveMetadataProvider(providerId, direction) {
   state.metadataProviders = moveMetadataProviderEntries(state.metadataProviders, providerId, direction);
   state.metadataProviderDirty = true;
   renderMetadataProviders();
   updateMetadataProviderDirtyStatus();
-}
-function restoreRecommendedMetadataProviders() {
-  state.metadataProviders = normalizeMetadataProviderEntries(state.metadataProviderRecommended);
-  state.metadataProviderResults = Object.create(null);
-  state.metadataProviderDirty = true;
-  renderMetadataProviders();
-  updateMetadataProviderDirtyStatus();
-}
-async function restoreAndSaveRecommendedMetadataProviders() {
-  // If the settings pane is opened before its first read completes, load the
-  // current server state first, then re-apply the user's restore intent.  The
-  // load response must never overwrite that intent before the save.
-  if (!state.metadataProvidersLoaded) {
-    const loaded = await loadMetadataStatus();
-    if (!loaded || !state.metadataProvidersLoaded) throw new Error("数据源配置不可用");
-  }
-  restoreRecommendedMetadataProviders();
-  return saveMetadataProvidersOnly();
 }
 function applyMetadataProviderSettings(data = {}) {
   const recommended = Array.isArray(data.recommended) ? data.recommended : [];
@@ -8292,12 +8310,12 @@ function applyMetadataProviderSettings(data = {}) {
   updateMetadataProviderDirtyStatus();
   updateMetadataSettingsOverview();
 }
+// One fixed probe song instead of three free-text inputs.  Every run has to ask
+// the same question before two providers can be compared, and the inputs used to
+// push the list itself below the fold on a phone (R494).
+const METADATA_PROBE_TRACK = Object.freeze({ title: "双截棍", artist: "周杰伦", album: "" });
 function metadataProviderProbePayload() {
-  const title = $("metadataProbeTitleInput")?.value?.trim() || "";
-  const artist = $("metadataProbeArtistInput")?.value?.trim() || "";
-  const album = $("metadataProbeAlbumInput")?.value?.trim() || "";
-  if (!title) throw new Error("请输入要测试的歌曲标题");
-  return { title, artist, album };
+  return { ...METADATA_PROBE_TRACK };
 }
 async function testMetadataProvider(providerId) {
   const row = $("metadataProviderList")?.querySelector?.(`[data-provider-id="${providerId}"]`);
@@ -8320,9 +8338,12 @@ async function testMetadataProvider(providerId) {
     const data = metadataProviderProbeResponse(await readResponseJsonBounded(response));
     if (!response.ok || data.ok !== true) throw new Error(data.message || data.error || "数据源测试失败");
     state.metadataProviderResults[providerId] = data.result || {};
+    const outcome = data.result?.ok === true ? "info" : "warn";
+    pushMetadataLog(outcome, "数据源", `${metadataProviderDisplayName(providerId)} 测试：${metadataProviderResultText(data.result || {})}`);
     return data.result || {};
   } catch (error) {
     state.metadataProviderResults[providerId] = metadataProviderUnavailableResult(providerId, error.message);
+    pushMetadataLog("error", "数据源", `${metadataProviderDisplayName(providerId)} 测试失败：${error.message || "请求未完成"}`);
     return state.metadataProviderResults[providerId];
   } finally {
     state.metadataProviderTestInFlight = "";
@@ -8411,6 +8432,148 @@ function metadataTagWriteConfirmation(input, confirmFn = confirm) {
   if (!input || input.checked !== true || input.dataset?.savedEnabled === "true") return true;
   return typeof confirmFn === "function" && confirmFn("启用 Tag 写回后，补全结果可能修改原始歌曲文件。确定继续吗？") === true;
 }
+function metadataTaskCounts(status = {}) {
+  const jobs = status.jobs || {};
+  const types = status.job_types || {};
+  const fetching = ["lyrics", "track", "album", "artist", "composer"]
+    .reduce((total, type) => total + Number(types[type]?.pending || 0), 0);
+  return {
+    pending: Number(jobs.pending || 0) + Number(jobs.retry || 0) + Number(jobs.running || 0),
+    fetching,
+    writing: Number(types.tag_write?.pending || 0),
+    failed: Number(jobs.failed || 0),
+    noMatch: Number(jobs.no_match || 0),
+    workers: Number(status.fetch_workers || 0),
+  };
+}
+// A provider that is cooling down is the only explanation for a run of failures,
+// so the reason stays on the pane next to the counters instead of hiding in a
+// single summary sentence (R494).
+function metadataProviderFailureText(status = {}) {
+  const failures = status.provider_failures && typeof status.provider_failures === "object"
+    ? Object.entries(status.provider_failures).filter(([, value]) => Number(value?.count || 0) > 0).slice(0, 2)
+    : [];
+  return failures.map(([name, value]) => {
+    const cooldown = Math.max(0, Math.min(60, Number(value?.cooldown_seconds || 0)));
+    const error = typeof value?.last_error === "string"
+      ? value.last_error.replace(/[\r\n]+/g, " ").trim().slice(0, 60)
+      : "";
+    return `${name}×${Number(value?.count || 0)}${cooldown ? `（冷却${cooldown}s）` : ""}${error ? `：${error}` : ""}`;
+  }).join("、");
+}
+function renderMetadataTaskState(status = {}) {
+  state.metadataStatus = status && typeof status === "object" ? status : {};
+  const counts = metadataTaskCounts(state.metadataStatus);
+  const enabled = state.metadataStatus.enabled === true;
+  const headline = $("metadataTaskHeadline");
+  const detail = $("metadataTaskDetail");
+  const dot = $("metadataTaskDot");
+  const stats = $("metadataTaskStats");
+  if (headline) {
+    headline.textContent = !enabled ? "后台补全已关闭" : (counts.pending ? "正在补全" : "队列已完成");
+  }
+  if (detail) {
+    // Tag 写回 runs as its own lane, so a busy writer is worth a word even when the
+    // fetch queue is empty.  The flag is compared strictly: the service sends a
+    // real boolean and a truthy string must not be read as "writing" (R494).
+    const writingTags = state.metadataStatus.tag_write_in_progress === true;
+    const lane = counts.pending
+      ? `剩余 ${counts.pending} 项 · ${counts.workers || 0} 并发`
+      : "没有待处理项目";
+    detail.textContent = !enabled
+      ? "播放与歌词页仍会按需获取"
+      : (writingTags ? `${lane} · Tag 写入中` : lane);
+  }
+  if (dot) {
+    dot.className = `metadata-task-dot${!enabled ? " is-off" : (counts.pending ? " is-busy" : " is-done")}`;
+  }
+  if (stats) {
+    stats.replaceChildren();
+    const rows = [["待抓取", counts.fetching], ["待写入", counts.writing], ["失败", counts.failed], ["未匹配", counts.noMatch]];
+    rows.forEach(([label, value]) => {
+      const item = document.createElement("span");
+      item.dataset.metadataStat = label;
+      const name = document.createElement("i");
+      name.textContent = label;
+      const count = document.createElement("b");
+      count.textContent = String(value);
+      if (label === "失败" && value > 0) count.classList.add("is-bad");
+      item.append(name, count);
+      stats.append(item);
+    });
+  }
+  const alert = $("metadataTaskAlert");
+  if (alert) {
+    const failureText = metadataProviderFailureText(state.metadataStatus);
+    alert.hidden = !failureText;
+    alert.textContent = failureText ? `数据源异常：${failureText}` : "";
+  }
+}
+function metadataLogStamp(at) {
+  return new Date(at).toLocaleTimeString("zh-CN", { hour12: false });
+}
+function pushMetadataLog(level, scope, text) {
+  const message = displayText(text);
+  if (!message) return;
+  if (!Array.isArray(state.metadataLog)) state.metadataLog = [];
+  state.metadataLog.push({ at: Date.now(), level, scope, text: message });
+  if (state.metadataLog.length > 200) state.metadataLog.splice(0, state.metadataLog.length - 200);
+  if ($("metadataLogDialog")?.open) renderMetadataLog();
+}
+function metadataLogFilterMatches(entry) {
+  const filter = state.metadataLogFilter || "all";
+  if (filter === "issue") return entry.level === "error" || entry.level === "warn";
+  if (filter === "done") return entry.level === "info";
+  return true;
+}
+function renderMetadataLog() {
+  const list = $("metadataLogList");
+  if (!list) return;
+  const counts = metadataTaskCounts(state.metadataStatus);
+  const summary = $("metadataLogSummary");
+  if (summary) {
+    summary.textContent = `队列 ${counts.pending} 项 · 失败 ${counts.failed} · 未匹配 ${counts.noMatch} · 待写入 ${counts.writing}`;
+  }
+  document.querySelectorAll("[data-metadata-log-filter]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.metadataLogFilter === (state.metadataLogFilter || "all")));
+  });
+  const entries = (Array.isArray(state.metadataLog) ? state.metadataLog : []).filter(metadataLogFilterMatches);
+  list.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "dialog-help";
+    empty.textContent = state.metadataLog?.length ? "当前筛选下没有记录。" : "还没有记录；补全、重试或测试数据源后会出现在这里。";
+    list.append(empty);
+    return;
+  }
+  entries.slice().reverse().forEach(entry => {
+    const row = document.createElement("div");
+    row.className = `metadata-log-row is-${entry.level || "info"}`;
+    const time = document.createElement("time");
+    time.textContent = metadataLogStamp(entry.at);
+    const scope = document.createElement("span");
+    scope.className = "metadata-log-scope";
+    scope.textContent = entry.scope || "任务";
+    const text = document.createElement("p");
+    text.textContent = entry.text;
+    row.append(time, scope, text);
+    list.append(row);
+  });
+}
+function metadataLogText() {
+  return (Array.isArray(state.metadataLog) ? state.metadataLog : [])
+    .map(entry => `${metadataLogStamp(entry.at)}\t${entry.scope || "任务"}\t${entry.text}`)
+    .join("\n");
+}
+async function copyMetadataLog() {
+  const note = $("metadataLogNote");
+  try {
+    await navigator.clipboard.writeText(metadataLogText());
+    if (note) note.textContent = "已复制到剪贴板。";
+  } catch (_) {
+    if (note) note.textContent = "复制失败，可长按选择日志内容。";
+  }
+}
 async function loadMetadataStatus() {
   const statusNode = $("metadataStatusText");
   if (!statusNode) return null;
@@ -8451,8 +8614,20 @@ async function loadMetadataStatus() {
     const liveStatus = statusResult.response?.ok
       ? unwrapMetadataResponsePayload(statusResult.data || {})
       : data.status || {};
-    statusNode.textContent = metadataStatusSummary(liveStatus);
+    renderMetadataTaskState(liveStatus);
     renderMetadataTagJobs(liveStatus);
+    // The pane renders its own counters now, so this line only carries action
+    // feedback such as "已请求…"; a successful read clears the placeholder (R494).
+    statusNode.textContent = "";
+    if (!state.metadataLog.length) {
+      const counts = metadataTaskCounts(liveStatus);
+      pushMetadataLog("info", "任务", `读取后台状态：队列 ${counts.pending} 项，失败 ${counts.failed} 项，未匹配 ${counts.noMatch} 项`);
+    }
+    const providerAlert = metadataProviderFailureText(liveStatus);
+    if (providerAlert && providerAlert !== state.metadataProviderAlert) {
+      state.metadataProviderAlert = providerAlert;
+      pushMetadataLog("warn", "数据源", providerAlert);
+    }
     return data;
   } catch (error) {
     statusNode.textContent = "无法读取后台元数据状态";
@@ -8482,7 +8657,7 @@ async function saveMetadataOverviewSettings() {
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存概览设置失败");
   $("metadataEnabledInput").checked = data.enabled === true;
   $("metadataGraceDaysInput").value = Number(data.orphan_grace_days ?? graceDays);
-  $("metadataStatusText").textContent = metadataStatusSummary(data.status || {});
+  renderMetadataTaskState(data.status || {});
   renderMetadataTagJobs(data.status || {});
   updateMetadataSettingsOverview();
   return data;
@@ -8500,7 +8675,7 @@ async function saveMetadataTagSettings() {
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存 Tag 写回设置失败");
   tagWriteInput.checked = data.tag_write_enabled === true;
   tagWriteInput.dataset.savedEnabled = String(data.tag_write_enabled === true);
-  $("metadataStatusText").textContent = metadataStatusSummary(data.status || {});
+  renderMetadataTaskState(data.status || {});
   renderMetadataTagJobs(data.status || {});
   updateMetadataSettingsOverview();
   return data;
@@ -8513,7 +8688,9 @@ async function retryFailedTagWrites() {
     const response = await apiFetch("api/metadata/retry-tag-writes", { method: "POST" });
     const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
     if (!response.ok || data.ok !== true) throw new Error(data.message || "重试失败");
-    $("metadataStatusText").textContent = data.retried ? `已将 ${data.retried} 项失败写回重新加入队列。` : "没有可重试的失败写回。";
+    const retried = Number(data.retried || 0);
+    $("metadataStatusText").textContent = retried ? `已将 ${retried} 项失败写回重新加入队列。` : "没有可重试的失败写回。";
+    pushMetadataLog(retried ? "info" : "warn", "Tag", retried ? `${retried} 项失败写回已重新排队` : "没有可重试的失败写回");
     renderMetadataTagJobs(data.status || {});
   } catch (error) {
     $("metadataStatusText").textContent = error.message || "重试失败";
@@ -8529,8 +8706,10 @@ async function refreshMetadataLibrary() {
     const data = unwrapMetadataResponsePayload(await readResponseJsonBounded(response));
     if (!response.ok || data.ok !== true) throw new Error(data.message || "启动后台补全失败");
     $("metadataStatusText").textContent = "已请求后台元数据补全并加入队列，页面可以正常关闭或继续播放。";
+    pushMetadataLog("info", "任务", "已请求重新补全，任务已加入后台队列");
   } catch (error) {
     $("metadataStatusText").textContent = error.message || "启动后台补全失败";
+    pushMetadataLog("error", "任务", `启动后台补全失败：${error.message || "未知原因"}`);
   } finally {
     button.disabled = false;
   }
@@ -9191,53 +9370,211 @@ function openMetadataCandidateDialog(trackId) {
   const input = $("metadataCandidateSearchInput");
   if (input) input.value = displayTrackTitle(item);
   const searchStatus = $("metadataCandidateSearchStatus");
-  if (searchStatus) searchStatus.textContent = "识别失败时可手动搜索并选择结果。";
+  if (searchStatus) searchStatus.textContent = "识别失败时可修改关键词重新搜索。";
+  // Nothing is selected until a query answers, so the footer cannot promise a
+  // write before there is anything to write (R494).
+  state.metadataCandidateSelection = null;
+  renderMetadataCandidatePreview(item, null);
+  const apply = $("applyMetadataCandidateBtn");
+  if (apply) { apply.disabled = true; apply.textContent = "确认并写入"; }
+  const status = metadataCandidateStatusNode();
+  if (status) status.textContent = "正在查询候选结果...";
   dialog.showModal();
   searchTrackMetadataManually();
 }
+// The service writes a candidate field when the local value is empty **or** when
+// the local value came from the filename rather than a real tag.  The preview has
+// to say exactly that: the old dialog promised "只补全空白" while filename-derived
+// values were silently replaced (R494).
+const METADATA_CANDIDATE_FIELDS = [
+  ["title", "歌名"],
+  ["artist", "歌手"],
+  ["album", "专辑"],
+  ["album_artist", "专辑艺人"],
+  ["date", "年份"],
+  ["track_no", "音轨号"],
+  ["disc_no", "碟号"],
+  ["genre", "风格"],
+];
+// Mirrors `PLACEHOLDER_NAMES` in metadata_service.py.
+const METADATA_CANDIDATE_PLACEHOLDERS = new Set([
+  "", "未分类", "未知专辑", "未知歌手", "未知艺术家", "未知作曲者",
+  "unknown album", "unknown artist", "unknown composer",
+]);
+function metadataCandidateConfidenceValue(candidate) {
+  const raw = candidate?.confidence;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.min(1, value) : 0;
+}
+function metadataCandidateConfidenceLabel(candidate) {
+  const percent = globalThis.fnAudioMetadataCandidatePresentationPolicy?.confidencePercent;
+  return typeof percent === "function" ? percent(candidate?.confidence) : `${Math.round(metadataCandidateConfidenceValue(candidate) * 100)}%`;
+}
+function metadataCandidateFieldChange(item, candidate, field) {
+  const next = String(candidate?.[field] ?? "").trim();
+  if (!next) return null;
+  const current = String(item?.[field] ?? "").trim();
+  // Same text is not a change worth showing, whatever it came from.
+  if (current && current.toLowerCase() === next.toLowerCase()) return {state: "keep", current, next};
+  if (!current || METADATA_CANDIDATE_PLACEHOLDERS.has(current.toLowerCase())) {
+    return {state: "fill", current, next};
+  }
+  // A value the scanner took from the file name is not a user tag, so the
+  // service is free to replace it.
+  if (item?.metadata_source?.[field] !== "tag") return {state: "replace", current, next};
+  return {state: "keep", current, next};
+}
+function metadataCandidateChanges(item, candidate) {
+  const changes = [];
+  if (!candidate) return changes;
+  METADATA_CANDIDATE_FIELDS.forEach(([field, label]) => {
+    const change = metadataCandidateFieldChange(item, candidate, field);
+    if (change) changes.push({field, label, ...change});
+  });
+  if (String(candidate.image_url || "").trim()) {
+    const hasArtwork = Boolean(item?.metadata_artwork_id || item?.artwork_id);
+    changes.push({
+      field: "artwork",
+      label: "封面",
+      state: hasArtwork ? "keep" : "fill",
+      current: hasArtwork ? "已有封面" : "缺失",
+      next: hasArtwork ? "保留" : "将下载 1 张",
+    });
+  }
+  return changes;
+}
+function renderMetadataCandidatePreview(item, candidate) {
+  const list = $("metadataCandidatePreview");
+  const note = $("metadataCandidatePreviewNote");
+  const changes = metadataCandidateChanges(item, candidate);
+  const writing = changes.filter(change => change.state !== "keep").length;
+  const keeping = changes.length - writing;
+  if (list) {
+    list.replaceChildren();
+    changes.forEach(change => {
+      const row = document.createElement("div");
+      row.className = `metadata-candidate-change is-${change.state}`;
+      row.dataset.field = change.field;
+      const term = document.createElement("dt");
+      term.textContent = change.label;
+      const detail = document.createElement("dd");
+      if (change.state === "keep") {
+        const keep = document.createElement("span");
+        keep.className = "metadata-candidate-keep";
+        keep.textContent = `${change.current} · 保留`;
+        detail.append(keep);
+      } else {
+        if (change.state === "replace" && change.current) {
+          const current = document.createElement("s");
+          current.className = "metadata-candidate-current";
+          current.textContent = change.current;
+          // A struck "1" on its own reads like a plus sign, so the arrow carries
+          // the meaning of the replacement (R494).
+          const arrow = document.createElement("span");
+          arrow.className = "metadata-candidate-arrow";
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = "→";
+          detail.append(current, arrow);
+        }
+        const next = document.createElement("span");
+        next.className = "metadata-candidate-next";
+        next.textContent = change.next;
+        detail.append(next);
+      }
+      row.append(term, detail);
+      list.append(row);
+    });
+  }
+  if (note) {
+    note.classList.toggle("is-idle", !writing);
+    note.textContent = !candidate
+      ? "选择左侧候选后，这里会列出每个字段的去向。"
+      : (changes.length
+        ? `共 ${writing} 项将写入，${keeping} 项保留。只改空白与文件名推断值，已有 Tag 不动。`
+        : "候选没有带来本曲缺少的字段，确认后只记录这次匹配。");
+  }
+  return {writing, keeping, changes};
+}
+function syncMetadataCandidateSelection() {
+  const selection = state.metadataCandidateSelection;
+  if (!selection) return;
+  const item = itemById(selection.trackId) || {};
+  const candidate = selection.candidates[selection.index] || null;
+  const {writing} = renderMetadataCandidatePreview(item, candidate);
+  const apply = $("applyMetadataCandidateBtn");
+  if (apply) {
+    apply.disabled = !candidate;
+    apply.textContent = writing ? `确认并写入 ${writing} 项` : "确认匹配";
+  }
+}
 function renderMetadataCandidateChoices(list, candidates, trackId, status = "review", searchId = "") {
-  const candidateRows = candidates.map((candidate, index) => {
-    const subtitle = [candidate.artist, candidate.album, metadataCandidateSourceLabel(candidate), globalThis.fnAudioMetadataCandidatePresentationPolicy.confidencePercent(candidate.confidence)].filter(Boolean).map(String).join(" · ");
-    return `<label class="metadata-candidate-choice"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span></label>`;
+  const rows = candidates.map((candidate, index) => {
+    const subtitle = [candidate.artist, candidate.album, candidate.date, metadataCandidateSourceLabel(candidate)]
+      .filter(Boolean).map(String).join(" · ");
+    const value = metadataCandidateConfidenceValue(candidate);
+    const tier = value >= 0.9 ? "is-high" : (value >= 0.7 ? "is-mid" : "is-low");
+    const percent = metadataCandidateConfidenceLabel(candidate);
+    return `<label class="metadata-candidate-choice${index === 0 ? " is-selected" : ""}"><input type="radio" name="metadataCandidate" value="${index}" ${index === 0 ? "checked" : ""}><span class="metadata-candidate-row"><strong>${escapeHtml(String(candidate.title))}</strong><small>${escapeHtml(subtitle)}</small></span><span class="metadata-candidate-conf ${tier}"><b>${escapeHtml(percent)}</b><span class="metadata-candidate-bar"><i style="width:${escapeHtml(percent)}"></i></span></span></label>`;
   }).join("");
-  list.innerHTML = `<div class="metadata-candidate-list">${candidateRows}</div><button type="button" class="track-action-choice" data-apply-track-metadata="${escapeHtml(String(trackId))}">确认所选候选并补全空白 Tag</button>`;
-  const apply = list.querySelector("[data-apply-track-metadata]");
-  if (!apply) return;
-  apply.onclick = async () => {
-    apply.disabled = true;
-    const applyController = typeof AbortController === "function" ? new AbortController() : null;
-    state.metadataCandidateController = applyController;
-    const requestToken = state.metadataCandidateRequestToken;
-    const searchToken = state.metadataCandidateSearchToken;
-    const isCurrentRequest = () => state.metadataCandidateController === applyController
-      && state.actionTrackId === String(trackId)
-      && state.metadataCandidateRequestToken === requestToken
-      && state.metadataCandidateSearchToken === searchToken;
-    try {
-      const selected = list.querySelector('input[name="metadataCandidate"]:checked');
-      const candidateIndex = Number(selected?.value);
-      if (!Number.isInteger(candidateIndex) || candidateIndex < 0) throw new Error("请选择一个候选结果");
-      const response = await apiFetch("api/metadata/track/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: trackId, candidate_index: candidateIndex, search_id: searchId }),
-        ...(applyController ? { signal: applyController.signal } : {}),
+  list.innerHTML = `<div class="metadata-candidate-list">${rows}</div>`;
+  state.metadataCandidateSelection = {trackId: String(trackId), candidates, searchId, index: 0};
+  list.querySelectorAll('input[name="metadataCandidate"]').forEach(input => {
+    input.onchange = () => {
+      const index = Number(input.value);
+      if (!Number.isInteger(index) || !state.metadataCandidateSelection) return;
+      state.metadataCandidateSelection.index = index;
+      list.querySelectorAll(".metadata-candidate-choice").forEach(choice => {
+        choice.classList.toggle("is-selected", choice.contains(input));
       });
-      const result = await readResponseJsonBounded(response);
-      if (!response.ok || result.ok !== true) throw new Error(result.message || "确认失败");
-      if (!isCurrentRequest()) return;
-      list.textContent = "已确认，后台将只补全空白 Tag 字段。";
-      clearLibraryResponseCaches();
-      if (state.pageItems?.length && !state.libraryLoading) await loadLibrary(false);
-    } catch (error) {
-      if (error?.name === "AbortError") return;
-      if (!isCurrentRequest()) return;
-      apply.disabled = false;
-      list.insertAdjacentHTML("afterbegin", `<div class="track-action-info">${escapeHtml(error.message || "确认失败")}</div>`);
-    } finally {
-      if (state.metadataCandidateController === applyController) state.metadataCandidateController = null;
-    }
-  };
+      syncMetadataCandidateSelection();
+    };
+  });
+  syncMetadataCandidateSelection();
+}
+async function applySelectedMetadataCandidate() {
+  const selection = state.metadataCandidateSelection;
+  const apply = $("applyMetadataCandidateBtn");
+  if (!selection || !apply || apply.disabled) return;
+  const trackId = selection.trackId;
+  const candidateIndex = Number(selection.index || 0);
+  const searchId = selection.searchId || "";
+  if (!Number.isInteger(candidateIndex) || candidateIndex < 0 || !selection.candidates[candidateIndex]) return;
+  apply.disabled = true;
+  const applyController = typeof AbortController === "function" ? new AbortController() : null;
+  state.metadataCandidateController = applyController;
+  const requestToken = state.metadataCandidateRequestToken;
+  const searchToken = state.metadataCandidateSearchToken;
+  const isCurrentRequest = () => state.metadataCandidateController === applyController
+    && state.actionTrackId === String(trackId)
+    && state.metadataCandidateRequestToken === requestToken
+    && state.metadataCandidateSearchToken === searchToken;
+  try {
+    const response = await apiFetch("api/metadata/track/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId, candidate_index: candidateIndex, search_id: searchId }),
+      ...(applyController ? { signal: applyController.signal } : {}),
+    });
+    const result = await readResponseJsonBounded(response);
+    if (!response.ok || result.ok !== true) throw new Error(result.message || "确认失败");
+    if (!isCurrentRequest()) return;
+    const list = metadataCandidateResultsNode();
+    if (list) list.textContent = "已确认，后台将只写入空白与文件名推断字段。";
+    const status = metadataCandidateStatusNode();
+    if (status) status.textContent = "已确认，写回会在后台完成。";
+    apply.textContent = "已确认";
+    clearLibraryResponseCaches();
+    if (state.pageItems?.length && !state.libraryLoading) await loadLibrary(false);
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (!isCurrentRequest()) return;
+    apply.disabled = false;
+    const status = metadataCandidateStatusNode();
+    if (status) status.textContent = error.message || "确认失败";
+    else metadataCandidateResultsNode()?.insertAdjacentHTML("afterbegin", `<div class="track-action-info">${escapeHtml(error.message || "确认失败")}</div>`);
+  } finally {
+    if (state.metadataCandidateController === applyController) state.metadataCandidateController = null;
+  }
 }
 function renderMetadataCandidateSearchResults(list, candidates, trackId, searchId = "") {
   const valid = Array.isArray(candidates) ? candidates.filter(candidate => candidate && candidate.title) : [];
@@ -10340,6 +10677,8 @@ $("newPlaylistBtn").onclick = () => openPlaylistDialog();
 $("closePlaylistDialog").onclick = () => $("playlistDialog").close();
 $("closeTrackActionDialog").onclick = closeTrackActionDialog;
 $("closeMetadataCandidateDialog").onclick = closeTrackActionDialog;
+$("cancelMetadataCandidateBtn").onclick = closeTrackActionDialog;
+$("applyMetadataCandidateBtn").onclick = applySelectedMetadataCandidate;
 $("metadataCandidateSearchForm").addEventListener("submit", event => {
   event.preventDefault();
   searchTrackMetadataManually();
@@ -10370,15 +10709,23 @@ $("chooseLibraryPathBtn").onclick = chooseLibraryPath;
 $("closeLibraryDirDialog").onclick = () => $("libraryDirDialog").close();
 $("libraryDirUpBtn").onclick = () => { void loadLibraryDir(state.libraryDirParent || ""); };
 $("libraryDirAddBtn").onclick = addCurrentLibraryDir;
-$("restoreMetadataProvidersBtn").onclick = async () => {
-  try {
-    await restoreAndSaveRecommendedMetadataProviders();
-    $("metadataProviderStatusText").textContent = "已恢复推荐数据源顺序并保存。";
-  } catch (error) {
-    $("metadataProviderStatusText").textContent = error.message || "恢复推荐配置失败";
-  }
-};
+$("metadataLogBtn").onclick = () => { renderMetadataLog(); $("metadataLogDialog").showModal(); };
+$("closeMetadataLogDialog").onclick = () => $("metadataLogDialog").close();
+$("closeMetadataLogBtn").onclick = () => $("metadataLogDialog").close();
+$("copyMetadataLogBtn").onclick = () => { void copyMetadataLog(); };
+$("metadataLogFilters").addEventListener("click", event => {
+  const button = event.target.closest?.("[data-metadata-log-filter]");
+  if (!button) return;
+  state.metadataLogFilter = button.dataset.metadataLogFilter || "all";
+  renderMetadataLog();
+});
 $("refreshMetadataBtn").onclick = refreshMetadataLibrary;
+$("deviceSearchInput").addEventListener("input", event => {
+  state.deviceSearchQuery = event.target.value || "";
+  // Signature caching would swallow a filter-only change, so clear it first.
+  state.deviceTargetsSignature = "";
+  renderDeviceTargets(state.deviceTargetsRendered, state.playTarget || "local");
+});
 $("scanDevices").onclick = () => loadDevices(true);
 $("playBtn").onclick = () => {
   if (state.deviceSwitchInFlight) return;

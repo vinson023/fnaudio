@@ -51,7 +51,7 @@ function saveHarness(response = { ok: true, enabled: false, orphan_grace_days: 0
     unwrapMetadataResponsePayload: value => value,
     normalizeMetadataProviderEntries: value => value || [],
     renderMetadataProviders() {}, updateMetadataProviderDirtyStatus() {},
-    metadataStatusSummary: () => "后台状态", renderMetadataTagJobs() {},
+    renderMetadataTaskState() {}, renderMetadataTagJobs() {},
     updateMetadataSettingsOverview: () => overviewSnapshots.push({ enabled: nodes.metadataEnabledInput.checked, tag: nodes.metadataTagWriteEnabledInput.checked }),
   };
   vm.runInNewContext([

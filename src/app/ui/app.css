@@ -228,7 +228,7 @@ body{background:var(--fn-bg)!important;color:var(--fn-text)!important;overflow:h
   .progress input::-moz-range-thumb{width:6px!important;height:6px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important}
 }
 .player-actions{min-width:0;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:2px!important}.player-actions #deviceBtn,.player-actions #lyricsBtn,.player-actions #favoriteCurrentBtn,.player-actions #repeatBtn,.player-actions #shuffleBtn,.player-actions #queueBtn,.player-actions #volumeBtn{width:36px!important;height:36px!important;min-width:36px!important;flex-basis:36px!important;border-radius:6px!important}.player-actions #deviceBtn:hover,.player-actions #lyricsBtn:hover,.player-actions #favoriteCurrentBtn:hover,.player-actions #repeatBtn:hover,.player-actions #shuffleBtn:hover,.player-actions #queueBtn:hover,.player-actions #volumeBtn:hover{background:var(--ui-hover)!important;color:var(--ui-accent-hover)!important}
-dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surface)!important;color:var(--ui-text)!important;border:0!important;border-radius:8px!important;box-shadow:var(--ui-shadow)!important}dialog::backdrop{background:var(--ui-backdrop)!important}.dialog-head h2{font-size:18px;margin:0;color:var(--ui-text)!important}.dialog-help{font-size:13px;color:var(--ui-muted)!important}.device-row small{margin-top:4px;color:var(--ui-muted)!important}.device-row-radio{border-color:var(--ui-border)!important;color:var(--ui-on-accent)!important}.device-row.is-current .device-row-radio{background:var(--ui-accent)!important;border-color:var(--ui-accent)!important}.device-section .device-row:last-child{border-bottom:1px solid var(--fn-line)!important}
+dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surface)!important;color:var(--ui-text)!important;border:0!important;border-radius:8px!important;box-shadow:var(--ui-shadow)!important}dialog::backdrop{background:var(--ui-backdrop)!important}.dialog-head h2{font-size:18px;margin:0;color:var(--ui-text)!important}.dialog-help{font-size:13px;color:var(--ui-muted)!important}.device-row small{margin-top:4px;color:var(--ui-muted)!important}.device-row-radio{border-color:var(--ui-border)!important;color:var(--ui-on-accent)!important}.device-row.is-current .device-row-radio{background:var(--ui-accent)!important;border-color:var(--ui-accent)!important}
 
 @media(max-width:760px){
     body{font-size:13px;background:var(--ui-canvas);overflow:hidden!important}
@@ -313,7 +313,7 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 .lyrics-lines{contain:layout paint}
 .muted-line{font-size:18px!important;color:var(--ui-secondary)!important}
 @media(min-width:761px){
-  .lyrics-panel{grid-template-columns:300px minmax(0,1fr)!important;grid-template-rows:auto minmax(0,1fr)!important;padding:72px 72px 42px!important}
+  .lyrics-panel{grid-template-columns:300px minmax(0,1fr)!important;grid-template-rows:minmax(0,1fr)!important;padding:72px 72px 42px!important}
   .lyrics-lines{height:auto!important;align-self:stretch!important;overflow:auto;padding-right:20px!important}
 }
 @media(max-width:390px){
@@ -666,15 +666,21 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   z-index:42;
   display:grid!important;
   grid-template-columns:minmax(300px,340px) minmax(0,720px)!important;
-  grid-template-rows:auto minmax(0,1fr)!important;
+  grid-template-rows:minmax(0,1fr)!important;
   justify-content:center;
-  align-items:start;
+  align-items:stretch;
   gap:16px 44px;
   min-height:0;
   height:auto!important;
   padding:38px clamp(28px,5vw,76px) 28px!important;
   overflow:hidden;
 }
+/* Centring trap: `place-content:center` alone clips the top of the block once it
+ * is taller than the column, which is exactly what happens on a short landscape
+ * window.  A single auto-margined child centres when it fits and falls back to
+ * the start edge (scrollable) when it does not, in every engine. */
+.lyrics-side{display:flex;grid-column:1!important;grid-row:1!important;min-height:0;min-width:0;overflow:auto}
+.lyrics-side-stack{display:grid;justify-items:center;align-content:start;gap:16px;width:100%;min-width:0;margin:auto}
  .lyrics-cover{display:grid;place-items:center;font-size:76px;overflow:hidden;grid-column:1!important;grid-row:1!important;width:310px;height:310px;justify-self:center!important;align-self:start!important;border-radius:8px;box-shadow:var(--ui-shadow)!important}
 .lyrics-meta{grid-column:1!important;grid-row:2!important;width:100%!important;align-self:start;text-align:center!important;min-width:0!important}
  .lyrics-meta strong{display:block!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:var(--ui-text)!important;font-size:18px;line-height:1.3!important}
@@ -687,7 +693,7 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 /* No top padding: the first line shares the artwork's top edge.  The 36px that
  * used to sit here pushed the whole lyric column down against a column that
  * starts at the panel edge, so the two never lined up (R489). */
- .lyrics-lines{grid-column:2!important;grid-row:1 / span 2!important;width:100%!important;height:auto!important;min-height:0;align-self:stretch!important;margin:0;padding:0 28px 42px 12px!important;overflow-y:auto!important;overscroll-behavior:contain;color:var(--ui-muted)!important;font-size:22px;line-height:2;text-align:left!important;scroll-behavior:smooth}
+ .lyrics-lines{grid-column:2!important;grid-row:1!important;width:100%!important;height:auto!important;min-height:0;align-self:stretch!important;margin:0;padding:0 28px 42px 12px!important;overflow-y:auto!important;overscroll-behavior:contain;color:var(--ui-muted)!important;font-size:22px;line-height:2;text-align:left!important;scroll-behavior:smooth}
 /* The scrollbar is hidden on purpose, which left the last visible line sliced in
  * half with nothing to say the rest had scrolled off.  A soft bottom edge does
  * what the scrollbar was doing.  It is bottom-only, so the first line stays
@@ -706,13 +712,15 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 .lyrics-bg,.lyrics-shade{display:none}
 
 @media(max-width:760px){
-  .lyrics-panel{grid-template-columns:1fr!important;grid-template-rows:auto auto minmax(0,1fr)!important;align-items:start!important}
+  .lyrics-panel{grid-template-columns:1fr!important;grid-template-rows:auto minmax(0,1fr)!important;align-items:stretch!important}
+  .lyrics-side{grid-column:1!important;grid-row:1!important;overflow:visible}
+  .lyrics-side-stack{align-content:start}
   .lyrics-cover{grid-column:1!important;grid-row:1!important;width:min(42vw,176px)!important;height:min(42vw,176px)!important}
   .lyrics-meta{grid-column:1!important;grid-row:2!important}
   .lyrics-meta strong{font-size:17px!important}
   .lyrics-meta span{font-size:12px!important}
   .lyrics-meta .lyrics-meta-album{font-size:11px!important}
-  .lyrics-lines{grid-column:1!important;grid-row:3!important;padding:12px 4px 24px!important;font-size:18px!important;line-height:1.95!important;text-align:center!important}
+  .lyrics-lines{grid-column:1!important;grid-row:2!important;padding:12px 4px 24px!important;font-size:18px!important;line-height:1.95!important;text-align:center!important}
   .lyrics-lines p.active{font-size:23px!important;line-height:1.65!important}
 }
 @media(max-width:390px){
@@ -722,38 +730,68 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .lyrics-lines p.active{font-size:21px!important}
 }
 
-/* Playback target picker: stable list surface with one clear current state. */
-#deviceDialog{width:min(560px,calc(100vw - 30px))!important;padding:0!important;overflow:hidden!important}
-#deviceDialog .dialog-head{min-height:70px;padding:15px 20px 12px!important;border-bottom:1px solid var(--fn-line)!important}
-#deviceDialog .dialog-head h2{margin:0!important;font-size:18px!important;line-height:1.25;color:var(--ui-text)!important}
-#deviceDialog .dialog-head .icon-button{width:34px!important;height:34px!important;border:0;border-radius:6px!important;background:transparent!important;color:var(--ui-secondary)!important;font-size:24px;line-height:1}
+/* Playback target picker: every row answers the same three questions in the same
+ * order — what kind of device (icon), what it is called (name + capability), and
+ * whether it can be reached right now (state + one radio).  The old row hung a 3px
+ * left bar AND a tick AND a repeated group title on the current device, printed no
+ * word for an offline device, and pushed the name out of the way on a phone (R494). */
+#deviceDialog{width:min(520px,calc(100vw - 30px))!important;padding:0!important;overflow:hidden!important}
+#deviceDialog .dialog-head{min-height:0!important;padding:15px 16px 12px!important;border-bottom:0!important;align-items:flex-start!important}
+#deviceDialog .dialog-head h2{margin:0!important;font-size:16px!important;line-height:1.3!important;font-weight:650;color:var(--ui-text)!important}
+#deviceDialog .dialog-head .icon-button{width:30px!important;height:30px!important;flex:0 0 auto;border:0;border-radius:6px!important;background:transparent!important;color:var(--ui-muted)!important;font-size:22px;line-height:1}
 #deviceDialog .dialog-head .icon-button:hover{background:var(--ui-hover)!important;color:var(--ui-text)!important}
-.dialog-current-target{display:block;margin-top:3px;color:var(--ui-accent-hover)!important;font-size:12px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#deviceDialog>.dialog-help{margin:0;padding:12px 20px 10px;font-size:13px!important;line-height:1.5!important;color:var(--ui-muted)!important}
-.device-list-wrap{max-height:min(52dvh,440px);overflow-y:auto;overscroll-behavior:contain;padding:0 20px;border-top:1px solid var(--ui-line)}
-.device-section{margin:12px 0 0!important}.device-section:first-child{margin-top:6px!important}
-.device-section h3{margin:0!important;font-weight:700!important;text-transform:uppercase!important;position:sticky!important;top:0!important;z-index:1!important;padding:10px 4px 7px!important;background:var(--ui-surface)!important;color:var(--ui-muted)!important;font-size:11px!important;letter-spacing:.6px!important}
-.device-row{width:100%;border:0;background:transparent;color:inherit;display:flex;align-items:center;text-align:left;cursor:pointer;position:relative!important;min-height:68px!important;padding:11px 8px!important;gap:11px!important;border-top:1px solid var(--ui-line)!important;border-radius:5px!important;transition:background .15s ease,color .15s ease!important}
-.device-row:last-child{border-bottom:0!important}.device-row:hover{background:var(--ui-hover)!important}.device-row.is-current{background:var(--ui-selected)!important}.device-row.is-current:after{content:""!important;position:absolute!important;top:12px!important;bottom:12px!important;left:0!important;width:3px!important;border-radius:3px!important;background:var(--ui-accent)!important}
-.device-row-text strong{font-size:14px!important;color:var(--ui-text)!important}.device-row-text small{margin-top:3px!important;font-size:12px!important;color:var(--ui-muted)!important}
-.device-row-radio{width:22px!important;height:22px!important;flex-basis:22px!important;font-size:13px!important}
-.device-dialog-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-top:1px solid var(--ui-line);background:var(--ui-sidebar)!important}
-.device-dialog-footer span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-muted)!important;font-size:12px}
+/* One line that says where the sound is going right now; the device name carries
+ * the accent so the answer is readable before any row is scanned. */
+.dialog-current-target{display:block;margin-top:5px;color:var(--ui-muted)!important;font-size:12px!important;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dialog-current-target b{color:var(--ui-accent)!important;font-weight:600}
+#deviceDialog>.dialog-help{margin:0;padding:6px 16px 14px;font-size:12px!important;line-height:1.5!important;color:var(--ui-muted)!important}
+/* Only shown once the room has more devices than a glance can handle. */
+.device-search{display:flex;align-items:center;gap:8px;margin:0 16px 10px;padding:0 10px;height:34px;border:1px solid var(--ui-line)!important;border-radius:6px!important;background:var(--ui-canvas)!important}
+.device-search[hidden]{display:none!important}
+.device-search svg{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:var(--ui-muted);stroke-width:1.8}
+/* The field owns the focus ring; the bare input inside must not draw a second,
+ * smaller box on top of it (R494). */
+.device-search:focus-within{border-color:var(--ui-accent)!important}
+#deviceDialog .device-search input{flex:1;min-width:0;border:0!important;background:transparent!important;color:var(--ui-text)!important;font-size:12.5px!important;height:100%;outline:none!important;box-shadow:none!important}
+.device-list-wrap{max-height:min(52dvh,440px);overflow-y:auto;overscroll-behavior:contain;padding:0 10px}
+.device-section{padding:2px 0 4px}
+.device-section+.device-section{border-top:1px solid var(--ui-line);margin-top:2px}
+.device-section h3{margin:8px 6px 4px!important;font-weight:700!important;text-transform:uppercase!important;position:sticky!important;top:0!important;z-index:1!important;padding:6px 0 4px!important;background:var(--ui-surface)!important;color:var(--ui-muted)!important;font-size:10.5px!important;letter-spacing:.09em!important}
+.device-row{display:grid!important;grid-template-columns:32px minmax(0,1fr) auto!important;align-items:center!important;gap:11px!important;width:100%;min-height:52px!important;padding:8px!important;border:1px solid transparent!important;border-radius:6px!important;background:transparent!important;color:inherit;text-align:left;cursor:pointer;transition:background .15s ease,border-color .15s ease!important}
+.device-row:hover{background:var(--ui-hover)!important}
+.device-row.is-current{background:var(--ui-selected)!important;border-color:transparent;border-color:color-mix(in srgb,var(--ui-accent) 32%,transparent)!important}
+/* Dimming comes from the theme's app-wide disabled-button rule; adding a second
+ * opacity here only fought it over the same property (R494). */
+.device-row.is-offline{cursor:not-allowed!important}
+.device-row.is-switching{opacity:.6}
+.device-row-icon{width:32px!important;height:32px!important;display:grid!important;place-items:center;border-radius:8px!important;background:var(--ui-canvas)!important;color:var(--ui-secondary)!important}
+.device-row-icon svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round}
+.device-row.is-current .device-row-icon{background:var(--ui-accent)!important;color:var(--ui-on-accent)!important}
+.device-row-text{min-width:0}
+.device-row-text strong{display:block!important;font-size:13.5px!important;font-weight:600!important;color:var(--ui-text)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-row-text small{display:block!important;margin-top:1px!important;font-size:11.5px!important;color:var(--ui-muted)!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.device-row-state{display:flex!important;align-items:center;gap:8px;flex:0 0 auto}
+.device-row-status{font-size:11px!important;font-weight:600;color:var(--ui-success)!important;white-space:nowrap}
+.device-row.is-current .device-row-status{color:var(--ui-accent)!important}
+.device-row.is-offline .device-row-status{color:var(--ui-muted)!important}
+.device-row-radio{width:18px!important;height:18px!important;flex:0 0 18px;display:grid!important;place-items:center;border:1.6px solid var(--ui-border)!important;border-radius:50%!important;background:transparent!important}
+.device-row.is-current .device-row-radio{background:var(--ui-accent)!important;border-color:var(--ui-accent)!important}
+.device-row-radio svg{width:11px;height:11px;fill:none;stroke:var(--ui-on-accent);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+.device-dialog-footer{display:flex;align-items:center;gap:10px;padding:11px 16px;border-top:1px solid var(--ui-line);background:var(--ui-canvas)!important}
+.device-dialog-footer span{display:flex;align-items:center;gap:7px;min-width:0;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-muted)!important;font-size:12px}
+/* A scan in progress gets a moving cue instead of only a disabled button. */
+#deviceRefreshStatus.is-busy:before{content:"";flex:0 0 auto;width:11px;height:11px;border-radius:50%;border:1.6px solid var(--ui-border);border-top-color:var(--ui-accent);animation:device-scan-spin .8s linear infinite}
+@keyframes device-scan-spin{to{transform:rotate(360deg)}}
 .device-dialog-footer .secondary-button{flex:0 0 auto;min-width:90px;height:34px!important;padding:0 12px!important;border-color:var(--ui-border)!important;background:var(--ui-surface)!important;color:var(--ui-text)!important}
 .device-dialog-footer .secondary-button:disabled{cursor:wait!important}
-.metadata-candidate-dialog{max-width:720px;border:1px solid var(--fn-line)!important;border-radius:8px!important;box-shadow:var(--ui-shadow)!important}
-.metadata-candidate-dialog::backdrop{background:var(--ui-backdrop)!important}
-.metadata-candidate-dialog .dialog-head{min-height:64px;border-bottom:1px solid var(--fn-line)!important}
-.metadata-candidate-search{display:flex;align-items:end;gap:10px;padding-top:14px}
-.metadata-candidate-search label{display:grid;gap:5px;flex:1;min-width:0;color:var(--fn-muted);font-size:12px}
-@media(max-width:760px){.metadata-candidate-dialog{max-width:none;padding:0 16px calc(env(safe-area-inset-bottom,0px) + 16px)!important}.metadata-candidate-search{align-items:stretch}.metadata-candidate-search .secondary-button{align-self:end}}
 @media(max-width:760px){
   #deviceDialog{width:calc(100vw - 20px)!important;max-height:calc(100dvh - 36px)!important}
-  #deviceDialog .dialog-head{min-height:64px!important;padding:13px 15px 10px!important}
-  #deviceDialog>.dialog-help{padding:10px 15px 8px!important;font-size:12px!important}
-  .device-list-wrap{max-height:calc(100dvh - 280px)!important;padding:0 15px!important}
-  .device-row{min-height:64px!important;padding:10px 7px!important}
-  .device-dialog-footer{padding:10px 15px!important}
+  #deviceDialog .dialog-head{padding:13px 14px 10px!important}
+  .device-search{margin:0 14px 8px}
+  .device-list-wrap{max-height:calc(100dvh - 190px)!important;padding:0 8px!important}
+  .device-row{min-height:56px!important;padding:8px 7px!important;gap:10px}
+  .device-row-text strong{font-size:14px!important}
+  .device-dialog-footer{padding:10px 14px!important}
 }
 
 /* Small-screen actions behave as a bottom sheet, leaving the song context visible. */
@@ -1156,80 +1194,96 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   }
 }
 
-/* Metadata provider configuration: compact cards keep the settings pane usable
-   on both a desktop browser and the fnOS mobile WebView. */
-.metadata-provider-settings{display:grid;gap:10px;margin:14px 0 4px;padding-top:10px;}
-.metadata-provider-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.metadata-provider-heading .dialog-help{margin:4px 0 0;line-height:1.45}
-.metadata-provider-heading .secondary-button{flex:0 0 auto;white-space:nowrap;padding:7px 10px}
-/* Two columns, not three: at this pane width a 3-up row gave every probe field
- * 231px while every other metadata field measures 349px, and the 34px height
- * was the only input shorter than the 38px used everywhere else. */
-.metadata-probe-query{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.metadata-probe-query label{display:grid;gap:5px;color:var(--ui-muted);font-size:12px}
-.metadata-probe-query input{width:100%;min-width:0;height:38px;padding:0 10px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-surface);color:var(--ui-text)}
-.metadata-provider-list{display:grid;gap:7px;max-height:min(42dvh,390px);overflow:auto;padding:1px 2px 2px 0;overscroll-behavior:contain}
+/* Metadata provider configuration.  The list belongs to the settings page now:
+ * it used to carry its own max-height + overflow inside a pane that also scrolls,
+ * so a phone showed two scrollbars side by side (R494). */
+.metadata-provider-settings{display:grid;gap:10px;margin:14px 0 4px;padding-top:10px}
+.metadata-probe-sample{display:flex;align-items:center;gap:9px;margin:0;padding:9px 11px;border:1px dashed var(--ui-border);border-radius:6px;background:var(--ui-canvas);color:var(--ui-secondary);font-size:12px;line-height:1.45}
+.metadata-probe-sample svg{width:15px;height:15px;flex:0 0 15px;fill:none;stroke:var(--ui-accent);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.metadata-probe-sample strong{margin:0 4px;color:var(--ui-text);font-weight:650}
+.metadata-provider-list{display:grid;gap:7px;padding:0}
+.metadata-provider-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-surface);cursor:grab}
 .metadata-provider-row:active{cursor:grabbing}
-.metadata-provider-actions .metadata-provider-move,.metadata-provider-actions .metadata-provider-test{font-size:11px;line-height:1.2;white-space:nowrap}
-.metadata-provider-result{display:grid;grid-column:1/-1;min-width:0;overflow-wrap:anywhere;gap:2px;padding:6px 8px;border-left:3px solid var(--ui-warning);background:var(--ui-warning-bg);color:var(--ui-warning);font-size:11px;line-height:1.4}
+.metadata-provider-row.is-fixed-last{background:var(--ui-hover);cursor:default}
+.metadata-provider-row.is-off{background:var(--ui-canvas)}
+.metadata-provider-row.is-off .metadata-provider-name,
+.metadata-provider-row.is-off .metadata-provider-capabilities{opacity:.55}
+.metadata-provider-grip{display:grid;place-items:center;width:16px;height:22px;flex:0 0 16px;color:var(--ui-muted);opacity:.5}
+.metadata-provider-grip svg{width:12px;height:12px;fill:currentColor}
+.metadata-provider-body{display:grid;gap:1px;flex:1 1 140px;min-width:110px}
+.metadata-provider-name{display:flex;align-items:center;gap:7px;min-width:0;color:var(--ui-text);font-size:13.5px;font-weight:650;line-height:1.3}
+.metadata-provider-name em{flex:0 0 auto;padding:0 5px;border:1px solid var(--ui-line);border-radius:3px;color:var(--ui-muted);font-size:10.5px;font-style:normal;font-weight:600}
+.metadata-provider-capabilities{color:var(--ui-muted);font-size:11.5px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
+.metadata-provider-move{display:flex;gap:2px;flex:0 0 auto}
+.metadata-provider-move.is-placeholder{visibility:hidden}
+.metadata-provider-move-button{display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--ui-muted);cursor:pointer}
+.metadata-provider-move-button:hover:not(:disabled){border-color:var(--ui-line);background:var(--ui-hover);color:var(--ui-text)}
+.metadata-provider-move-button:disabled{opacity:.28;cursor:not-allowed}
+.metadata-provider-move-button svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.metadata-provider-test{flex:0 0 auto;height:26px;min-height:26px;padding:0 9px;font-size:12px}
+.metadata-provider-switch{flex:0 0 38px;width:38px;height:22px}
+.metadata-provider-switch span{border-radius:11px}
+.metadata-provider-switch span::after{top:3px;left:3px;width:16px;height:16px;box-shadow:none}
+.metadata-provider-switch input:checked+span::after{transform:translateX(16px)}
+.metadata-provider-result{flex:1 1 100%;display:grid;gap:2px;min-width:0;overflow-wrap:anywhere;padding:7px 9px;border-left:3px solid var(--ui-warning);background:var(--ui-warning-bg);color:var(--ui-warning);font-size:11.5px;line-height:1.45}
 .metadata-provider-result[hidden]{display:none!important}
 .metadata-provider-result.is-ok{border-left-color:var(--ui-success);background:var(--ui-success-bg);color:var(--ui-success)}
 .metadata-provider-result.is-failed{border-left-color:var(--ui-danger);background:var(--ui-danger-bg);color:var(--ui-danger)}
 .metadata-provider-result small{min-width:0;white-space:normal;color:var(--ui-muted)}
-@media(max-width:760px){
-  .metadata-provider-heading{display:grid;grid-template-columns:1fr;gap:8px}
-  .metadata-provider-heading .secondary-button{justify-self:start}
-  .metadata-probe-query{grid-template-columns:1fr}
-  .metadata-provider-list{max-height:38dvh}
-  .metadata-provider-header{align-items:flex-start;flex-wrap:wrap}
-  .metadata-provider-capabilities{width:100%;padding-left:26px}
-  .metadata-provider-actions{width:100%;padding-left:26px}
-  .metadata-provider-actions button{flex:1 1 0}
+/* Phone: keep the switch on the name line and drop the rest underneath, so the
+ * five controls never squeeze a 390px row. */
+@media(max-width:560px){
+  .metadata-provider-row{display:grid;grid-template-columns:16px minmax(0,1fr) auto;
+    grid-template-areas:"grip body switch" ". move test";row-gap:7px;column-gap:8px}
+  .metadata-provider-grip{grid-area:grip}
+  .metadata-provider-body{grid-area:body}
+  .metadata-provider-switch{grid-area:switch;justify-self:end}
+  .metadata-provider-move{grid-area:move;justify-self:start}
+  .metadata-provider-test{grid-area:test}
+  .metadata-provider-result{grid-column:1/-1;flex:none}
 }
 
-/* Metadata workbench refresh: stronger hierarchy for settings and manual completion. */
-.metadata-settings-pane{padding-top:4px!important}
-.metadata-settings-section{margin:0 0 20px;padding:0 0 18px;border-bottom:1px solid var(--ui-line)}.metadata-settings-section:last-of-type{margin-bottom:0;border-bottom:0}.metadata-settings-section .settings-section-heading{margin:0 0 10px}.metadata-settings-section .settings-section-heading h3{font-size:15px}.metadata-settings-section .settings-section-heading p{line-height:1.45}.metadata-tag-section .settings-section-heading h3{color:var(--ui-warning)}.metadata-tag-section .metadata-settings-actions{margin-top:10px}.metadata-settings-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 14px}
-.metadata-settings-overview>div{display:grid;gap:4px;min-height:68px;padding:11px 12px;border:1px solid var(--ui-border);}
-.metadata-settings-overview span{font-size:11px}
-.metadata-settings-overview strong{font-size:17px}
-.metadata-core-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 10px}
-.metadata-core-controls .metadata-toggle{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:start;gap:8px;min-height:68px;padding:11px 12px;border:1px solid var(--ui-border);}
-.metadata-core-controls .metadata-toggle span{display:grid;gap:3px;white-space:normal}
-.metadata-core-controls .metadata-toggle strong{display:block;margin-bottom:2px;font-size:13px}
-.metadata-core-controls .metadata-toggle small{display:block;font-size:11px;line-height:1.4}
-.metadata-provider-settings{margin-top:16px;padding:14px 0 0;border-top:1px solid var(--ui-line)}
-.metadata-provider-heading{padding:0 0 10px}
-.metadata-provider-heading strong{color:var(--ui-text);font-size:15px}
-.metadata-provider-row{display:grid;border:1px solid var(--ui-border);cursor:grab;grid-template-columns:minmax(0,1fr);gap:9px;padding:11px 12px;border-radius:5px;background:var(--ui-surface);box-shadow:var(--ui-shadow)}
-.metadata-provider-header{min-width:0;grid-column:1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
-.metadata-provider-toggle{flex:1 1 auto;min-width:0;min-height:26px}
-.metadata-provider-toggle input{margin-top:2px}
-.metadata-provider-toggle span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650;color:var(--ui-text)}
-.metadata-provider-capabilities{flex:0 0 auto;grid-column:1;grid-row:2;min-width:0;white-space:normal;overflow-wrap:anywhere;padding-left:0;color:var(--ui-muted);font-size:11px}
-.metadata-provider-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto;grid-column:2;grid-row:1/3;padding-left:0;width:auto;justify-content:flex-start}
-.metadata-provider-actions .metadata-provider-move{width:30px;height:28px;padding:0;font-size:0}
-.metadata-provider-actions .metadata-provider-test{min-height:28px;padding:0 10px}
-.metadata-provider-row.is-fixed-last{cursor:default;background:var(--ui-hover)}
-.metadata-candidate-dialog{width:min(820px,calc(100vw - 28px));padding:0!important;overflow:hidden;background:var(--ui-canvas)}
-.metadata-candidate-dialog .dialog-head{padding:18px 20px 14px!important;background:var(--ui-surface)}
-.metadata-candidate-dialog .dialog-head h2{margin:0!important;font-size:20px!important}
-.metadata-candidate-dialog .dialog-head .dialog-help{margin:3px 0 0;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px!important;color:var(--ui-muted)!important}
-.metadata-candidate-source-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;padding:14px 20px;border-bottom:1px solid var(--ui-line);background:var(--ui-sidebar)}
-.metadata-candidate-source-bar label{display:grid;gap:5px;color:var(--ui-muted);font-size:12px}
-.metadata-candidate-source-bar select{height:38px;border-color:var(--ui-border);background:var(--ui-surface);color:var(--ui-text)}
-.metadata-candidate-source-bar small{max-width:180px;padding-bottom:8px;color:var(--ui-muted);font-size:11px;line-height:1.4}
-.metadata-candidate-dialog #metadataCandidateStatus{margin:14px 20px 0;padding:10px 12px;border-left:3px solid var(--ui-success);background:var(--ui-success-bg);color:var(--ui-success);font-size:12px;line-height:1.45}
-.metadata-candidate-results{display:grid;gap:8px;overflow:auto;max-height:45dvh;margin:0 20px;padding:12px 0!important}
-.metadata-candidate-list{display:grid;gap:8px}
-.metadata-candidate-choice{color:var(--ui-secondary);cursor:pointer;display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:center;min-height:64px;padding:10px 12px;border:1px solid var(--ui-border);border-radius:5px;background:var(--ui-surface)}
-.metadata-candidate-choice:hover{border-color:var(--ui-accent);background:var(--ui-selected)}
-.metadata-candidate-choice input{width:16px;height:16px;flex:0 0 16px;margin:0}
-.metadata-candidate-choice span{display:grid;gap:4px;min-width:0}
-.metadata-candidate-choice strong{font-size:13px;color:var(--ui-text)}
-.metadata-candidate-choice small{color:var(--ui-muted);font-size:11px;line-height:1.35}
-.metadata-candidate-dialog .track-action-choice{width:100%;margin-top:10px;border-radius:5px}
+/* Background completion: one live line plus four counters, and the rest behind
+ * a log button instead of a paragraph inside the settings page (R494). */
+.metadata-task-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 10px}
+.metadata-task-state{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0}
+.metadata-task-state strong{flex:0 0 auto;color:var(--ui-text);font-size:13.5px;font-weight:650;white-space:nowrap}
+.metadata-task-state span:not(.metadata-task-dot){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-muted);font-size:12px}
+.metadata-task-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--ui-muted)}
+.metadata-task-dot.is-busy{background:var(--ui-accent)}
+.metadata-task-dot.is-done{background:var(--ui-success)}
+.metadata-task-dot.is-off{background:var(--ui-border)}
+.metadata-task-actions{display:flex;gap:8px;flex:0 0 auto}
+.metadata-task-actions .secondary-button{height:30px;min-height:30px;padding:0 11px;font-size:12px}
+.metadata-task-stats{display:flex;flex-wrap:wrap;gap:6px 18px}
+.metadata-task-stats span{display:inline-flex;align-items:baseline;gap:5px;color:var(--ui-muted);font-size:11.5px}
+.metadata-task-stats i{font-style:normal}
+.metadata-task-stats b{color:var(--ui-text);font-size:13px;font-weight:650;font-variant-numeric:tabular-nums}
+.metadata-task-stats b.is-bad{color:var(--ui-danger)}
+/* Only rendered when a provider is failing or cooling down: the counters alone
+ * never explain why a queue stopped moving. */
+.metadata-task-alert{margin:0!important;padding:7px 10px!important;border-radius:6px!important;background:color-mix(in srgb,var(--ui-danger) 10%,transparent)!important;color:var(--ui-danger)!important;font-size:11.5px!important;line-height:1.5!important;overflow-wrap:anywhere}
+.metadata-task-alert[hidden]{display:none!important}
 
+/* Completion log dialog: the pane showed a running commentary before, which
+ * buried every other setting under a paragraph of counters (R494). */
+.metadata-log-dialog{width:min(680px,calc(100vw - 28px));padding:0!important;overflow:hidden;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface)}
+.metadata-log-dialog .dialog-head{padding:16px 18px 13px!important;border-bottom:1px solid var(--ui-line)}
+.metadata-log-dialog .dialog-head h2{margin:0!important;font-size:17px!important}
+.metadata-log-dialog .dialog-head .dialog-help{margin:3px 0 0;padding:0;color:var(--ui-muted)!important;font-size:12px!important}
+.metadata-log-filters{display:flex;flex-wrap:wrap;gap:4px;padding:12px 18px 0}
+.metadata-log-filters button{padding:4px 10px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--ui-muted);font-size:12px;cursor:pointer}
+.metadata-log-filters button[aria-pressed="true"]{background:var(--ui-selected);color:var(--ui-accent);font-weight:600}
+.metadata-log-list{display:grid;gap:0;margin:10px 0 0;padding:0 18px 10px;max-height:min(52dvh,420px);overflow:auto;overscroll-behavior:contain}
+.metadata-log-row{display:grid;grid-template-columns:62px 58px minmax(0,1fr);gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--ui-line);font-size:12px}
+.metadata-log-row time{color:var(--ui-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.metadata-log-scope{color:var(--ui-secondary);font-size:11px;font-weight:600}
+.metadata-log-row p{margin:0;color:var(--ui-secondary);overflow-wrap:anywhere}
+.metadata-log-row.is-warn .metadata-log-scope{color:var(--ui-warning)}
+.metadata-log-row.is-error .metadata-log-scope{color:var(--ui-danger)}
+.metadata-log-footer{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--ui-line);background:var(--ui-sidebar)}
+.metadata-log-footer .dialog-help{margin-right:auto;font-size:11.5px}
+.metadata-log-footer .secondary-button{height:30px;min-height:30px;padding:0 12px}
 /* R410: keep keyboard focus visible across shared FNOS controls without changing interaction semantics. */
 :where(button,a,input,select,textarea,[role="button"],[role="tab"],[role="switch"]):focus-visible{outline:2px solid var(--ui-accent)!important;outline-offset:2px!important}
 .track:focus-within{background:var(--ui-selected)!important;box-shadow:inset 3px 0 0 var(--ui-accent)!important}
@@ -1237,21 +1291,85 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 .group-row:focus-visible{background:var(--ui-selected)!important;box-shadow:inset 3px 0 0 var(--ui-accent)!important}
 .artist-all-tracks-breadcrumb button:focus-visible{border-radius:4px!important;background:var(--ui-selected)!important;text-decoration:none!important}
 .breadcrumb-chevron{display:inline-grid!important;place-items:center!important;flex:0 0 14px!important;width:14px!important;height:18px!important;color:var(--ui-muted)!important}
-.breadcrumb-chevron svg{width:14px!important;height:14px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+.breadcrumb-chevron svg{width:14px;height:14px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}
 .artist-all-songs-chevron{color:var(--ui-muted)!important;line-height:1!important;font-size:0!important}
-.metadata-candidate-search{margin:0;padding:14px 20px!important;background:var(--ui-surface);border-top:1px solid var(--ui-line)}
-.metadata-candidate-search input{min-width:0;border:1px solid var(--fn-line);padding:0 10px;background:var(--ui-surface);color:var(--fn-ink);height:40px;border-radius:5px}
-.metadata-candidate-search .secondary-button{flex:0 0 auto;height:40px;border-radius:5px}
-.metadata-candidate-dialog #metadataCandidateSearchStatus{margin:0;padding:0 20px 14px;background:var(--ui-surface);color:var(--ui-muted)}
+/* Metadata candidate: one search bar, a scannable result column, and a preview
+ * that answers "what will change" before anything is confirmed.  The old dialog
+ * stacked a source bar, a status strip, the list and a manual-search form, each
+ * fighting for the same attention, and parked the confirm button at the end of
+ * the list where it scrolled away (R494). */
+/* A flex column so the body — not the dialog — absorbs the remaining height:/n * with `overflow:hidden` a taller stack used to push the footer buttons off a
+ * phone screen entirely (R494). */
+/* `display` only while open: an author `!important` on the base selector would
+ * also beat the UA's `dialog:not([open]){display:none}` and leave a closed dialog
+ * painted (R494). */
+.metadata-candidate-dialog[open]{display:flex;flex-direction:column;width:min(880px,calc(100vw - 28px));max-height:min(calc(100dvh - 24px),760px);padding:0!important;overflow:hidden;background:var(--ui-canvas)}
+.metadata-candidate-dialog .dialog-head{padding:16px 20px 13px!important;background:var(--ui-surface);border-bottom:1px solid var(--ui-line)!important;align-items:flex-start!important}
+.metadata-candidate-dialog .dialog-head h2{margin:0!important;font-size:19px!important;line-height:1.3}
+.metadata-candidate-dialog .dialog-head .dialog-help{margin:3px 0 0;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px!important;color:var(--ui-muted)!important}
+.metadata-candidate-search{display:flex!important;align-items:center;gap:10px;margin:0!important;padding:12px 20px!important;background:var(--ui-surface)!important;border-top:0!important;border-bottom:1px solid var(--ui-line)!important}
+.metadata-candidate-query{display:flex!important;align-items:center;gap:8px;flex:1;min-width:0;height:36px;padding:0 10px;border:1px solid var(--ui-border)!important;border-radius:6px!important;background:var(--ui-canvas)}
+.metadata-candidate-query:focus-within{border-color:var(--ui-accent)!important}
+.metadata-candidate-query-icon{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:var(--ui-muted);stroke-width:1.8;stroke-linecap:round}
+/* The field owns the frame; the input itself must stay bare inside it. */
+.metadata-candidate-dialog .metadata-candidate-query input{flex:1;min-width:0;height:100%!important;min-height:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;outline:none!important;font-size:13px!important}
+.metadata-candidate-search select{flex:0 0 auto;width:172px;height:36px!important;min-height:36px!important;padding:0 8px!important;border:1px solid var(--ui-border)!important;border-radius:6px!important;background:var(--ui-surface)!important;color:var(--ui-text)!important;font-size:12.5px!important}
+.metadata-candidate-search .secondary-button{flex:0 0 auto;height:36px!important;min-height:36px!important;padding:0 16px!important;border-radius:6px!important}
+.metadata-candidate-hint{margin:0!important;padding:8px 20px 12px!important;background:var(--ui-surface)!important;color:var(--ui-muted)!important;font-size:11.5px!important;line-height:1.5}
+.metadata-candidate-hint:empty{display:none!important;padding:0!important}
+.metadata-candidate-body{display:grid;grid-template-columns:minmax(0,1fr) 296px;flex:1 1 auto;min-height:0;overflow:hidden}
+.metadata-candidate-results{display:grid;gap:7px;align-content:start;overflow:auto;max-height:min(46dvh,384px);margin:0!important;padding:14px 20px!important;border-right:1px solid var(--ui-line)}
+.metadata-candidate-list{display:grid;gap:7px}
+.metadata-candidate-choice{color:var(--ui-secondary);cursor:pointer;display:grid!important;grid-template-columns:18px minmax(0,1fr) auto!important;gap:10px!important;align-items:start!important;min-height:56px;padding:10px 11px!important;border:1px solid var(--ui-line)!important;border-radius:6px!important;background:var(--ui-surface)!important;transition:border-color .15s ease,background .15s ease!important}
+.metadata-candidate-choice:hover{border-color:var(--ui-border)!important;background:var(--ui-hover)!important}
+.metadata-candidate-choice.is-selected{border-color:var(--ui-accent)!important;background:var(--ui-selected)!important}
+.metadata-candidate-choice input{width:16px;height:16px;margin:2px 0 0!important;accent-color:var(--ui-accent)}
+.metadata-candidate-row{display:grid!important;gap:2px!important;min-width:0}
+.metadata-candidate-row strong{font-size:13.5px;font-weight:600;color:var(--ui-text)}
+.metadata-candidate-row small{color:var(--ui-muted);font-size:11.5px;line-height:1.4}
+.metadata-candidate-conf{display:grid!important;gap:4px!important;justify-items:end;min-width:52px}
+.metadata-candidate-conf b{font-size:11.5px;font-weight:650;font-variant-numeric:tabular-nums;color:var(--ui-success)}
+.metadata-candidate-bar{display:block;width:52px;height:3px;border-radius:2px;background:var(--ui-line);overflow:hidden}
+.metadata-candidate-bar i{display:block;height:100%;border-radius:2px;background:var(--ui-success)}
+.metadata-candidate-conf.is-mid b{color:var(--ui-warning)}
+.metadata-candidate-conf.is-mid .metadata-candidate-bar i{background:var(--ui-warning)}
+.metadata-candidate-conf.is-low b{color:var(--ui-muted)}
+.metadata-candidate-conf.is-low .metadata-candidate-bar i{background:var(--ui-muted)}
+.metadata-candidate-preview{display:grid;gap:9px;align-content:start;min-height:0;overflow:auto;padding:14px 16px;background:var(--ui-surface)}
+.metadata-candidate-preview h3{margin:0!important;font-size:11px!important;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ui-muted)!important}
+.metadata-candidate-changes{display:grid;gap:8px;margin:0}
+.metadata-candidate-change{display:grid;grid-template-columns:52px minmax(0,1fr);gap:8px;align-items:baseline}
+.metadata-candidate-change dt{color:var(--ui-muted);font-size:12px}
+/* `dd` stays block on purpose: as a grid/flex box the `+` rendered by the
+ * `:before` rule below would become its own item and take a line of its own. */
+.metadata-candidate-change dd{min-width:0;margin:0}
+.metadata-candidate-change.is-replace dd{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px}
+.metadata-candidate-arrow{color:var(--ui-muted);font-size:11px}
+.metadata-candidate-current{display:block;color:var(--ui-muted);font-size:11.5px;text-decoration:line-through;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.metadata-candidate-next{display:block;color:var(--ui-text);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* `+` is the whole promise: this field is empty now and gets a value. */
+.metadata-candidate-change.is-fill .metadata-candidate-next:before{content:"+";margin-right:3px;color:var(--ui-success);font-weight:700}
+.metadata-candidate-keep{color:var(--ui-muted);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.metadata-candidate-preview-note{margin:0!important;padding:9px 11px!important;border-radius:6px!important;background:var(--ui-success-bg)!important;color:var(--ui-success)!important;font-size:11px!important;line-height:1.5}
+.metadata-candidate-preview-note.is-idle{background:var(--ui-canvas)!important;color:var(--ui-muted)!important}
+.metadata-candidate-footer{display:flex;align-items:center;gap:8px;padding:12px 20px;border-top:1px solid var(--ui-line);background:var(--ui-surface)}
+.metadata-candidate-footer .dialog-help{flex:1 1 auto;margin:0!important;padding:0!important;font-size:11.5px!important;line-height:1.4;color:var(--ui-muted)!important}
+.metadata-candidate-footer .secondary-button,.metadata-candidate-footer .primary-button{flex:0 0 auto;height:34px!important;min-height:34px!important;padding:0 14px!important;border-radius:6px!important;font-size:13px;white-space:nowrap}
 @media(max-width:760px){
   .metadata-settings-overview,.metadata-core-controls{grid-template-columns:1fr}
   .metadata-provider-header{grid-template-columns:minmax(0,1fr)}
   .metadata-provider-capabilities,.metadata-provider-actions{grid-column:1}
   .metadata-provider-actions{grid-row:3}
-  .metadata-candidate-source-bar{grid-template-columns:1fr;gap:7px}
-  .metadata-candidate-source-bar small{max-width:none;padding:0}
   .metadata-candidate-dialog{width:100%;max-height:calc(100dvh - 16px);margin:auto 0 0;border-radius:8px 8px 0 0!important}
-  .metadata-candidate-results{max-height:46dvh}
+  .metadata-candidate-search{display:grid!important;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .metadata-candidate-query{grid-column:1;grid-row:1}
+  .metadata-candidate-search .secondary-button{grid-column:2;grid-row:1}
+  .metadata-candidate-search select{grid-column:1/-1;grid-row:2;width:100%}
+  .metadata-candidate-body{grid-template-columns:1fr}
+  .metadata-candidate-results{max-height:34dvh;border-right:0;border-bottom:1px solid var(--ui-line);padding:12px 14px!important}
+  .metadata-candidate-preview{padding:12px 14px}
+  .metadata-candidate-footer{flex-wrap:wrap;padding:10px 14px}
+  .metadata-candidate-footer .dialog-help{flex:1 1 100%;order:-1;margin:0 0 6px!important}
 }
 
 @media(max-width:760px){.library-path-picker{flex-wrap:wrap}.settings-inline-feedback{flex:1 1 100%}}

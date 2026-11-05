@@ -77,6 +77,38 @@ TRACKS = [
 # then returns a completed projection on a later poll.  Keep that lifecycle in
 # the browser fixture so the E2E suite exercises the UI's recovery and keyed
 # row patching paths rather than only the generic {ok:true} fallback.
+# The settings pane renders its provider rows and counters from these two
+# documents, so the fixture has to answer with the same shape the service does.
+METADATA_PROVIDERS = [
+    {"id": "netease", "enabled": True, "capabilities": ["search", "track", "album", "cover", "lyrics"]},
+    {"id": "kuwo", "enabled": True, "capabilities": ["search", "track", "album", "cover"]},
+    {"id": "kugou", "enabled": False, "capabilities": ["search", "track", "lyrics"]},
+    {"id": "migu", "enabled": False, "capabilities": ["search", "track", "album"]},
+    {"id": "joox", "enabled": False, "capabilities": ["search", "track"]},
+    {"id": "musicbrainz", "enabled": True, "capabilities": ["search", "track", "album"]},
+]
+
+
+def metadata_status_payload():
+    return {
+        "ok": True,
+        "running": True,
+        "enabled": True,
+        "tag_write_enabled": False,
+        "tag_write_in_progress": False,
+        "fetch_workers": 4,
+        "entities": 12,
+        "lyrics": 3,
+        "jobs": {"pending": 96, "retry": 2, "running": 4, "failed": 6, "no_match": 8},
+        "job_types": {
+            "lyrics": {"pending": 40},
+            "track": {"pending": 56},
+            "tag_write": {"pending": 18},
+        },
+        "track_matches": {"auto": 21, "confirmed": 3, "review": 2},
+    }
+
+
 METADATA_FIXTURES = {
     "fixture-1": {
         "best": {"title": "晨光", "artist": "测试歌手", "album": "离线专辑"},
@@ -256,8 +288,18 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"state": core, "status": core, "core": core, "kind": "browser"}, head_only=head_only)
         if path == "/api/dlna/renderer/status":
             return self.send_json({"available": False, "state": {}}, head_only=head_only)
+        if path == "/api/config/metadata":
+            return self.send_json({
+                "ok": True,
+                "enabled": True,
+                "tag_write_enabled": False,
+                "orphan_grace_days": 7,
+                "providers": METADATA_PROVIDERS,
+                "recommended": METADATA_PROVIDERS,
+                "status": metadata_status_payload(),
+            }, head_only=head_only)
         if path == "/api/metadata/status":
-            return self.send_json({"ok": True, "running": True, "pending": 0}, head_only=head_only)
+            return self.send_json(metadata_status_payload(), head_only=head_only)
         if path == "/api/metadata/track":
             track_id = str((query.get("track_id") or [""])[0])
             fixture = METADATA_FIXTURES.get(track_id)

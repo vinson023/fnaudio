@@ -79,12 +79,34 @@ assert.equal(policy.dropTarget(custom, "netease", "missing", false), -1);
 
 assert.match(index, /id="metadataProviderList"/);
 assert.match(index, /id="metadataCandidateProviderSelect"/);
-assert.match(index, /单独选择数据源不会改变全局排序/);
-assert.match(index, /id="restoreMetadataProvidersBtn"/);
-assert.match(index, /id="metadataProbeTitleInput"/);
-assert.match(index, /id="metadataProbeArtistInput"/);
-assert.match(index, /id="metadataProbeAlbumInput"/);
-assert.match(index, /每个数据源可单独测试/);
+// The source picker shares the search bar now; the separate explainer line went
+// away with the source bar it used to sit in (R494).
+assert.match(index, /id="metadataCandidateProviderSelect" aria-label="查询数据源"/);
+assert.doesNotMatch(index, /metadata-candidate-source-bar/);
+// R494 removed the three manual probe inputs for one fixed sample, and dropped
+// the "restore recommendation" button together with its save path.
+assert.doesNotMatch(index, /id="restoreMetadataProvidersBtn"/);
+assert.doesNotMatch(app, /restoreRecommendedMetadataProviders/);
+assert.doesNotMatch(app, /restoreAndSaveRecommendedMetadataProviders/);
+for (const id of ["metadataProbeTitleInput", "metadataProbeArtistInput", "metadataProbeAlbumInput"]) {
+  assert.doesNotMatch(index, new RegExp(`id="${id}"`), `${id} must be gone: the probe song is fixed now`);
+  assert.doesNotMatch(app, new RegExp(id), `${id} must not survive in the probe payload`);
+}
+assert.match(index, /class="metadata-probe-sample"/, "the fixed probe song needs a visible, read-only line");
+assert.match(index, /周杰伦 · 双截棍/, "the probe sample is one fixed track so two runs stay comparable");
+assert.match(app, /METADATA_PROBE_TRACK = Object\.freeze\(\{ title: "双截棍", artist: "周杰伦"/);
+assert.doesNotMatch(app, /请输入要测试的歌曲标题/, "a fixed sample can never be missing");
+// The list must scroll with the pane, not on its own inside it.
+assert.doesNotMatch(fs.readFileSync("app/ui/app.css", "utf8"), /\.metadata-provider-list\{[^}]*max-height/,
+  "the provider list must not carry a second scrollbar inside the settings pane");
+assert.match(index, /id="metadataLogBtn"/, "completion logs belong behind a button, not inline");
+assert.match(index, /id="metadataLogDialog"/);
+assert.match(index, /id="metadataTaskStats"/, "the counters need their own row");
+assert.match(index, /id="metadataTaskHeadline"/, "the pane keeps one live headline instead of a paragraph");
+// The status line survives only as short action feedback ("已请求…"), never as
+// the running commentary it used to print.
+assert.match(functionSource("renderMetadataTaskState"), /metadataTaskHeadline/);
+assert.doesNotMatch(functionSource("renderMetadataTaskState"), /metadataStatusText/);
 assert.doesNotMatch(app, /function ensureMetadataProviderSaveAction\(\)/,
   "R483 moved the provider save button into the static settings markup; the factory must not come back");
 assert.match(index, /id="saveMetadataProvidersBtn"/,
@@ -171,7 +193,7 @@ const displayNameSandbox = {
 vm.runInNewContext(functionSource("metadataProviderDisplayName"), displayNameSandbox);
 assert.equal(displayNameSandbox.metadataProviderDisplayName("netease"), "网易云音乐");
 assert.equal(displayNameSandbox.metadataProviderDisplayName("musicbrainz"), "MusicBrainz");
-assert.match(app, /restoreMetadataProvidersBtn/);
+assert.doesNotMatch(app, /restoreMetadataProvidersBtn/, "the restore button and its handler are gone, not merely hidden");
 assert.match(functionSource("saveMetadataProvidersOnly"), /metadataProviderPayload\(\)/);
 assert.doesNotMatch(app, /function saveMetadataSettings\(/, "the obsolete full metadata save path must stay removed");
 assert.match(app, /搜索/);
@@ -234,23 +256,10 @@ const configured = [
   { id: "kugou", enabled: true },
   { id: "musicbrainz", enabled: false },
 ];
-let restoredPayload = null;
-restoreSandbox.loadMetadataStatus = async () => {
-  restoreSandbox.state.metadataProvidersLoaded = true;
-  restoreSandbox.state.metadataProviderRecommended = recommended;
-  restoreSandbox.state.metadataProviders = configured;
-  return { ok: true };
-};
-restoreSandbox.saveMetadataSettings = async () => {
-  restoredPayload = restoreSandbox.state.metadataProviders.map(({ id, enabled }) => ({ id, enabled }));
-};
-restoreSandbox.saveMetadataProvidersOnly = restoreSandbox.saveMetadataSettings;
 vm.runInNewContext([
   functionSource("metadataProviderFallbackEntries"),
   functionSource("normalizeMetadataProviderEntries"),
   functionSource("metadataProviderUnavailableResult"),
-  functionSource("restoreRecommendedMetadataProviders"),
-  functionSource("restoreAndSaveRecommendedMetadataProviders"),
 ].join("\n"), restoreSandbox);
 
 restoreSandbox.state.metadataProviders = [
@@ -270,13 +279,6 @@ assert.equal(musicBrainzUnavailable.search.supported, true);
 assert.equal(musicBrainzUnavailable.error, "network down");
 
 (async () => {
-  await restoreSandbox.restoreAndSaveRecommendedMetadataProviders();
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(restoredPayload)),
-    recommended.map(({ id, enabled }) => ({ id, enabled })),
-    "restoring before the first settings read must save the recommendation, not the loaded custom order",
-  );
-
   const probeFlow = {
     state: {
       metadataProviderTestInFlight: "",
@@ -285,9 +287,6 @@ assert.equal(musicBrainzUnavailable.error, "network down");
       metadataProviderResults: Object.create(null),
     },
     values: {
-      metadataProbeTitleInput: { value: "晴天" },
-      metadataProbeArtistInput: { value: "周杰伦" },
-      metadataProbeAlbumInput: { value: "叶惠美" },
       metadataProviderStatusText: { textContent: "" },
     },
     $: id => id === "metadataProviderList"
@@ -300,9 +299,16 @@ assert.equal(musicBrainzUnavailable.error, "network down");
     readResponseJsonBounded: async () => providerProbeEnvelope,
     displayText: value => typeof value === "string" ? value : "",
     renderMetadataProviders() {},
+    metadataProviderDisplayName: id => id,
+    metadataProviderResultText: () => "命中",
+    pushMetadataLog() {},
     metadataProviderUnavailableResult: () => ({ ok: false, error: "unexpected fallback" }),
   };
+  // The payload reads a module-level constant, so the sandbox has to carry it.
+  const probeTrackSource = app.match(/const METADATA_PROBE_TRACK = Object\.freeze\(\{[^}]*\}\);/);
+  assert.ok(probeTrackSource, "the fixed probe track must be a single frozen constant");
   vm.runInNewContext([
+    probeTrackSource[0],
     functionSource("metadataProviderProbeResponse"),
     functionSource("metadataProviderProbePayload"),
     functionSource("testMetadataProvider"),
@@ -320,8 +326,8 @@ assert.equal(musicBrainzUnavailable.error, "network down");
   );
   assert.equal(probeFlow.request.url, "api/metadata/provider-test");
   assert.deepEqual(JSON.parse(probeFlow.request.init.body), {
-    provider_id: "kugou", title: "晴天", artist: "周杰伦", album: "叶惠美",
-  });
+    provider_id: "kugou", title: "双截棍", artist: "周杰伦", album: "",
+  }, "the probe must always send the fixed sample, with no field left for the operator");
   console.log("Metadata provider settings UI regression checks passed.");
 })().catch(error => {
   console.error(error);

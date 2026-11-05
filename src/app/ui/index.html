@@ -127,13 +127,19 @@
     <div class="lyrics-bg" id="lyricsBg"></div>
     <div class="lyrics-shade"></div>
     <div class="lyrics-panel">
-      <div class="lyrics-cover" id="lyricsCover"><svg class="record-placeholder" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="7.5"></circle><circle class="record-placeholder-center" cx="12" cy="12" r="2.1"></circle></svg></div>
-      <div class="lyrics-meta"><strong id="lyricsTitle">未选择曲目</strong><span class="lyrics-meta-artist" id="lyricsMetaArtist">未知歌手</span><span class="lyrics-meta-album" id="lyricsMetaAlbum">未知专辑</span></div>
+      <!-- The artwork and its caption are one block.  They used to be two grid
+           rows of the panel, both top aligned, so on a tall window the whole
+           left column stuck to the ceiling while the lyric column ran the full
+           height (R494). -->
+      <div class="lyrics-side"><div class="lyrics-side-stack">
+        <div class="lyrics-cover" id="lyricsCover"><svg class="record-placeholder" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="7.5"></circle><circle class="record-placeholder-center" cx="12" cy="12" r="2.1"></circle></svg></div>
+        <div class="lyrics-meta"><strong id="lyricsTitle">未选择曲目</strong><span class="lyrics-meta-artist" id="lyricsMetaArtist">未知歌手</span><span class="lyrics-meta-album" id="lyricsMetaAlbum">未知专辑</span></div>
+      </div></div>
       <div class="lyrics-lines is-empty" id="lyricsLines"><p class="muted-line">请选择一首歌曲</p></div>
     </div>
   </section>
   <audio id="audio" preload="metadata"></audio>
-  <dialog id="deviceDialog" aria-labelledby="deviceDialogTitle"><div class="dialog-head"><div><h2 id="deviceDialogTitle">选择播放设备</h2><span class="dialog-current-target" id="deviceCurrentTarget">当前：本机播放</span></div><button class="icon-button dialog-close-button" id="closeDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help">选择浏览器、连接到 NAS 的 USB DAC，或局域网内的 DLNA/UPnP 播放设备。</p><div class="device-list-wrap" id="deviceList"></div><div class="device-dialog-footer"><span id="deviceRefreshStatus">设备会按类别显示</span><button class="secondary-button" id="scanDevices" type="button">刷新设备</button></div></dialog>
+  <dialog id="deviceDialog" aria-labelledby="deviceDialogTitle"><div class="dialog-head"><div><h2 id="deviceDialogTitle">播放设备</h2><span class="dialog-current-target" id="deviceCurrentTarget">正在读取当前输出…</span></div><button class="icon-button dialog-close-button" id="closeDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><div class="device-search" id="deviceSearchWrap" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg><input id="deviceSearchInput" type="search" maxlength="120" placeholder="搜索设备名称" aria-label="搜索设备名称" autocomplete="off"></div><div class="device-list-wrap" id="deviceList"></div><div class="device-dialog-footer"><span id="deviceRefreshStatus">正在搜索播放设备…</span><button class="secondary-button" id="scanDevices" type="button">重新扫描</button></div></dialog>
   <dialog id="folderDialog" aria-labelledby="folderDialogTitle">
     <div class="settings-shell">
       <header class="settings-head">
@@ -210,15 +216,22 @@
             </div>
             <div class="settings-group metadata-provider-settings" data-settings-block="metadata-providers">
               <div class="settings-group-head"><h3>数据源</h3><span class="settings-badge is-save">需保存</span></div>
-              <div class="metadata-provider-heading"><div><p class="dialog-help">按顺序查询歌曲、封面和歌词；每个数据源可单独测试或禁用。</p></div><button class="secondary-button" id="restoreMetadataProvidersBtn" type="button">恢复推荐配置</button></div>
-              <div class="metadata-probe-query" data-settings-live><label><span>测试歌曲</span><input id="metadataProbeTitleInput" type="text" maxlength="512" placeholder="输入歌曲标题（必填）"></label><label><span>歌手</span><input id="metadataProbeArtistInput" type="text" maxlength="512" placeholder="可选"></label><label><span>专辑</span><input id="metadataProbeAlbumInput" type="text" maxlength="512" placeholder="可选"></label></div>
+              <p class="dialog-help">按顺序查询歌曲、封面和歌词；靠上优先级更高，关闭的项目会被跳过。</p>
+              <!-- One fixed probe song instead of three manual inputs: the test
+                   always asks the same question, so two runs are comparable
+                   (R494). -->
+              <p class="metadata-probe-sample"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9.2v5.6l4.6-2.8z"/></svg><span>测试样本：<strong>周杰伦 · 双截棍</strong>，每次测试都用这一首</span></p>
               <div id="metadataProviderList" class="metadata-provider-list" aria-label="可配置的元数据数据源"></div>
               <p class="dialog-help" id="metadataProviderStatusText" aria-live="polite">正在读取数据源配置...</p>
             </div>
             <div class="settings-group metadata-task-section" data-settings-block="metadata-tasks">
               <div class="settings-group-head"><h3>补全任务</h3><span class="settings-badge is-live">实时</span></div>
-              <p class="dialog-help">批量补全在后台执行，可以继续播放；失败或无匹配项目可稍后重试。</p>
-              <div class="metadata-settings-actions"><button class="secondary-button" id="refreshMetadataBtn" type="button">重新补全元数据</button></div>
+              <div class="metadata-task-row">
+                <div class="metadata-task-state"><span class="metadata-task-dot" id="metadataTaskDot" aria-hidden="true"></span><strong id="metadataTaskHeadline">正在读取状态...</strong><span id="metadataTaskDetail"></span></div>
+                <div class="metadata-task-actions"><button class="secondary-button" id="metadataLogBtn" type="button">查看日志</button><button class="secondary-button" id="refreshMetadataBtn" type="button">重新补全</button></div>
+              </div>
+              <div class="metadata-task-stats" id="metadataTaskStats"></div>
+              <p class="metadata-task-alert" id="metadataTaskAlert" hidden></p>
               <p class="dialog-help" id="metadataStatusText" aria-live="polite">正在读取后台状态...</p>
             </div>
             <div class="settings-group metadata-tag-section settings-danger-zone" data-settings-block="metadata-tags">
@@ -292,7 +305,37 @@
   <dialog id="dlnaDiagnosticsDialog" aria-labelledby="dlnaDiagnosticsDialogTitle"><div class="dialog-head"><h2 id="dlnaDiagnosticsDialogTitle">DLNA 兼容性记录</h2><button class="icon-button dialog-close-button" id="closeDlnaDiagnosticsDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help" id="dlnaDiagnosticsSummary"></p><div class="diagnostics-list" id="dlnaDiagnosticsList"></div><button class="secondary-button" id="refreshDlnaDiagnosticsBtn" type="button">刷新记录</button></dialog>
   <dialog id="playlistDialog" aria-labelledby="playlistDialogTitle"><div class="dialog-head"><h2 id="playlistDialogTitle">新建播放列表</h2><button class="icon-button dialog-close-button" id="closePlaylistDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help" id="playlistDialogHelp">输入一个名字，创建后可从曲目旁边加入歌曲。</p><div class="path-entry single"><input id="playlistNameInput" placeholder="例如：夜晚听"></div><div id="playlistChoices" class="playlist-choices"></div><p class="dialog-help" id="playlistStatus"></p><button class="secondary-button" id="savePlaylistBtn" type="button">保存</button></dialog>
   <dialog id="trackActionDialog" aria-labelledby="trackActionTitle"><div class="dialog-head"><h2 id="trackActionTitle">歌曲操作</h2><button class="icon-button dialog-close-button" id="closeTrackActionDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><div id="trackActionList" class="track-action-list"></div></dialog>
-  <dialog id="metadataCandidateDialog" class="metadata-candidate-dialog" aria-labelledby="metadataCandidateTitle"><div class="dialog-head"><div><h2 id="metadataCandidateTitle">元数据补全</h2><p class="dialog-help" id="metadataCandidateTrackSummary"></p></div><button class="icon-button dialog-close-button" id="closeMetadataCandidateDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><div class="metadata-candidate-source-bar"><label><span>查询数据源</span><select id="metadataCandidateProviderSelect"><option value="">自动匹配（按设置顺序）</option></select></label><small>单独选择数据源不会改变全局排序。</small></div><div id="metadataCandidateStatus" class="track-action-info">正在查询候选结果...</div><div id="metadataCandidateSearchResults" class="metadata-candidate-results"></div><form id="metadataCandidateSearchForm" class="metadata-candidate-search"><label><span>手动搜索</span><input id="metadataCandidateSearchInput" type="search" maxlength="512" placeholder="输入歌名、歌手或专辑" autocomplete="off"></label><button class="secondary-button" type="submit">搜索</button></form><p class="dialog-help" id="metadataCandidateSearchStatus" aria-live="polite"></p></dialog>
+  <dialog id="metadataCandidateDialog" class="metadata-candidate-dialog" aria-labelledby="metadataCandidateTitle">
+    <div class="dialog-head">
+      <div><h2 id="metadataCandidateTitle">元数据补全</h2><p class="dialog-help" id="metadataCandidateTrackSummary"></p></div>
+      <button class="icon-button dialog-close-button" id="closeMetadataCandidateDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button>
+    </div>
+    <form class="metadata-candidate-search" id="metadataCandidateSearchForm">
+      <label class="metadata-candidate-query"><svg class="metadata-candidate-query-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></svg><input id="metadataCandidateSearchInput" type="search" maxlength="512" placeholder="输入歌名、歌手或专辑" aria-label="搜索关键词" autocomplete="off"></label>
+      <select id="metadataCandidateProviderSelect" aria-label="查询数据源"><option value="">自动匹配（按设置顺序）</option></select>
+      <button class="secondary-button" type="submit">搜索</button>
+    </form>
+    <p class="metadata-candidate-hint" id="metadataCandidateSearchStatus" aria-live="polite"></p>
+    <div class="metadata-candidate-body">
+      <div id="metadataCandidateSearchResults" class="metadata-candidate-results"></div>
+      <aside class="metadata-candidate-preview">
+        <h3>将写入的变化</h3>
+        <dl class="metadata-candidate-changes" id="metadataCandidatePreview"></dl>
+        <p class="metadata-candidate-preview-note" id="metadataCandidatePreviewNote"></p>
+      </aside>
+    </div>
+    <div class="metadata-candidate-footer">
+      <p class="dialog-help" id="metadataCandidateStatus" aria-live="polite">正在查询候选结果...</p>
+      <button class="secondary-button" id="cancelMetadataCandidateBtn" type="button">取消</button>
+      <button class="primary-button" id="applyMetadataCandidateBtn" type="button" disabled>确认并写入</button>
+    </div>
+  </dialog>
+  <dialog id="metadataLogDialog" class="metadata-log-dialog" aria-labelledby="metadataLogTitle">
+    <div class="dialog-head"><div><h2 id="metadataLogTitle">补全日志</h2><p class="dialog-help" id="metadataLogSummary"></p></div><button class="icon-button dialog-close-button" id="closeMetadataLogDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div>
+    <div class="metadata-log-filters" id="metadataLogFilters"><button type="button" data-metadata-log-filter="all" aria-pressed="true">全部</button><button type="button" data-metadata-log-filter="issue" aria-pressed="false">失败与未匹配</button><button type="button" data-metadata-log-filter="done" aria-pressed="false">已完成</button></div>
+    <div class="metadata-log-list" id="metadataLogList" role="log"></div>
+    <div class="metadata-log-footer"><span class="dialog-help" id="metadataLogNote">只记录本次页面会话里发生的事件，逐曲历史不会长期保存。</span><button class="secondary-button" id="copyMetadataLogBtn" type="button">复制</button><button class="secondary-button" id="closeMetadataLogBtn" type="button">关闭</button></div>
+  </dialog>
   <dialog id="externalShareDialog" class="external-share-dialog" aria-labelledby="externalShareDialogTitle">
     <div class="dialog-head"><h2 id="externalShareDialogTitle">创建外部链接</h2><button class="icon-button dialog-close-button" id="closeExternalShareDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button>
     </div>

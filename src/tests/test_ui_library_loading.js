@@ -179,8 +179,8 @@ assert.match(app, /state\.uiMetrics\.metadataPrefetchFailures = Math\.min\(10000
 assert.match(app, /const metadataRequestStartedAt = Date\.now\(\);/, "Metadata latency must measure each provider request independently");
 assert.match(app, /metadataPrefetchTotalMs = Math\.min\(3600000, state\.uiMetrics\.metadataPrefetchTotalMs \+ metadataRequestElapsedMs\)/, "Metadata latency total must not double-count poll windows");
 assert.match(app, /if \(generation !== state\.visibleMetadataPrefetchSeq \|\| requestSeq !== state\.libraryRequestSeq\) return;\s*if \(!data\) \{/, "Cancelled visible metadata batches must not be counted as provider failures");
-assert.match(app, /const noMatchJobs = Number\(jobs\.no_match \|\| 0\);/, "Metadata status must distinguish provider no-match jobs from failures");
-assert.match(app, /暂未匹配（可稍后重试）/, "Metadata no-match status should remain visibly recoverable");
+assert.match(app, /noMatch: Number\(jobs\.no_match \|\| 0\)/, "Metadata status must distinguish provider no-match jobs from failures");
+assert.match(app, /\["未匹配", counts\.noMatch\]/, "Metadata no-match count stays visible beside the failure count instead of hiding in a summary line");
 assert.match(app, /const missingProjection = !Object\.prototype\.hasOwnProperty\.call\(data, "status"\)/, "Generic HTTP 200 metadata envelopes must remain retryable");
 assert.match(app, /firstListCommitMs = Math\.min\(3600000/, "First list commit timing must remain bounded");
 assert.match(app, /firstCoverHydrationMs = Math\.min\(3600000/, "First cover timing must remain bounded");
@@ -313,11 +313,11 @@ assert.match(app, /state\.metadataCandidateController\?\.abort\(\)/, "Closing or
 assert.match(app, /error\?\.name === "AbortError"/, "Cancelled metadata candidate lookups must not be rendered as failures");
 assert.match(app, /const applyController = typeof AbortController === "function" \? new AbortController\(\) : null;[\s\S]*?state\.metadataCandidateController = applyController;/, "Metadata candidate confirmation must own a cancellable request");
 assert.match(app, /api\/metadata\/track\/apply[\s\S]*?signal: applyController\.signal/, "Metadata candidate confirmation must propagate its cancellation signal");
-assert.match(app, /if \(!isCurrentRequest\(\)\) return;[\s\S]*?已确认，后台将只补全空白 Tag 字段/, "A stale metadata confirmation must not overwrite a replaced dialog");
+assert.match(app, /if \(!isCurrentRequest\(\)\) return;[\s\S]*?已确认，后台将只写入空白与文件名推断字段/, "A stale metadata confirmation must not overwrite a replaced dialog");
 assert.match(app, /cooldown_seconds/, "Metadata status should expose provider cooldown observability");
-assert.match(app, /冷却\$\{cooldown\}s/, "Provider cooldown should be visible in the metadata status summary");
+assert.match(app, /冷却\$\{cooldown\}s/, "Provider cooldown should stay visible next to the task counters");
 assert.match(app, /value\.last_error\.replace\(/, "Metadata status should expose a bounded provider failure reason");
-assert.match(app, /slice\(0, 96\)/, "Provider failure reason must remain bounded in the settings UI");
+assert.match(app, /slice\(0, 60\)/, "Provider failure reason must remain bounded in the settings UI");
 assert.match(app, /const listChanged = deferListCommit \? false : commitTrackListHtml\(listHtml\);/, "Track DOM replacement must retain the row markup guard while deferring a transient empty commit during snapshot loading");
 assert.match(app, /fnAudioLibraryRenderPolicy\?\.shouldDeferListCommit\(/, "Snapshot defer decision must use the isolated render policy");
 assert.match(renderPolicy, /function shouldDeferListCommit\(options\)/, "Snapshot defer decision must remain a pure bounded policy");
@@ -469,7 +469,7 @@ assert.match(app, /const candidateArtwork = usableCoverSource\([\s\S]*?selectDis
 assert.match(app, /function applyGroupArtwork\(node, imageUrl\)[\s\S]*?const normalizedUrl = usableCoverSource\(imageUrl\)/, "Group artwork fallbacks must reuse the bounded cover source validator");
 assert.match(app, /function applyGroupArtwork\(node, imageUrl\)[\s\S]*?data-cover-src/, "Group artwork fallbacks must enter the shared cover scheduler");
 assert.match(app, /function applyGroupArtwork\(node, imageUrl\)[\s\S]*?hydrateVisibleTrackCovers\(\)/, "Group artwork fallbacks must trigger bounded hydration after local failure");
-assert.match(app, /后台补全未开启（播放\/歌词页仍可按需获取）/, "Metadata status must distinguish disabled background enrichment from completion");
+assert.match(app, /"后台补全已关闭"[\s\S]*?播放与歌词页仍会按需获取/, "Metadata status must distinguish disabled background enrichment from completion");
 assert.match(app, /fnAudioMetadataProjectionPolicy\?\.signature\(data\)/, "Metadata projection signature must use the isolated policy module");
 assert.match(metadataProjection, /global\.fnAudioMetadataProjectionPolicy = \{ signature \}/, "Metadata projection policy must expose a pure signature");
 assert.doesNotMatch(metadataProjection, /safeCount\(source\.metadata_updated_at\)/, "Terminal-job timestamps must not independently invalidate the visible list");
@@ -1030,7 +1030,7 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       deviceList: { innerHTML: "正在搜索播放设备...", childElementCount: 1 },
       deviceDialog: { open: false },
       scanDevices: { disabled: false, textContent: "" },
-      deviceRefreshStatus: { textContent: "" },
+      deviceRefreshStatus: { textContent: "", classList: { toggle() {} } },
     };
     const state = {
       deviceLoadInFlight: false,
