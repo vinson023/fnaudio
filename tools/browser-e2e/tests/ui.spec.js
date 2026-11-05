@@ -322,6 +322,9 @@ test("mobile settings can add a music folder through the server browser", async 
   await page.locator("#mobileNavBtn").click();
   await page.locator("#mobileSettingsNavBtn").click();
   await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
+  // The phone frame opens on the group list, so the library pane is one tap in.
+  await page.locator('[data-settings-tab="library"]').click();
+  await expect(page.locator("#settings-pane-library")).toBeVisible();
   await page.locator("#chooseLibraryPathBtn").click();
 
   const browser = page.locator("#libraryDirDialog");

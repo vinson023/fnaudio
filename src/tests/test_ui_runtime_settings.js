@@ -25,35 +25,46 @@ function functionSource(name) {
   return match[0];
 }
 
-// 1) 高级性能控件留在高级 pane；Renderer 显示名归「播放与设备」pane。
-const paneMatch = index.match(/<section\b[^>]*class="settings-pane"[^>]*data-settings-pane="runtime"[^>]*>([\s\S]*?)<\/section>/);
-assert.ok(paneMatch, "the runtime settings pane must exist");
-assert.match(paneMatch[1], /<input id="libraryConnectionPoolInput" type="checkbox">/, "the pool toggle belongs to the runtime pane");
-assert.match(paneMatch[1], /<label class="metadata-toggle">/, "the toggle must reuse the established settings-toggle shape");
-assert.doesNotMatch(index.match(/data-settings-pane="metadata"[^>]*>([\s\S]*?)<\/section>/)[1], /libraryConnectionPoolInput/, "the metadata pane must not claim the pool switch");
-assert.match(paneMatch[1], /<select id="lyricsCacheBudgetInput">/, "the budget select belongs to the runtime pane");
-const dlnaPaneMatch = index.match(/<section\b[^>]*class="settings-pane"[^>]*data-settings-pane="dlna"[^>]*>([\s\S]*?)<\/section>/);
-assert.ok(dlnaPaneMatch, "the DLNA settings pane must exist");
-assert.match(dlnaPaneMatch[1], /<input id="dlnaTypeDetectionInput" type="checkbox"/, "the DLNA pane must expose the type detection switch");
-assert.match(dlnaPaneMatch[1], /id="saveDlnaSettingsBtn"/, "the DLNA pane must own its save control");
-const playbackPaneMatch = index.match(/<section\b[^>]*class="settings-pane"[^>]*data-settings-pane="playback"[^>]*>([\s\S]*?)<\/section>/);
-assert.ok(playbackPaneMatch, "the playback and devices settings pane must exist");
-assert.match(playbackPaneMatch[1], /<input id="rendererNameInput" type="text" maxlength="128"/, "the renderer name editor belongs to playback and devices and is bounded");
-assert.doesNotMatch(dlnaPaneMatch[1], /rendererNameInput/, "DLNA diagnostics must not own the general renderer identity field");
-assert.match(paneMatch[1], /<option value="8388608" selected>/, "the select must offer the shipped default");
-const budgetSelectMarkup = paneMatch[1].match(/<select id="lyricsCacheBudgetInput">([\s\S]*?)<\/select>/);
+// 1) 连接池与 DLNA 归「服务与网络」，歌词缓存预算归「高级」，Renderer 显示名归「播放与输出」。
+function paneMarkup(name) {
+  const match = index.match(new RegExp(`<section\\b[^>]*class="settings-pane[^"]*"[^>]*data-settings-pane="${name}"[^>]*>([\\s\\S]*?)<\\/section>`));
+  assert.ok(match, `the ${name} settings pane must exist`);
+  return match[1];
+}
+const networkPane = paneMarkup("network");
+const advancedPane = paneMarkup("advanced");
+const playbackPane = paneMarkup("playback");
+const appearancePane = paneMarkup("appearance");
+const metadataPane = paneMarkup("metadata");
+assert.match(networkPane, /<input id="libraryConnectionPoolInput" type="checkbox">/, "the pool toggle belongs to the service pane");
+assert.match(networkPane, /<label class="metadata-toggle">/, "the toggle must reuse the established settings-toggle shape");
+assert.doesNotMatch(metadataPane, /libraryConnectionPoolInput/, "the metadata pane must not claim the pool switch");
+assert.match(advancedPane, /<select id="lyricsCacheBudgetInput">/, "the budget select belongs to the advanced pane");
+assert.doesNotMatch(metadataPane, /lyricsCacheBudgetInput/, "the metadata pane must not claim the budget");
+assert.match(networkPane, /<input id="dlnaTypeDetectionInput" type="checkbox"/, "the service pane must expose the DLNA type detection switch");
+// The DLNA switch used to own a pane-local save button.  It is now one savable
+// block among several, so what has to hold is that it declares itself savable
+// instead of taking effect on click.
+assert.match(networkPane, /data-settings-block="network-dlna"[^>]*>[\s\S]*?dlnaTypeDetectionInput/, "the DLNA switch must sit in its own savable block");
+assert.doesNotMatch(networkPane, /data-settings-block="network-dlna"[^>]*data-settings-live/, "the DLNA switch must not be marked as a live control");
+assert.match(playbackPane, /<input id="rendererNameInput" type="text" maxlength="128"/, "the renderer name editor belongs to playback and devices and is bounded");
+assert.doesNotMatch(networkPane, /rendererNameInput/, "DLNA diagnostics must not own the general renderer identity field");
+assert.match(advancedPane, /<option value="8388608" selected>/, "the select must offer the shipped default");
+const budgetSelectMarkup = advancedPane.match(/<select id="lyricsCacheBudgetInput">([\s\S]*?)<\/select>/);
 assert.ok(budgetSelectMarkup, "the budget control must be a select, not a free-text box");
 const PRESET_BUDGETS = [...budgetSelectMarkup[1].matchAll(/<option value="(\d+)"/g)].map(found => found[1]);
 assert.equal(PRESET_BUDGETS.length, 6, "the select must offer exactly six budgets");
 assert.ok(PRESET_BUDGETS.includes("65536"), "the select must offer the floor the cache enforces");
 assert.ok(PRESET_BUDGETS.includes("67108864"), "the select must offer the ceiling the cache enforces");
-assert.doesNotMatch(index.match(/data-settings-pane="metadata"[^>]*>([\s\S]*?)<\/section>/)[1], /lyricsCacheBudgetInput/, "the metadata pane must not claim the budget");
 // 端口那两句话不能被挤掉：它仍是「改端口要重启」的唯一说明。
-assert.match(paneMatch[1], /修改端口后，请停止并重新启动 fnAudio/, "the port restart notice must survive in the same pane");
-assert.match(paneMatch[1], /修改后点击“保存高级设置”生效/, "advanced settings must explain their page-local save action");
-assert.doesNotMatch(paneMatch[1], /这个开关即时生效/, "advanced controls must not claim immediate effect when they use a save button");
-assert.match(paneMatch[1], /浅色与深色由 fnAudio 单独显示；跟随系统时按浏览器或设备的浅深色偏好切换。/, "theme help text must describe the actual local and system-preference behavior");
-assert.doesNotMatch(paneMatch[1], /FNOS 官方配色|与 fnOS 系统主题保持一致/, "theme help text must not claim an unimplemented FNOS host-theme integration");
+assert.match(networkPane, /修改端口后，请停止并重新启动 fnAudio/, "the port restart notice must survive in the service pane");
+// 每个 pane 各带一个保存按钮的说法已经作废：写入只剩底部一条路径，所以任何
+// 「点这里保存」的页内指示都必须消失，否则两套说明会互相矛盾。
+assert.doesNotMatch(index, /修改后点击“保存高级设置”生效/, "page-local save instructions must not survive the shared save bar");
+assert.match(index, /id="settingsSaveBtn"[^>]*>保存更改</, "every savable group must write through the shared footer");
+assert.doesNotMatch(networkPane, /这个开关即时生效/, "the pool switch must not claim immediate effect when it waits for a save");
+assert.match(appearancePane, /浅色与深色由 fnAudio 单独显示；跟随系统时按浏览器或设备的浅深色偏好切换。/, "theme help text must describe the actual local and system-preference behavior");
+assert.doesNotMatch(index, /FNOS 官方配色|与 fnOS 系统主题保持一致/, "theme help text must not claim an unimplemented FNOS host-theme integration");
 
 // 2) 常量口径必须与服务端配置键逐字相同，两侧任一改名都会在这里断掉。
 const constLine = app.match(/^const LIBRARY_CONNECTION_POOL_SETTING_KEY = "([^"]+)";$/m);
@@ -76,8 +87,8 @@ assert.equal(dlnaTypeDetectionKey[1], "dlna_type_detection");
 assert.match(configPy, /DEFAULT_RENDERER_NAME = "fnAudio Renderer"/, "configuration must preserve the renderer default");
 assert.match(dlnaServicePy, /friendly = html\.escape\(self\.renderer_name if is_renderer else "fnAudio Music Library"\)/, "only the renderer friendly name is configurable and XML-escaped");
 
-// 3) 接线：切到运行 pane 要读回；运行页必须拥有自己的保存按钮，不再依赖全局保存。
-assert.match(functionSource("setSettingsTab"), /if \(name === "runtime"\) loadRuntimeSettings\(\);/, "opening the runtime pane must read the setting back");
+// 3) 接线：切到运行设置所在的 pane 要读回；写入统一走底部保存栏，不再依赖全局保存。
+assert.match(functionSource("setSettingsTab"), /if \(name === "network" \|\| name === "advanced"\) loadRuntimeSettings\(\);/, "opening either runtime pane must read the settings back");
 assert.match(app, /function ensureSettingsStatusNodes\(\)/, "settings panes must create page-local live statuses");
 assert.match(functionSource("ensureSettingsStatusNodes"), /librarySettingsStatus[\s\S]*runtimeSettingsStatus[\s\S]*metadataOverviewSettingsStatus[\s\S]*metadataTagSettingsStatus/, "each save pane must own a status node");
 assert.match(functionSource("openFolderBrowser"), /ensureSettingsStatusNodes\(\)/, "opening settings must materialize local status nodes");
@@ -89,8 +100,12 @@ assert.match(functionSource("setSettingsTab"), /if \(name === "playback"\) loadP
 assert.match(app, /function settingsTabIndexForKey\(/, "top-level tabs must support keyboard navigation");
 assert.match(functionSource("bindSettingsTabs"), /onkeydown/, "top-level tabs must bind keyboard navigation");
 assert.match(functionSource("bindSettingsTabs"), /setSettingsTab\(state\.settingsTab \|\| "library"\)/, "top-level tab semantics must be initialized when bindings are installed");
-assert.match(index, /data-settings-tab="playback"[^>]*>播放与设备/, "the top-level settings taxonomy must expose playback and devices");
-assert.match(index, /id="savePlaybackSettingsBtn"[^>]*>保存播放与设备设置/, "playback and devices must have its own save control");
+assert.match(index, /data-settings-tab="playback"[^>]*>[\s\S]*?settings-nav-label">播放与输出</, "the top-level settings taxonomy must expose playback and output");
+assert.match(index, /data-settings-tab="playback"[^>]*>[\s\S]*?settings-nav-icon/, "every rail entry must carry an icon");
+// The pane-local save button is now a hidden handler, so the guard is that the
+// handler still exists and still calls the playback save path.
+assert.match(index, /id="savePlaybackSettingsBtn"[^>]*>保存播放与设备设置/, "the playback save handler must survive as a hidden trigger");
+assert.match(app, /function savePlaybackPaneSettings\(\) \{[\s\S]*savePlaybackSettings\(\)/, "the hidden trigger must still call the playback save path");
 const tabNavigation = {};
 vm.createContext(tabNavigation);
 vm.runInContext(`${functionSource("settingsTabIndexForKey")}\nglobalThis.settingsTabIndexForKey = settingsTabIndexForKey;`, tabNavigation);
@@ -101,11 +116,11 @@ assert.equal(tabNavigation.settingsTabIndexForKey("Home", 3, 5), 0);
 assert.equal(tabNavigation.settingsTabIndexForKey("End", 0, 5), 4);
 assert.equal(tabNavigation.settingsTabIndexForKey("Enter", 0, 5), -1, "activation keys must not be mistaken for tab movement");
 assert.equal(tabNavigation.settingsTabIndexForKey("ArrowRight", 0, 0), -1, "empty tab sets must be ignored");
-assert.match(index, /id="saveRuntimeSettingsBtn"[^>]*>保存高级设置/, "the advanced pane must have its own save button");
+assert.match(index, /id="saveRuntimeSettingsBtn"[^>]*>保存运行设置/, "the runtime save handler must survive as a hidden trigger");
 assert.match(app, /function saveRuntimePaneSettings\(\) \{[\s\S]*saveRuntimeSettings\(\)/, "the runtime save button must call the runtime save path");
 assert.doesNotMatch(index, /id="chooseFolderBtn"/, "the settings dialog must not expose a global save button");
 assert.match(index, /role="tablist"[^>]*aria-label="设置分类"/, "the settings tablist must be labelled");
-assert.match(index, /role="tabpanel"[^>]*aria-labelledby="settings-tab-runtime"/, "the runtime pane must expose tabpanel semantics");
+assert.match(index, /role="tabpanel"[^>]*aria-labelledby="settings-tab-network"/, "the runtime pane must expose tabpanel semantics");
 assert.match(index, /id="playbackSettingsStatus"[^>]*aria-live="polite"/, "playback settings reads need a page-local live status");
 
 // 4) 路由字符串两端对齐：UI 拼的是相对路径，服务端注册 GET 与 POST 两条。

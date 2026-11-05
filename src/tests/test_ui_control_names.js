@@ -93,8 +93,10 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 102, "index.html declares 102 visible form controls, including independent metadata and DLNA save actions and the R461 directory browser");
+assert.equal(controls.length, 103, "index.html declares 103 visible form controls, including the shared save bar and the R461 directory browser");
 assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
+assert.equal(controls.find(control => control.attr.id === "settingsSaveBtn")?.name, "保存更改");
+assert.equal(controls.find(control => control.attr.id === "settingsDiscardBtn")?.name, "放弃");
 
 const nameless = controls.filter((control) => !control.name).map((control) => control.attr.id || control.tag);
 assert.deepEqual(nameless, [], `every control in index.html needs an accessible name, these have none: ${nameless.join(", ")}`);
@@ -106,8 +108,9 @@ for (const [paneId, tabId] of [
   ["settings-pane-library", "settings-tab-library"],
   ["settings-pane-playback", "settings-tab-playback"],
   ["settings-pane-metadata", "settings-tab-metadata"],
-  ["settings-pane-dlna", "settings-tab-dlna"],
-  ["settings-pane-runtime", "settings-tab-runtime"],
+  ["settings-pane-network", "settings-tab-network"],
+  ["settings-pane-appearance", "settings-tab-appearance"],
+  ["settings-pane-advanced", "settings-tab-advanced"],
 ]) {
   assert.match(
     html,

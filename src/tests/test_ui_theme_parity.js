@@ -9,10 +9,10 @@ const tokens = fs.readFileSync("app/ui/design-tokens.css", "utf8");
 const theme = fs.readFileSync("app/ui/fnos-theme.css", "utf8");
 const appCss = fs.readFileSync("app/ui/app.css", "utf8");
 
-// The theme select lives in the runtime settings pane with the choice hook.
-const pane = html.match(/<section\b[^>]*data-settings-pane="runtime"[^>]*>([\s\S]*?)<\/section>/);
-assert.ok(pane, "runtime settings pane exists");
-assert.match(pane[1], /id="themeModeInput"/, "theme select lives in the runtime pane");
+// The theme select lives in its own 外观 pane with the choice hook.
+const pane = html.match(/<section\b[^>]*data-settings-pane="appearance"[^>]*>([\s\S]*?)<\/section>/);
+assert.ok(pane, "appearance settings pane exists");
+assert.match(pane[1], /id="themeModeInput"/, "theme select lives in the appearance pane");
 assert.match(pane[1], /data-theme-choice/, "theme select carries the choice hook");
 assert.match(pane[1], /<option value="">跟随系统<\/option>/, "follow-system option present");
 assert.match(pane[1], /<option value="light">浅色<\/option>/, "light option present");
@@ -112,14 +112,13 @@ assert.match(appCss, /\.settings-pane-status\{color:var\(--ui-success\)!importan
   "settings status fallback must use the FNOS success token");
 assert.match(appCss, /\.library-path-input\[readonly\]\{background:var\(--ui-sidebar\)!important;color:var\(--ui-secondary\)!important\}/,
   "readonly library path fallback must use FNOS surface and text tokens");
-assert.match(appCss, /\.metadata-settings-tabs\{border-bottom-color:var\(--ui-line\)!important\}/,
-  "metadata settings tabs fallback must use the FNOS line token");
 assert.match(appCss, /\.metadata-tag-job\.is-failed\{background:var\(--ui-danger-bg\)!important;color:var\(--ui-danger\)!important;border-left-color:var\(--ui-danger\)!important\}/,
   "metadata failed job fallback must use FNOS danger tokens");
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /function normalizeDialogCloseControls\(\)/);
 assert.match(theme, /\.dialog-close-button svg, \.library-path-remove svg\s*\{/);
-assert.match(theme, /\.settings-tabs\s*\{\s*display:\s*flex !important;\s*flex-wrap:\s*nowrap !important;[\s\S]*?overflow-x:\s*auto !important;/, "mobile settings tabs must stay in one horizontally scrollable row");
-assert.match(theme, /\.settings-tabs button\s*\{\s*flex:\s*0 0 auto !important;\s*white-space:\s*nowrap !important;/, "mobile settings tab labels must not wrap");
+assert.match(theme, /\.settings-nav button\.active \{ background: var\(--ui-selected\) !important; color: var\(--ui-accent\) !important; \}/,
+  "the selected rail entry must use the FNOS selection tokens");
+assert.match(theme, /\.settings-nav button \{[^}]*min-height: 44px;/, "rail entries must stay a 44px target before the phone override");
 assert.match(theme, /\.switch-control input:focus-visible \+ span\s*\{[^}]*outline:2px solid var\(--ui-accent\)[^}]*outline-offset:2px/, "custom switches must expose a visible keyboard focus ring");
 assert.doesNotMatch(theme, /mode-mp3-icon/, "the retired MP3 badge must not remain in the FNOS theme");
 assert.match(theme, /prefers-color-scheme:\s*dark[\s\S]*?\.player-actions #deviceBtn[\s\S]*?color:\s*var\(--ui-secondary\) !important;/,

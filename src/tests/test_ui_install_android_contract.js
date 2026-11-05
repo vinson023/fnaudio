@@ -15,7 +15,8 @@ assert.match(index, /安装完成后，请在这里选择音乐目录/, "library
 assert.match(index, /id="chooseLibraryPathBtn"/, "library settings must expose the official directory picker action");
 assert.match(app, /response\?\.data|Array\.isArray\(response\)/, "library picker must consume returned directory paths");
 assert.match(css, /\.library-path-picker/, "library picker must have a dedicated aligned layout");
-assert.match(index, /class="settings-pane-actions"><span class="settings-inline-feedback">只保存 Renderer 名称<\/span><button[^>]*id="savePlaybackSettingsBtn"/, "Renderer save hint must align with its actual save action");
+assert.match(index, /data-settings-block="playback-identity"[\s\S]*?只改变 Renderer 显示名称，不改变设备身份/, "the renderer group must say that only the display name changes");
+assert.match(index, /class="settings-legacy-actions"[^>]*>[\s\S]*?id="savePlaybackSettingsBtn"/, "the renderer save must stay wired through the hidden trigger");
 assert.match(css, /\.settings-inline-feedback\{display:inline-flex!important;align-items:center!important;min-height:34px!important\}/, "settings feedback must share the action row's vertical alignment");
 assert.match(gradle, /main\.assets\.srcDirs \+= \["\.\.\/\.\.\/src\/app\/ui"\]/, "Android must package the current UI source tree");
 assert.match(gradle, /verifyFnaudioUiSource/, "Android build must verify the UI source tree before packaging");

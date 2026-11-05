@@ -23,6 +23,12 @@ async function openSettings(page) {
   if ((page.viewportSize()?.width ?? 1440) <= 760) await page.locator('#mobileNavBtn').click();
   await page.locator('#mobileSettingsNavBtn').click();
 }
+// Phones open settings on the rail; picking a group is what reveals its pane.
+async function openSettingsGroup(page, name) {
+  await openSettings(page);
+  await page.locator(`[data-settings-tab="${name}"]`).click();
+  await expect(page.locator(`#settings-pane-${name}`)).toBeVisible();
+}
 async function insideViewport(page, selector) {
   const element = page.locator(selector);
   await expect(element,selector).toBeVisible();
@@ -556,33 +562,30 @@ test('FNOS: mobile repeat modes use one state glyph without duplicate badges', a
   await screenshot(page, info, 'mobile-repeat-modes');
 });
 
-test('FNOS: settings tablists support keyboard navigation with synchronized ARIA state', async ({page}) => {
+test('FNOS: settings rail supports keyboard navigation with synchronized ARIA state', async ({page}) => {
   await load(page);
   await openSettings(page);
 
-  const runtimeTab = page.locator('[data-settings-tab="runtime"]');
+  const lastTab = page.locator('[data-settings-tab="advanced"]');
   await page.locator('[data-settings-tab="library"]').focus();
   await page.keyboard.press('End');
-  await expect(runtimeTab).toBeFocused();
-  await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('#settings-pane-runtime')).toBeVisible();
-  await expect(page.locator('#settings-pane-runtime .settings-section-heading')).toContainText('浅色与深色由 fnAudio 单独显示；跟随系统时按浏览器或设备的浅深色偏好切换。');
+  await expect(lastTab).toBeFocused();
+  await expect(lastTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#settings-pane-advanced')).toBeVisible();
   await expect(page.locator('[data-settings-tab="library"]')).toHaveAttribute('tabindex', '-1');
   await page.keyboard.press('ArrowLeft');
-  await expect(page.locator('[data-settings-tab="dlna"]')).toBeFocused();
-  await expect(page.locator('#settings-pane-dlna')).toBeVisible();
+  await expect(page.locator('[data-settings-tab="appearance"]')).toBeFocused();
+  await expect(page.locator('#settings-pane-appearance')).toBeVisible();
+  await expect(page.locator('#settings-pane-appearance .dialog-help')).toContainText('浅色与深色由 fnAudio 单独显示');
 
   await page.locator('[data-settings-tab="metadata"]').click();
-  const tagsTab = page.locator('[data-metadata-settings-tab="tags"]');
-  await page.locator('[data-metadata-settings-tab="overview"]').focus();
-  await page.keyboard.press('End');
-  await expect(tagsTab).toBeFocused();
-  await expect(tagsTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('#metadata-settings-pane-tags')).toBeVisible();
-  await expect(page.locator('[data-metadata-settings-tab="overview"]')).toHaveAttribute('tabindex', '-1');
-  await page.keyboard.press('Home');
-  await expect(page.locator('[data-metadata-settings-tab="overview"]')).toBeFocused();
-  await expect(page.locator('#metadata-settings-pane-overview')).toBeVisible();
+  // Metadata is one scrolling column now. A second tablist inside the rail is
+  // exactly the nesting this rewrite removed, so its absence is the contract.
+  await expect(page.locator('#settings-pane-metadata [role="tablist"]')).toHaveCount(0);
+  for (const block of ['metadata-overview', 'metadata-providers', 'metadata-tasks', 'metadata-tags']) {
+    await expect(page.locator(`[data-settings-block="${block}"]`)).toHaveCount(1);
+  }
+  await expect(page.locator('[data-settings-block="metadata-tags"]')).toHaveClass(/settings-danger-zone/);
 });
 
 test('FNOS: settings controls use the shared state palette', async ({page}) => {
@@ -596,13 +599,17 @@ test('FNOS: settings controls use the shared state palette', async ({page}) => {
     return { color: style.color, background: style.backgroundColor };
   });
   expect(tabStyle).toEqual({ color: 'rgb(0, 102, 255)', background: 'rgba(0, 102, 255, 0.15)' });
-  const saveStyle = await page.locator('#settings-pane-library .settings-save').evaluate(button => {
+  // The footer is the only save surface, so it can only be sampled once a change
+  // has queued something for it to write.
+  await page.locator('[data-settings-tab="network"]').click();
+  await page.locator('#libraryConnectionPoolInput').click();
+  await expect(page.locator('#settingsSaveBtn')).toBeVisible();
+  const saveStyle = await page.locator('#settingsSaveBtn').evaluate(button => {
     const style = getComputedStyle(button);
     return { color: style.color, background: style.backgroundColor };
   });
   expect(saveStyle).toEqual({ color: 'rgb(255, 255, 255)', background: 'rgb(0, 102, 255)' });
   await settingsTab.click();
-  await page.locator('[data-metadata-settings-tab="providers"]').click();
   const providerTest = page.locator('.metadata-provider-test').first();
   await providerTest.hover();
   const providerHover = await providerTest.evaluate(button => {
@@ -612,92 +619,81 @@ test('FNOS: settings controls use the shared state palette', async ({page}) => {
   expect(providerHover).toEqual({ color: 'rgb(11, 11, 12)', background: 'rgba(0, 0, 0, 0.08)' });
 });
 
-test('FNOS: metadata provider pane does not duplicate the subtab divider', async ({page}) => {
+test('FNOS: metadata groups draw one divider each, not two', async ({page}) => {
   await load(page);
-  await openSettings(page);
-  await page.locator('[data-settings-tab="metadata"]').click();
-  await page.locator('[data-metadata-settings-tab="providers"]').click();
-  const section = page.locator('#metadata-settings-pane-providers .metadata-provider-settings');
-  await expect(section).toBeVisible();
-  await expect.poll(() => section.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px');
+  await openSettingsGroup(page, 'metadata');
+  const providerGroup = page.locator('[data-settings-block="metadata-providers"]');
+  await expect(providerGroup).toBeVisible();
+  // The group separator is the only rule above the provider list; the inner
+  // heading block used to add a second one when the sub-tabs were still there.
+  await expect.poll(() => providerGroup.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('1px');
+  const heading = page.locator('[data-settings-block="metadata-providers"] .metadata-provider-heading');
+  await expect.poll(() => heading.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px');
 });
 
-test('FNOS: DLNA pane uses the settings tab divider without a duplicate heading rule', async ({page}) => {
+test('FNOS: service pane keeps one heading per group', async ({page}) => {
   await load(page);
-  await openSettings(page);
-  await page.locator('[data-settings-tab="dlna"]').click();
-  const heading = page.locator('#settings-pane-dlna .settings-diagnostics-heading');
-  await expect(heading).toBeVisible();
-  const style = await heading.evaluate(element => {
-    const computed = getComputedStyle(element);
-    return {
-      borderTopWidth: computed.borderTopWidth,
-      marginTop: computed.marginTop,
-      paddingTop: computed.paddingTop,
-    };
-  });
-  expect(style).toEqual({borderTopWidth: '0px', marginTop: '0px', paddingTop: '0px'});
+  await openSettingsGroup(page, 'network');
+  const heads = page.locator('#settings-pane-network > .settings-group > .settings-group-head');
+  await expect(heads).toHaveCount(3);
+  const texts = await heads.locator('h3').allTextContents();
+  expect(texts).toEqual(['DLNA 设备', '运行端口', '曲库连接池']);
+  // The DLNA diagnostics button is an action, not a second heading.
+  const actions = page.locator('#settings-pane-network .settings-inline-actions');
+  await expect.poll(() => actions.evaluate(element => getComputedStyle(element).borderTopWidth)).toBe('0px');
 });
 
 for (const [width, height] of [[320, 568], [375, 667], [320, 900], [1440, 900]]) {
-  test(`FNOS ${width}x${height}: metadata provider save action stays visible`, async ({page}, info) => {
+  test(`FNOS ${width}x${height}: the shared save bar stays reachable`, async ({page}, info) => {
     await load(page, width, height);
-    await openSettings(page);
-    await page.locator('[data-settings-tab="metadata"]').click();
-    await page.locator('[data-metadata-settings-tab="providers"]').click();
+    await openSettingsGroup(page, 'metadata');
 
-    const actions = page.locator('.metadata-provider-save-actions');
-    const save = page.locator('#saveMetadataProvidersBtn');
-    await expect(actions).toBeVisible();
+    const list = page.locator('#metadataProviderList');
+    await expect(list).toBeVisible();
+    const toggle = list.locator('[data-metadata-provider-toggle]').first();
+    await toggle.scrollIntoViewIfNeeded();
+    await toggle.click();
+
+    const save = page.locator('#settingsSaveBtn');
     await expect(save).toBeVisible();
-    await expect(save).toBeDisabled();
+    await expect(save).toContainText('保存更改');
     const box = await save.boundingBox();
     const viewport = page.viewportSize();
-    expect(box.y + box.height, 'metadata provider save action must remain in the dialog viewport').toBeLessThanOrEqual(viewport.height + 1);
+    expect(box.y + box.height, 'the shared save action must remain in the dialog viewport').toBeLessThanOrEqual(viewport.height + 1);
+    expect(box.y, 'the shared save action must not scroll off the top').toBeGreaterThanOrEqual(0);
+
     if (width <= 760) {
-      const list = page.locator('#metadataProviderList');
+      await expect(page.locator('#folderDialog')).toHaveCSS('height', `${viewport.height}px`);
       const lastRow = list.locator('.metadata-provider-row').last();
-      const lastControl = lastRow.locator('.metadata-provider-actions button').last();
-      await lastControl.scrollIntoViewIfNeeded();
-      await expect(lastControl).toBeVisible();
+      await lastRow.scrollIntoViewIfNeeded();
       const geometry = await page.evaluate(() => {
-        const dialog = document.querySelector('#folderDialog');
-        const title = dialog.querySelector('.dialog-head h2');
-        const providerHeading = dialog.querySelector('.metadata-provider-heading');
-        const settingsPane = document.querySelector('#settings-pane-metadata');
-        const control = document.querySelector('#metadataProviderList .metadata-provider-row:last-child .metadata-provider-actions button:last-child');
-        const actions = document.querySelector('#metadataProviderList .metadata-provider-row:last-child .metadata-provider-actions');
+        const pane = document.querySelector('#settings-pane-metadata');
         const row = document.querySelector('#metadataProviderList .metadata-provider-row:last-child');
-        const saveBar = document.querySelector('.metadata-provider-save-actions');
+        const actions = row.querySelector('.metadata-provider-actions');
+        const control = actions.querySelector('button:last-child');
         const controlBox = control.getBoundingClientRect();
-        const actionsBox = actions.getBoundingClientRect();
-        const rowBox = row.getBoundingClientRect();
-        const saveBox = saveBar.getBoundingClientRect();
-        const dialogBox = dialog.getBoundingClientRect();
-        const titleBox = title.getBoundingClientRect();
-        const providerHeadingBox = providerHeading.getBoundingClientRect();
         const hit = document.elementFromPoint(controlBox.left + controlBox.width / 2, controlBox.top + controlBox.height / 2);
-        return {controlBottom: controlBox.bottom, saveTop: saveBox.top, hitIsControl: hit === control || control.contains(hit), actionsRight: actionsBox.right, rowRight: rowBox.right, titleTop: titleBox.top, providerHeadingTop: providerHeadingBox.top, dialogTop: dialogBox.top, settingsPaneTop: settingsPane.getBoundingClientRect().top, settingsPaneOverflowY: getComputedStyle(settingsPane).overflowY, settingsPaneScrolls: settingsPane.scrollHeight > settingsPane.clientHeight, settingsPaneScrollTop: settingsPane.scrollTop};
+        return {
+          paneOverflowY: getComputedStyle(pane).overflowY,
+          paneScrolls: pane.scrollHeight > pane.clientHeight,
+          rowRight: row.getBoundingClientRect().right,
+          actionsRight: actions.getBoundingClientRect().right,
+          hitIsControl: hit === control || control.contains(hit),
+        };
       });
-      expect(geometry.controlBottom, 'last provider action must clear the sticky save bar').toBeLessThanOrEqual(geometry.saveTop);
-      expect(geometry.hitIsControl, 'the save bar must not cover the last provider control').toBeTruthy();
+      expect(geometry.paneOverflowY, 'the active settings pane must own mobile content scrolling').toBe('auto');
+      expect(geometry.paneScrolls, 'settings content must overflow its fixed mobile pane').toBeTruthy();
       expect(geometry.rowRight - geometry.actionsRight, 'mobile provider actions must align to the card content edge').toBeLessThanOrEqual(16);
-      expect(geometry.titleTop, 'the settings title must remain fully visible when scrolling provider rows').toBeGreaterThanOrEqual(geometry.dialogTop + 8);
-      expect(geometry.settingsPaneOverflowY, 'the active settings pane must own mobile content scrolling').toBe('auto');
-      expect(geometry.settingsPaneScrolls, 'settings content must overflow its fixed mobile pane').toBeTruthy();
-      if (geometry.settingsPaneScrollTop > 0) {
-        expect(geometry.providerHeadingTop, 'scrolled provider heading must be clipped by the active settings pane').toBeLessThan(geometry.settingsPaneTop);
-      }
+      expect(geometry.hitIsControl, 'the save bar must not cover the last provider control').toBeTruthy();
     }
-    await screenshot(page, info, `metadata-provider-save-${width}x${height}`);
+    await screenshot(page, info, `settings-save-bar-${width}x${height}`);
   });
 }
 
 test('FNOS: mobile library settings keep directory selection above the save bar', async ({page}, info) => {
   await load(page, 320, 812);
-  await openSettings(page);
+  await openSettingsGroup(page, 'library');
   const picker = page.locator('#chooseLibraryPathBtn');
-  const save = page.locator('#saveLibrarySettingsBtn');
   await expect(picker).toBeVisible();
   const pickerBox = await picker.boundingBox();
   expect(pickerBox.y + pickerBox.height, 'directory picker must remain inside the mobile dialog viewport').toBeLessThanOrEqual(812);
@@ -709,29 +705,39 @@ test('FNOS: mobile library settings keep directory selection above the save bar'
   });
   expect(pickerIsTopmost, 'directory picker must not be covered by the save bar').toBeTruthy();
   await screenshot(page, info, 'mobile-library-path-picker');
-  await save.scrollIntoViewIfNeeded();
+  // Removing a directory is the only edit on this pane that can be staged, so it
+  // is what has to summon the footer on a phone.
+  await page.locator('.library-path-remove').first().click();
+  const save = page.locator('#settingsSaveBtn');
   await expect(save).toBeVisible();
+  await expect(save).toContainText('保存更改');
+  const saveBox = await save.boundingBox();
+  expect(saveBox.y + saveBox.height).toBeLessThanOrEqual(812 + 1);
 });
 
-test('FNOS: mobile runtime settings keep the save button inside the pane', async ({page}) => {
+test('FNOS: mobile detail level keeps the save bar inside the frame', async ({page}) => {
   await load(page, 320, 812);
-  await openSettings(page);
-  await page.locator('#settings-tab-runtime').click();
-  const geometry = await page.locator('#settings-pane-runtime').evaluate(pane => {
-    const button = pane.querySelector('.settings-pane-actions button');
-    const paneBox = pane.getBoundingClientRect();
-    const buttonBox = button.getBoundingClientRect();
-    const top = document.elementFromPoint(buttonBox.left + buttonBox.width / 2, buttonBox.top + buttonBox.height / 2);
+  await openSettingsGroup(page, 'advanced');
+  await page.locator('#lyricsCacheBudgetInput').selectOption('262144');
+  const save = page.locator('#settingsSaveBtn');
+  await expect(save).toBeVisible();
+  await expect(save).toHaveText('保存更改（1）');
+  const geometry = await page.evaluate(() => {
+    const dialog = document.querySelector('#folderDialog');
+    const footer = document.querySelector('.settings-foot');
+    const button = document.querySelector('#settingsSaveBtn');
+    const box = button.getBoundingClientRect();
+    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
     return {
-      pane: paneBox.toJSON(),
-      button: buttonBox.toJSON(),
-      text: button.textContent.trim(),
+      dialog: dialog.getBoundingClientRect().toJSON(),
+      footer: footer.getBoundingClientRect().toJSON(),
+      button: box.toJSON(),
       buttonIsTopmost: top === button || button.contains(top),
     };
   });
-  expect(geometry.text).toBe('保存高级设置');
-  expect(geometry.button.top).toBeGreaterThanOrEqual(geometry.pane.top);
-  expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.pane.bottom);
+  expect(geometry.footer.bottom).toBeLessThanOrEqual(geometry.dialog.bottom + 1);
+  expect(geometry.button.top).toBeGreaterThanOrEqual(geometry.dialog.top);
+  expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.dialog.bottom);
   expect(geometry.buttonIsTopmost).toBeTruthy();
 });
 
@@ -751,31 +757,34 @@ test('FNOS: selected library paths remain readable in dark settings', async ({pa
 });
 
 for (const width of [320, 1440]) {
-  test(`FNOS ${width}: DLNA settings actions align with the shared save edge`, async ({page}, info) => {
+  test(`FNOS ${width}: save bar actions share one edge`, async ({page}, info) => {
     await load(page, width, 900);
-    await openSettings(page);
-    await page.locator('[data-settings-tab="dlna"]').click();
+    await openSettingsGroup(page, 'network');
+    await page.locator('#libraryConnectionPoolInput').click();
+    await expect(page.locator('#settingsSaveBtn')).toBeVisible();
 
-    const actions = page.locator('#settings-pane-dlna .settings-pane-actions');
-    const buttons = actions.locator('button');
-    await expect(buttons).toHaveCount(2);
+    const actions = page.locator('.settings-foot-actions');
     const layout = await actions.evaluate(element => ({
-      justifyContent: getComputedStyle(element).justifyContent,
       box: element.getBoundingClientRect().toJSON(),
+      footer: element.parentElement.getBoundingClientRect().toJSON(),
       buttons: [...element.querySelectorAll('button')].map(button => button.getBoundingClientRect().toJSON()),
       scrollWidth: element.scrollWidth,
       clientWidth: element.clientWidth,
     }));
-    expect(layout.justifyContent).toBe(width < 761 ? 'stretch' : 'flex-end');
+    expect(layout.buttons).toHaveLength(2);
     expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
     for (const button of layout.buttons) {
-      expect(button.right).toBeLessThanOrEqual(layout.box.right + 1);
+      expect(button.right).toBeLessThanOrEqual(layout.footer.right + 1);
+      expect(button.left).toBeGreaterThanOrEqual(layout.footer.left - 1);
     }
     if (width < 761) {
+      // Phones stack the count above two equal-width buttons.
       expect(Math.abs(layout.buttons[0].top - layout.buttons[1].top)).toBeLessThanOrEqual(1);
       expect(Math.abs(layout.buttons[0].width - layout.buttons[1].width)).toBeLessThanOrEqual(1);
+    } else {
+      expect(layout.footer.right - layout.buttons[1].right, 'desktop save actions must sit on the frame edge').toBeLessThanOrEqual(24);
     }
-    await screenshot(page, info, `dlna-actions-${width}`);
+    await screenshot(page, info, `save-bar-actions-${width}`);
   });
 }
 
@@ -1106,7 +1115,7 @@ test('FNOS 768: wide track columns scroll inside the library viewport', async ({
 });
 
 for(const width of [320,768,1440]) {
-  test(`FNOS ${width}: five settings panes and metadata subtabs remain operable`,async ({page},info) => {
+  test(`FNOS ${width}: six settings groups stay operable`,async ({page},info) => {
     await load(page,width,width<761?812:900);
     await openSettings(page);
     const dialog=page.locator('#folderDialog');
@@ -1116,78 +1125,59 @@ for(const width of [320,768,1440]) {
     });
     expect(closeSize.width).toBeGreaterThanOrEqual(width<761?44:36);
     expect(closeSize.height).toBeGreaterThanOrEqual(width<761?44:36);
+
+    const groups=['library','playback','metadata','network','appearance','advanced'];
     if (width < 761) {
-      const removeSize = await page.locator('.library-path-remove').first().evaluate(el => {
-        const box = el.getBoundingClientRect();
-        return {width: box.width, height: box.height};
-      });
-      expect(removeSize.width).toBeGreaterThanOrEqual(44);
-      expect(removeSize.height).toBeGreaterThanOrEqual(44);
+      // The phone frame opens on the rail: six full-width rows, no pane yet.
+      await expect(page.locator('.settings-panes')).toBeHidden();
+      await expect(page.locator('.settings-foot')).toBeHidden();
+      await expect(page.locator('.settings-nav button')).toHaveCount(groups.length);
+      const rail = await page.locator('.settings-nav').evaluate(el => ({
+        tops: [...el.querySelectorAll('button')].map(b => Math.round(b.getBoundingClientRect().top)),
+        heights: [...el.querySelectorAll('button')].map(b => Math.round(b.getBoundingClientRect().height)),
+      }));
+      expect([...new Set(rail.heights)], 'every rail row must be the same height').toEqual([60]);
+      expect(new Set(rail.tops).size, 'rail rows must not share a baseline').toBe(groups.length);
+      await screenshot(page, info, 'settings-rail');
     }
-    for(const tab of ['library','playback','metadata','dlna','runtime']) {
-      await page.locator(`#settings-tab-${tab}`).click();
+
+    for(const tab of groups) {
+      await page.locator(`[data-settings-tab="${tab}"]`).click();
       await expect(page.locator(`#settings-pane-${tab}`)).toBeVisible();
       expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBeTruthy();
       if (width < 761) {
-        const tabGeometry = await page.locator('.settings-tabs').evaluate(el => {
-          const strip = el.getBoundingClientRect();
-          const boxes = [...el.querySelectorAll('button')].map(button => button.getBoundingClientRect());
-          const active = el.querySelector('button.active').getBoundingClientRect();
-          const whole = box => box.left >= strip.left - 1 && box.right <= strip.right + 1;
-          return {
-            scrollable: el.scrollWidth > el.clientWidth + 1,
-            activeWhole: whole(active),
-            everyLabelWhole: boxes.every(whole),
-          };
-        });
-        // Five labels need ~302px at the phone font size and a 320px phone leaves
-        // the strip 270px, so that row has to scroll and scrolling legitimately
-        // clips the leading label.  The invariants that matter: the tab you just
-        // activated is whole, and a row that fits never clips a label.
-        expect(tabGeometry.activeWhole, 'the activated settings tab must be whole').toBe(true);
-        if (!tabGeometry.scrollable) {
-          expect(tabGeometry.everyLabelWhole, 'a settings row that fits must not clip any label').toBe(true);
-        }
+        // Picking a group replaces the rail with its pane; the back arrow is the
+        // only way up, so the header close button steps aside.
+        await expect(page.locator('.settings-nav')).toBeHidden();
+        await expect(page.locator('#settingsBackBtn')).toBeVisible();
+        await expect(page.locator('#closeFolderDialog')).toBeHidden();
+        const paneBox = await page.locator(`#settings-pane-${tab}`).evaluate(el => el.getBoundingClientRect().toJSON());
+        expect(paneBox.left).toBeGreaterThanOrEqual(-1);
+        expect(paneBox.right).toBeLessThanOrEqual(width + 1);
       }
       await screenshot(page,info,'settings-'+tab);
+      if (width < 761) {
+        await page.locator('#settingsBackBtn').click();
+        await expect(page.locator('.settings-nav')).toBeVisible();
+        await expect(page.locator('.settings-panes')).toBeHidden();
+      }
+    }
+
+    await page.locator('[data-settings-tab="metadata"]').click();
+    // Metadata is one column of four blocks: all of them render, none hides
+    // behind a second tab strip.
+    for (const block of ['metadata-overview','metadata-providers','metadata-tasks','metadata-tags']) {
+      const group = page.locator(`[data-settings-block="${block}"]`);
+      await expect(group).toHaveCount(1);
+      await expect(group).toBeVisible();
     }
     if (width < 761) {
-      const tabGeometry = await page.locator('.settings-tabs').evaluate(el => {
-        const buttons = [...el.querySelectorAll('button')].map(button => button.getBoundingClientRect());
-        return {
-          clientWidth: el.clientWidth,
-          scrollWidth: el.scrollWidth,
-          tops: buttons.map(rect => Math.round(rect.top)),
-        };
-      });
-      // A 320px phone cannot fit five labels, so the strip must stay scrollable
-      // there rather than wrapping onto a second baseline.
-      expect(tabGeometry.scrollWidth).toBeGreaterThan(tabGeometry.clientWidth);
-      expect(new Set(tabGeometry.tops).size, 'mobile settings tabs must share one baseline').toBe(1);
-    }
-    await page.locator('#settings-tab-metadata').click();
-    if (width < 761) {
-      const topTabGeometry = await page.locator('.settings-tabs').evaluate(el => {
-        const first = el.querySelector('button');
-        const box = el.getBoundingClientRect();
-        const firstBox = first.getBoundingClientRect();
-        return {left: firstBox.left, stripLeft: box.left};
-      });
-      expect(topTabGeometry.left).toBeGreaterThanOrEqual(topTabGeometry.stripLeft - 1);
-    }
-    for(const sub of ['overview','providers','tasks','tags']) {
-      await page.locator(`#metadata-settings-tab-${sub}`).click();
-      await expect(page.locator(`#metadata-settings-pane-${sub}`)).toBeVisible();
-      expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBeTruthy();
-      await screenshot(page,info,'metadata-'+sub);
-    }
-    await page.locator('#metadata-settings-tab-providers').click();
-    if (width < 761) {
-      const providerTop = await page.locator('#metadataProviderList').evaluate(el => el.getBoundingClientRect().top);
-      const probeTop = await page.locator('.metadata-probe-query').evaluate(el => el.getBoundingClientRect().top);
+      const providerTop = await page.locator('#metadataProviderList').evaluate(el=>el.getBoundingClientRect().top);
+      const probeTop = await page.locator('.metadata-probe-query').evaluate(el=>el.getBoundingClientRect().top);
       expect(providerTop, 'mobile source management must precede optional provider test inputs').toBeLessThan(probeTop);
     }
     const testButton=page.locator('[data-metadata-provider-test]').first();
+    await testButton.scrollIntoViewIfNeeded();
     await expect(testButton).toBeVisible();
     await page.locator('#metadataProbeTitleInput').fill('晨光');
     // Browser fixtures supply probe results; no provider credentials/network.
@@ -1198,14 +1188,21 @@ for(const width of [320,768,1440]) {
     await expect(result).toContainText('125 ms');
     expect(await result.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBeTruthy();
     await screenshot(page,info,'provider-result');
-    const saveBounds = await page.locator('#saveMetadataProvidersBtn').evaluate(el => {
+
+    // Probing is read-only, so nothing may be queued for the footer yet.
+    await expect(page.locator('#settingsSaveBtn')).toBeHidden();
+    // Toggling a source is the metadata edit that has to summon it.
+    await page.locator('[data-metadata-provider-toggle]').first().click();
+    const save = page.locator('#settingsSaveBtn');
+    await expect(save).toBeVisible();
+    const saveBounds = await save.evaluate(el => {
       const rect = el.getBoundingClientRect();
       return {top: rect.top, bottom: rect.bottom, viewport: window.innerHeight};
     });
     expect(saveBounds.bottom).toBeLessThanOrEqual(saveBounds.viewport + 1);
+    expect(saveBounds.top).toBeGreaterThanOrEqual(0);
     expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBeTruthy();
-    await page.locator('#saveMetadataProvidersBtn').scrollIntoViewIfNeeded();
-    await insideViewport(page,'#saveMetadataProvidersBtn');
+    await insideViewport(page,'#settingsSaveBtn');
     // Read all settings and scroll to saves; do not write fixture or NAS settings.
   });
 }
@@ -1420,7 +1417,6 @@ test('FNOS dark palette applies across library, player and settings without whit
   await page.evaluate(() => document.getElementById('libraryHealth').classList.remove('is-error'));
   await screenshot(page,info,'dark-library-health');
   await page.locator('#settings-tab-metadata').click();
-  await page.locator('#metadata-settings-tab-providers').click();
   await screenshot(page,info,'dark-providers');
   expect(await page.locator('#folderDialog').evaluate(el=>getComputedStyle(el).colorScheme)).toBe('dark');
   await page.locator('#closeFolderDialog').click();
@@ -1609,7 +1605,6 @@ test('FNOS audit: open dialogs have no retired teal tokens', async ({page}) => {
   await openSettings(page);
   await scan('library settings');
   await page.locator('[data-settings-tab="metadata"]').click();
-  await page.locator('[data-metadata-settings-tab="providers"]').click();
   await scan('metadata providers');
 });
 
@@ -1674,7 +1669,6 @@ test('FNOS 375 dark mobile settings keep surfaces tokenized', async ({page}) => 
   await load(page, 375, 812);
   await openSettings(page);
   await page.locator('[data-settings-tab="metadata"]').click();
-  await page.locator('[data-metadata-settings-tab="providers"]').click();
   await page.locator('#deviceDialog').evaluate(dialog => dialog.showModal());
   const whiteSurfaces = await page.evaluate(() => [...document.querySelectorAll('body *')]
     .filter(element => {
@@ -1693,7 +1687,6 @@ test('FNOS 375 dark mobile has no retired teal state colors', async ({page}) => 
   await load(page, 375, 812);
   await openSettings(page);
   await page.locator('[data-settings-tab="metadata"]').click();
-  await page.locator('[data-metadata-settings-tab="providers"]').click();
   const retired = await page.evaluate(() => {
     const values = new Set([
       'rgb(18, 184, 168)', 'rgb(7, 157, 145)', 'rgb(10, 168, 157)',

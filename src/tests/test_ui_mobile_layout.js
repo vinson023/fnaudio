@@ -83,8 +83,12 @@ assert.doesNotMatch(css, /\.mobile-library-tabs\b/, "retired mobile library tabs
 assert.match(css, /\.pager-inner\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-nav\{[\s\S]*?width:100%!important;[\s\S]*?justify-content:center!important;/);
 assert.match(css, /\.pager-page-summary\{flex:0 0 auto!important;/);
-assert.ok(css.includes(".settings-tabs{margin-top:12px!important;flex-wrap:nowrap!important;overflow-x:auto!important;overflow-y:hidden!important;scrollbar-width:none!important}"), "mobile settings tabs must stay in one row and scroll when needed");
-assert.ok(css.includes(".settings-tabs button{flex:0 0 auto!important;padding:0 6px!important;white-space:nowrap!important;font-size:12px!important}"), "mobile settings labels must not wrap into uneven tab heights, and must shrink enough for all five to fit a 390px dialog");
+// 手机端不再有横向标签条：左侧导航变成整页列表，每行 60px 触控高度。
+assert.ok(!css.includes(".settings-tabs") && !themeCss.includes(".settings-tabs"), "the retired horizontal settings tab strip must not remain in any stylesheet");
+assert.match(themeCss, /\.settings-nav button \{[^}]*min-height: 60px;/, "phone settings rows must stay a 60px touch target");
+assert.match(themeCss, /\.settings-shell\.is-detail \.settings-nav \{ display: none; \}/, "picking a group must replace the phone list with its pane");
+assert.match(themeCss, /\.settings-shell:not\(\.is-detail\) \.settings-foot \{ display: none; \}/, "the phone list level must not reserve a save bar");
+
 assert.match(css, /body\.mobile-search-active \.player\{[^}]*position:fixed!important;[^}]*display:grid!important;[^}]*bottom:0!important;[^}]*contain:layout paint!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*position:absolute!important;/);
 assert.doesNotMatch(css, /body\.mobile-search-active \.player\{[^}]*display:none!important/);
@@ -150,20 +154,22 @@ assert.match(finalMobileContract, /\.shell,\.content\{height:100%!important\}/, 
 assert.match(css, /\.mobile-library-search input::-webkit-search-cancel-button\{display:none!important\}/,
   "the native search cancel button must stay hidden next to #mobileSearchClearBtn");
 
-// R467: settings is one dialog with five panes of very different lengths. Sizing
-// the frame from its content made the whole window jump by up to 446px per tab,
-// so desktop pins the height, widens the frame and scrolls the active pane.
-assert.doesNotMatch(css, /#folderDialog\{width:min\(620px/, "the settings dialog must not keep the cramped 620px frame");
-assert.match(css, /#folderDialog\{width:min\(760px,calc\(100vw - 48px\)\)!important\}/,
-  "the settings dialog must use the widened desktop frame");
-assert.match(themeCss, /@media \(min-width: 761px\) \{\s*#folderDialog\[open\] \{[^}]*grid-template-rows: auto auto minmax\(0, 1fr\) !important;[^}]*height: min\(680px, calc\(100dvh - 48px\)\) !important;/,
+// R483: 设置改成「左侧导航 + 固定底部保存栏」。框架宽度钉在 880，高度钉在 680，
+// 只有当前 pane 滚动；因此切换分组不会再让窗口跳动。
+assert.doesNotMatch(themeCss, /width: min\(760px/, "the settings dialog must not keep the cramped 760px frame");
+assert.match(themeCss, /#folderDialog \{\s*width: min\(880px, calc\(100vw - 48px\)\) !important;/,
+  "the settings dialog must use the 880px desktop frame");
+assert.match(themeCss, /#folderDialog\[open\] \{[^}]*height: min\(680px, calc\(100dvh - 48px\)\) !important;/,
   "the desktop settings dialog must pin its height instead of following the active pane");
-assert.match(themeCss, /#folderDialog > \.settings-pane\[hidden\] \{ display: none !important; \}/,
-  "the flex pane rule outranks [hidden], so inactive panes need an explicit guard");
-assert.match(themeCss, /#folderDialog > \.settings-pane > \.settings-pane-actions \{\s*margin-top: auto !important;/,
-  "each pane must pin its action bar to the bottom edge of the frame");
-assert.match(themeCss, /#folderDialog > \.settings-pane > \.metadata-settings-subpane > \.settings-pane-actions \{\s*margin-top: auto !important;/,
-  "the nested metadata sub-panes must pin their action bars the same way");
+assert.match(themeCss, /\.settings-pane\[hidden\] \{ display: none !important; \}/,
+  "inactive panes need an explicit guard against the pane sizing rule");
+assert.match(themeCss, /\.settings-shell \{\s*display: grid;\s*grid-template-rows: 56px minmax\(0, 1fr\) auto;/,
+  "header, body and save bar must be the three rows that make the bar permanent");
+assert.match(themeCss, /\.settings-body \{ display: grid; grid-template-columns: 208px minmax\(0, 1fr\); min-height: 0; \}/,
+  "the rail must keep a fixed 208px column so the panes do not reflow");
+assert.match(themeCss, /\.settings-pane > \.settings-group \{ max-width: 560px; \}/,
+  "settings copy must keep a readable measure inside the wide frame");
+assert.doesNotMatch(themeCss, /settings-pane-actions/, "the per-pane action bars must be gone");
 
 // The dark header's sort arrow is the only cue for which column is sorted; the
 // accent alone reaches just 3.24:1 on the dark header surface.

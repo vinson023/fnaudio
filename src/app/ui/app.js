@@ -396,7 +396,6 @@ state.albumMetadata = globalThis.fnAudioAlbumMetadataCache?.(4096) || {
   get size() { return 0; }
 };
 state.settingsTab = "library";
-state.metadataSettingsTab = "overview";
 state.searchTimer = null;
 state.nativePlayback = { available: false, mediaId: "", queueIds: [], position: 0, duration: 0, playing: false, playbackState: 1 };
 state.mediaSession = { supported: false, metadata: false, actions: [], host: "standalone" };
@@ -7395,6 +7394,7 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
 
 async function openFolderBrowser(path = "") {
   ensurePlaybackSettingsControls();
+  resetSettingsDirty();
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
@@ -7403,6 +7403,12 @@ async function openFolderBrowser(path = "") {
     const node = $(id);
     if (node) node.textContent = "";
   });
+  settingsSetStatus($("settingsSaveStatus"), "");
+  // The phone layout always opens on the rail, never on the group that was
+  // last visited on the desktop.
+  const shell = settingsShell();
+  if (shell) shell.classList.remove("is-detail");
+  updateSettingsSummaries();
 }
 function ensureSettingsStatusNodes() {
   const entries = [
@@ -7440,34 +7446,19 @@ function setSettingsTab(name = "library") {
     pane.hidden = !active;
     pane.classList.toggle("active", active);
   });
-  const activeTab = tabs.find(button => button.dataset.settingsTab === name);
-  const tabStrip = activeTab?.closest(".settings-tabs");
-  if (activeTab && tabStrip && tabStrip.scrollWidth > tabStrip.clientWidth) {
-    const activeIndex = tabs.indexOf(activeTab);
-    const startIndex = activeIndex <= Math.floor((tabs.length - 1) / 2)
-      ? 0
-      : Math.max(0, activeIndex - 2);
-    const firstOffsetLeft = tabs[0]?.offsetLeft || 0;
-    const targetScrollLeft = Math.max(0, (tabs[startIndex]?.offsetLeft || 0) - firstOffsetLeft);
-    tabStrip.scrollLeft = targetScrollLeft;
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        if (tabStrip.isConnected) tabStrip.scrollLeft = targetScrollLeft;
-      });
-    }
-    setTimeout(() => {
-      if (tabStrip.isConnected) tabStrip.scrollLeft = targetScrollLeft;
-    }, 0);
-  }
+  // The rail swaps panes in place, so the new pane must start at its own top
+  // instead of inheriting the scroll offset of the one that was just hidden.
+  const activePane = document.querySelector(`[data-settings-pane="${name}"]`);
+  if (activePane) activePane.scrollTop = 0;
   if (name === "metadata") {
-    setMetadataSettingsTab(state.metadataSettingsTab || "overview");
     ensureMetadataSettingsOverview();
     updateMetadataSettingsOverview();
     loadMetadataStatus();
   }
-  if (name === "runtime") loadRuntimeSettings();
   if (name === "playback") loadPlaybackSettings();
-  if (name === "dlna") loadRuntimeSettings();
+  if (name === "network" || name === "advanced") loadRuntimeSettings();
+  updateSettingsSummaries();
+  updateSettingsDirtyUi();
 }
 function settingsTabIndexForKey(key, currentIndex, count) {
   if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count <= 0) return -1;
@@ -7479,11 +7470,9 @@ function settingsTabIndexForKey(key, currentIndex, count) {
 }
 function bindSettingsTabs() {
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
-    button.onclick = event => {
-      // Prevent the browser's post-click focus scroll from overriding the
-      // narrow-screen tab-strip position restored by setSettingsTab().
-      event.preventDefault();
+    button.onclick = () => {
       setSettingsTab(button.dataset.settingsTab);
+      openSettingsDetail();
       if (typeof button.focus === "function") button.focus({ preventScroll: true });
     };
     button.onkeydown = event => {
@@ -7494,66 +7483,245 @@ function bindSettingsTabs() {
       const next = tabs[nextIndex];
       setSettingsTab(next.dataset.settingsTab);
       next.focus();
-      const strip = next.closest(".settings-tabs");
-      if (strip && strip.scrollWidth > strip.clientWidth) {
-        const startIndex = nextIndex <= Math.floor((tabs.length - 1) / 2)
-          ? 0
-          : Math.max(0, nextIndex - 2);
-        const firstOffsetLeft = tabs[0]?.offsetLeft || 0;
-        strip.scrollLeft = Math.max(0, (tabs[startIndex]?.offsetLeft || 0) - firstOffsetLeft);
-      }
     };
   });
   setSettingsTab(state.settingsTab || "library");
 }
-function setMetadataSettingsTab(name = "overview") {
-  const tabs = Array.from(document.querySelectorAll("[data-metadata-settings-tab]"));
-  const panes = Array.from(document.querySelectorAll("[data-metadata-settings-pane]"));
-  if (!tabs.some(tab => tab.dataset.metadataSettingsTab === name)) {
-    name = tabs[0]?.dataset.metadataSettingsTab || "overview";
+/* --------------------------------------------------------------- settings ---
+ * One dialog, one write path.  Seven pane handlers still own the endpoints, but
+ * the operator never sees them: a change marks the block that produced it, the
+ * rail shows which groups are waiting, and the footer writes every waiting group
+ * in a fixed order.  Groups are keyed by endpoint, not by tab, because the pool
+ * switch and the lyrics budget share one POST and live on two different tabs. */
+const SETTINGS_GROUPS = [
+  { key: "library", label: "音乐目录", blocks: ["library"], save: () => saveLibrarySettings() },
+  { key: "playback", label: "设备身份", blocks: ["playback-identity"], save: () => savePlaybackPaneSettings() },
+  { key: "metadata", label: "基础与安全", blocks: ["metadata-overview"], save: () => saveMetadataOverviewPaneSettings() },
+  { key: "metadata-providers", label: "数据源", blocks: ["metadata-providers"], save: () => saveMetadataProviderPaneSettings() },
+  { key: "metadata-tags", label: "Tag 写回", blocks: ["metadata-tags"], save: () => saveMetadataTagPaneSettings() },
+  { key: "dlna", label: "DLNA 设备", blocks: ["network-dlna"], save: () => saveDlnaPaneSettings() },
+  { key: "runtime", label: "运行设置", blocks: ["network-pool", "advanced-cache"], save: () => saveRuntimePaneSettings() },
+];
+// Which rail entry a block belongs to.  A block without an entry here is either
+// read-only (关于) or applies on click (播放输出, 主题, 补全任务) and never dirties.
+const SETTINGS_BLOCK_TABS = {
+  library: "library",
+  "playback-identity": "playback",
+  "metadata-overview": "metadata",
+  "metadata-providers": "metadata",
+  "metadata-tags": "metadata",
+  "network-dlna": "network",
+  "network-pool": "network",
+  "advanced-cache": "advanced",
+};
+function settingsShell() {
+  return document.querySelector("#folderDialog .settings-shell");
+}
+function settingsIsNarrow() {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(max-width: 760px)").matches;
+}
+function settingsDirtyBlocks() {
+  if (!(state.settingsDirty instanceof Set)) state.settingsDirty = new Set();
+  return state.settingsDirty;
+}
+function settingsBlockGroup(block) {
+  return SETTINGS_GROUPS.find(group => group.blocks.includes(block)) || null;
+}
+function settingsDirtyGroups() {
+  const dirty = settingsDirtyBlocks();
+  return SETTINGS_GROUPS.filter(group => group.blocks.some(block => dirty.has(block)));
+}
+function markSettingsDirty(block) {
+  if (!settingsBlockGroup(block)) return;
+  const dirty = settingsDirtyBlocks();
+  if (dirty.has(block)) return;
+  dirty.add(block);
+  state.settingsCloseArmed = false;
+  updateSettingsDirtyUi();
+}
+function clearSettingsDirty(blocks = []) {
+  const dirty = settingsDirtyBlocks();
+  blocks.forEach(block => dirty.delete(block));
+  updateSettingsDirtyUi();
+}
+function resetSettingsDirty() {
+  state.settingsDirty = new Set();
+  state.settingsCloseArmed = false;
+  updateSettingsDirtyUi();
+}
+function settingsSetStatus(node, message, tone = "") {
+  if (!node || !node.classList) return;
+  node.textContent = message || "";
+  node.classList.toggle("is-success", tone === "success");
+  node.classList.toggle("is-error", tone === "error");
+  updateSettingsFootVisibility();
+}
+function updateSettingsFootVisibility() {
+  const shell = settingsShell();
+  if (!shell) return;
+  const status = $("settingsSaveStatus");
+  const hasStatus = Boolean(status && status.textContent.trim());
+  shell.classList.toggle("has-foot", settingsDirtyGroups().length > 0 || hasStatus);
+}
+function updateSettingsDirtyUi() {
+  const groups = settingsDirtyGroups();
+  const count = groups.length;
+  const dirtyNode = $("settingsDirtyCount");
+  if (dirtyNode) dirtyNode.textContent = count ? `${count} 项未保存` : "";
+  const saveBtn = $("settingsSaveBtn");
+  if (saveBtn) {
+    saveBtn.hidden = count === 0;
+    saveBtn.textContent = count ? `保存更改（${count}）` : "保存更改";
   }
-  tabs.forEach(tab => {
-    const active = tab.dataset.metadataSettingsTab === name;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", active ? "true" : "false");
-    tab.tabIndex = active ? 0 : -1;
+  const discardBtn = $("settingsDiscardBtn");
+  if (discardBtn) discardBtn.hidden = count === 0;
+  const dirty = settingsDirtyBlocks();
+  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+    const tab = button.dataset.settingsTab;
+    const waiting = Object.entries(SETTINGS_BLOCK_TABS)
+      .some(([block, owner]) => owner === tab && dirty.has(block));
+    button.classList.toggle("has-dirty", waiting);
   });
-  panes.forEach(pane => {
-    const active = pane.dataset.metadataSettingsPane === name;
-    pane.hidden = !active;
-    pane.classList.toggle("active", active);
-  });
-  state.metadataSettingsTab = name;
-  syncMetadataSettingsSaveAction(name);
-  return name;
+  updateSettingsFootVisibility();
 }
-function syncMetadataSettingsSaveAction(name = "overview") {
-  const button = $("saveMetadataSettingsBtn");
-  const tagButton = $("saveMetadataTagSettingsBtn");
-  if (button) button.onclick = saveMetadataOverviewPaneSettings;
-  if (tagButton) tagButton.onclick = saveMetadataTagPaneSettings;
+function settingsSummaryText(id, text) {
+  const node = $(id);
+  if (node) node.textContent = text || "";
 }
-function metadataSettingsTabIndexForKey(key, currentIndex, count) {
-  if (!Number.isInteger(currentIndex) || !Number.isInteger(count) || count <= 0) return -1;
-  if (key === "Home") return 0;
-  if (key === "End") return count - 1;
-  if (key === "ArrowRight" || key === "ArrowDown") return (currentIndex + 1) % count;
-  if (key === "ArrowLeft" || key === "ArrowUp") return (currentIndex + count - 1) % count;
-  return -1;
+function updateSettingsSummaries() {
+  const paths = Array.isArray(state.libraryStatus?.library_paths) ? state.libraryStatus.library_paths : [];
+  settingsSummaryText("settingsSummaryLibrary", paths.length ? `${paths.length} 个目录` : "未选择目录");
+  const renderer = typeof playbackRendererNameInput === "function" ? playbackRendererNameInput() : null;
+  settingsSummaryText("settingsSummaryPlayback", renderer?.value?.trim() || "跟随设备名");
+  const metadata = $("metadataEnabledInput");
+  settingsSummaryText("settingsSummaryMetadata", metadata ? (metadata.checked ? "已启用" : "已关闭") : "");
+  const port = $("serverPortValue")?.textContent?.trim();
+  settingsSummaryText("settingsSummaryNetwork", port && port !== "--" ? `端口 ${port}` : "");
+  const theme = $("themeModeInput");
+  settingsSummaryText("settingsSummaryAppearance", theme?.selectedOptions?.[0]?.textContent?.trim() || "");
+  const budget = $("lyricsCacheBudgetInput");
+  settingsSummaryText("settingsSummaryAdvanced", budget?.selectedOptions?.[0]?.textContent?.trim() || "");
 }
-function bindMetadataSettingsTabs() {
-  document.querySelectorAll("[data-metadata-settings-tab]").forEach(button => {
-    button.onclick = () => setMetadataSettingsTab(button.dataset.metadataSettingsTab);
-    button.onkeydown = event => {
-      const tabs = Array.from(document.querySelectorAll("[data-metadata-settings-tab]"));
-      const nextIndex = metadataSettingsTabIndexForKey(event.key, tabs.indexOf(button), tabs.length);
-      if (nextIndex < 0) return;
-      event.preventDefault();
-      const next = tabs[nextIndex];
-      setMetadataSettingsTab(next.dataset.metadataSettingsTab);
-      next.focus();
-    };
-  });
+function bindSettingsDirtyTracking() {
+  const shell = settingsShell();
+  if (!shell || shell.dataset.dirtyBound === "1") return;
+  shell.dataset.dirtyBound = "1";
+  const onChange = event => {
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    // Live controls write on click and must never queue a save.
+    if (target.closest("[data-settings-live]")) return;
+    const block = target.closest("[data-settings-block]");
+    if (!block) return;
+    markSettingsDirty(block.dataset.settingsBlock);
+  };
+  shell.addEventListener("input", onChange);
+  shell.addEventListener("change", onChange);
+}
+async function saveAllSettings() {
+  const groups = settingsDirtyGroups();
+  if (!groups.length) return false;
+  const saveBtn = $("settingsSaveBtn");
+  const discardBtn = $("settingsDiscardBtn");
+  const status = $("settingsSaveStatus");
+  const originalLabel = saveBtn ? saveBtn.textContent : "";
+  if (saveBtn) saveBtn.disabled = true;
+  if (discardBtn) discardBtn.disabled = true;
+  settingsSetStatus(status, "");
+  const failed = [];
+  for (const group of groups) {
+    if (saveBtn) saveBtn.textContent = `正在保存${group.label}...`;
+    let ok = false;
+    try {
+      ok = (await group.save()) !== false;
+    } catch (_) {
+      ok = false;
+    }
+    // A group only leaves the queue once its own endpoint confirmed the write,
+    // so one failure cannot be hidden behind a later success.
+    if (ok) clearSettingsDirty(group.blocks);
+    else failed.push(group.label);
+  }
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalLabel;
+  }
+  if (discardBtn) discardBtn.disabled = false;
+  if (status) {
+    if (failed.length) settingsSetStatus(status, `${failed.join("、")} 保存失败`, "error");
+    else settingsSetStatus(status, "已保存", "success");
+  }
+  updateSettingsDirtyUi();
+  updateSettingsSummaries();
+  return failed.length === 0;
+}
+async function discardSettingsChanges() {
+  resetSettingsDirty();
+  const status = $("settingsSaveStatus");
+  settingsSetStatus(status, "已放弃未保存的更改");
+  const jobs = [loadRuntimeSettings(), loadPlaybackSettings(), loadMetadataStatus()];
+  await Promise.all(jobs.map(job => job.catch(() => null)));
+  // The path list only lives in the DOM until it is saved, so redrawing it from
+  // the last known server status is what actually puts the edits back.
+  renderLibraryPathInputs(state.libraryStatus?.library_paths || []);
+  updateSettingsSummaries();
+}
+function openSettingsDetail() {
+  const shell = settingsShell();
+  if (!shell || !settingsIsNarrow()) return;
+  shell.classList.add("is-detail");
+}
+function leaveSettingsDetail() {
+  const shell = settingsShell();
+  if (shell?.classList.contains("is-detail")) {
+    shell.classList.remove("is-detail");
+    return;
+  }
+  closeSettingsDialog();
+}
+function closeSettingsDialog() {
+  const dialog = $("folderDialog");
+  if (!dialog || !dialog.open) return true;
+  if (settingsDirtyGroups().length && !state.settingsCloseArmed) {
+    state.settingsCloseArmed = true;
+    settingsSetStatus($("settingsSaveStatus"), "还有未保存的更改：再点一次关闭会丢弃这些更改", "error");
+    return false;
+  }
+  state.settingsCloseArmed = false;
+  dialog.close();
+  return true;
+}
+function bindSettingsFooter() {
+  const saveBtn = $("settingsSaveBtn");
+  if (saveBtn) saveBtn.onclick = () => { void saveAllSettings(); };
+  const discardBtn = $("settingsDiscardBtn");
+  if (discardBtn) discardBtn.onclick = () => { void discardSettingsChanges(); };
+  const backBtn = $("settingsBackBtn");
+  if (backBtn) backBtn.onclick = leaveSettingsDetail;
+  const dialog = $("folderDialog");
+  if (dialog && dialog.dataset.closeBound !== "1") {
+    dialog.dataset.closeBound = "1";
+    // Esc closes natively, so the same "click twice to discard" rule has to be
+    // enforced here as well, and a close that slipped through still discards.
+    dialog.addEventListener("cancel", event => {
+      if (settingsDirtyGroups().length && !state.settingsCloseArmed) {
+        event.preventDefault();
+        state.settingsCloseArmed = true;
+        settingsSetStatus($("settingsSaveStatus"), "还有未保存的更改：再按一次 Esc 会丢弃这些更改", "error");
+      }
+    });
+    dialog.addEventListener("close", () => {
+      state.settingsCloseArmed = false;
+      settingsSetStatus($("settingsSaveStatus"), "");
+      if (settingsDirtyGroups().length) void discardSettingsChanges();
+      const shell = settingsShell();
+      if (shell) shell.classList.remove("is-detail");
+    });
+  }
+  bindSettingsDirtyTracking();
+  updateSettingsDirtyUi();
 }
 const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
 // Spelled exactly as `CONFIG_BYTES_KEY` in app/server/metadata_local_lyrics_cache.py;
@@ -7921,28 +8089,6 @@ function updateMetadataSettingsOverview() {
   if (writeNode) writeNode.textContent = tagWrite ? "已启用" : "未启用";
   if (providersNode) providersNode.textContent = `${enabledCount} 个已启用`;
 }
-function ensureMetadataProviderSaveAction() {
-  const status = $("metadataProviderStatusText");
-  const pane = document.querySelector('[data-metadata-settings-pane="providers"]');
-  if (!status || !pane) return null;
-  let actions = pane.querySelector(".metadata-provider-save-actions");
-  if (!actions) {
-    actions = document.createElement("div");
-    actions.className = "metadata-settings-actions metadata-provider-save-actions";
-    status.insertAdjacentElement("afterend", actions);
-  }
-  let button = $("saveMetadataProvidersBtn");
-  if (!button) {
-    button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary-button";
-    button.id = "saveMetadataProvidersBtn";
-    button.textContent = "保存";
-    actions.append(button);
-  }
-  button.onclick = saveMetadataProviderPaneSettings;
-  return button;
-}
 function ensureMetadataCandidateProviderPicker() {
   const dialog = metadataCandidateDialogNode();
   if (!dialog) return;
@@ -7978,7 +8124,6 @@ function renderMetadataCandidateProviderPicker() {
 function renderMetadataProviders() {
   const list = $("metadataProviderList");
   if (!list) return;
-  ensureMetadataProviderSaveAction();
   list.replaceChildren();
   const entries = normalizeMetadataProviderEntries(state.metadataProviders, state.metadataProviderRecommended);
   state.metadataProviders = entries;
@@ -8075,11 +8220,14 @@ function renderMetadataProviders() {
 }
 function updateMetadataProviderDirtyStatus() {
   const status = $("metadataProviderStatusText");
+  // The footer is the only write path, so an edited provider order has to join
+  // the shared queue or the operator would have no way to commit it.
+  if (state.metadataProviderDirty === true) markSettingsDirty("metadata-providers");
   if (!status) return;
   const saveButton = $("saveMetadataProvidersBtn");
   if (saveButton) saveButton.disabled = state.metadataProviderDirty !== true;
   status.textContent = state.metadataProviderDirty === true
-    ? "数据源配置已修改，点击“保存数据源设置”后生效。"
+    ? "数据源配置已修改，点击底部“保存更改”后生效。"
     : "拖动或使用上移/下移调整顺序，可单独测试或启用数据源。";
 }
 function moveMetadataProvider(providerId, direction) {
@@ -8419,6 +8567,7 @@ function renderLibraryPathInputs(paths = [""]) {
     button.onclick = () => {
       button.closest(".library-path-row")?.remove();
       if (!$("libraryPathList").querySelector(".library-path-input")) renderLibraryPathInputs([""]);
+      markSettingsDirty("library");
     };
   });
 }
@@ -8603,8 +8752,9 @@ function addCurrentLibraryDir() {
   if (dialog && !dialog.open) dialog.showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
+  markSettingsDirty("library");
   const libraryStatus = $("librarySettingsStatus");
-  if (libraryStatus) libraryStatus.textContent = "已添加目录，请点击“保存音乐库设置”。";
+  if (libraryStatus) libraryStatus.textContent = "已添加目录，点击底部“保存更改”写入。";
   return true;
 }
 async function saveSettingsPane(button, statusNode, saveAction, successMessage = "已保存。") {
@@ -8665,11 +8815,6 @@ async function saveDlnaSettings() {
 }
 function saveDlnaPaneSettings() {
   return saveSettingsPane($("saveDlnaSettingsBtn"), $("dlnaSettingsStatus"), saveDlnaSettings, "DLNA 设置已保存。");
-}
-function saveMetadataPaneSettings() {
-  return state.metadataSettingsTab === "tags"
-    ? saveMetadataTagPaneSettings()
-    : saveMetadataOverviewPaneSettings();
 }
 function saveMetadataOverviewPaneSettings() {
   return saveSettingsPane($("saveMetadataSettingsBtn"), $("metadataOverviewSettingsStatus"), saveMetadataOverviewSettings, "概览设置已保存。");
@@ -10159,9 +10304,9 @@ $("deviceDialog").addEventListener("close", () => {
   clearTimeout(state.deviceRefreshTimer);
   state.deviceRefreshTimer = null;
 });
-$("closeFolderDialog").onclick = () => $("folderDialog").close();
+$("closeFolderDialog").onclick = closeSettingsDialog;
 bindSettingsTabs();
-bindMetadataSettingsTabs();
+bindSettingsFooter();
 $("dlnaDiagnosticsBtn").onclick = openDlnaDiagnostics;
 $("closeDlnaDiagnosticsDialog").onclick = () => $("dlnaDiagnosticsDialog").close();
 $("refreshDlnaDiagnosticsBtn").onclick = loadDlnaDiagnostics;
@@ -10193,6 +10338,7 @@ $("retryLibraryLoadBtn").onclick = () => requestLibraryLoad(state.page || 1, fal
 $("saveRuntimeSettingsBtn").onclick = saveRuntimePaneSettings;
 $("saveDlnaSettingsBtn").onclick = saveDlnaPaneSettings;
 $("saveMetadataSettingsBtn").onclick = saveMetadataOverviewPaneSettings;
+$("saveMetadataProvidersBtn").onclick = saveMetadataProviderPaneSettings;
 $("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
 $("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
 $("chooseLibraryPathBtn").onclick = chooseLibraryPath;

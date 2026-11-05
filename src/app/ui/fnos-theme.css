@@ -190,49 +190,136 @@ dialog {
   background: var(--ui-raised) !important; color: var(--ui-text) !important; box-shadow: var(--ui-shadow) !important;
 }
 dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: none !important; }
-/* Settings is one dialog with five panes of very different lengths. Sizing the
- * frame by its content made the whole window jump by up to 446px on every tab
- * change, so both breakpoints pin the frame and scroll the active pane instead.
- * The pane rules stay outside the query because the phone frame is pinned too. */
-#folderDialog > .settings-pane {
-  grid-row: 3;
-  display: flex;
-  flex-direction: column;
-  min-height: 0 !important;
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  overscroll-behavior: contain;
+/* Settings is one dialog with six groups of very different lengths. The frame is
+ * pinned and only the active pane scrolls, so switching groups never resizes the
+ * window. The rail and the footer are the two stable surfaces: the rail says
+ * which group you are in and what it currently holds, the footer is the only
+ * place a change is ever written. */
+#folderDialog {
+  width: min(880px, calc(100vw - 48px)) !important;
+  max-width: min(880px, calc(100vw - 48px)) !important;
+  padding: 0 !important;
+  overflow: hidden !important;
 }
-/* The flex display above outranks `.settings-pane[hidden]`, so the inactive
- * panes have to be hidden again explicitly. */
-#folderDialog > .settings-pane[hidden] { display: none !important; }
-/* Every pane keeps its action bar on the frame's bottom edge. Without this the
- * save button floated 338px above the edge on the short DLNA pane while
- * sitting at the very bottom on the tall metadata pane. */
-#folderDialog > .settings-pane > .settings-pane-actions {
-  margin-top: auto !important;
+#folderDialog[open] {
+  display: block !important;
+  height: min(680px, calc(100dvh - 48px)) !important;
+  max-height: calc(100dvh - 48px) !important;
 }
-/* The metadata tab nests its action bars one level deeper, inside the active
- * sub-pane, so that sub-pane has to fill the pane for the same pinning. */
-#folderDialog > .settings-pane > .metadata-settings-subpane {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
+.settings-shell {
+  display: grid;
+  grid-template-rows: 56px minmax(0, 1fr) auto;
+  height: 100%;
   min-height: 0;
 }
-#folderDialog > .settings-pane > .metadata-settings-subpane[hidden] { display: none !important; }
-#folderDialog > .settings-pane > .metadata-settings-subpane > .settings-pane-actions {
-  margin-top: auto !important;
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  min-width: 0;
+  padding: 0 var(--ui-space-5);
+  border-bottom: 1px solid var(--ui-line);
+  background: var(--ui-raised);
 }
-@media (min-width: 761px) {
-  #folderDialog[open] {
-    display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) !important;
-    height: min(680px, calc(100dvh - 48px)) !important;
-    max-height: calc(100dvh - 48px) !important;
-    overflow: hidden !important;
-  }
+.settings-head h2 { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--ui-text) !important; font-size: 16px; font-weight: 650; }
+.settings-back { display: none !important; }
+.settings-body { display: grid; grid-template-columns: 208px minmax(0, 1fr); min-height: 0; }
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: var(--ui-space-3) var(--ui-space-2);
+  overflow-y: auto;
+  border-right: 1px solid var(--ui-line);
+  background: var(--ui-sidebar);
 }
+.settings-nav button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0 !important;
+  border-radius: var(--ui-radius-sm);
+  background: transparent !important;
+  color: var(--ui-secondary) !important;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-nav button:hover { background: var(--ui-hover) !important; color: var(--ui-text) !important; }
+.settings-nav button.active { background: var(--ui-selected) !important; color: var(--ui-accent) !important; }
+.settings-nav-icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.settings-nav-text { display: grid; gap: 1px; min-width: 0; }
+.settings-nav-label { font-size: 13px; font-weight: 550; line-height: 1.3; }
+.settings-nav-summary { overflow: hidden; color: var(--ui-muted) !important; font-size: 11px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.settings-nav-summary:empty { display: none; }
+.settings-nav button.active .settings-nav-summary { color: var(--ui-accent) !important; }
+.settings-nav button.has-dirty .settings-nav-summary { color: var(--ui-warning) !important; }
+/* A pending write needs a mark that survives an empty summary line, so the dot
+ * rides on the label instead of recolouring the second line. */
+.settings-nav button.has-dirty .settings-nav-label::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--ui-warning);
+  vertical-align: 1px;
+}
+.settings-nav-chevron { display: none; }
+.settings-panes { min-height: 0; overflow: hidden; }
+.settings-pane {
+  height: 100%;
+  min-height: 0;
+  padding: var(--ui-space-5);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.settings-pane[hidden] { display: none !important; }
+.settings-pane > .settings-group { max-width: 560px; }
+.settings-group { display: grid; gap: var(--ui-space-2); }
+.settings-group + .settings-group { margin-top: var(--ui-space-5); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-line); }
+.settings-group-head { display: flex; align-items: center; gap: var(--ui-space-2); }
+.settings-group-head h3 { margin: 0; color: var(--ui-text) !important; font-size: 13px; font-weight: 650; }
+.settings-badge { flex: none; padding: 0 7px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.7; }
+.settings-badge.is-save { background: var(--ui-selected); color: var(--ui-accent) !important; }
+.settings-badge.is-live { background: var(--ui-success-bg); color: var(--ui-success) !important; }
+.settings-badge.is-danger { background: var(--ui-danger-bg); color: var(--ui-danger) !important; }
+/* Writing tags back edits the files on disk, so the group reads as a hazard
+ * block instead of one more switch in the list. */
+.settings-danger-zone {
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-danger) !important;
+  border-radius: var(--ui-radius);
+  background: var(--ui-danger-bg);
+}
+.settings-inline-actions { display: flex; flex-wrap: wrap; gap: var(--ui-space-2); }
+.settings-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+  min-height: 56px;
+  padding: var(--ui-space-2) var(--ui-space-5);
+  border-top: 1px solid var(--ui-line);
+  background: var(--ui-raised);
+}
+.settings-dirty { flex: 1 1 auto; min-width: 0; color: var(--ui-warning) !important; font-size: 12px; }
+.settings-save-status { min-width: 0; font-size: 12px; color: var(--ui-secondary) !important; }
+.settings-save-status.is-success { color: var(--ui-success) !important; }
+.settings-save-status.is-error { color: var(--ui-danger) !important; }
+.settings-foot-actions { display: flex; flex: none; align-items: center; gap: var(--ui-space-2); }
+.settings-foot-actions .settings-save { min-width: 120px; }
+/* The seven per-pane save buttons still exist so their handlers keep working,
+ * but the footer is the only visible write path. */
+.settings-legacy-actions { display: none !important; }
+/* An empty save bar is 56px of dead space, so it only exists while it has
+ * something to say: pending groups, or the result of the last write. */
+.settings-shell:not(.has-foot) .settings-foot { display: none; }
 .dialog-close-button { display: inline-grid; place-items: center; flex: 0 0 36px !important; width: 36px !important; height: 36px !important; padding: 0; color: var(--ui-secondary) !important; }
 .dialog-close-button svg, .library-path-remove svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .library-path-remove { display: inline-grid !important; place-items: center !important; }
@@ -257,22 +344,9 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .danger-button { border-color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; }
 .danger-button:hover:not(:disabled) { border-color: var(--ui-danger) !important; background: var(--ui-danger-bg) !important; color: var(--ui-danger) !important; }
 .primary-button, .settings-save, #saveMetadataProvidersBtn, #savePlaylistBtn, #saveColumnsBtn { border-color: var(--ui-accent) !important; background: var(--ui-accent) !important; color: var(--ui-on-accent) !important; }
-.settings-tabs { display: flex !important; flex-wrap: wrap; gap: var(--ui-space-1) !important; margin: 0 !important; padding: 0 0 var(--ui-space-3); border-bottom: 1px solid var(--ui-line) !important; overflow: visible; }
-.settings-tabs button, .metadata-settings-tabs button { min-height: 36px; padding: var(--ui-space-2) var(--ui-space-3) !important; border: 0 !important; border-radius: var(--ui-radius-sm); background: transparent !important; color: var(--ui-secondary) !important; white-space: nowrap; }
-.settings-tabs button.active, .metadata-settings-tabs button.active { background: var(--ui-selected) !important; color: var(--ui-accent) !important; font-weight: 600 !important; box-shadow: none; border: 0 !important; }
-.settings-tabs button::after, .metadata-settings-tabs button::after { display: none !important; }
 .settings-pane { min-height: 0 !important; padding-top: var(--ui-space-4) !important; }
 .settings-section-heading { margin-block: var(--ui-space-4) var(--ui-space-3); }
 .settings-section-heading strong, .settings-section-heading h3, .metadata-provider-heading strong { color: var(--ui-text) !important; }
-.settings-pane-actions { display: flex !important; flex-wrap: wrap; align-items: center !important; justify-content: flex-end !important; gap: var(--ui-space-3) !important; position: sticky; bottom: calc(-1 * var(--ui-space-6)); z-index: 2; padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-2) !important; margin: var(--ui-space-4) calc(-1 * var(--ui-space-6)) calc(-1 * var(--ui-space-2)); border-top: 1px solid var(--ui-line) !important; background: var(--ui-raised); }
-#settings-pane-dlna .settings-pane-actions { justify-content: flex-end !important; }
-#settings-pane-dlna .settings-diagnostics-heading {
-  margin-top: 0 !important;
-  padding-top: 0;
-  border-top: 0;
-}
-.metadata-settings-tabs { display: flex; flex-wrap: wrap; gap: var(--ui-space-1); padding-bottom: var(--ui-space-3); border-color: var(--ui-line); background: transparent; }
-.metadata-provider-settings { margin: var(--ui-space-3) 0 var(--ui-space-1); padding-top: 0 !important; border-top: 0; }
 .metadata-settings-section .settings-section-heading { margin: 0 0 var(--ui-space-2) !important; }
 .metadata-settings-overview { gap: var(--ui-space-2); margin-bottom: var(--ui-space-2); background: var(--ui-sidebar); border: 1px solid var(--ui-line); border-radius: var(--ui-radius); padding: var(--ui-space-3); }
 .metadata-settings-overview > div { min-width: 0; min-height: 60px; padding: var(--ui-space-2); }
@@ -379,7 +453,6 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .artist-all-songs-entry:hover,
   .player-button:hover:not(.play-button),
   .player-actions button:hover, .secondary-button:hover:not(:disabled), .track-action-choice:hover,
-  .settings-tabs button:hover:not(.active), .metadata-settings-tabs button:hover:not(.active),
   .metadata-candidate-choice:hover, .device-row:hover { background: var(--ui-hover) !important; color: var(--ui-text) !important; }
   .primary-button:hover:not(:disabled), .settings-save:hover:not(:disabled), .play-button:hover { background: var(--ui-accent-hover) !important; color: var(--ui-on-accent) !important; }
   .artist-all-songs-entry:hover { border-color: var(--ui-line) !important; }
@@ -455,31 +528,12 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   /* Keep secondary actions available on desktop only; mobile transport stays compact. */
   .player-actions { display: none !important; }
   .volume-panel { right: 0 !important; }
-  dialog, #folderDialog, .metadata-candidate-dialog { width: calc(100% - 16px) !important; max-width: calc(100% - 16px) !important; max-height: calc(100dvh - 24px) !important; margin: auto !important; padding: var(--ui-space-4) !important; border-radius: var(--ui-radius-lg) !important; }
-  #folderDialog[open] { display: grid; height: calc(100dvh - 24px) !important; grid-template-rows: auto auto minmax(0, 1fr) !important; overflow: hidden !important; }
-  #folderDialog > .dialog-head {
-    position: sticky;
-    top: 0;
-    z-index: 5;
-    margin: 0 calc(-1 * var(--ui-space-4));
-    padding: var(--ui-space-3) var(--ui-space-4) !important;
-    border-bottom: 1px solid var(--ui-line) !important;
-    background: var(--ui-raised) !important;
-  }
   dialog .dialog-head .dialog-close-button { flex-basis: 44px !important; width: 44px !important; min-width: 44px; height: 44px !important; }
   /* The 64px trailing pad used to reserve room for the last tab while the strip
    * scrolled.  The five labels now fit at phone widths, so the pad only added
    * 46px of phantom scroll that could drag the whole row sideways for nothing. */
-  .settings-tabs { display: flex !important; flex-wrap: nowrap !important; gap: var(--ui-space-1) !important; padding-inline-end: 0 !important; overflow-x: auto !important; overflow-y: hidden !important; scrollbar-width: none !important; }
-  .settings-tabs::-webkit-scrollbar { display: none !important; }
   /* 6px inline padding instead of 8px: with five labels the row needs 302px, which
    * clears a 360px phone (310px strip) without scrolling and still scrolls at 320px. */
-  .settings-tabs button, .metadata-settings-tabs button { min-width: 0; min-height: 44px !important; text-align: center; padding: var(--ui-space-2) 6px !important; }
-  .settings-tabs button { flex: 0 0 auto !important; white-space: nowrap !important; }
-  .metadata-settings-tabs { display: flex !important; flex-wrap: nowrap !important; gap: var(--ui-space-1) !important; overflow-x: auto !important; overflow-y: hidden !important; scrollbar-width: none; }
-  .metadata-settings-tabs::-webkit-scrollbar { display: none !important; }
-  .metadata-settings-tabs button { flex: 0 0 auto !important; white-space: nowrap !important; }
-  #folderDialog > .settings-pane { grid-row: 3; min-height: 0 !important; overflow-y: auto !important; overscroll-behavior: contain; }
   .metadata-settings-grid, .metadata-core-controls, .metadata-candidate-source-bar { grid-template-columns: minmax(0,1fr) !important; }
   .metadata-settings-overview { grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--ui-space-1) !important; padding: var(--ui-space-2) !important; }
   .metadata-settings-overview > div { min-height: 54px; padding: var(--ui-space-2) !important; }
@@ -487,11 +541,6 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .metadata-settings-overview strong { font-size: 13px !important; }
   .metadata-provider-heading, .settings-diagnostics-heading { flex-wrap: wrap; gap: var(--ui-space-2); }
   .metadata-provider-list { padding-bottom: calc(var(--ui-space-5) + 240px) !important; scroll-padding-bottom: 240px; }
-  .metadata-provider-settings { display: grid; grid-template-columns: minmax(0,1fr); grid-template-areas: "heading" "providers" "probe" "status"; }
-  .metadata-provider-settings > .metadata-provider-heading { grid-area: heading; }
-  .metadata-provider-settings > .metadata-provider-list { grid-area: providers; }
-  .metadata-provider-settings > .metadata-probe-query { grid-area: probe; }
-  .metadata-provider-settings > #metadataProviderStatusText { grid-area: status; }
   .metadata-provider-header { grid-template-columns: minmax(0,1fr) !important; }
   .metadata-provider-actions { grid-column: 1 !important; grid-row: 3 !important; justify-content: flex-end; width: 100%; padding-left: 0; }
   .metadata-provider-actions button { min-height: 44px !important; flex: 0 0 auto; }
@@ -504,9 +553,6 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .metadata-candidate-search input, .metadata-candidate-search button { width: 100%; min-height: 44px !important; }
   .metadata-candidate-results { max-height: 32dvh !important; }
   .settings-pane { padding-bottom: var(--ui-space-4) !important; }
-  .settings-pane-actions { position: sticky !important; bottom: 0 !important; z-index: 2 !important; justify-content: flex-end !important; padding-inline: var(--ui-space-4) !important; margin-inline: calc(-1 * var(--ui-space-4)) !important; margin-bottom: 0 !important; }
-  #settings-pane-dlna .settings-pane-actions { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch !important; gap: var(--ui-space-2) !important; }
-  #settings-pane-dlna .settings-pane-actions button { min-width: 0; width: 100%; }
   .library-path-row { grid-template-columns: minmax(0, 1fr) 44px !important; }
   .library-path-remove { width: 44px !important; min-width: 44px !important; height: 44px !important; }
   .library-health-grid { grid-template-columns: minmax(0,1fr); }
@@ -668,9 +714,6 @@ html.android-app .player-actions { display: none !important; }
 /* Theme boundary for the metadata/settings workbench. These components were
  * added after the original FNOS pass and must consume semantic tokens rather
  * than pinning a light-surface palette that breaks dark mode. */
-.metadata-settings-tabs{border-bottom-color:var(--ui-line)!important}
-.metadata-settings-tabs button{color:var(--ui-secondary)!important}
-.metadata-settings-tabs button.active{color:var(--ui-accent-hover)!important}
 .metadata-settings-section{margin-bottom: var(--ui-space-3) !important;padding: var(--ui-space-3) 0 !important;background: transparent;border-color: var(--ui-line);box-shadow: none;border-bottom-color:var(--ui-line)!important}
 .metadata-tag-section{background:var(--ui-warning-bg)!important;border-color:var(--ui-border)!important}
 .metadata-tag-section .settings-section-heading h3{color:var(--ui-warning)!important}
@@ -1358,4 +1401,73 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
 .player-actions #queueBtn svg,
 .player-actions #volumeBtn svg {
   stroke-width: 1.75 !important;
+}
+
+
+/* Phone: the same DOM becomes two levels. The rail is the list page; picking a
+ * group opens its pane over the whole frame, and the back arrow returns. The
+ * footer only exists in the detail level, where there is something to write. */
+@media (max-width: 760px) {
+  /* [open] keeps the same specificity as the desktop frame rule, so the phone
+   * override wins on source order instead of losing to the pinned 680px frame. */
+  #folderDialog[open] {
+    inset: 0 !important;
+    margin: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+  .settings-shell { grid-template-rows: 52px minmax(0, 1fr) auto; }
+  .settings-head { padding: 0 var(--ui-space-4); }
+  .settings-head .dialog-close-button { flex-basis: 44px !important; width: 44px !important; height: 44px !important; }
+  /* The list level has no "up", only "out": the back arrow belongs to the
+   * detail level, where the header close button would be a second exit. */
+  .settings-back { display: none !important; }
+  .settings-shell.is-detail .settings-back { display: inline-grid !important; }
+  .settings-shell.is-detail .settings-head .dialog-close-button { display: none !important; }
+  .settings-body { position: relative; display: block; height: 100%; min-height: 0; }
+  .settings-nav {
+    height: 100%;
+    padding: 0 var(--ui-space-3);
+    overflow-y: auto;
+    border-right: 0;
+    background: var(--ui-raised);
+  }
+  .settings-nav button {
+    grid-template-columns: 20px minmax(0, 1fr) 16px;
+    gap: var(--ui-space-3);
+    min-height: 60px;
+    padding: var(--ui-space-2) 2px;
+    border-bottom: 1px solid var(--ui-line) !important;
+    border-radius: 0;
+  }
+  /* On the list level no group is "current", so none of them may look selected. */
+  .settings-shell:not(.is-detail) .settings-nav button.active { background: transparent !important; color: var(--ui-secondary) !important; }
+  .settings-shell:not(.is-detail) .settings-nav button.active .settings-nav-summary { color: var(--ui-muted) !important; }
+  .settings-nav-icon { width: 20px; height: 20px; }
+  .settings-nav-label { font-size: 14px; }
+  .settings-nav-summary { font-size: 12px; }
+  .settings-nav-chevron { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; color: var(--ui-muted) !important; }
+  .settings-panes { display: none; height: 100%; }
+  .settings-shell.is-detail .settings-nav { display: none; }
+  .settings-shell.is-detail .settings-panes { display: block; }
+  .settings-pane { padding: var(--ui-space-4); }
+  .settings-pane > .settings-group { max-width: none; }
+  /* On a phone the source list is the primary task and the probe inputs are
+   * optional, so the list comes first even though the DOM puts the probe form
+   * above it for the wider layout. */
+  [data-settings-block="metadata-providers"] > .settings-group-head { order: 0; }
+  [data-settings-block="metadata-providers"] > .metadata-provider-heading { order: 1; }
+  [data-settings-block="metadata-providers"] > #metadataProviderList { order: 2; }
+  [data-settings-block="metadata-providers"] > .metadata-probe-query { order: 3; }
+  [data-settings-block="metadata-providers"] > #metadataProviderStatusText { order: 4; }
+  .settings-shell:not(.is-detail) .settings-foot { display: none; }
+  .settings-foot { flex-wrap: wrap; min-height: 56px; padding: var(--ui-space-2) var(--ui-space-4); }
+  .settings-dirty { flex: 1 1 auto; }
+  .settings-foot-actions { flex: 1 1 100%; }
+  .settings-foot-actions .secondary-button { flex: 1 1 0; min-height: 44px; }
 }

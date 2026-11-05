@@ -7,8 +7,8 @@ const UI_DIR = path.join(__dirname, "..", "app", "ui");
 const app = fs.readFileSync(path.join(UI_DIR, "app.js"), "utf8");
 const index = fs.readFileSync(path.join(UI_DIR, "index.html"), "utf8");
 
-assert.match(app, /function syncMetadataSettingsSaveAction\(/, "metadata save action must follow the active subpane");
-assert.match(app, /syncMetadataSettingsSaveAction\(name\)/, "metadata subtab changes must update the save action");
+// 子标签同步器已随二级标签一起删除：两个保存动作各自独立，谁都不跟随「当前子页」。
+assert.doesNotMatch(app, /syncMetadataSettingsSaveAction/, "the sub-tab save switcher must be gone");
 assert.match(app, /保存概览设置/, "overview must use a scoped save label");
 assert.match(app, /保存 Tag 写回设置/, "Tag writes must use a scoped save label");
 
@@ -107,96 +107,43 @@ assert.doesNotMatch(app, /MusicBrainz.*固定排在最后/, "provider help must 
 assert.match(index, /<h3>基础与安全<\/h3>/, "metadata settings must separate safety controls");
 assert.match(index, /<h3>补全任务<\/h3>/, "metadata settings must separate background jobs");
 assert.match(index, /<h3>Tag 写回<\/h3>/, "metadata settings must separate file-writing controls");
-assert.match(index, /role="tablist" aria-label="元数据设置分类"/, "metadata settings must expose their own labelled tablist");
-for (const name of ["overview", "providers", "tasks", "tags"]) {
-  assert.match(index, new RegExp(`data-metadata-settings-tab="${name}"`), `${name} must have a metadata tab`);
-  assert.match(index, new RegExp(`data-metadata-settings-pane="${name}"`), `${name} must have its own panel`);
+// 元数据不再嵌套第二层标签：四段是同一条滚动列里的四个 block，Tag 写回作为
+// 危险区排在最后。这取代了原来「四个二级标签各带一个保存按钮」的结构。
+assert.doesNotMatch(index, /role="tablist" aria-label="元数据设置分类"/, "metadata must not nest a second tablist inside the settings rail");
+assert.doesNotMatch(app, /function setMetadataSettingsTab\(/, "the metadata sub-tab switcher must be gone, not merely unused");
+assert.doesNotMatch(app, /data-metadata-settings-tab/, "no code may keep querying the removed sub-tabs");
+// 两个样式层都不能把横向子标签条带回来。
+for (const file of ["app/ui/app.css", "app/ui/fnos-theme.css"]) {
+  assert.doesNotMatch(fs.readFileSync(file, "utf8"), /\.metadata-settings-tabs|\.metadata-settings-subpane/,
+    `${file} must not keep the retired metadata sub-tab strip`);
 }
+for (const name of ["metadata-overview", "metadata-providers", "metadata-tasks", "metadata-tags"]) {
+  assert.match(index, new RegExp(`data-settings-block="${name}"`), `${name} must be its own settings block`);
+}
+assert.match(index, /data-settings-block="metadata-tags" class="[^"]*settings-danger-zone|class="[^"]*settings-danger-zone[^"]*" data-settings-block="metadata-tags"/, "the Tag write group must render as a hazard block");
 assert.match(index, /id="metadataTagWriteActions"/, "tag write actions must have their own region");
 assert.match(app, /\$\("metadataTagWriteActions"\)\?\.append\(retryButton\)/, "retry writes must render in the tag write region");
-assert.match(app, /function setMetadataSettingsTab\(/, "metadata tabs need an independent state switcher");
-assert.match(app, /function metadataSettingsTabIndexForKey\(/, "metadata tabs must support standard keyboard navigation");
-assert.match(app, /function bindMetadataSettingsTabs\(/, "metadata tabs must bind click and keyboard interaction");
-assert.match(app, /state\.metadataSettingsTab = name;/, "metadata subtab selection must persist while switching top-level panes");
-assert.match(functionSource("setSettingsTab"), /setMetadataSettingsTab\(state\.metadataSettingsTab \|\| "overview"\)/, "reopening metadata must preserve the selected subtab");
 
-const metadataTabNodes = ["overview", "providers", "tasks", "tags"].map(name => ({
-  dataset: { metadataSettingsTab: name },
-  attrs: {},
-  active: false,
-  focus() { metadataTabsSandbox.focused = this; },
-  classList: { toggle(_className, active) { this.node.active = active; }, node: null },
-  setAttribute(name, value) { this.attrs[name] = value; },
-}));
-const metadataPaneNodes = ["overview", "providers", "tasks", "tags"].map(name => ({
-  dataset: { metadataSettingsPane: name }, hidden: true, active: false,
-  classList: { toggle(_className, active) { this.node.active = active; }, node: null },
-}));
-for (const node of [...metadataTabNodes, ...metadataPaneNodes]) node.classList.node = node;
-const metadataTabsSandbox = {
-  state: { metadataSettingsTab: "overview" },
-  focus: null,
-  $() { return null; },
-  document: { querySelectorAll(selector) {
-    return selector === "[data-metadata-settings-tab]" ? metadataTabNodes : metadataPaneNodes;
-  }, querySelector() { return null; } },
+// 写入归属：Tag 写回与概览是两个独立的 group，所以底部保存栏不能用一个动作
+// 覆盖两者，也不能让 Tag 的写入搭概览那次 POST 的便车。
+const groupsSource = app.match(/const SETTINGS_GROUPS = \[[\s\S]*?\];/);
+assert.ok(groupsSource, "the settings groups table must stay declarative");
+const groupLine = key => {
+  const found = groupsSource[0].match(new RegExp('[{] key: "' + key + '",[^}]*[}]'));
+  assert.ok(found, `${key} must be its own save group`);
+  return found[0];
 };
-vm.runInNewContext([
-  functionSource("setMetadataSettingsTab"),
-  functionSource("syncMetadataSettingsSaveAction"),
-  functionSource("metadataSettingsTabIndexForKey"),
-  functionSource("bindMetadataSettingsTabs"),
-].join("\n"), metadataTabsSandbox);
-metadataTabsSandbox.bindMetadataSettingsTabs();
-let keyboardPrevented = false;
-metadataTabNodes[0].onkeydown({ key: "ArrowRight", preventDefault() { keyboardPrevented = true; } });
-assert.equal(keyboardPrevented, true);
-assert.equal(metadataTabsSandbox.focused, metadataTabNodes[1], "keyboard navigation must focus its newly selected tab");
-assert.deepEqual(metadataPaneNodes.map(node => node.hidden), [true, false, true, true]);
-metadataTabNodes[2].onclick();
-assert.equal(metadataTabNodes[2].attrs["aria-selected"], "true", "clicking a metadata tab must select it");
-assert.equal(metadataTabsSandbox.setMetadataSettingsTab("providers"), "providers");
-assert.equal(metadataTabsSandbox.state.metadataSettingsTab, "providers");
-assert.deepEqual(metadataTabNodes.map(node => node.attrs["aria-selected"]), ["false", "true", "false", "false"]);
-assert.deepEqual(metadataPaneNodes.map(node => node.hidden), [true, false, true, true]);
-assert.equal(metadataTabsSandbox.setMetadataSettingsTab("missing"), "overview", "unknown metadata tabs must fall back to the overview");
-const saveButton = { hidden: false, textContent: "保存概览设置" };
-const tagSaveButton = { hidden: false, textContent: "保存 Tag 写回设置" };
-const saveActionSandbox = {
-  saveMetadataOverviewPaneSettings() {},
-  saveMetadataTagPaneSettings() {},
-  $: id => id === "saveMetadataSettingsBtn" ? saveButton : id === "saveMetadataTagSettingsBtn" ? tagSaveButton : null,
-  document: { querySelector() { throw new Error("save actions must remain in their owning subpages"); } },
-};
-vm.runInNewContext(functionSource("syncMetadataSettingsSaveAction") + "\nglobalThis.syncMetadataSettingsSaveAction = syncMetadataSettingsSaveAction;", saveActionSandbox);
-for (const name of ["overview", "providers", "tasks", "tags"]) {
-  saveActionSandbox.syncMetadataSettingsSaveAction(name);
-  assert.equal(saveButton.onclick, saveActionSandbox.saveMetadataOverviewPaneSettings);
-  assert.equal(tagSaveButton.onclick, saveActionSandbox.saveMetadataTagPaneSettings);
-  assert.equal(saveButton.hidden, false, "the overview pane controls its own button visibility");
-  assert.equal(tagSaveButton.hidden, false, "the Tag pane controls its own button visibility");
+assert.match(groupLine("metadata"), /blocks: \["metadata-overview"\]/, "the overview save must own only the overview block");
+assert.match(groupLine("metadata-tags"), /blocks: \["metadata-tags"\]/, "the Tag save must own only the Tag block");
+assert.doesNotMatch(groupLine("metadata"), /metadata-tags/, "the overview save must not reach the Tag block");
+assert.doesNotMatch(groupLine("metadata-tags"), /metadata-overview/, "the Tag save must not reach the overview block");
+// 底部保存栏是唯一写入路径，因此历史按钮必须都退成隐藏触发器。
+const legacy = index.match(/<div class="settings-legacy-actions"[^>]*>([\s\S]*?)<\/div>/);
+assert.ok(legacy, "the legacy per-pane save buttons must still exist as hidden triggers");
+assert.ok(legacy[0].includes(" hidden "), "the legacy save triggers must not be visible");
+for (const id of ["saveMetadataSettingsBtn", "saveMetadataTagSettingsBtn", "saveMetadataProvidersBtn"]) {
+  assert.match(legacy[1], new RegExp(`id="${id}"`), `${id} must survive as a hidden trigger`);
 }
-assert.equal(saveButton.textContent, "保存概览设置");
-assert.equal(tagSaveButton.textContent, "保存 Tag 写回设置");
-const sectionStack = [];
-const buttonOwners = {};
-for (const token of index.matchAll(/<\/?section\b[^>]*>|<button\b[^>]*>/g)) {
-  if (token[0].startsWith("</section")) sectionStack.pop();
-  else if (token[0].startsWith("<section")) sectionStack.push(token[0].match(/\bid="([^"]+)"/)?.[1] || "");
-  else {
-    const id = token[0].match(/\bid="([^"]+)"/)?.[1];
-    if (id) buttonOwners[id] = sectionStack.filter(Boolean);
-  }
-}
-assert.ok(buttonOwners.saveMetadataSettingsBtn.includes("metadata-settings-pane-overview"), "overview save must be owned by the overview DOM pane");
-assert.ok(buttonOwners.saveMetadataTagSettingsBtn.includes("metadata-settings-pane-tags"), "Tag save must be owned by the Tag DOM pane");
-assert.ok(!buttonOwners.saveMetadataSettingsBtn.includes("metadata-settings-pane-tags"));
-assert.deepEqual(metadataTabNodes.map(node => node.tabIndex), [0, -1, -1, -1], "only the active metadata tab belongs in the tab sequence");
-assert.equal(metadataTabsSandbox.metadataSettingsTabIndexForKey("ArrowRight", 3, 4), 0, "right arrow wraps to the first metadata tab");
-assert.equal(metadataTabsSandbox.metadataSettingsTabIndexForKey("ArrowLeft", 0, 4), 3, "left arrow wraps to the last metadata tab");
-assert.equal(metadataTabsSandbox.metadataSettingsTabIndexForKey("Home", 2, 4), 0);
-assert.equal(metadataTabsSandbox.metadataSettingsTabIndexForKey("End", 0, 4), 3);
-assert.equal(metadataTabsSandbox.metadataSettingsTabIndexForKey("Escape", 0, 4), -1, "unrelated keys must not change tabs");
 
 assert.match(app, /function renderMetadataProviders\(/);
 assert.match(app, /function moveMetadataProvider\(/);
