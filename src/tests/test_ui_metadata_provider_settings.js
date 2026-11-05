@@ -85,15 +85,20 @@ assert.match(index, /id="metadataProbeTitleInput"/);
 assert.match(index, /id="metadataProbeArtistInput"/);
 assert.match(index, /id="metadataProbeAlbumInput"/);
 assert.match(index, /每个数据源可单独测试/);
-assert.match(app, /function ensureMetadataProviderSaveAction\(\)/);
-assert.match(app, /id = "saveMetadataProvidersBtn"/);
-assert.match(functionSource("renderMetadataProviders"), /ensureMetadataProviderSaveAction\(\)/, "rendering providers must materialize the provider save action");
+assert.doesNotMatch(app, /function ensureMetadataProviderSaveAction\(\)/,
+  "R483 moved the provider save button into the static settings markup; the factory must not come back");
+assert.match(index, /id="saveMetadataProvidersBtn"/,
+  "the provider save button is a static control in the settings markup now");
+assert.doesNotMatch(functionSource("renderMetadataProviders"), /saveMetadataProvidersBtn/,
+  "rendering the provider list must not materialize a second save button");
 assert.match(app, /function saveMetadataProviderPaneSettings\(\)/);
 assert.match(app, /function saveMetadataProvidersOnly\(\)/);
 assert.match(functionSource("saveMetadataProvidersOnly"), /body: JSON\.stringify\(\{ providers: metadataProviderPayload\(\) \}\)/);
 assert.doesNotMatch(functionSource("saveMetadataProvidersOnly"), /metadataTagWriteConfirmation/);
-assert.doesNotMatch(app, /\$\("saveMetadataProvidersBtn"\)\.onclick\s*=/, "the dynamically-created provider save button must not be bound before it exists");
-assert.match(app, /点击“保存数据源设置”后生效/);
+assert.equal((app.match(/\$\("saveMetadataProvidersBtn"\)\.onclick\s*=/g) || []).length, 1,
+  "the static button is bound exactly once, at boot, after it exists");
+assert.match(app, /点击底部“保存更改”后生效/,
+  "a pending provider write points at the shared save bar, not at a per-pane button");
 assert.doesNotMatch(app, /数据源配置已修改，点击“保存设置”后生效/);
 assert.match(functionSource("updateMetadataProviderDirtyStatus"), /saveButton\.disabled = state\.metadataProviderDirty !== true/);
 assert.match(functionSource("refreshMetadataLibrary"), /apiFetch\("api\/metadata\/refresh", \{ method: "POST" \}\)/);

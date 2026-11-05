@@ -2112,7 +2112,38 @@ function syncPlayerProgress() {
   updateTransportStateUnknown();
 }
 function updateSeekRail(value = $("seek")?.value || 0) {
-  setStyleVarIfChanged($("seek"), "--seek-fill", `${seekPercent(value)}%`);
+  const fill = seekPercent(value);
+  // The buffered band never sits behind the played edge.  A seek past the buffer
+  // leaves the element's ranges behind the playhead, and a band that shrank on
+  // seek would read as if the file were being unloaded instead of as "not there
+  // yet", so the fill wins that comparison (R484).
+  const buffered = Math.max(fill, seekBufferedPercent());
+  setStyleVarIfChanged($("seek"), "--seek-fill", `${fill}%`);
+  setStyleVarIfChanged($("seek"), "--seek-buffer", `${buffered}%`);
+}
+function seekBufferedPercent() {
+  // How far the element has buffered, expressed in the rail's own time base.
+  // ``audio.buffered`` is measured in the element's clock, so it moves onto the
+  // rail by the same delta ``localPlaybackSeconds`` applies to
+  // ``audio.currentTime``: a stream adds the offset it was opened at, a plain
+  // cue track subtracts where the track starts.  Deriving the delta from the
+  // played edge instead of re-deriving the cue arithmetic keeps one authority
+  // for that mapping.
+  //
+  // A row that belongs to a caster or to the host player has no element ranges
+  // behind it, and a band drawn there would be a guess rather than a reading.
+  if (isIncomingRendererSession() || isRemoteTarget() || nativePlaybackAvailable()) return 0;
+  const duration = seekDuration();
+  if (!(duration > 0)) return 0;
+  const ranges = audio.buffered;
+  if (!ranges || !ranges.length) return 0;
+  const end = playbackSeconds(ranges.end(ranges.length - 1));
+  const played = playbackSeconds(audio.currentTime);
+  const railEnd = localPlaybackSeconds() + (end - played);
+  // One decimal is the coarsest step that still moves the band by less than a
+  // pixel on a phone rail; without it the var changes in the twelfth decimal on
+  // every buffer tick and the compare-first writer never gets to skip a frame.
+  return seekPercent(Math.round(railEnd / duration * 1000) / 10);
 }
 function updateTransportStateUnknown() {
   // Say so when the transport row is running on extrapolation instead of on evidence.
@@ -10431,6 +10462,10 @@ audio.onended = async () => {
   const moved = await coreControl("next");
   if (!moved) updateMediaSessionPlaybackState();
 };
+// Buffer growth is the one rail change that does not come with a position tick:
+// a paused element keeps filling, and an emptied one loses its ranges.
+audio.onprogress = () => updateSeekRail();
+audio.onemptied = () => updateSeekRail();
 audio.ontimeupdate = () => {
   if (isRemoteTarget()) return;
   const item = currentItem();

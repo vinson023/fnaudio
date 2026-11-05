@@ -131,8 +131,10 @@ assert.match(themeCss, /html\.fnaudio-android-client \.mobile-pagebar\s*\{[\s\S]
 assert.doesNotMatch(themeCss, /html\.fnaudio-android-client \.top-actions/, "Android WebView must not carry a desktop action row");
 assert.match(finalThemeMobileContract, /\.transport\s*\{[\s\S]*?width:\s*max-content\s*!important;[\s\S]*?margin-inline:\s*auto\s*!important;[\s\S]*?justify-self:\s*center\s*!important;/, "the loaded FNOS theme must keep transport controls centered");
 assert.match(themeCss, /\.progress input,[\s\S]*?#seek\s*\{[\s\S]*?flex:\s*1 1 0\s*!important;[\s\S]*?width:\s*auto\s*!important;[\s\S]*?min-width:\s*0\s*!important;/, "the loaded FNOS theme must let the seek range absorb remaining width without overflow");
-assert.match(themeCss, /\.progress input::-webkit-slider-runnable-track\s*\{[\s\S]*?height:\s*4px\s*!important;[\s\S]*?background:\s*linear-gradient\(/, "the seek rail must use the thin blue and gray visual style");
-assert.match(themeCss, /\.progress input::-webkit-slider-thumb\s*\{[\s\S]*?width:\s*6px\s*!important;[\s\S]*?height:\s*6px\s*!important;[\s\S]*?background:\s*var\(--ui-accent\)\s*!important;/, "the seek rail must use a small, usable progress handle");
+// The rail that actually paints is the .player .progress copy, not the base one;
+// guard the one on screen (R484).
+assert.match(themeCss, /\.player \.progress input::-webkit-slider-runnable-track\s*\{[\s\S]*?height:\s*4px\s*!important;[\s\S]*?background:\s*linear-gradient\(/, "the seek rail must use the thin blue and gray visual style");
+assert.match(themeCss, /\.player \.progress input::-webkit-slider-thumb\s*\{[\s\S]*?width:\s*10px\s*!important;[\s\S]*?height:\s*10px\s*!important;[\s\S]*?background:\s*var\(--ui-surface\)\s*!important;/, "the seek rail must use a handle that clears the 4px band on both sides");
 assert.match(themeCss, /\.now-meta #nowTime\s*\{[^}]*display:\s*block\s*!important;/, "the elapsed and total time must appear under the song information");
 assert.match(themeCss, /\.player \.progress #elapsed,\s*\.player \.progress #duration\s*\{[^}]*display:\s*none\s*!important;/, "the time labels must not occupy either end of the progress rail");
 assert.match(themeCss, /\.player \.progress #transportStateUnknown\s*\{[^}]*display:\s*none\s*!important;/, "unknown transport state must remain hidden");

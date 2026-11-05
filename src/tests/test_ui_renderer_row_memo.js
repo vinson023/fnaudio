@@ -19,7 +19,7 @@ const limitConst = constSource("TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS");
 const paintNames = [
   "clock", "playbackSeconds", "seekPercent",
   "setTextContentIfChanged", "setStyleVarIfChanged", "setDatasetStateIfChanged",
-  "syncNowPlayingTime", "syncPlayerProgress", "updateSeekRail", "setPlayButton",
+  "syncNowPlayingTime", "syncPlayerProgress", "updateSeekRail", "seekBufferedPercent", "setPlayButton",
   "isIncomingRendererSession", "updateTransportStateUnknown",
   "transportStateIsUnknown", "transportExtrapolation",
   "updateMediaSessionPosition", "updateIncomingRendererUi", "resetTransportRow",

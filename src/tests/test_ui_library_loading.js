@@ -654,8 +654,10 @@ assert.match(app, /function setTextContentIfChanged\(node, value\) \{[\s\S]*?if 
   "the shared guard must stay a real comparison, not an unconditional write");
 assert.equal((app.match(/"--seek-fill"/g) || []).length, 1,
   "exactly one place may name the rail variable, and it is the guarded writer below");
-assert.match(app, /function updateSeekRail\(value = \$\("seek"\)\?\.value \|\| 0\) \{\s*setStyleVarIfChanged\(\$\("seek"\), "--seek-fill"/,
-  "the rail fill must go through the compare-then-write helper");
+assert.equal((app.match(/"--seek-buffer"/g) || []).length, 1,
+  "the buffered edge is named once, beside the fill it has to stay ahead of");
+assert.match(app, /function updateSeekRail\(value = \$\("seek"\)\?\.value \|\| 0\) \{\s*const fill = seekPercent\(value\);[\s\S]*?setStyleVarIfChanged\(\$\("seek"\), "--seek-fill", `\$\{fill\}%`\);\s*setStyleVarIfChanged\(\$\("seek"\), "--seek-buffer"/,
+  "the rail writes both readings through the compare-then-write helper");
 
 // An ended cast must leave no position behind when nothing is selected locally (TODO.md:58).
 const restoreBody = app.match(/function restoreLibraryNowPlaying\(\) \{[\s\S]*?\n\}/);
@@ -689,7 +691,7 @@ const transportNodes = {
   nowTitle: countedNode({ textContent: "Cast me something" }),
 };
 const transportNames = ["setTextContentIfChanged", "setStyleVarIfChanged", "clock", "seekPercent",
-                        "updateSeekRail", "setPlayButton", "resetTransportRow"];
+                        "updateSeekRail", "seekBufferedPercent", "setPlayButton", "resetTransportRow"];
 const transportSource = transportNames.map(name => {
   const found = app.match(new RegExp("function " + name + "\\([\\s\\S]*?\\) \\{[\\s\\S]*?\\n\\}"));
   assert.ok(found, `${name} must stay a top-level function for this check`);
@@ -700,6 +702,10 @@ const transportContext = {
   $: id => transportNodes[id],
   state: transportState,
   seekDuration: () => 0,
+  isIncomingRendererSession: () => false,
+  isRemoteTarget: () => false,
+  nativePlaybackAvailable: () => false,
+  audio: { currentTime: 0, buffered: { length: 0, start: () => 0, end: () => 0 } },
   String, Math, Number,
 };
 vm.runInNewContext(transportSource + "; globalThis.resetRow = resetTransportRow;", transportContext);
@@ -717,7 +723,8 @@ const writesAfterReset = transportNodes.elapsed.writes + transportNodes.duration
 transportContext.resetRow();
 assert.equal(transportNodes.elapsed.writes + transportNodes.duration.writes, writesAfterReset,
   "repeating the reset must not rewrite identical text");
-assert.equal(transportNodes.seek.styleWrites, 1, "the rail fill is written once and then compared");
+assert.equal(transportNodes.seek.styleWrites, 2,
+  "the rail writes its fill and its buffered edge once, then compares both");
 
 
 // TODO.md:49 - the precondition "my callers already excluded remote playback" is now enforced in
@@ -762,7 +769,7 @@ assert.match(timeupdateBody[0], /if \(isRemoteTarget\(\)\) return;\s*const item 
 // staleness lamp next to it: an extra text or style write per tick is exactly what the
 // two assertions below are counting.
 const progressSource = ["setTextContentIfChanged", "setStyleVarIfChanged", "clock", "seekPercent",
-                        "syncNowPlayingTime", "updateSeekRail", "syncPlayerProgress",
+                        "syncNowPlayingTime", "updateSeekRail", "seekBufferedPercent", "syncPlayerProgress",
                         "updateTransportStateUnknown", "transportStateIsUnknown",
                         "transportExtrapolation", "setDatasetStateIfChanged"]
   .map(name => {
@@ -781,21 +788,23 @@ const progressContext = {
   state: { seeking: false },
   isIncomingRendererSession: () => false,
   isRemoteTarget: () => false,
+  nativePlaybackAvailable: () => false,
+  audio: { currentTime: 42, buffered: { length: 0, start: () => 0, end: () => 0 } },
   String, Math, Number,
 };
 const progressLimit = app.match(/^const TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS = [^\n]+/m);
 assert.ok(progressLimit, "the extrapolation limit must stay a top-level const for the cost measurement");
 vm.runInNewContext(progressLimit[0] + ";\n" + progressSource + "; globalThis.tick = syncPlayerProgress;", progressContext);
 progressContext.tick();
-assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 2,
-  "a real progress change costs exactly one text write and one rail write");
+assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 3,
+  "a real progress change costs exactly one text write and two rail writes (fill + buffered edge)");
 assert.equal(progressNodes.nowTime.textContent, "0:42 / 3:00");
 const railAfterFirstTick = progressNodes.seek.properties["--seek-fill"];
 assert.ok(typeof railAfterFirstTick === "string" && railAfterFirstTick.endsWith("%"),
   `the rail must be painted as a percentage, got ${railAfterFirstTick}`);
 progressContext.tick();
 progressContext.tick();
-assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 2,
+assert.equal(progressNodes.nowTime.writes + progressNodes.seek.styleWrites, 3,
   "re-ticking the same position must touch the DOM zero times - that is what the poll duplicate costs");
 
 // R173 dead-code pin.  clearLibraryQueryState() had no caller anywhere in the tree: a

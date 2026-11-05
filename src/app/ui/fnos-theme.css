@@ -1356,6 +1356,36 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
   min-width: 0 !important;
   margin: 0 !important;
 }
+/* Two readings on one painted band (R484): the played edge, and how far the
+ * element has buffered ahead of it.  Three hard stops in a single gradient keep
+ * the rail one 4px line instead of stacking elements on top of the native range,
+ * which is what the hit target and the thumb are still measured against.
+ *
+ * ``--seek-buffer`` falls back to ``--seek-fill``, so a source with no usable
+ * TimeRanges (the host player, a track that has not started) collapses the
+ * middle stop to zero width and the rail looks exactly as it did before.  The
+ * tint is ``--ui-selected`` (brand at 15%/25% by theme) rather than a new
+ * literal, so both themes derive the band from the same accent. */
+.player .progress input::-webkit-slider-runnable-track {
+  height: 4px !important;
+  border-radius: 0 !important;
+  background: linear-gradient(to right,
+    var(--ui-accent) 0 var(--seek-fill, 0%),
+    var(--ui-selected) var(--seek-fill, 0%) var(--seek-buffer, var(--seek-fill, 0%)),
+    var(--ui-line) var(--seek-buffer, var(--seek-fill, 0%)) 100%) !important;
+}
+/* A white core inside an accent ring, so the handle still reads where the accent
+ * meets the accent-coloured band.  It is 10px on a 4px rail, which is why every
+ * host of this rail has to let it overflow. */
+.player .progress input::-webkit-slider-thumb {
+  width: 10px !important;
+  height: 10px !important;
+  margin-top: -3px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--ui-surface) !important;
+  box-shadow: 0 0 0 2px var(--ui-accent) !important;
+}
 .player .progress #transportStateUnknown {
   display: none !important;
 }
@@ -1374,6 +1404,10 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
     height: 4px !important;
     margin: 0 !important;
     padding: 0 !important;
+    /* app.css pins the phone rail to overflow:hidden, which would clip the 10px
+     * handle down to the 4px band.  Nothing else overflows here: the rail is
+     * anchored to both viewport edges, so there is no width to scroll. */
+    overflow: visible !important;
   }
   .player .progress input {
     height: 4px !important;

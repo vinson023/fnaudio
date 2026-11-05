@@ -348,6 +348,7 @@ test('Player progress uses a full-width thin rail with time under song details',
       trackHeight: track.height,
       thumbWidth: thumb.width,
       fill: seek.style.getPropertyValue('--seek-fill'),
+      overflow: getComputedStyle(document.querySelector('.progress')).overflow,
     };
   });
   expect(geometry.rail.height).toBe(4);
@@ -360,6 +361,23 @@ test('Player progress uses a full-width thin rail with time under song details',
   expect(geometry.rail.left).toBe(0);
   expect(geometry.rail.right).toBe(375);
   expect(geometry.fill).toBe('50%');
+  // The 10px handle is taller than the rail, so the phone rail may not clip it.
+  expect(geometry.overflow).toBe('visible');
+
+  // The buffered band: 30s played of 120s, buffered to 90s, arrives through the
+  // same `progress` event the browser fires.
+  const buffer = await page.evaluate(() => {
+    const audio = document.querySelector('#audio');
+    const ranges = {length: 1, start: () => 0, end: () => 90};
+    Object.defineProperty(audio, 'buffered', {configurable: true, get: () => ranges});
+    Object.defineProperty(audio, 'currentTime', {configurable: true, get: () => 30, set: () => {}});
+    Object.defineProperty(audio, 'duration', {configurable: true, get: () => 120});
+    audio.dispatchEvent(new Event('progress'));
+    const seek = document.querySelector('#seek');
+    return {fill: seek.style.getPropertyValue('--seek-fill'), buffer: seek.style.getPropertyValue('--seek-buffer')};
+  });
+  expect(buffer.fill).toBe('50%');
+  expect(buffer.buffer).toBe('75%');
   await screenshot(page, info, 'player-progress-reference-style');
 });
 

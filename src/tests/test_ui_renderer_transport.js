@@ -77,6 +77,12 @@ const context = {
   counters,
   isIncomingRendererSession: () => Boolean(transportState.rendererSession && transportState.rendererSession.uri),
   isRemoteTarget: () => false,
+  nativePlaybackAvailable: () => false,
+  // The rail reads the element's TimeRanges only when this browser owns the row;
+  // a caster owns it here, so the stub never gets asked.
+  audio: {currentTime: 0, buffered: {length: 0, start: () => 0, end: () => 0}},
+  playbackSeconds: value => Number(value) || 0,
+  localPlaybackSeconds: () => 0,
   seekDuration: () => Number(transportState.rendererSession.duration || 0),
   currentSeconds: () => Number(transportState.rendererSession.position || 0),
   currentItem: () => null,
@@ -96,6 +102,7 @@ const sources = [
   "syncNowPlayingTime",
   "syncPlayerProgress",
   "updateSeekRail",
+  "seekBufferedPercent",
   "setPlayButton",
   "renderIncomingRendererSession",
   "updateRemoteUi",
@@ -116,6 +123,8 @@ assert.equal(nodes.duration.textContent, "1:40", "The transport row must learn t
 assert.equal(nodes.elapsed.textContent, "0:12", "The transport row must learn the render position");
 assert.equal(nodes.seek.value, 12, "The slider must follow an incoming render position");
 assert.equal(nodes.seek.style.getPropertyValue("--seek-fill"), "12%", "The rail fill must follow the slider");
+assert.equal(nodes.seek.style.getPropertyValue("--seek-buffer"), "12%",
+  "A caster's row carries no local buffer reading, so the band collapses onto the played edge");
 assert.equal(nodes.nowTime.textContent, "0:12 / 1:40", "The compact clock must advance with the transport row");
 assert.match(nodes.playBtn.innerHTML, /pause-icon/, "A playing render session shows the pause icon");
 assert.ok(counters.mediaPosition >= 1, "The media session position must advance for an incoming session");
@@ -134,7 +143,7 @@ assert.equal(nodes.elapsed.textContent, "0:40");
 assert.equal(nodes.elapsed.counts.text, 2, "The clock is rewritten once per real change");
 assert.equal(nodes.nowTitle.counts.text, 1, "An unchanged title must not be rewritten by the poll");
 assert.equal(nodes.nowArtist.counts.text, 1, "An unchanged artist line must not be rewritten by the poll");
-assert.equal(nodes.seek.counts.style, 2, "The rail is rewritten once per real change");
+assert.equal(nodes.seek.counts.style, 4, "The rail writes its fill and buffered edge once per real change");
 
 const afterPosition = paintSnapshot();
 session.transport = "PAUSED_PLAYBACK";
