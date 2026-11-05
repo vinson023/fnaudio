@@ -179,7 +179,55 @@ h1, h2, h3 { color: var(--ui-text) !important; font-style: normal; overflow-wrap
 .volume-control { position: relative !important; display: inline-grid !important; place-items: center !important; }
 .volume-panel { position: absolute !important; right: 0 !important; bottom: calc(100% + 8px) !important; transform: none !important; display: grid !important; place-items: center !important; width: 48px !important; height: 144px !important; padding: var(--ui-space-3) 0 !important; z-index: 90 !important; background: var(--ui-raised) !important; border: 1px solid var(--ui-border) !important; box-shadow: var(--ui-shadow) !important; border-radius: var(--ui-radius) !important; }
 .volume-panel::after { display: none !important; }
-.volume-slider { appearance: auto !important; writing-mode: vertical-rl !important; direction: rtl !important; transform: none !important; width: 24px !important; height: 112px !important; margin: 0 !important; }
+/* The popover's rail is a 3px line with a white-core handle, the same language
+ * the progress rail was given in R484.  The UA vertical slider cannot be
+ * restyled at all -- it paints its own track and thumb -- so the element is
+ * rebuilt from `appearance: none`.  The panel stays 48x144 and the input 24x112:
+ * this changes what is painted, not where anything sits (R488). */
+.volume-panel {
+  /* A control rail is not a divider.  --ui-line is a 10% black hairline meant
+   * for separators; painted at 3px on this popover it lands at 1.25:1 and reads
+   * as nothing at all.  Mixing the theme's own text colour keeps the rail inside
+   * the palette instead of adding a literal, and needs no per-theme branch
+   * because --ui-text already flips: measured 1.65:1 in light, 2.04:1 in dark. */
+  --volume-rail: color-mix(in srgb, var(--ui-text) 22%, transparent);
+}
+.volume-slider {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  writing-mode: vertical-rl !important;
+  direction: rtl !important;
+  transform: none !important;
+  width: 24px !important;
+  height: 112px !important;
+  margin: 0 !important;
+  background: transparent !important;
+}
+/* One gradient, one hard stop at the played edge.  `--volume-fill` falls back to
+ * 0%, so a page that never ran the fill update still shows a usable rail rather
+ * than a full one. */
+.volume-slider::-webkit-slider-runnable-track {
+  width: 3px !important;
+  height: 112px !important;
+  border-radius: 1.5px !important;
+  background: linear-gradient(to top,
+    var(--ui-accent) 0 var(--volume-fill, 0%),
+    var(--volume-rail) var(--volume-fill, 0%) 100%) !important;
+}
+/* A white core inside an accent ring: a solid accent dot would vanish where it
+ * crosses the accent-coloured part of the rail.  The handle is centred with a
+ * negative *right* margin -- on a vertical slider Chromium hangs the thumb off
+ * the track's inline-start edge, so a negative left margin moves nothing. */
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  margin-right: -4.5px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--ui-surface) !important;
+  box-shadow: 0 0 0 2px var(--ui-accent) !important;
+}
 
 /* Native dialog lifecycle, IDs, pane states and generated actions are retained. */
 dialog {

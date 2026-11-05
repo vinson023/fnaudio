@@ -1091,6 +1091,37 @@ for (const width of [320,375,414,768,1280,1440]) {
     if (!mobile) {
       await page.locator('#volumeBtn').click();
       await insideViewport(page,'#volume');
+      // R488: the popover rail is a rebuilt range, not the UA vertical slider.
+      // getComputedStyle cannot see the -webkit- pseudo-elements (Chromium hands
+      // back the host element's own style), so this asserts what is observable:
+      // the rebuild, the geometry it must not move, and the fill the JS pushes
+      // into CSS for the gradient.
+      const rail = await page.evaluate(() => {
+        const slider = document.querySelector('#volume');
+        const panel = document.querySelector('#volumePanel');
+        slider.value = '0.62';
+        slider.dispatchEvent(new Event('input', {bubbles: true}));
+        const cs = getComputedStyle(slider);
+        const s = slider.getBoundingClientRect();
+        const p = panel.getBoundingClientRect();
+        const state = {
+          appearance: cs.appearance,
+          writingMode: cs.writingMode,
+          fill: slider.style.getPropertyValue('--volume-fill'),
+          rail: getComputedStyle(panel).getPropertyValue('--volume-rail').trim(),
+          slider: [Math.round(s.width), Math.round(s.height)],
+          panel: [Math.round(p.width), Math.round(p.height)],
+        };
+        slider.value = '1';
+        slider.dispatchEvent(new Event('input', {bubbles: true}));
+        return state;
+      });
+      expect(rail.appearance, 'the UA vertical slider paints its own track').toBe('none');
+      expect(rail.writingMode).toBe('vertical-rl');
+      expect(rail.slider, 'the rebuild changes what is painted, not where').toEqual([24, 112]);
+      expect(rail.panel).toEqual([48, 144]);
+      expect(rail.fill).toBe('62%');
+      expect(rail.rail).toContain('color-mix');
       await page.locator('#volumeBtn').click();
     }
     if(mobile) {

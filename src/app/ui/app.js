@@ -10430,10 +10430,20 @@ $("repeatBtn").onclick = toggleRepeat;
 $("shuffleBtn").onclick = toggleShuffle;
 $("mobileRepeatBtn").onclick = toggleRepeat;
 $("mobileShuffleBtn").onclick = toggleShuffle;
+function updateVolumeRail(value = Number($("volume")?.value || 0)) {
+  // The rail's fill is a gradient stop, so the value has to reach CSS as a
+  // custom property.  It is written on the input rather than on the panel: the
+  // track is a pseudo-element of the input and inherits from it, and nothing
+  // else reads the number.  Clamped because the caller can be a restored value
+  // rather than the slider itself (R488).
+  const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);
+  setStyleVarIfChanged($("volume"), "--volume-fill", `${percent}%`);
+}
 $("volume").oninput = e => {
   const value = Number(e.target.value);
   audio.volume = value;
   if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+  updateVolumeRail(value);
 };
 $("volumeBtn").onclick = event => {
   event.stopPropagation();
@@ -10446,6 +10456,10 @@ document.addEventListener("click", () => {
 });
 audio.volume = 1;
 if ($("volume")) $("volume").value = "1";
+// The rail is a gradient, so it starts empty unless the boot value is pushed
+// into CSS once.  Without this the popover opens with a grey rail and a handle
+// parked at the top (R488).
+updateVolumeRail();
 audio.onplay = () => { setPlayButton(true); updateMediaSessionPlaybackState(); syncState(); };
 audio.onpause = () => { setPlayButton(false); updateMediaSessionPlaybackState(); syncState(); };
 audio.onerror = () => {
