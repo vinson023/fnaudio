@@ -488,11 +488,6 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
 .lyrics-lines, .lyrics-lines p, .lyrics-lines button { color: var(--ui-muted) !important; }
 .lyrics-lines .active { color: var(--ui-accent) !important; }
 .lyrics-lines p.active { color: var(--ui-accent) !important; }
-.lyrics-close, .lyrics-favorite { background: var(--ui-surface) !important; border-color: var(--ui-border) !important; color: var(--ui-text) !important; border-radius: var(--ui-radius-sm) !important; box-shadow: none !important; }
-.lyrics-close svg, .lyrics-favorite svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
-.lyrics-favorite { gap: var(--ui-space-1); }
-.lyrics-favorite.active-control svg { fill: currentColor; }
-.lyrics-favorite-label { line-height: 1; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (hover: hover) {

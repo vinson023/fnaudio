@@ -19,7 +19,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 @keyframes marquee{0%,18%{transform:translateX(0)}82%,100%{transform:translateX(calc(-100% + min(100%, 280px)))}}
 .progress span{flex:0 0 auto}.volume{border:0;background:transparent;color:var(--ui-muted);display:flex;align-items:center;gap:7px;flex:0 0 auto}.volume input{width:80px;}
 .dialog-head{display:flex;align-items:center;justify-content:space-between}.path-entry{display:grid;grid-template-columns:1fr;gap:8px;margin:12px 0 8px}.path-entry input{min-width:0;border:1px solid var(--line);border-radius:6px;padding:9px 10px}.device-row:disabled{opacity:.5;cursor:not-allowed}.device-row-text{min-width:0;flex:1}.device-row-text strong,.device-row-text small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.device-row-radio{flex:0 0 24px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;background:transparent;}.device-current-tag,.device-row-choice,.device-row-actions,.device-test-button{display:none}.secondary-button{border:1px solid var(--line);padding:9px 12px;}.secondary-button:disabled{opacity:.55;cursor:wait}.device-test-button{padding:6px 10px;white-space:nowrap}
- .lyrics-view{position:fixed;inset:0;}.lyrics-bg{position:absolute;inset:-30px;background:center/cover no-repeat;filter:blur(28px);opacity:.08;transform:scale(1.08)}.lyrics-close{border-radius:var(--ui-radius-sm);}.lyrics-cover img{width:100%;height:100%;object-fit:cover}.lyrics-lines{overflow:auto;scrollbar-width:none}.lyrics-lines::-webkit-scrollbar{display:none}@media(min-width:761px){
+ .lyrics-view{position:fixed;inset:0;}.lyrics-bg{position:absolute;inset:-30px;background:center/cover no-repeat;filter:blur(28px);opacity:.08;transform:scale(1.08)}.lyrics-cover img{width:100%;height:100%;object-fit:cover}.lyrics-lines{overflow:auto;scrollbar-width:none}.lyrics-lines::-webkit-scrollbar{display:none}@media(min-width:761px){
   .topbar{height:84px!important;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px!important;padding:0 22px!important;align-items:center}
   .topbar-library{display:block!important;min-width:0!important}
   .topbar-library-main{display:flex;align-items:center;justify-content:space-between;gap:24px!important;min-width:0}
@@ -79,7 +79,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 .brand-mark{background:var(--ui-selected);color:var(--accent)}.hero{border-bottom-color:var(--line)}.eyebrow{color:var(--accent)}.hero p,.track-artist,.track-album,.group-info span,.folder-toolbar,.empty,.limit-row{color:var(--muted)}
 .search,.secondary-button,.path-entry input{background:var(--ui-surface);border-color:var(--ui-border);color:var(--text);box-shadow:none}.search input{background:transparent;border:0;outline:0;width:100%;padding:10px 0;color:var(--text)}
 .track,.group-row,.folder-toolbar,.limit-row{border-top-color:var(--ui-line)}.track-cover,.group-icon,.cover,.lyrics-cover{background:var(--ui-selected);color:var(--accent)}.format-badge.dsd{border-color:var(--ui-warning);color:var(--ui-warning);background:var(--ui-warning-bg)}.icon-button{border:0;background:transparent;font-size:20px;padding:8px;line-height:1;color:var(--ui-secondary)}.icon-button:hover,.active-control{color:var(--accent)!important}.progress input,.volume input{accent-color:var(--accent)}
-.push-button{border:1px solid var(--accent);padding:6px 9px;border-radius:5px;white-space:nowrap;border-color:var(--ui-accent);background:var(--ui-selected);color:var(--ui-accent-hover)}.lyrics-close{width:auto;}
+.push-button{border:1px solid var(--accent);padding:6px 9px;border-radius:5px;white-space:nowrap;border-color:var(--ui-accent);background:var(--ui-selected);color:var(--ui-accent-hover)}
 @keyframes device-target-pulse{50%{transform:scale(.82);opacity:.58}}
 .device-row.is-switching .device-row-radio{animation:device-target-pulse .75s ease-in-out infinite}
 @media(max-width:760px){
@@ -147,9 +147,6 @@ button,input,select{font:inherit}button{cursor:pointer}
 .favorite-current svg{fill:none}.favorite-current.active-control svg{fill:currentColor}
 .player-actions #favoriteCurrentBtn{box-sizing:border-box;flex:0 0 40px;padding:0!important;margin:0;border:0!important;background:transparent!important;color:var(--ui-secondary)!important;display:inline-grid!important;place-items:center!important;line-height:1}.player-actions #favoriteCurrentBtn svg{width:21px!important;height:21px!important;display:block;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .player-actions #favoriteCurrentBtn:hover,.player-actions #favoriteCurrentBtn.active-control{background:var(--ui-hover)!important;color:var(--ui-danger)!important}
-@media(max-width:760px){
-  .lyrics-favorite{left:auto!important;}
-}
 @media(max-width:390px){.player-button{width:38px!important;height:38px!important}
 }.format-badge strong{letter-spacing:.7px;font-size:inherit}
 
@@ -279,20 +276,12 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .lyrics-meta strong{display:block!important;line-height:1.2!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
   .lyrics-meta span{margin-top:3px!important}
   .lyrics-lines{width:100%!important;height:auto!important;align-self:stretch!important;overflow:auto;}
-  .lyrics-close{right:auto!important;}
 }
 @media(max-width:390px){
   .lyrics-view{bottom:136px!important}
   .lyrics-meta strong{font-size:18px!important}
 }
 .lyrics-shade{position:absolute;inset:0;background:var(--ui-canvas)!important;opacity:.88!important}
-.lyrics-close,.lyrics-favorite{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  line-height:1;
-}
-.lyrics-favorite{right:24px!important;left:auto!important}
 
 /* Large-library rendering hint: browsers that support content-visibility can
    skip layout/paint for rows below the fold. Older WebViews ignore these
@@ -305,8 +294,6 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .lyrics-lines{height:auto!important;align-self:stretch!important;overflow:auto;padding-right:20px!important}
 }
 @media(max-width:760px){
-  .lyrics-close,.lyrics-favorite{top:calc(env(safe-area-inset-top,0px) + 12px)!important;}
-  .lyrics-favorite{right:12px!important}
   .lyrics-panel{padding-top:62px!important}
 }
 @media(max-width:390px){
@@ -650,7 +637,8 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   position:relative;
   z-index:4;
   display:grid;
-  grid-template-columns:120px minmax(0,1fr) 120px;
+  /* One column: the header carries the track title and nothing else (R489). */
+  grid-template-columns:minmax(0,1fr);
   align-items:center;
   min-height:64px;
   padding:0 28px;
@@ -660,32 +648,12 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   width:100%;
   max-width:100%;
 }
-.lyrics-header-meta{position:absolute;top:50%;left:50%;width:min(420px,calc(100% - 260px))!important;min-width:0;text-align:center;line-height:1.25;transform:translate(-50%,-50%)}
+/* No buttons share this row any more, so the title no longer has to keep 260px
+ * of clearance for them; it only needs to stay off the header edges. */
+.lyrics-header-meta{position:absolute;top:50%;left:50%;width:min(720px,calc(100% - 96px))!important;min-width:0;text-align:center;line-height:1.25;transform:translate(-50%,-50%)}
 .lyrics-header-meta strong,.lyrics-header-meta span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .lyrics-header-meta strong{color:var(--ui-text)!important;font-size:15px;font-weight:700}
  .lyrics-header-meta span{margin-top:2px;color:var(--ui-muted)!important;font-size:12px}
-.lyrics-close,.lyrics-favorite,.lyrics-queue{
-  position:absolute;
-  top:50%;
-  transform:translateY(-50%);
-  justify-self:auto;
-  z-index:auto;
-  min-width:72px;
-  height:34px;
-  padding:0 12px;
-   border:1px solid var(--ui-border);
-  border-radius:6px!important;
-   background:var(--ui-surface)!important;
-   color:var(--ui-secondary)!important;
-  box-shadow:none!important;
-  font-size:13px;
-}
-.lyrics-close{left:28px;right:auto!important}
-.lyrics-header-actions{position:absolute;top:50%;right:28px;z-index:5;display:flex;align-items:center;gap:8px;transform:translateY(-50%)}
-.lyrics-header-actions .lyrics-favorite,.lyrics-header-actions .lyrics-queue{position:static!important;top:auto!important;right:auto!important;left:auto!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;transform:none!important;visibility:visible}
-.lyrics-queue{gap:5px!important;min-width:68px!important}
-.lyrics-queue svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
- .lyrics-favorite.active-control{background:var(--ui-danger-bg)!important;color:var(--ui-danger)!important;border-color:var(--ui-danger)!important}
 .lyrics-panel{
   position:relative;
   z-index:42;
@@ -705,7 +673,23 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
  .lyrics-meta strong{display:block!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:var(--ui-text)!important;font-size:18px;line-height:1.3!important}
  .lyrics-meta span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px!important;color:var(--ui-muted)!important;font-size:13px;line-height:1.35}
  .lyrics-meta .lyrics-meta-album{color:var(--ui-muted)!important;font-size:12px!important}
- .lyrics-lines{grid-column:2!important;grid-row:1 / span 2!important;width:100%!important;height:auto!important;min-height:0;align-self:stretch!important;margin:0;padding:36px 28px 42px 12px!important;overflow-y:auto!important;overscroll-behavior:contain;color:var(--ui-muted)!important;font-size:22px;line-height:2;text-align:left!important;scroll-behavior:smooth}
+/* A single's album is usually its own title, which printed the same string
+ * twice under the artwork.  The attribute has to be honoured explicitly: the
+ * span above is `display:block!important`, so `[hidden]` alone would lose. */
+ .lyrics-meta .lyrics-meta-album[hidden]{display:none!important}
+/* No top padding: the first line shares the artwork's top edge.  The 36px that
+ * used to sit here pushed the whole lyric column down against a column that
+ * starts at the panel edge, so the two never lined up (R489). */
+ .lyrics-lines{grid-column:2!important;grid-row:1 / span 2!important;width:100%!important;height:auto!important;min-height:0;align-self:stretch!important;margin:0;padding:0 28px 42px 12px!important;overflow-y:auto!important;overscroll-behavior:contain;color:var(--ui-muted)!important;font-size:22px;line-height:2;text-align:left!important;scroll-behavior:smooth}
+/* The scrollbar is hidden on purpose, which left the last visible line sliced in
+ * half with nothing to say the rest had scrolled off.  A soft bottom edge does
+ * what the scrollbar was doing.  It is bottom-only, so the first line stays
+ * fully opaque at rest, and the 42px bottom padding keeps the last line clear of
+ * the 28px fade once the reader reaches the end. */
+ .lyrics-lines{
+  -webkit-mask-image:linear-gradient(to bottom,#000 0,#000 calc(100% - 28px),transparent 100%);
+  mask-image:linear-gradient(to bottom,#000 0,#000 calc(100% - 28px),transparent 100%);
+}
 .lyrics-lines p{transition:.2s;margin:0 0 10px!important;color:inherit!important;overflow-wrap:anywhere}
  .lyrics-lines p.active{font-weight:700;color:var(--ui-text)!important;font-size:28px!important;line-height:1.58!important}
 /* Placeholder ("请选择一首歌曲" / "没有找到歌词") is a single line of text: left
@@ -715,10 +699,6 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 .lyrics-bg,.lyrics-shade{display:none}
 
 @media(max-width:760px){
-    .lyrics-close,.lyrics-favorite,.lyrics-queue{min-width:58px!important;height:31px!important;padding:0 8px!important;border-radius:5px!important;font-size:12px!important}
-  .lyrics-close{top:12px!important;left:10px!important}
-    .lyrics-header-actions .lyrics-queue{width:31px!important;min-width:31px!important;padding:0!important}
-  .lyrics-header-actions .lyrics-queue span{display:none!important}
   .lyrics-panel{grid-template-columns:1fr!important;grid-template-rows:auto auto minmax(0,1fr)!important;align-items:start!important}
   .lyrics-cover{grid-column:1!important;grid-row:1!important;width:min(42vw,176px)!important;height:min(42vw,176px)!important}
   .lyrics-meta{grid-column:1!important;grid-row:2!important}
@@ -1070,18 +1050,15 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   }
   .lyrics-header{
     display:grid!important;
-    grid-template-columns:52px minmax(0,1fr) 52px!important;
+    grid-template-columns:minmax(0,1fr)!important;
     height:48px;
     min-height:48px!important;
     padding:0 8px!important;
   }
   .lyrics-header-meta{
-    top:10px!important;
-    right:132px;
-    left:78px!important;
     z-index:82;
     position:static!important;
-    grid-column:2;
+    grid-column:1;
     width:100%!important;
     min-width:0!important;
     transform:none!important;
@@ -1090,36 +1067,6 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   }
   .lyrics-header-meta strong{font-size:13px!important}
   .lyrics-header-meta span{margin-top:1px!important;font-size:10px!important}
-  .lyrics-close{
-    position:static!important;
-    grid-column:1;
-    justify-self:start!important;
-    width:50px!important;
-    min-width:50px!important;
-    height:30px!important;
-    padding:0 6px!important;
-    font-size:11px!important;
-    transform:none!important;
-  }
-  .lyrics-header-actions{
-    top:12px!important;
-    right:10px!important;
-    gap:5px!important;
-    z-index:83!important;
-    position:static!important;
-    grid-column:3;
-    justify-self:end;
-    transform:none!important;
-  }
-  .lyrics-header-actions .lyrics-favorite{
-    position:static!important;
-    width:50px;
-    min-width:50px!important;
-    height:30px!important;
-    padding:0 6px!important;
-    font-size:11px!important;
-    transform:none!important;
-  }
   .lyrics-panel{gap:6px!important;padding:8px 14px 10px!important}
 }
 
@@ -1204,7 +1151,6 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 /* Settings uses the selected control-panel glyph instead of the legacy decorative gear. */
 /* Hover must not imitate a persisted favorite/shuffle state. */
 .player-actions #favoriteCurrentBtn:not(.active-control):hover,
-.lyrics-favorite:not(.active-control):hover,
 .player-actions #shuffleBtn:not(.active-control):hover,
 .transport #mobileShuffleBtn:not(.active-control):hover{
   background:var(--ui-hover)!important;
@@ -1213,7 +1159,6 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 }
 @media (hover:none){
   .player-actions #favoriteCurrentBtn:not(.active-control):hover,
-  .lyrics-favorite:not(.active-control):hover,
   .player-actions #shuffleBtn:not(.active-control):hover,
   .transport #mobileShuffleBtn:not(.active-control):hover{
     background:transparent!important;

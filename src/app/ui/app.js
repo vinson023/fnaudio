@@ -2054,20 +2054,15 @@ function isPlayingNow() {
 function updateFavoriteControls() {
   const item = currentItem();
   const active = Boolean(item && isFavorite(item.id));
-  ["favoriteCurrentBtn", "lyricsFavoriteBtn"].forEach(id => {
-    const node = $(id);
-    if (!node) return;
-    node.classList.toggle("active-control", active);
-    node.setAttribute("aria-pressed", String(active));
-    const label = active ? "取消收藏当前歌曲" : "收藏当前歌曲";
-    node.title = label;
-    node.setAttribute("aria-label", label);
-    if (id === "lyricsFavoriteBtn") {
-      node.dataset.favoriteLabel = active ? "已收藏" : "收藏";
-      const visibleLabel = node.querySelector(".lyrics-favorite-label");
-      if (visibleLabel) visibleLabel.textContent = active ? "已收藏" : "收藏";
-    }
-  });
+  // Only the player bar carries a favorite action now: the lyrics page is a
+  // read-only surface with no header buttons (R489).
+  const node = $("favoriteCurrentBtn");
+  if (!node) return;
+  node.classList.toggle("active-control", active);
+  node.setAttribute("aria-pressed", String(active));
+  const label = active ? "取消收藏当前歌曲" : "收藏当前歌曲";
+  node.title = label;
+  node.setAttribute("aria-label", label);
 }
 function refreshFavoritePresentation() {
   const count = $("favoriteCount");
@@ -5132,6 +5127,10 @@ function updateLyricsMeta(item = currentItem()) {
   $("lyricsMetaArtist").title = detailArtist;
   $("lyricsMetaAlbum").textContent = album;
   $("lyricsMetaAlbum").title = album;
+  // A single's album is usually the title itself, so the block under the
+  // artwork printed "Heat Waves" twice.  The line only earns its place when it
+  // says something the title did not (R489).
+  $("lyricsMetaAlbum").hidden = album === title;
   $("lyricsHeaderTitle").textContent = title;
   $("lyricsHeaderArtist").textContent = artist;
   if (!item) {
@@ -10328,7 +10327,6 @@ $("nowPlayingSummary").onkeydown = event => {
   event.preventDefault();
   toggleLyrics();
 };
-$("lyricsClose").onclick = closeLyrics;
 $("queueBtn").onclick = openCurrentQueue;
 $("closeDialog").onclick = () => $("deviceDialog").close();
 $("deviceDialog").addEventListener("close", () => {
@@ -10360,7 +10358,6 @@ $("createExternalShare").onclick = createExternalShareLink;
 $("copyExternalShare").onclick = copyExternalShareLink;
 $("openExternalShareDetails").onclick = openExternalShareDetails;
 $("favoriteCurrentBtn").onclick = toggleCurrentFavorite;
-$("lyricsFavoriteBtn").onclick = toggleCurrentFavorite;
 $("savePlaylistBtn").onclick = savePlaylistFromDialog;
 $("playlistNameInput").onkeydown = event => { if (event.key === "Enter") savePlaylistFromDialog(); };
 $("saveLibrarySettingsBtn").onclick = saveLibrarySettings;

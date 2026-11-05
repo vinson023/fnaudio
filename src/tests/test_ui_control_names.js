@@ -93,7 +93,7 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 103, "index.html declares 103 visible form controls, including the shared save bar and the R461 directory browser");
+assert.equal(controls.length, 101, "index.html declares 101 visible form controls, including the shared save bar and the R461 directory browser; R489 removed the lyrics back and favourite buttons");
 assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
 assert.equal(controls.find(control => control.attr.id === "settingsSaveBtn")?.name, "保存更改");
 assert.equal(controls.find(control => control.attr.id === "settingsDiscardBtn")?.name, "放弃");

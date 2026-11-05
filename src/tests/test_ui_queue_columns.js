@@ -132,13 +132,11 @@ assert.equal(coreSnapshotContext.favoriteRefreshes, 1);
 
 const favoriteContext = {
   state: { queue: [{ id: 42 }], index: 0, favorites: ["42"] },
-  lyricsFavoriteLabel: { textContent: "" },
   nodes: {
+    // The player bar is the only surface with a favourite action (R489).
     favoriteCurrentBtn: { dataset: {}, classList: { toggle: (_name, value) => { favoriteContext.currentActive = value; } }, setAttribute: (name, value) => { favoriteContext.currentAttributes[name] = value; } },
-    lyricsFavoriteBtn: { dataset: {}, classList: { toggle: (_name, value) => { favoriteContext.lyricsActive = value; } }, setAttribute: (name, value) => { favoriteContext.lyricsAttributes[name] = value; }, querySelector: () => favoriteContext.lyricsFavoriteLabel },
   },
   currentAttributes: {},
-  lyricsAttributes: {},
   $: id => favoriteContext.nodes[id],
 };
 vm.runInNewContext(`${sourceBetween("function currentItem", "function isPrivateHost")}${sourceBetween("function updateFavoriteControls", "function updateNowMarquee")}; this.favorites = { isFavorite, updateFavoriteControls };`, favoriteContext);
@@ -146,17 +144,11 @@ favoriteContext.favorites.updateFavoriteControls();
 assert.equal(favoriteContext.currentActive, true, "Favorite IDs must match across numeric and string transport forms");
 assert.equal(favoriteContext.currentAttributes["aria-pressed"], "true", "Favorite state must be exposed independently from hover styling");
 assert.equal(favoriteContext.currentAttributes["aria-label"], "取消收藏当前歌曲", "The player favorite action must describe its active-state action");
-assert.equal(favoriteContext.nodes.lyricsFavoriteBtn.dataset.favoriteLabel, "已收藏");
-assert.equal(favoriteContext.lyricsAttributes["aria-label"], "取消收藏当前歌曲", "The lyrics favorite action must describe its active-state action");
-assert.equal(favoriteContext.lyricsFavoriteLabel.textContent, "已收藏", "The visible lyrics action label must follow favorite state");
 favoriteContext.state.favorites = [];
 favoriteContext.favorites.updateFavoriteControls();
 assert.equal(favoriteContext.currentActive, false, "Favorite control must clear when server state removes the current track");
 assert.equal(favoriteContext.currentAttributes["aria-pressed"], "false");
 assert.equal(favoriteContext.currentAttributes["aria-label"], "收藏当前歌曲");
-assert.equal(favoriteContext.nodes.lyricsFavoriteBtn.dataset.favoriteLabel, "收藏");
-assert.equal(favoriteContext.lyricsAttributes["aria-label"], "收藏当前歌曲");
-assert.equal(favoriteContext.lyricsFavoriteLabel.textContent, "收藏");
 assert.match(source, /const active = state\.shuffle === true;[\s\S]*?const pressed = String\(active\);[\s\S]*?setAttribute\("aria-pressed", pressed\)/, "Shuffle must render only an explicit boolean true as active");
 
 assert.match(source, /openTrackContextMenu\(trackId, x, y, mobile = false\)/);

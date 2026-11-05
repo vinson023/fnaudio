@@ -70,9 +70,10 @@ assert.match(css, /\.library-scroll \.track-list\{\s*flex:1 1 auto!important;[\s
 // `display:block` on the sizing rule would be overridden anyway.
 assert.match(css, /\.pager\{\s*flex:0 0 52px!important;\s*min-height:52px!important;/, "the mobile pager must reserve a 52px strip");
 assert.match(css, /\.lyrics-view\{[\s\S]*?grid-template-rows:48px minmax\(0,1fr\)!important;/);
-assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:52px minmax\(0,1fr\) 52px!important;[\s\S]*?min-height:48px!important;[\s\S]*?padding:0 8px!important;/);
-assert.match(css, /\.lyrics-close\{\s*position:static!important;/);
-assert.match(css, /\.lyrics-header-actions \.lyrics-favorite\{\s*position:static!important;/);
+assert.match(css, /\.lyrics-header\{\s*display:grid!important;\s*grid-template-columns:minmax\(0,1fr\)!important;[\s\S]*?min-height:48px!important;[\s\S]*?padding:0 8px!important;/,
+  "the compact lyrics header is a single centred column: no side buttons to reserve space for");
+assert.doesNotMatch(css, /\.lyrics-close/, "the compact lyrics header no longer carries a back button");
+assert.doesNotMatch(css, /\.lyrics-header-actions/, "the compact lyrics header no longer carries an action group");
 assert.match(css, /\.lyrics-panel\{gap:6px!important;padding:8px 14px 10px!important\}/);
 assert.doesNotMatch(css, /grid-template-rows:calc\(56px \+ env\(safe-area-inset-top,0px\)\)/);
 assert.match(css, /\.sidebar\{[\s\S]*?width:min\(76vw,268px\)!important;[\s\S]*?padding:8px 10px 14px!important;/);

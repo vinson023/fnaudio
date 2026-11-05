@@ -81,11 +81,17 @@ assert.match(theme, /\.record-placeholder\s*\{[^}]*stroke-width:\s*1\.5/);
 assert.match(theme, /\.record-placeholder-center\s*\{[^}]*fill:\s*currentColor/);
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /function recordPlaceholderMarkup\(\)[\s\S]*?class="record-placeholder"/);
 assert.match(theme, /\.device-row-radio svg\s*\{[^}]*stroke-width:\s*2/);
-assert.match(theme, /\.lyrics-close svg, \.lyrics-favorite svg\s*\{/);
+// The lyrics page is read-only: no back button and no favourite button in its
+// header, so neither the theme nor the markup may carry rules for them (R489).
+assert.doesNotMatch(theme, /\.lyrics-close|\.lyrics-favorite/, "the lyrics header has no buttons to style");
+assert.doesNotMatch(theme, /\.lyrics-header-actions/, "the lyrics header has no action group to lay out");
 assert.match(theme, /\.lyrics-cover:not\(:has\(img\)\)\s*\{[^}]*display:\s*grid/);
 assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /class="lyrics-cover"[\s\S]*class="record-placeholder"/);
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /node\.classList\.toggle\("has-artwork", Boolean\(next\)\)/);
-assert.match(fs.readFileSync("app/ui/index.html", "utf8"), /id="lyricsFavoriteBtn"[^>]*aria-label="收藏当前歌曲"/);
+assert.doesNotMatch(fs.readFileSync("app/ui/index.html", "utf8"), /id="lyricsFavoriteBtn"/,
+  "favouriting belongs to the player bar, not to the lyrics page");
+assert.doesNotMatch(fs.readFileSync("app/ui/index.html", "utf8"), /id="lyricsClose"/,
+  "the lyrics page is closed from the player bar or Escape, not from a header button");
 assert.match(fs.readFileSync("app/ui/app.js", "utf8"), /id="settingsModeBtn"[^>]*aria-pressed="false">MP3 转码：关<\//,
   "the playback-output MP3 control must retain the original state text");
 assert.doesNotMatch(fs.readFileSync("app/ui/app.css", "utf8"), /#modeBtn\b/,

@@ -972,7 +972,7 @@ test('FNOS: lyrics control renders the 词 glyph in its icon slot', async ({page
 });
 
 for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {
-  test(`FNOS ${width}: lyrics page keeps artwork, metadata and controls in view`, async ({page}, info) => {
+  test(`FNOS ${width}: lyrics page keeps artwork, metadata and lines in view`, async ({page}, info) => {
     await load(page, width, height);
     await page.route('**/api/lyrics**', route => route.fulfill({json: {
       lyrics: '[00:00.00]E2E lyric one\n[00:04.00]E2E lyric two\n[00:08.00]E2E lyric three\n[00:12.00]E2E lyric four\n[00:16.00]E2E lyric five\n[00:20.00]E2E lyric six',
@@ -987,9 +987,14 @@ for (const [width, height] of [[1440, 900], [768, 900], [375, 812]]) {
     await expect(page.locator('#lyricsView')).toBeVisible();
     await expect(page.locator('#lyricsHeaderTitle')).toHaveText('晨光');
     await expect(page.locator('#lyricsLines')).toContainText('E2E lyric six');
-    for (const selector of ['#lyricsClose', '#lyricsFavoriteBtn', '#lyricsCover', '#lyricsLines']) {
+    for (const selector of ['#lyricsCover', '#lyricsLines']) {
       await insideViewport(page, selector);
     }
+    // The header is the title and nothing else now: closing lives in the player
+    // bar (词 toggles) and on Escape, favouriting on the player bar too (R489).
+    await expect(page.locator('#lyricsClose')).toHaveCount(0);
+    await expect(page.locator('#lyricsFavoriteBtn')).toHaveCount(0);
+    await expect(page.locator('.lyrics-header-actions')).toHaveCount(0);
     await expect(page.locator('#lyricsCover .record-placeholder')).toBeVisible();
     await screenshot(page, info, `lyrics-${width}`);
   });
@@ -1171,8 +1176,14 @@ for (const width of [320,375,414,768,1280,1440]) {
     if (!mobile) {
       await page.locator('#lyricsBtn').click();
       await expect(page.locator('#lyricsView')).toBeVisible();
-      await insideViewport(page,'#lyricsClose');
-      await page.locator('#lyricsClose').click();
+      // The header has no back button any more, so the two remaining exits have
+      // to work: Escape, and the 词 toggle in the player bar (R489).
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#lyricsView')).toBeHidden();
+      await page.locator('#lyricsBtn').click();
+      await expect(page.locator('#lyricsView')).toBeVisible();
+      await page.locator('#lyricsBtn').click();
+      await expect(page.locator('#lyricsView')).toBeHidden();
     }
     expect(errors).toEqual([]);
   });
@@ -1515,7 +1526,8 @@ test('FNOS dark palette applies across library, player and settings without whit
   await page.locator('#lyricsBtn').click();
   await page.evaluate(()=>document.getElementById('lyricsLines').innerHTML='<p class="active">当前歌词可读性</p>');
   expect(await page.locator('.lyrics-lines p.active').evaluate(el=>getComputedStyle(el).color)).toBe('rgb(0, 102, 255)');
-  await page.locator('#lyricsClose').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#lyricsView')).toBeHidden();
   await page.evaluate(()=>document.documentElement.dataset.theme='light');
   expect(await page.locator('.content').evaluate(el=>getComputedStyle(el).backgroundColor)).toBe('rgb(255, 255, 255)');
 });
