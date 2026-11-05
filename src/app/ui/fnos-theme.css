@@ -1228,25 +1228,29 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
    * row is the right end of that: 76px left only 8px around a 60px cover. */
   .player {
     height: var(--ui-player-height) !important;
-    grid-template-columns: max-content minmax(0, 1fr) max-content !important;
+    /* Track information owns the left edge and the transport owns the middle,
+     * so the two outer columns are equal shares of what is left over.  That is
+     * what puts the play cluster on the bar's centre line instead of wherever
+     * the title happens to end (R485). */
+    grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr) !important;
     grid-template-rows: 1fr !important;
     align-items: center !important;
     column-gap: 16px !important;
     padding: 0 20px !important;
   }
-  .player .transport {
-    grid-column: 1 !important;
-    grid-row: 1 !important;
-    width: max-content;
-    min-width: 0 !important;
-    justify-content: flex-start !important;
-    align-self: center;
-  }
   .player .now-playing {
-    grid-column: 2 !important;
+    grid-column: 1 !important;
     grid-row: 1 !important;
     align-self: center;
     min-width: 0;
+  }
+  .player .transport {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    width: max-content;
+    min-width: 0 !important;
+    justify-content: center !important;
+    align-self: center;
   }
   .player .player-actions {
     grid-column: 3 !important;

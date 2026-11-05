@@ -282,11 +282,49 @@ test('Desktop player uses a full-width progress rail and puts time under track d
   await expect(page.locator('#transportStateUnknown')).toBeHidden();
   expect(layout.seek.left).toBeGreaterThanOrEqual(layout.progress.left);
   expect(layout.seek.right).toBeLessThanOrEqual(layout.progress.right);
-  expect(layout.transport.left).toBeLessThan(layout.track.left);
+  // R485: the track information owns the left edge, the transport owns the
+  // middle of the bar, and the action row keeps the right edge.
+  expect(layout.track.left).toBeLessThan(layout.transport.left);
+  expect(layout.transport.right).toBeLessThanOrEqual(layout.actions.left);
+  expect(layout.player.right - layout.actions.right).toBeLessThanOrEqual(24);
+  expect(Math.abs((layout.transport.left + layout.transport.right) / 2 - (layout.player.left + layout.player.right) / 2)).toBeLessThanOrEqual(1);
   for (const child of [layout.transport, layout.track, layout.actions]) {
     expect(Math.abs((child.top + child.bottom) / 2 - (layout.player.top + layout.player.bottom) / 2)).toBeLessThanOrEqual(1);
   }
-  await page.screenshot({path:info.outputPath('desktop-player-left-controls.png')});
+  await page.screenshot({path:info.outputPath('desktop-player-centered-controls.png')});
+});
+
+test('Desktop player keeps the transport on the centre line when the window narrows', async ({page}, info) => {
+  // The outer columns are equal shares of the leftover width, so the transport
+  // is centred by construction.  A narrow window is where a long title or a wide
+  // action row could quietly push it off that line again.
+  await load(page, 800, 900);
+  const layout = await page.evaluate(() => {
+    document.querySelector('.now-meta strong').textContent =
+      '这是一个非常长的歌曲标题用来确认截断而不是把中间的控制区推走';
+    const box = selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return {left: rect.left, right: rect.right, width: rect.width};
+    };
+    const player = box('.player');
+    const title = document.querySelector('.now-meta strong');
+    return {
+      player,
+      transport: box('.player .transport'),
+      track: box('.player .now-playing'),
+      actions: box('.player .player-actions'),
+      overflow: getComputedStyle(title).textOverflow,
+      actionsOverflow: document.querySelector('.player-actions').scrollWidth
+        - document.querySelector('.player-actions').clientWidth,
+    };
+  });
+  expect(Math.abs((layout.transport.left + layout.transport.right) / 2 - (layout.player.left + layout.player.right) / 2)).toBeLessThanOrEqual(1);
+  expect(layout.track.right).toBeLessThanOrEqual(layout.transport.left);
+  expect(layout.transport.right).toBeLessThanOrEqual(layout.actions.left);
+  expect(layout.overflow).toBe('ellipsis');
+  // One pixel of slack: at 761px the action row is exactly as wide as its column.
+  expect(layout.actionsOverflow).toBeLessThanOrEqual(1);
+  await page.screenshot({path:info.outputPath('desktop-player-centered-narrow.png')});
 });
 
 test('Mobile player keeps previous, play and next controls centered', async ({page}, info) => {
