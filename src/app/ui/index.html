@@ -9,6 +9,56 @@
   <link rel="stylesheet" href="app.css?v=__FNAUDIO_ASSET_BUILD__">
   <link rel="stylesheet" href="design-tokens.css?v=__FNAUDIO_ASSET_BUILD__">
   <link rel="stylesheet" href="fnos-theme.css?v=__FNAUDIO_ASSET_BUILD__">
+  <script id="stylesheet-retry">
+  /* A dropped stylesheet request is permanent for that page load: the browser
+   * never re-requests it, and nothing repaints the rules that were lost.  Losing
+   * all three is obvious, but losing only fnos-theme.css is the nasty case --
+   * the page still looks plausible because app.css and design-tokens.css carry
+   * the layout and the palette, so the only symptoms are the transport glyphs
+   * falling back to the SVG black default and the phone seek rail reverting to
+   * the native control.  That is why the same build looked correct on one launch
+   * and broken on the next, and it cannot be reproduced on demand.
+   * Re-request any sheet that produced no style sheet object, exactly once, with
+   * a fresh query so a cached failure cannot answer it.  The Android client
+   * inlines all three sheets as <style> elements, so there are no <link> nodes
+   * there and this script does nothing. */
+  (function () {
+    var names = ['app.css', 'design-tokens.css', 'fnos-theme.css'];
+    /* `link.sheet` is not a failure signal: Chromium hands one out as soon as the
+     * element is inserted, so it is non-null even for a request that was aborted.
+     * A sheet that never arrived stays unparsed, and an unparsed sheet refuses
+     * cssRules access exactly like a cross-origin one does -- so a throw, or an
+     * empty rule list, both mean nothing from that sheet was applied. */
+    function applied(link) {
+      if (!link.sheet) return false;
+      try {
+        return link.sheet.cssRules.length > 0;
+      } catch (error) {
+        return false;
+      }
+    }
+    function refetch() {
+      var links = document.querySelectorAll('link[rel="stylesheet"]');
+      for (var i = 0; i < links.length; i += 1) {
+        var link = links[i];
+        if (link.getAttribute('data-fnaudio-retried') || applied(link)) continue;
+        var href = link.getAttribute('href') || '';
+        var path = href.split('?')[0];
+        var base = path.substring(path.lastIndexOf('/') + 1);
+        if (names.indexOf(base) === -1) continue;
+        var fresh = link.cloneNode(false);
+        /* Keep the original path: rebuilding the URL from the bare file name
+         * would drop any directory prefix and turn the retry into a 404. */
+        fresh.setAttribute('href', path + '?retry=' + Date.now());
+        fresh.setAttribute('data-fnaudio-retried', '1');
+        link.parentNode.insertBefore(fresh, link);
+        link.parentNode.removeChild(link);
+      }
+    }
+    if (document.readyState === 'complete') refetch();
+    else window.addEventListener('load', refetch);
+  })();
+  </script>
 </head>
 <body>
   <header class="topbar">

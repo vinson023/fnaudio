@@ -481,6 +481,34 @@ test('Player keeps readable transport glyphs when the theme layer is unavailable
   expect(bare.seekHeight).toBe(8);
 });
 
+test('A dropped stylesheet request is retried instead of leaving the player half-styled', async ({page}) => {
+  // Regression for the intermittent report: the same build painted white
+  // transport glyphs on one launch and black ones on the next.  A single failed
+  // request for fnos-theme.css is enough to cause it -- app.css and
+  // design-tokens.css still carry the layout and the palette, so the only
+  // symptoms are the black SVG default on the transport glyphs and the native
+  // seek rail.  The browser never re-requests a sheet that failed, so the page
+  // has to do it.
+  let attempts = 0;
+  await page.route('**/fnos-theme.css*', async route => {
+    attempts += 1;
+    if (attempts === 1) return route.abort('failed');
+    return route.continue();
+  });
+  await page.setViewportSize({width: 375, height: 812});
+  await page.goto(baseUrl, {waitUntil: 'load'});
+  await expect.poll(() => attempts, {
+    message: 'the sheet that failed must be requested again',
+    timeout: 5000,
+  }).toBeGreaterThan(1);
+  await expect.poll(() => page.evaluate(() => {
+    const links = [...document.querySelectorAll('link[href*="fnos-theme.css"]')];
+    return {count: links.length, applied: links.filter(link => !!link.sheet).length};
+  }), {message: 'the retried sheet must end up applied', timeout: 5000}).toEqual({count: 1, applied: 1});
+  // Exactly one retry: a sheet that is genuinely gone must not turn into a loop.
+  expect(attempts, 'the retry must not repeat').toBe(2);
+});
+
 test('FNOS: every dialog close control uses the shared line icon', async ({page}) => {
   await load(page);
   const ids = [
