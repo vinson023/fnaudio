@@ -1332,3 +1332,20 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
     transform: translateY(-14px);
   }
 }
+
+/* One stroke weight across the footer action row.  app.css pins the seven
+ * action icons to 2px and the lyric symbol to 1.9px, so the row rendered as
+ * three different weights beside the 1.75px controls everywhere else in the
+ * shell.  These selectors repeat app.css's specificity on purpose: the sheet
+ * loads later, so an equal-specificity !important wins without raising it. */
+.player-actions #deviceBtn svg,
+.player-actions #favoriteCurrentBtn svg,
+.player-actions #repeatBtn svg,
+.player-actions #shuffleBtn svg,
+.player-actions #queueBtn svg,
+.player-actions #volumeBtn svg {
+  stroke-width: 1.75 !important;
+}
+.player-actions #lyricsBtn .lyric-symbol {
+  stroke-width: 1.75 !important;
+}

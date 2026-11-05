@@ -2347,8 +2347,8 @@ function setPlayButton(playing) {
   if (!button || button.dataset.playing === next) return;
   button.dataset.playing = next;
   const icon = next === "playing"
-    ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
-    : '<path d="m8 5 12 7-12 7z"/>';
+    ? '<path d="M5 5h5v14H5zM14 5h5v14h-5z"/>'
+    : '<path d="m5 5 14 7-14 7z"/>';
   button.innerHTML = `<svg class="transport-icon ${next === "playing" ? "pause-icon" : "play-icon"}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${icon}</svg>`;
 }
 function stopLocalAudio() {
