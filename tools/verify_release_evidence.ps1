@@ -147,7 +147,14 @@ if (Test-Path -LiteralPath $androidShaPath -PathType Leaf) {
         throw "ANDROID_SHA256SUMS must contain exactly one checksum record."
     }
     $androidRecord = $androidShaLines[0].Trim()
-    if ($androidRecord -notmatch '^(?<hash>[A-Fa-f0-9]{64})\s{2}(?<name>fnaudio-android-[0-9]+\.[0-9]+\.[0-9]+-release\.apk)$') {
+    # Both artifact names are legal here: `fnaudio-android-<version>-release.apk`
+    # from build_android_release.ps1 (it needs a keystore this machine does not
+    # have) and the `fnaudio-<version>-debug.apk` every archive from 0.2.125 to
+    # 0.2.138 actually ships.  Pinning only the release name made those archives
+    # fail their own evidence check with "invalid checksum record" — a recovery
+    # run would read that as a corrupt package.  What this branch verifies is the
+    # checksum, not the signing identity.
+    if ($androidRecord -notmatch '^(?<hash>[A-Fa-f0-9]{64})\s{2}(?<name>fnaudio(?:-android)?-[0-9]+\.[0-9]+\.[0-9]+-(?:release|debug)\.apk)$') {
         throw "ANDROID_SHA256SUMS contains an invalid checksum record."
     }
     $androidArtifactPath = Join-Path $directory $Matches.name
@@ -268,8 +275,11 @@ if ($evidenceComplete) {
     if ((Split-Path -Leaf $artifactPath) -ne $expectedArtifactName) {
         throw "Release artifact name does not match provenance version."
     }
-    if ($androidValidated -and (Split-Path -Leaf $androidArtifactPath) -ne "fnaudio-android-$provenanceVersion-release.apk") {
-        throw "Android artifact name does not match provenance version."
+    if ($androidValidated) {
+        $androidLeaf = Split-Path -Leaf $androidArtifactPath
+        if ($androidLeaf -notmatch "^fnaudio(?:-android)?-$([regex]::Escape($provenanceVersion))-(?:release|debug)\.apk$") {
+            throw "Android artifact name does not match provenance version."
+        }
     }
 }
 if ($RequireCompleteEvidence -and -not $evidenceComplete) {

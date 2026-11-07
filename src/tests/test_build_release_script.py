@@ -338,6 +338,70 @@ class BuildReleaseScriptTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("fnaudio-android-9.8.7-debug.apk", rejected.stderr)
 
+    def test_release_evidence_verifier_accepts_the_debug_sidecar_the_tree_ships(self):
+        """Every archive so far ships a debug APK, and it must still verify.
+
+        The sidecar regex pinned `fnaudio-android-<version>-release.apk`, a name
+        only build_android_release.ps1 can produce, and that script refuses to run
+        without a release keystore.  So artifacts/0.2.130 through 0.2.138 — all
+        carrying `fnaudio-<version>-debug.apk` — failed their own evidence check
+        with "invalid checksum record", which a recovery run reads as a corrupt
+        package.  The branch verifies a checksum; both names must reach it.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifact = directory / "fnaudio-9.8.7-fnpack.fpk"
+            android = directory / "fnaudio-9.8.7-debug.apk"
+            artifact.write_bytes(b"fixture fpk bytes")
+            android.write_bytes(b"fixture debug apk bytes")
+            (directory / "SHA256SUMS").write_text(
+                "%s  %s\n" % (hashlib.sha256(artifact.read_bytes()).hexdigest().upper(), artifact.name),
+                encoding="ascii",
+            )
+            (directory / "ANDROID_SHA256SUMS").write_text(
+                "%s  %s\n" % (hashlib.sha256(android.read_bytes()).hexdigest().upper(), android.name),
+                encoding="ascii",
+            )
+            manifest = directory / "SOURCE_MANIFEST.sha256"
+            manifest.write_text("0" * 64 + "  src/manifest\n", encoding="ascii")
+            (directory / "SOURCE_PROVENANCE.json").write_text(
+                json.dumps({
+                    "schema": 1,
+                    "version": "9.8.7",
+                    "asset_build": "9.8.7-0123456789ab",
+                    "staged_file_count": 1,
+                    "source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest().upper(),
+                    "fnpack_sha256": "a" * 64,
+                    "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest().upper(),
+                }),
+                encoding="utf-8",
+            )
+
+            wrong = json.dumps({
+                "schema": 1,
+                "version": "9.8.6",
+                "asset_build": "9.8.6-0123456789ab",
+                "staged_file_count": 1,
+                "source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest().upper(),
+                "fnpack_sha256": "a" * 64,
+                "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest().upper(),
+            }).encode("utf-8")
+
+            verified, wrong_version, tampered = self._run_evidence_verifiers([
+                {"args": {"ArtifactDirectory": str(directory)}},
+                {"args": {"ArtifactDirectory": str(directory)},
+                 "pre": [(directory / "SOURCE_PROVENANCE.json", wrong)]},
+                {"args": {"ArtifactDirectory": str(directory)},
+                 "pre": [(android, b"tampered debug apk bytes")]},
+            ])
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertRegex(verified.stdout, r"AndroidValidated\s*: True")
+
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("ANDROID_SHA256SUMS", tampered.stderr)
+            self.assertNotEqual(wrong_version.returncode, 0)
+            self.assertIn("provenance version", wrong_version.stderr)
+
     def test_release_evidence_verifier_checks_android_release_sidecar(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
