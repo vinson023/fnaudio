@@ -3455,7 +3455,7 @@ function renderAlbumDetail(list) {
       <small data-album-detail-release-date ${releaseDate ? "" : "hidden"}>${escapeHtml(releaseDate)}</small>
     </aside>
     <section class="album-detail-tracks">
-      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button>${breadcrumbChevronMarkup()}<strong>${escapeHtml(album)}</strong><button type="button" class="secondary-button breadcrumb-play-all" data-play-all>播放全部</button></nav>
+      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button>${breadcrumbChevronMarkup()}<strong>${escapeHtml(album)}</strong></nav>
       <div class="album-detail-table-head" id="albumDetailTableHead"></div>
       <div class="album-detail-track-list">${renderTrackRows(list)}</div>
     </section>
@@ -4035,7 +4035,6 @@ function renderGenreTracks(list) {
   return `<nav class="artist-all-tracks-breadcrumb category-tracks-breadcrumb" aria-label="类型路径">
     <button type="button" data-group-back>类型</button>${breadcrumbChevronMarkup()}
     <strong>${escapeHtml(genre)}</strong>
-    <button type="button" class="secondary-button breadcrumb-play-all" data-play-all>播放全部</button>
   </nav>${renderTrackRows(list)}`;
 }
 function renderFolders(data = folderChildren()) {
@@ -4105,8 +4104,12 @@ function render() {
   const genreDetail = state.view === "genres" && Boolean(state.groupName);
   // R508（负责人要求「取消掉所有列表里面的『播放全部』按钮」）: 列表顶部不再有
   // 「播放全部」。播放列表 / 收藏 / 队列原本就有的这条工具条只留计数与它们自己的
-  // 动作（删除播放列表 / 清空队列）；整页播放入口只剩专辑详情与类型详情的面包屑，
-  // 分组行仍然靠右键 / 手机长按。
+  // 动作（删除播放列表 / 清空队列）。
+  //
+  // R511（负责人「还是有些地方有『播放全部』按钮」）: R508 当时按「列表里面的」
+  // 划界，留下了专辑详情面包屑、类型详情面包屑与分类详情头这三处。负责人看到
+  // 之后要求一并不留：三处渲染、共用选择器、点击回调与专用样式这次全部删除。
+  // 播整张仍可从列表任意一行开始，分组长按 / 右键也仍有「播放」。
   const countBar = (countText, extraActions = "") => `<div class="playlist-toolbar"><span>${countText}</span>${extraActions ? `<div class="playlist-toolbar-actions">${extraActions}</div>` : ""}</div>`;
   const playlistToolbar = isPlaylistView() && currentPlaylist()
     ? countBar(`${clientPageTotal} 首歌曲`, `<button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button>`)
@@ -4115,7 +4118,7 @@ function render() {
       : state.view === "queue"
         ? countBar(`${state.queue.length} 首歌曲`, `<button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button>`)
       : isGroup && state.groupName && !albumDetail && !genreDetail
-      ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button><button type="button" class="secondary-button" data-group-back>返回分类</button></div></div>`
+      ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button type="button" class="secondary-button" data-group-back>返回分类</button></div></div>`
       : "";
   const listHtml = isFolder
     ? renderFolders(folderState)
@@ -4232,8 +4235,6 @@ function render() {
     document.querySelectorAll("[data-delete-playlist]").forEach(b => b.onclick = () => deletePlaylist(b.dataset.deletePlaylist));
     document.querySelectorAll("[data-clear-queue]").forEach(b => b.onclick = clearQueue);
     document.querySelectorAll("[data-play-group]").forEach(b => b.onclick = () => playGroup(b.dataset.playGroup));
-    document.querySelectorAll("[data-play-all]").forEach(b => b.onclick = playAll);
-    document.querySelectorAll("[data-play-artist-album]").forEach(b => b.onclick = playAll);
     document.querySelectorAll("[data-group-row]").forEach(row => {
       row.onclick = event => {
         if (event.target.closest("button")) return;
@@ -4818,45 +4819,6 @@ function playableTracks() {
   if (groupViews[state.view]) return state.groupName ? filteredTracks() : [];
   if (isPlaylistView()) return playlistTracks();
   return filteredTracks();
-}
-async function playAll() {
-  let tracks = [];
-  if (state.view === "queue") tracks = state.queue;
-  else if (state.view === "favorites") tracks = favoriteTracks();
-  else if (state.view === "random100") tracks = state.pageItems;
-  else if (isPlaylistView()) tracks = playlistTracks();
-  else if (isPagedLibraryView() || groupViews[state.view] || state.view === "folders") {
-    const extra = { view: state.view };
-    if (isCreatorView() && currentCreatorName()) {
-      extra.group = currentCreatorName();
-      if (state.groupName) extra.album = state.groupName;
-    } else if (groupViews[state.view] && state.groupName) extra.group = state.groupName;
-    if (state.view === "folders") {
-      extra.root = state.folderRoot || "";
-      extra.folder = state.folderPath || "";
-    }
-    tracks = await fetchAllTracksForCurrentView(extra);
-  } else {
-    tracks = playableTracks();
-  }
-  if (!tracks.length) return;
-  state.streamOffset = 0;
-  state.pendingSeekTime = null;
-  state.transcodeCacheReady = false;
-  state.playSourceKind = "";
-  const queue = state.shuffle ? shuffleItems(tracks) : tracks;
-  try {
-    await commitQueue(queue, queue[0]?.id || "");
-  } catch (error) {
-    alert(error.message || "播放队列保存失败");
-    return;
-  }
-  if (isRemoteTarget()) {
-    state.remoteStatus = null;
-    await remoteControl("stop", null, true);
-  }
-  loadCurrent();
-  render();
 }
 function nextIndex() {
   if (!state.queue.length) return -1;
@@ -9518,8 +9480,9 @@ function groupActionButtons(groupKey) {
   // artist row now starts playing everything under it in one click.  插播所选项目
   // stays out -- nothing asked for it, and it means "insert after the current
   // track", which is a different action from 播放 rather than a second way to
-  // reach the same one.  (The album detail page has no 播放全部 button of its
-  // own, which is why this menu entry matters there.)
+  // reach the same one.  R511 then removed the last three 播放全部 buttons (album
+  // and genre detail breadcrumbs, category detail header), so this menu entry is
+  // now the only one-click way to play a whole set.
   return [
     groupActionButton("播放", "play"),
     groupActionButton("加入当前队列", "queue"),

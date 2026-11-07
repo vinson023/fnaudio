@@ -15,7 +15,8 @@
 //   1. 长按只在手机宽度 + 手指 + 主键时成立，鼠标与桌面宽度不许抢跑；
 //   2. 长按抬起后的那次 click 必须被吃掉 —— 否则专辑行会被「打开专辑」，菜单刚
 //      弹出就被导航走，看起来像长按没生效；
-//   3. 列表顶部不再有「播放全部」；详情页与分类头的那两处按 R508 的边界保留。
+//   3. 「播放全部」一个都不许有：R508 撤掉列表顶部那批，R511 把详情页与分类头
+//      剩下的三处也撤了，连选择器、类名与回调一起消失。
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -174,14 +175,16 @@ barCalls.forEach(line => assert.equal(/data-play-all/.test(line), false, "no cal
 assert.match(toolbarChain, /data-delete-playlist/, "the playlist count bar keeps 删除播放列表");
 assert.match(toolbarChain, /data-clear-queue/, "the queue count bar keeps 清空队列");
 
-// 边界：撤的是「列表里面的」。专辑详情与类型详情面包屑的按钮按负责人选择保留，
-// 分类详情头（艺术家 / 类型根下钻）那一处也留着。
+// 边界：R508 当时把专辑详情、类型详情面包屑与分类详情头三处留了下来；负责人看到
+// 之后在 R511 说「还是有些地方有『播放全部』按钮」，于是这三处也一并撤掉——现在
+// 四类位置一个都不剩，包括共用的 data-play-all 选择器与它的类名。
 const albumDetail = sourceBetween("function renderAlbumDetail", "function trackRowSelectionKey");
-assert.match(albumDetail, /data-play-all/, "the album detail breadcrumb keeps its 播放全部");
+assert.equal(albumDetail.includes("data-play-all"), false, "the album detail breadcrumb lost its button in R511");
 const genreTracks = sourceBetween("function renderGenreTracks", "function renderFolders");
-assert.match(genreTracks, /data-play-all/, "the genre detail breadcrumb keeps its 播放全部");
-// 绑定面：留下的按钮仍然共用同一个 data-play-all 选择器。
-assert.match(source, /document\.querySelectorAll\("\[data-play-all\]"\)\.forEach\(b => b\.onclick = playAll\)/, "every remaining 播放全部 button shares one binding");
+assert.equal(genreTracks.includes("data-play-all"), false, "the genre detail breadcrumb lost its button in R511");
+assert.equal(toolbarChain.includes("data-play-all"), false, "the category detail header lost its button in R511");
+assert.equal(source.includes("data-play-all"), false, "no 播放全部 button survives anywhere in app.js");
+assert.equal(source.includes("breadcrumb-play-all"), false, "nor the class that styled it");
 
 // --- 4. 平铺列表不再有独立工具条节点 -----------------------------------------
 // R504 把它挂在 #trackList 外面是为了保住键控复用（混进列表会让

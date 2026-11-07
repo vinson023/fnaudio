@@ -229,12 +229,12 @@ test("group rows play everything under them from the right-click menu", async ({
   expect(unexpected).toEqual([]);
 });
 
-test("album and genre detail pages offer 播放全部 in their own breadcrumb", async ({ page }) => {
-  // R501: `data-play-all` used to be rendered only on the category-detail header,
-  // which the album and genre detail pages replace with their breadcrumb -- so the
-  // two views a user reaches by opening a row had no way to play the page, only
-  // double-clicking row by row.  Drive the real buttons and check the queue the
-  // player reports lines up with what the page is showing.
+test("no view renders a 播放全部 button", async ({ page }) => {
+  // R501 put one in the album and genre detail breadcrumbs so those pages could
+  // start their whole set; R508 removed every list toolbar copy; R511 removed the
+  // last three (album detail, genre detail, category detail header) after the
+  // owner said 还是有些地方有「播放全部」按钮.  This walks the three places that
+  // used to have it and asserts the button is nowhere.
   const unexpected = [];
   page.on("console", message => {
     if (message.type() !== "error") return;
@@ -242,38 +242,28 @@ test("album and genre detail pages offer 播放全部 in their own breadcrumb", 
     if (/\/media\/fixture-/.test(String(location.url || ""))) return;
     unexpected.push(`${message.text()} @ ${location.url || "<inline>"}`);
   });
-  const pageRowTitles = selector => page.locator(`${selector} .track .track-title`).evaluateAll(nodes => nodes.map(node => node.textContent.trim()));
+  const noPlayAll = async label => {
+    await expect(page.locator("[data-play-all]"), `${label} still carries data-play-all`).toHaveCount(0);
+    await expect(page.locator("button", { hasText: /^播放全部$/ }), `${label} still shows 播放全部`).toHaveCount(0);
+  };
 
   await loadLibrary(page, { width: 1440, height: 900 });
+  await noPlayAll("the library views");
+
   await page.locator("[data-view='albums']").click();
   await expect(page.locator(".album-group-row")).toHaveCount(3);
   await page.locator(".album-group-row").filter({ hasText: "Native DSD" }).click();
-  const albumPlayAll = page.locator(".album-detail-breadcrumb [data-play-all]");
-  await expect(albumPlayAll).toBeVisible();
-  await expect(albumPlayAll).toHaveText("播放全部");
-  const albumRows = await pageRowTitles(".album-detail-track-list");
-  expect(albumRows.length).toBeGreaterThan(1);
-  await albumPlayAll.click();
-  await expect(page.locator("#queueCount")).toHaveText(String(albumRows.length));
-  // The album opens in track order, so the queue has to start on the first row
-  // the page lists -- not on whatever the album list happened to sort by.
-  await expect(page.locator("#nowTitle")).toHaveText(albumRows[0]);
-
+  // The page itself still has to work: rows are listed, the way back is there.
+  await expect(page.locator(".album-detail-track-list .track").first()).toBeVisible();
+  await noPlayAll("the album detail page");
   await page.locator(".album-detail-breadcrumb [data-group-back]").click();
   await expect(page.locator(".album-group-row")).toHaveCount(3);
 
-  // Genre has no `track_no` order, so only the invariant "queue starts on the
-  // first row and holds the whole page" is asserted here.
   await page.locator("[data-view='genres']").click();
   await expect(page.locator(".group-row")).toHaveCount(1);
   await page.locator(".group-row").filter({ hasText: "未分类" }).click();
-  const genrePlayAll = page.locator(".category-tracks-breadcrumb [data-play-all]");
-  await expect(genrePlayAll).toBeVisible();
-  const genrePageRows = await pageRowTitles("#trackList");
-  expect(genrePageRows.length).toBe(4);
-  await genrePlayAll.click();
-  await expect(page.locator("#queueCount")).toHaveText(String(genrePageRows.length));
-  await expect(page.locator("#nowTitle")).toHaveText(genrePageRows[0]);
+  await expect(page.locator(".category-tracks-breadcrumb")).toBeVisible();
+  await noPlayAll("the genre detail page");
   expect(unexpected).toEqual([]);
 });
 
@@ -281,7 +271,8 @@ test("phone hold opens the group menu and list toolbars drop 播放全部", asyn
   // R504: on a phone the group rows had no entry point at all -- `contextmenu`
   // returned early below 761px and there was no hold timer -- so 播放 was only
   // reachable with a mouse.  R508 then removed 播放全部 from every list toolbar
-  // (the owner: 取消掉所有列表里面的「播放全部」按钮); the detail pages keep theirs.
+  // (the owner: 取消掉所有列表里面的「播放全部」按钮).  R511 then removed the last
+  // three detail-page copies as well, so this only has to prove the list side.
   const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
   const openView = async view => {
     if ((page.viewportSize()?.width ?? 1440) <= 760) await page.locator("#mobileNavBtn").click();

@@ -1440,23 +1440,3 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .shell,.content{height:100%!important}
   .mobile-settings-nav-item{display:flex!important}
 }
-
-/* 「播放全部」 inside a detail breadcrumb (R501).
- *
- * The album and genre detail pages had no in-page way to start the whole set —
- * only double-clicking one song, or right-clicking a row in the *list* view that
- * the user had already left.  The button sits at the far end of the breadcrumb
- * row the page already owns, so it costs no new chrome and stays visible while
- * the list scrolls (both rows are sticky on the pages that use them).
- *
- * The rule is more specific than `.album-detail-breadcrumb button`, which resets
- * background/border/padding for the breadcrumb's link-like buttons and would
- * otherwise make this one look like another link. */
-.album-detail-breadcrumb .breadcrumb-play-all,
-.artist-all-tracks-breadcrumb .breadcrumb-play-all{margin-left:auto!important;flex:0 0 auto!important;height:30px!important;padding:0 12px!important;border:1px solid var(--ui-border)!important;border-radius:6px!important;background:var(--ui-surface)!important;color:var(--ui-secondary)!important;font-size:12px!important;font-weight:400!important;text-decoration:none!important;white-space:nowrap!important}
-.album-detail-breadcrumb .breadcrumb-play-all:hover,
-.artist-all-tracks-breadcrumb .breadcrumb-play-all:hover{border-color:var(--ui-border)!important;background:var(--ui-hover)!important;color:var(--ui-accent-hover)!important;text-decoration:none!important}
-@media(max-width:760px){
-  .album-detail-breadcrumb .breadcrumb-play-all,
-  .artist-all-tracks-breadcrumb .breadcrumb-play-all{height:28px!important;padding:0 10px!important;font-size:12px!important}
-}

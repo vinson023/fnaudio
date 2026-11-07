@@ -123,11 +123,13 @@ assert.deepEqual(asArray(loadWrapper({ MAX_ITEMS: 50000, shuffle: () => [1] })([
 assert.deepEqual(asArray(loadWrapper({ MAX_ITEMS: 50000, shuffle: () => { throw new Error("hostile rng"); } })([1, 2])), [1, 2],
   "a throwing policy must not abort playback");
 
-// --- 8. source-level lane: both live builders use the entry, none sorts -------
+// --- 8. source-level lane: the live builder uses the entry, none sorts -------
 assert.equal(countOf(source, "state.shuffle ? shuffleItems(group) : group;"), 1, "playGroup must shuffle through the policy entry");
-assert.equal(countOf(source, "state.shuffle ? shuffleItems(tracks) : tracks;"), 1, "playAll must shuffle through the policy entry");
+// R511 删掉了详情页 / 分类头的整页播放，`playAll()` 随之退场，所以这条从「恰好一处」
+// 改成「一处都不许有」：随机入口现在只剩 playGroup 一条。
+assert.equal(countOf(source, "state.shuffle ? shuffleItems(tracks) : tracks;"), 0, "the retired play-all lane must not come back");
 assert.equal(countOf(source, ".sort(() => Math.random()"), 0, "a comparator-driven shuffle must not return to app.js");
-assert.ok(countOf(source, "shuffleItems(") >= 3, "the compatibility entry point must stay wired to real call sites");
+assert.ok(countOf(source, "shuffleItems(") >= 2, "the compatibility entry point must stay wired to its definition and the live call site");
 
 // --- 9. the dead comparator must stay gone everywhere the UI can see it ------
 for (const file of fs.readdirSync(uiDir)) {
