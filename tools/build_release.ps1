@@ -303,7 +303,19 @@ try {
     $assetHashInput = @($stagedStampedAssets | ForEach-Object {
         Get-Sha256Hex -Path (Join-Path $stageUiRoot ($_.Replace("/", "\")))
     }) -join ""
-    $assetHash = $assetHashInput.Substring(0, 12).ToLowerInvariant()
+    # The 64-character digests above are hashed again as one string before the
+    # prefix is taken. Cutting the prefix straight off the concatenation returns
+    # the FIRST asset's prefix only — access_profile_loader.js — so the key stayed
+    # 58a38563247b from 0.2.130 through 0.2.137 while app.css and app.js changed
+    # underneath it, and a same-version rebuild could not bust a browser cache.
+    $assetHashAlgorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $assetHashDigest = $assetHashAlgorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($assetHashInput))
+    }
+    finally {
+        $assetHashAlgorithm.Dispose()
+    }
+    $assetHash = ([BitConverter]::ToString($assetHashDigest)).Replace("-", "").Substring(0, 12).ToLowerInvariant()
     $assetBuild = "$version-$assetHash"
     $stageIndex = $stageIndex.Replace("__FNAUDIO_ASSET_BUILD__", $assetBuild)
     if ($stageIndex.Contains("__FNAUDIO_ASSET_BUILD__")) {

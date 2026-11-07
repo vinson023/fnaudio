@@ -263,6 +263,37 @@ class BuildReleaseScriptTests(unittest.TestCase):
         self.assertIn("Security.Cryptography.SHA256", script)
         self.assertNotIn("$fnpackSha256 = (Get-FileHash", script)
 
+    def test_ui_asset_build_key_covers_every_stamped_asset(self):
+        """A key cut from the first digest cannot bust the cache of the others.
+
+        `$assetHashInput` is one 4,160-character string: 65 digests joined. The
+        committed formula took `Substring(0, 12)` off that string, which answers
+        with the first asset's prefix — access_profile_loader.js — so the key
+        stayed 58a38563247b from 0.2.130 through 0.2.137 while app.css and app.js
+        changed underneath it, and a same-version rebuild could never invalidate
+        a cached script. Hashing the joined string is what makes one changed
+        asset move the key, and that is what this test pins.
+        """
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "tools" / "build_release.ps1").read_text(encoding="utf-8")
+        self.assertIn("$assetHashInput = @($stagedStampedAssets", script)
+        self.assertNotIn("$assetHashInput.Substring", script)
+        self.assertIn("GetBytes($assetHashInput)", script)
+        self.assertIn("$assetHash = ([BitConverter]::ToString($assetHashDigest))", script)
+
+        ui = root / "src" / "app" / "ui"
+        index = (ui / "index.html").read_text(encoding="utf-8")
+        assets = sorted(set(re.findall(r'(?:src|href)="([^"]+)\?v=__FNAUDIO_ASSET_BUILD__"', index)))
+        self.assertGreater(len(assets), 1)
+        digests = "".join(hashlib.sha256((ui / name).read_bytes()).hexdigest() for name in assets)
+        moved = digests[:-64] + ("0" * 64)
+
+        def key(text):
+            return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+        self.assertNotEqual(key(digests), key(moved), "a changed asset must move the key")
+        self.assertEqual(digests[:12], moved[:12], "the retired prefix cut could not see the change")
+
     def test_release_evidence_verifier_supports_machine_readable_json(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
