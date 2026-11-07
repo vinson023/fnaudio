@@ -244,7 +244,7 @@ paintBlocks.forEach(entry => {
   assert.match(block[0], /^[ \t]*syncPlayerProgress\(\);[ \t]*$/m, entry[2]);
 });
 assert.match(app, /updateModeButton\(\);\nsyncPlayerProgress\(\);\nupdateNowMarquee\(\);/, "Boot paints the row then the marquee");
-assert.match(app, /nativeRemoteEnter\(true\);\n[ \t]*syncPlayerProgress\(\);\n[ \t]*updateNowMarquee\(\);/, "The cast-enter branch paints the row it just wrote");
+assert.match(app, /nativeRemoteEnter\(true\);[\s\S]{0,320}?updateRemoteUi\(\);\n[ \t]*syncPlayerProgress\(\);\n[ \t]*updateNowMarquee\(\);/, "The cast-enter branch paints the row it just wrote");
 assert.match(app, /window\.addEventListener\("resize", updateNowMarquee\);/, "Resize stays a geometry-only listener");
 assert.doesNotMatch(app, /addEventListener\("resize",\s*\(\)\s*=>\s*\{[\s\S]{0,200}syncPlayerProgress/, "A window resize must not gain a wrapper that repaints progress");
 

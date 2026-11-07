@@ -103,8 +103,15 @@ const LEGACY_TRACK_COLUMNS_STORE_KEY = "fnaudio.trackColumns.v2";
 const OLDER_TRACK_COLUMNS_STORE_KEY = "fnaudio.trackColumns.v1";
 const TRACK_LONG_PRESS_DURATION_MS = 550;
 const TRACK_LONG_PRESS_MOVE_THRESHOLD_PX = 10;
+// R504: 文件夹 / 专辑 / 歌手 / 作曲者 / 类型 这些分组行也需要「长按出菜单」。
+// 时长与位移阈值刻意复用歌曲行那两个值——同一份列表里两种按住手感会被当成
+// 两种不同的手势，而它们本来就是同一件事。
+const GROUP_LONG_PRESS_DURATION_MS = TRACK_LONG_PRESS_DURATION_MS;
+const GROUP_LONG_PRESS_MOVE_THRESHOLD_PX = TRACK_LONG_PRESS_MOVE_THRESHOLD_PX;
 let activeTrackLongPress = null;
 let suppressedTrackClick = { rowKey: "", until: 0 };
+let activeGroupLongPress = null;
+let suppressedGroupClick = { groupKey: "", until: 0 };
 
 function parseStoredJson(key, fallback, maxChars = MAX_UI_PREFERENCE_STORAGE_CHARS) {
   try {
@@ -133,6 +140,13 @@ const DEFAULT_TRACK_COLUMNS = ["title", "track_no", "format", "album"];
 const DEFAULT_LIBRARY_TRACK_COLUMNS = ["title", "artist", "album", "size", "format"];
 const DEFAULT_ALBUM_DETAIL_TRACK_COLUMNS = ["track_no", ...DEFAULT_LIBRARY_TRACK_COLUMNS];
 const PAGED_LIBRARY_VIEWS = new Set(["all", "dsd", "recent", "random100", "folders", "albums", "artists", "composers", "genres"]);
+// R504: 这四类视图没有分组行（没有东西可以右键），整页播放因此走顶部工具条上的
+// 「播放全部」按钮，而不是右键菜单。
+const FLAT_PLAY_ALL_VIEWS = new Set(["all", "dsd", "recent", "random100"]);
+// R505（负责人要求）: 手机上不提供这三项文件类动作——打开包含的文件夹 / 分享外部链接 /
+// 删除歌曲。三者都要落到飞牛文件管理器，手机上只会弹出另一个 App 的面板或落回
+// showFileDetails；删除还是唯一一枚 danger 项，却紧挨着播放类动作。桌面保持原样。
+const MOBILE_HIDDEN_TRACK_ACTIONS = new Set(["open-folder", "share", "delete-file"]);
 state.libraryStatus = null;
 state.libraryLoadError = "";
 state.libraryStatusPromise = null;
@@ -175,6 +189,7 @@ state.playlists = loadStoredPlaylists();
 state.favorites = loadStoredFavorites();
 state.pendingPlaylistTrack = "";
 state.pendingPlaylistTrackIds = [];
+state.pendingPlaylistTracks = [];
 state.actionTrackId = "";
 state.metadataCandidateRequestToken = 0;
 state.metadataCandidateController = null;
@@ -2329,7 +2344,11 @@ async function refreshRendererSession() {
     if (token !== state.rendererRequestToken || state.rendererRequestController !== controller) return;
     const session = data.available === true ? (data.state || {}) : {};
     const transport = String(session.transport || "").toUpperCase();
+    // "superseded" is the renderer's own verdict that local playback took the
+    // output; such a session keeps its uri only so the caster can press Play
+    // again, and must never reclaim the transport row.
     let active = typeof session.uri === "string" && session.uri.length > 0
+      && session.superseded !== true
       && !["STOPPED", "NO_MEDIA_PRESENT"].includes(transport);
     // A stop issued by a local play intent (TODO.md:72 ruling D-2) can lose the
     // race: a command that was already on the wire, or one the bridge refused,
@@ -2813,7 +2832,7 @@ function stopRemoteEventStream() {
   state.remoteEventConnected = false;
 }
 function applyRemotePlaybackSnapshot(data, options = {}) {
-  if (!isRemoteTarget() || !data || (data.target_id && String(data.target_id) !== String(state.playTarget))) return;
+  if (!isRemoteTarget() || !data || (data.target_id && !sameDeviceTarget(data.target_id, state.playTarget))) return;
   const stateVersion = remoteStateVersion(data.state_version);
   if (state.remoteStateVersion > 0 && (stateVersion == null || stateVersion < state.remoteStateVersion)) return;
   state.remoteStatus = data;
@@ -2855,7 +2874,7 @@ function startRemoteEventStream() {
       if (source !== state.remoteEventSource) return;
       try {
         const data = JSON.parse(event.data || "{}");
-        if (String(data.target_id || "") !== targetId) return;
+        if (!sameDeviceTarget(data.target_id, targetId)) return;
         state.remoteEventConnected = true;
         state.remoteEventRetryAt = 0;
         applyRemotePlaybackSnapshot(data);
@@ -3439,7 +3458,7 @@ function renderAlbumDetail(list) {
       <small data-album-detail-release-date ${releaseDate ? "" : "hidden"}>${escapeHtml(releaseDate)}</small>
     </aside>
     <section class="album-detail-tracks">
-      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button>${breadcrumbChevronMarkup()}<strong>${escapeHtml(album)}</strong></nav>
+      <nav class="album-detail-breadcrumb" aria-label="专辑路径"><button type="button" data-group-back>专辑</button>${breadcrumbChevronMarkup()}<strong>${escapeHtml(album)}</strong><button type="button" class="secondary-button breadcrumb-play-all" data-play-all>播放全部</button></nav>
       <div class="album-detail-table-head" id="albumDetailTableHead"></div>
       <div class="album-detail-track-list">${renderTrackRows(list)}</div>
     </section>
@@ -3697,6 +3716,17 @@ function invalidateLibraryResponseForTrack(trackId) {
   if (!id || !state.libraryResponseCache?.deleteWhere) return;
   state.libraryResponseCache.deleteWhere(value => Array.isArray(value?.items)
     && value.items.some(item => String(item?.id || "") === id));
+}
+function renderFlatListToolbar(markup = "") {
+  const host = $("listToolbar");
+  if (!host) return;
+  // Same rule as the playlist nav: re-writing identical markup on every status
+  // tick would throw away the button that is currently being pressed.
+  if (host.dataset.fnaudioFlatToolbar === markup) return;
+  host.dataset.fnaudioFlatToolbar = markup;
+  host.innerHTML = markup;
+  host.hidden = !markup;
+  host.querySelectorAll("[data-play-all]").forEach(button => button.onclick = playAll);
 }
 function commitTrackListHtml(listHtml) {
   const list = $("trackList");
@@ -4019,6 +4049,7 @@ function renderGenreTracks(list) {
   return `<nav class="artist-all-tracks-breadcrumb category-tracks-breadcrumb" aria-label="类型路径">
     <button type="button" data-group-back>类型</button>${breadcrumbChevronMarkup()}
     <strong>${escapeHtml(genre)}</strong>
+    <button type="button" class="secondary-button breadcrumb-play-all" data-play-all>播放全部</button>
   </nav>${renderTrackRows(list)}`;
 }
 function renderFolders(data = folderChildren()) {
@@ -4086,14 +4117,28 @@ function render() {
   const clientPageTotal = clientPage?.total ?? null;
   const albumDetail = isAlbumDetailView();
   const genreDetail = state.view === "genres" && Boolean(state.groupName);
+  // R504: 平铺列表（全部音乐 / DSD / 最近添加 / 随机 100 首）本身没有「行」可以
+  // 右键，它们的等价物就是列表顶部这一行里的「播放全部」。播放列表 / 收藏 / 队列
+  // 原来已经有这条工具条，只补按钮。
+  //
+  // 这四个视图的工具条挂在 #trackList **外面**（`renderFlatListToolbar`）：提交器
+  // 的键控复用要求列表的每个顶层子节点都带 key（`nextKeySet.size === next.length`），
+  // 混进一个没有 key 的工具条会让整条键控路径失效、退化成整表 innerHTML 替换——
+  // 那正是「元数据补全后整表闪一下、封面全部重解码」的老毛病（e2e
+  // `metadata completion patches the existing song row without a list flash` 钉的
+  // 就是它，本轮实测：把工具条塞进列表，`sameNode` 立刻变 false）。
+  const playAllBar = (countText, extraActions = "") => `<div class="playlist-toolbar"><span>${countText}</span><div class="playlist-toolbar-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button>${extraActions}</div></div>`;
   const playlistToolbar = isPlaylistView() && currentPlaylist()
-    ? `<div class="playlist-toolbar"><span>${clientPageTotal} 首歌曲</span><button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button></div>`
+    ? playAllBar(`${clientPageTotal} 首歌曲`, `<button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button>`)
     : state.view === "favorites"
-      ? `<div class="playlist-toolbar"><span>${clientPageTotal} 首收藏歌曲</span></div>`
+      ? playAllBar(`${clientPageTotal} 首收藏歌曲`)
       : state.view === "queue"
-        ? `<div class="playlist-toolbar"><span>${state.queue.length} 首歌曲</span><button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button></div>`
+        ? playAllBar(`${state.queue.length} 首歌曲`, `<button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button>`)
       : isGroup && state.groupName && !albumDetail && !genreDetail
       ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button><button type="button" class="secondary-button" data-group-back>返回分类</button></div></div>`
+      : "";
+  const flatToolbar = FLAT_PLAY_ALL_VIEWS.has(state.view)
+    ? playAllBar(`${libraryCount(state.pageTotal || list.length)} 首歌曲`)
     : "";
   const listHtml = isFolder
     ? renderFolders(folderState)
@@ -4131,6 +4176,8 @@ function render() {
     listLength: list.length,
   }) === true;
   const listChanged = deferListCommit ? false : commitTrackListHtml(listHtml);
+  // Its own node, outside #trackList: see the comment on `flatToolbar`.
+  renderFlatListToolbar(flatToolbar);
   if (listChanged) {
     // Attach group-specific local/online fallback handlers before the shared
     // scheduler can assign image sources, including legacy WebViews without IO.
@@ -4215,6 +4262,12 @@ function render() {
     document.querySelectorAll("[data-group-row]").forEach(row => {
       row.onclick = event => {
         if (event.target.closest("button")) return;
+        // A finished hold also ends in a click.  Letting it through would open the
+        // album / artist right after the hold opened the menu (R504).
+        if (shouldSuppressGroupClick(row.dataset.groupKey)) {
+          event.preventDefault();
+          return;
+        }
         if (event.ctrlKey && !window.matchMedia("(max-width: 760px)").matches) {
           event.preventDefault();
           toggleGroupSelection(row.dataset.groupKey);
@@ -4244,11 +4297,22 @@ function render() {
         openGroupRow(row);
       };
       row.oncontextmenu = event => {
-        if (window.matchMedia("(max-width: 760px)").matches) return;
+        // R504: a phone can deliver a hold as `contextmenu` (some WebViews do) or
+        // through the timer in `startGroupLongPress` (others do not).  Both have to
+        // land on the same menu, so the width check that used to drop the phone's
+        // event is gone; `preventDefault` still keeps the WebView's own menu out.
         event.preventDefault();
         const key = String(row.dataset.groupKey || "");
+        if (!key) return;
         if (!state.selectedGroupKeys.has(key)) setGroupSelection([key]);
-        openGroupContextMenu(key, event.clientX, event.clientY);
+        const mobile = window.matchMedia("(max-width: 760px)").matches;
+        if (mobile) suppressGroupClick(key);
+        // Touch-triggered contextmenu can carry 0,0, which would pin the menu to
+        // the top-left corner; fall back to the row's own box.
+        const bounds = row.getBoundingClientRect();
+        const x = event.clientX || bounds.left + bounds.width / 2;
+        const y = event.clientY || bounds.top + Math.min(bounds.height, 48);
+        openGroupContextMenu(key, x, y);
       };
     });
   }
@@ -4417,7 +4481,11 @@ function clearTransientListSelection() {
 function groupDescriptorFromRow(row) {
   if (!row) return null;
   const decode = value => { try { return decodeURIComponent(value || ""); } catch (error) { return value || ""; } };
-  return { key: String(row.dataset.groupKey || ""), type: row.dataset.groupType || "group", view: row.dataset.groupView || state.view, name: decode(row.dataset.groupName), root: decode(row.dataset.groupRoot), path: decode(row.dataset.groupPath), trackCount: Number(row.dataset.groupTrackCount || 0) };
+  // Folder rows carry `data-group-label` instead of `data-group-name`, so the menu
+  // used to title every folder "文件夹" while albums showed their own name (R504).
+  // The label only feeds the title; folder queries use root/path.
+  const name = decode(row.dataset.groupName) || decode(row.dataset.groupLabel);
+  return { key: String(row.dataset.groupKey || ""), type: row.dataset.groupType || "group", view: row.dataset.groupView || state.view, name, root: decode(row.dataset.groupRoot), path: decode(row.dataset.groupPath), trackCount: Number(row.dataset.groupTrackCount || 0) };
 }
 function selectedGroupDescriptors(groupKey = "") {
   const rows = [...document.querySelectorAll("[data-group-row]")];
@@ -4470,11 +4538,21 @@ async function resolveSelectedGroupTracks(groupKey = "") {
   // A folder row stands for the whole container, so queueing or playing it
   // covers everything beneath it even though opening it only lists the files
   // that sit directly in it.
-  const pool = fnAudioBatchRequestPool(groups, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, group => group.type === "folder"
-    ? fetchAllTracksForCurrentView({ view: "folders", root: group.root, folder: group.path, subtree: 1 }, querySnapshot)
-    : creatorName && group.view === "albums"
-      ? fetchAllTracksForCurrentView({ view: creatorView, group: creatorName, album: group.name }, querySnapshot)
-      : fetchAllTracksForCurrentView({ view: group.view, group: group.name }, querySnapshot));
+  //
+  // An album row is resolved in the album detail's order, not the list's.  The
+  // album list sorts by album name (`library_sort_options_policy`), and every row
+  // of one album compares equal on that key, so the server falls through to
+  // `album, title, id` -- "play this album" would start on whichever track sorts
+  // first by title.  Opening the album sets `track_no` (``openGroupRow``), so the
+  // right-click path has to ask for the same order explicitly (R499).
+  function groupQuery(group) {
+    if (group.type === "folder") return { view: "folders", root: group.root, folder: group.path, subtree: 1 };
+    if (group.view !== "albums") return { view: group.view, group: group.name };
+    return creatorName
+      ? { view: creatorView, group: creatorName, album: group.name, sort: "track_no", dir: "asc" }
+      : { view: "albums", group: group.name, sort: "track_no", dir: "asc" };
+  }
+  const pool = fnAudioBatchRequestPool(groups, fnAudioBatchRequestPool.DEFAULT_CONCURRENCY, group => fetchAllTracksForCurrentView(groupQuery(group), querySnapshot));
   const resolved = [];
   try {
     for (let index = 0; index < groups.length; index += 1) resolved.push(await pool.get(index));
@@ -4538,8 +4616,11 @@ async function commitQueue(queue, currentId = "", options = {}) {
 function selectedItems(ids = []) {
   return (ids || []).map(itemById).filter(Boolean);
 }
-async function addSelectedToQueue(ids = []) {
-  const items = selectedItems(ids);
+async function addTracksToQueue(tracks = []) {
+  // Takes rows, for the same reason `playTracks` does: a group action already
+  // holds the songs, and going back through `selectedItems(ids)` -> `itemById`
+  // would silently drop everything past the 12,000-entry item cache (R501).
+  const items = (tracks || []).filter(item => item && item.id);
   if (!items.length) return;
   const existing = new Set(state.queue.map(item => String(item.id)));
   const queue = [...state.queue, ...items.filter(item => !existing.has(String(item.id)))];
@@ -4550,8 +4631,11 @@ async function addSelectedToQueue(ids = []) {
     alert(error.message || "播放队列保存失败");
   }
 }
-async function playSelectedTracks(ids = []) {
-  const items = selectedItems(ids);
+async function addSelectedToQueue(ids = []) {
+  return addTracksToQueue(selectedItems(ids));
+}
+async function playTracks(tracks = []) {
+  const items = (tracks || []).filter(item => item && item.id);
   if (!items.length) return;
   state.streamOffset = 0;
   state.pendingSeekTime = null;
@@ -4565,6 +4649,13 @@ async function playSelectedTracks(ids = []) {
   }
   loadCurrent();
   render();
+}
+async function playSelectedTracks(ids = []) {
+  // Selection is a list of ids and the id -> item lookups are bounded by the
+  // 12,000-entry item cache, which is exactly why a group right-click hands the
+  // rows over directly (`playTracks`) instead: a 13,000-track folder would lose
+  // its last thousand songs to the cache trim and still "succeed".
+  return playTracks(selectedItems(ids));
 }
 function clientContextTracks() {
   const ids = state.view === "favorites"
@@ -4823,6 +4914,36 @@ async function loadCurrent() {
   syncState();
   if (isRemoteTarget()) {
     stopLocalAudio();
+    // A device load takes the output from the caster just as a local play does,
+    // and the server ends that renderer session when it applies this load. Drop
+    // the row here rather than after the reply: `updateRemoteUi` paints the cast
+    // first while the claim is still set, so the rail showed the caster's 30s
+    // (and the caster's title) for the whole round trip. The preempted uri keeps
+    // the next poll from handing the row back in that window.
+    if (isIncomingRendererSession()) {
+      state.rendererPreemptedUri = String(state.rendererSession?.uri || "");
+      state.rendererSession = null;
+      state.rendererSnapshotAt = 0;
+    }
+    // Position belongs to the track, and this track starts at 0: the readout must
+    // not keep the outgoing track's place while the load is still on the wire.
+    // That round trip is 0.26s - 0.92s here, which is exactly the gap between a
+    // click and the row moving on a DAC.
+    state.remoteBaseSeconds = 0;
+    state.remoteSnapshotAt = Date.now();
+    // The length belongs to the track as much as the position does. Until this
+    // load is confirmed the device still declares the *outgoing* track's length
+    // (30s while a cast owned the row, the previous song when switching tracks
+    // on a DAC), and `seekDuration` prefers a declared value over the library
+    // row -- so the rail kept showing the old length for as long as the reply
+    // took, measured at 0.5s-2.4s. Clearing the declaration makes the clicked
+    // track's own length stand in until the output reports its own.
+    if (state.remoteStatus?.position) {
+      state.remoteStatus = {
+        ...state.remoteStatus,
+        position: { ...state.remoteStatus.position, rel_seconds: 0, duration_seconds: 0 },
+      };
+    }
     setTextContentIfChanged($("nowTitle"), displayTrackTitle(item));
     setTextContentIfChanged($("nowArtist"), `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)} · ${state.playTargetName}`);
     const localCover = coverUrl(item, 512);
@@ -4839,6 +4960,11 @@ async function loadCurrent() {
       }
     }).catch(() => {});
     nativeRemoteEnter(true);
+    // Repaint on the click, not on the reply: the length comes from the library
+    // row until the device declares its own, and `currentSeconds` now counts from
+    // the zero above. The load reply and the status poll then replace both with
+    // what the output actually reports.
+    updateRemoteUi();
     syncPlayerProgress();
     updateNowMarquee();
     return;
@@ -4999,7 +5125,14 @@ function seekDuration() {
     const cueStart = playbackSeconds(item.cue_start);
     return remoteDuration > cueStart ? remoteDuration - cueStart : 0;
   }
-  if (isRemoteTarget()) return playbackSeconds(state.remoteStatus?.position?.duration_seconds);
+  if (isRemoteTarget()) {
+    // A device that has not declared a length yet is not a zero-length track.
+    // The library row already states the duration, and using it keeps the rail
+    // correct from the click instead of from the first status snapshot; a
+    // declared value always wins once the output reports one.
+    const declared = playbackSeconds(state.remoteStatus?.position?.duration_seconds);
+    return declared > 0 ? declared : playbackSeconds(item?.duration);
+  }
   if (item?.duration) return playbackSeconds(item.duration);
   return Number.isFinite(audio.duration) ? audio.duration : 0;
 }
@@ -7162,8 +7295,10 @@ function stableDeviceTargets(targets = []) {
   return fnAudioDeviceTargetPresentation.stableTargets(targets, displayText);
 }
 function resolvedDeviceTarget(targets, reportedTarget) {
-  const targetId = String(reportedTarget || "local");
-  return targets.some(target => String(target.id || "") === targetId) ? targetId : "local";
+  return globalThis.fnAudioPlaybackTargetPolicy.resolvePublished(targets, reportedTarget) || "local";
+}
+function sameDeviceTarget(left, right) {
+  return globalThis.fnAudioPlaybackTargetPolicy.sameDevice(left, right);
 }
 async function recoverUnavailablePlaybackTarget(notify = false, expectedTarget = "") {
   if (expectedTarget && String(state.playTarget || "") !== String(expectedTarget)) return false;
@@ -7221,11 +7356,16 @@ async function validateRestoredPlaybackTarget() {
       if (!response.ok || !globalThis.fnAudioResponseJsonLoader.parsedBody(result.bodyStatus)) return true;
       const data = result.data || {};
       receivedTargets = true;
-      const target = (data.targets || []).find(candidate =>
-        String(candidate?.id || "") === restoredTarget
-        && (candidate?.online === undefined || candidate?.online === true)
-      );
-      if (target) {
+      const rows = Array.isArray(data.targets) ? data.targets : [];
+      // A restored session can carry the output registry key ("mpd") that the
+      // device list publishes under its stable id ("mpd:<stable id>"). Without
+      // this the reload reported the very DAC that is still active as offline,
+      // posted the target back to "local" and silenced the paused device.
+      const published = globalThis.fnAudioPlaybackTargetPolicy.resolvePublished(rows, restoredTarget);
+      const target = published
+        ? rows.find(candidate => String(candidate?.id || "") === published)
+        : null;
+      if (target && (target.online === undefined || target.online === true)) {
         state.playTargetName = displayText(target.name || "播放设备");
         updateDeviceLabel();
         return true;
@@ -7320,7 +7460,7 @@ function renderDeviceTargets(targets, currentTarget) {
 }
 function markCurrentDeviceTarget(targetId, switching = false) {
   document.querySelectorAll("[data-target]").forEach(button => {
-    const isCurrent = button.dataset.target === targetId;
+    const isCurrent = sameDeviceTarget(button.dataset.target, targetId);
     button.classList.toggle("is-current", isCurrent);
     button.classList.toggle("is-switching", switching && isCurrent);
     button.setAttribute("aria-pressed", String(isCurrent));
@@ -7369,17 +7509,22 @@ async function loadDevices(forceRefresh = false) {
     if (!globalThis.fnAudioResponseJsonLoader.parsedBody(result.bodyStatus)) throw new Error("设备列表读取失败");
     const targets = stableDeviceTargets(data.targets || []);
     const reportedTarget = data.current_target || state.playTarget || "local";
-    const targetUnavailable = !targets.some(target => String(target.id || "") === String(reportedTarget));
+    // "mpd" and "mpd:<stable id>" are one output; only a device that is really
+    // absent counts as unavailable.
+    const targetUnavailable = !globalThis.fnAudioPlaybackTargetPolicy.resolvePublished(targets, reportedTarget);
     if (targetUnavailable && data.refreshing === true) {
       if ($("deviceDialog").open) scheduleDeviceRefresh();
       return;
     }
     const currentTarget = resolvedDeviceTarget(targets, reportedTarget);
-    if (targetRevision > 0 && currentTarget !== state.playTarget) {
+    const previousTarget = state.playTarget;
+    // The two spellings name the same DAC, so a rewrite of one into the other
+    // is not a device switch: no teardown, no re-subscribe, no refresh loop.
+    const sameTarget = sameDeviceTarget(previousTarget, currentTarget);
+    if (targetRevision > 0 && currentTarget !== previousTarget && !sameTarget) {
       if ($("deviceDialog").open) scheduleDeviceRefresh();
       return;
     }
-    const previousTarget = state.playTarget;
     if (targetUnavailable && reportedTarget !== "local") {
       await recoverUnavailablePlaybackTarget(false, reportedTarget);
       // Recovery performs its own network write and can overlap a user
@@ -7388,9 +7533,12 @@ async function loadDevices(forceRefresh = false) {
       if (token !== state.deviceLoadRequestToken || state.deviceLoadController !== controller
         || targetRevision !== state.deviceTargetRevision || state.deviceSwitchInFlight) return;
     }
-    state.playTarget = currentTarget;
+    // Keep the spelling this session already uses when both name one device.
+    // Adopting the published id here would make the next control command look
+    // like a target change to the core, which closes and rewinds the output.
+    state.playTarget = sameTarget ? previousTarget : currentTarget;
     state.playTargetName = currentTarget === "local" ? "当前设备" : (data.current_target_name || state.playTargetName);
-    if (previousTarget !== currentTarget) {
+    if (!sameTarget && previousTarget !== currentTarget) {
       stopRemoteEventStream();
       if (isRemoteTarget()) {
         // The server or another controller already moved the audible output away from
@@ -9048,17 +9196,40 @@ function savePlaybackPaneSettings() {
 function openPlaylistDialog(trackId = "") {
   openPlaylistDialogForTracks(trackId ? [trackId] : []);
 }
-function openPlaylistDialogForTracks(trackIds = []) {
-  const ids = [...new Set((trackIds || []).map(String).filter(id => itemById(id)))];
+function playlistTrackIds(values = []) {
+  // Rows already resolved by a caller are authoritative; a bare id still has to
+  // exist in the item cache.  That distinction is the whole point: a group action
+  // on a 13,000-song folder evicts its own tail from the 12,000-entry cache while
+  // it runs, so re-validating its rows by id dropped exactly those songs and still
+  // reported success (R501).
+  const list = Array.isArray(values) ? values : [values];
+  const ids = [];
+  const seen = new Set();
+  list.forEach(value => {
+    const isRow = Boolean(value) && typeof value === "object";
+    const id = String((isRow ? value.id : value) || "");
+    if (!id || seen.has(id)) return;
+    if (!isRow && !itemById(id)) return;
+    seen.add(id);
+    ids.push(id);
+  });
+  return ids;
+}
+function openPlaylistDialogForTracks(values = []) {
+  const list = Array.isArray(values) ? values : [values];
+  const ids = playlistTrackIds(list);
   state.pendingPlaylistTrack = ids[0] || "";
   state.pendingPlaylistTrackIds = ids;
+  // The rows travel with the dialog: the id list cannot be re-validated later
+  // without losing whatever the cache has forgotten in the meantime.
+  state.pendingPlaylistTracks = list.slice();
   $("playlistStatus").textContent = "";
   $("playlistNameInput").value = "";
   if (ids.length) {
     $("playlistDialogTitle").textContent = "加入播放列表";
     $("playlistDialogHelp").textContent = ids.length > 1 ? `选择一个已有播放列表，或输入名称创建新列表并加入所选 ${ids.length} 首歌曲。` : "选择一个已有播放列表，或输入名称创建新列表并加入当前歌曲。";
     $("savePlaylistBtn").textContent = "新建并加入";
-    renderPlaylistChoices(ids);
+    renderPlaylistChoices(list);
   } else {
     $("playlistDialogTitle").textContent = "新建播放列表";
     $("playlistDialogHelp").textContent = "输入一个名字，创建后可从曲目旁边加入歌曲。";
@@ -9068,8 +9239,9 @@ function openPlaylistDialogForTracks(trackIds = []) {
   $("playlistDialog").showModal();
   $("playlistNameInput").focus();
 }
-function renderPlaylistChoices(trackIds = []) {
-  const ids = [...new Set((Array.isArray(trackIds) ? trackIds : [trackIds]).map(String).filter(Boolean))];
+function renderPlaylistChoices(values = []) {
+  const list = Array.isArray(values) ? values : [values];
+  const ids = playlistTrackIds(list);
   const choices = $("playlistChoices");
   if (!state.playlists.length) {
     choices.innerHTML = `<p class="dialog-help">还没有自建播放列表。</p>`;
@@ -9079,24 +9251,26 @@ function renderPlaylistChoices(trackIds = []) {
     const exists = ids.length > 0 && ids.every(id => list.trackIds.includes(id));
   return `<button type="button" class="playlist-choice" data-add-to-list="${escapeHtml(list.id)}" ${exists ? "disabled" : ""}><span>${escapeHtml(list.name)}</span><small>${exists ? "已加入" : `${list.trackIds.length} 首`}</small></button>`;
   }).join("");
-  choices.querySelectorAll("[data-add-to-list]").forEach(button => button.onclick = () => addTracksToPlaylist(button.dataset.addToList, ids));
+  // Hand the same rows on: re-deriving them from ids here is where the tail used
+  // to fall off a second time.
+  choices.querySelectorAll("[data-add-to-list]").forEach(button => button.onclick = () => addTracksToPlaylist(button.dataset.addToList, list));
 }
-function createPlaylist(name, trackIds = []) {
+function createPlaylist(name, values = []) {
   const cleanName = String(name || "").trim();
   if (!cleanName) {
     $("playlistStatus").textContent = "请输入播放列表名称";
     return null;
   }
   const playlist = { id: makePlaylistId(), name: cleanName, trackIds: [] };
-  playlist.trackIds.push(...[...new Set((Array.isArray(trackIds) ? trackIds : [trackIds]).map(String).filter(id => itemById(id)))]);
+  playlist.trackIds.push(...playlistTrackIds(values));
   state.playlists.push(playlist);
   savePlaylists();
   renderPlaylistNav();
   return playlist;
 }
-function addTracksToPlaylist(playlistId, trackIds = []) {
+function addTracksToPlaylist(playlistId, values = []) {
   const playlist = state.playlists.find(x => x.id === playlistId);
-  const ids = [...new Set((trackIds || []).map(String).filter(id => itemById(id)))];
+  const ids = playlistTrackIds(values);
   if (!playlist || !ids.length) return;
   ids.forEach(id => { if (!playlist.trackIds.includes(id)) playlist.trackIds.push(id); });
   savePlaylists();
@@ -9143,10 +9317,16 @@ function openTrackMenuForRow(row, x, y, mobile = false) {
   } else if (!state.selectedTrackRowKeys.has(rowKey)) {
     setTrackSelection([rowKey]);
   }
-  openTrackContextMenu(id, x, y, mobile);
+  openTrackContextMenu(id, x, y);
 }
 function trackRowFromTarget(target, list = $("trackList")) {
   const row = target?.closest?.("[data-track-row-key]");
+  return row && list?.contains(row) ? row : null;
+}
+function groupRowFromTarget(target, list = $("trackList")) {
+  // The two row families are siblings inside #trackList, so every pointer handler
+  // has to say which one it is looking at before it starts a hold (R504).
+  const row = target?.closest?.("[data-group-row]");
   return row && list?.contains(row) ? row : null;
 }
 function startTrackLongPress(row, event) {
@@ -9178,6 +9358,60 @@ function finishTrackLongPress(event) {
   if (!gesture || gesture.pointerId !== event.pointerId) return;
   const triggered = gesture.triggered;
   cancelTrackLongPress();
+  if (!triggered) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+function cancelGroupLongPress() {
+  if (!activeGroupLongPress) return;
+  window.clearTimeout(activeGroupLongPress.timer);
+  activeGroupLongPress = null;
+}
+function suppressGroupClick(groupKey) {
+  suppressedGroupClick = { groupKey: String(groupKey || ""), until: Date.now() + 900 };
+}
+function shouldSuppressGroupClick(groupKey) {
+  return suppressedGroupClick.groupKey === String(groupKey || "") && Date.now() < suppressedGroupClick.until;
+}
+function startGroupLongPress(row, event) {
+  // Same gesture as the song rows, same gate: phone width, a finger, primary
+  // button.  A mouse never holds -- desktop already has right-click (R504).
+  if (!window.matchMedia("(max-width: 760px)").matches || event.pointerType === "mouse" || event.button !== 0) return;
+  cancelGroupLongPress();
+  const gesture = {
+    row,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    timer: 0,
+    triggered: false,
+  };
+  gesture.timer = window.setTimeout(() => {
+    if (activeGroupLongPress !== gesture) return;
+    if (!gesture.row?.isConnected) return;
+    const key = String(gesture.row.dataset.groupKey || "");
+    if (!key) return;
+    gesture.triggered = true;
+    setGroupSelection([key]);
+    // The finger is still down.  Lifting it fires a click on the row, and a click
+    // on an album row opens that album -- which would close the menu the hold just
+    // opened and look like the hold did nothing (R504).
+    suppressGroupClick(key);
+    openGroupContextMenu(key, gesture.startX, gesture.startY);
+  }, GROUP_LONG_PRESS_DURATION_MS);
+  activeGroupLongPress = gesture;
+}
+function moveGroupLongPress(event) {
+  const gesture = activeGroupLongPress;
+  if (!gesture || gesture.pointerId !== event.pointerId || gesture.triggered) return;
+  const moved = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+  if (moved > GROUP_LONG_PRESS_MOVE_THRESHOLD_PX) cancelGroupLongPress();
+}
+function finishGroupLongPress(event) {
+  const gesture = activeGroupLongPress;
+  if (!gesture || gesture.pointerId !== event.pointerId) return;
+  const triggered = gesture.triggered;
+  cancelGroupLongPress();
   if (!triggered) return;
   event.preventDefault();
   event.stopPropagation();
@@ -9251,6 +9485,14 @@ function bindTrackListInteractions() {
     const row = trackRowFromTarget(event.target, list);
     if (row) startTrackLongPress(row, event);
   });
+  list.addEventListener("pointerdown", event => {
+    if (libraryInteractionBlockedFor(event.target, list)) {
+      cancelGroupLongPress();
+      return;
+    }
+    const row = groupRowFromTarget(event.target, list);
+    if (row) startGroupLongPress(row, event);
+  });
   list.addEventListener("pointerdown", event => { speculateLibraryNavigation(event, list); });
   list.addEventListener("pointermove", event => { armLibraryNavigationHover(event, list); });
   list.addEventListener("pointerleave", () => cancelLibraryNavigationHoverDwell());
@@ -9264,6 +9506,9 @@ function bindTrackListInteractions() {
   list.addEventListener("pointermove", moveTrackLongPress);
   list.addEventListener("pointerup", finishTrackLongPress);
   list.addEventListener("pointercancel", finishTrackLongPress);
+  list.addEventListener("pointermove", moveGroupLongPress);
+  list.addEventListener("pointerup", finishGroupLongPress);
+  list.addEventListener("pointercancel", finishGroupLongPress);
 }
 const TRACK_ACTION_ICONS = {
   play: '<path d="m9 6 9 6-9 6Z"/>',
@@ -9292,7 +9537,16 @@ function groupActionButton(label, action, disabled = false) {
 function groupActionButtons(groupKey) {
   const selected = selectedGroupDescriptors(groupKey);
   const multiple = selected.length > 1;
+  // 0.1.172 removed both 播放 and 插播所选项目 from the group menu while the
+  // handler kept its `case "play"` branch alive, so for two years the menu could
+  // not reach it.  播放 is back by owner request (R499): a folder / album /
+  // artist row now starts playing everything under it in one click.  插播所选项目
+  // stays out -- nothing asked for it, and it means "insert after the current
+  // track", which is a different action from 播放 rather than a second way to
+  // reach the same one.  (The album detail page has no 播放全部 button of its
+  // own, which is why this menu entry matters there.)
   return [
+    groupActionButton("播放", "play"),
     groupActionButton("加入当前队列", "queue"),
     groupActionButton("加入播放列表", "playlist"),
     groupActionButton("打开", "open", multiple),
@@ -9334,12 +9588,17 @@ async function runGroupAction(action) {
     alert("读取所选项目的歌曲失败");
     return;
   }
-  if (!tracks.length) return;
+  if (!tracks.length) {
+    // A folder with no audio file, or a row whose tracks went away while the menu
+    // was open: a 播放 click that returns silently reads as a dead button (R499).
+    if (action === "play") alert("所选项目下没有可播放的歌曲");
+    return;
+  }
   const ids = tracks.map(item => String(item.id));
-  if (action === "play") playSelectedTracks(ids);
-  else if (action === "queue") addSelectedToQueue(ids);
+  if (action === "play") playTracks(tracks);
+  else if (action === "queue") addTracksToQueue(tracks);
   else if (action === "insert") insertSelectedTracks(ids);
-  else if (action === "playlist") openPlaylistDialogForTracks(ids);
+  else if (action === "playlist") openPlaylistDialogForTracks(tracks);
 }
 function actionButton(label, action, danger = false, disabled = false) {
   return `<button type="button" class="track-action-choice ${danger ? "danger" : ""}" data-track-action="${action}" ${disabled ? "disabled" : ""}>${trackActionIcon(action)}<span>${label}</span></button>`;
@@ -9603,16 +9862,28 @@ function trackActionButtons(trackId) {
   if (state.view === "queue") actions.push(actionButton("从当前队列移除", "remove-queue", true));
   if (state.view === "favorites") actions.push(actionButton("从收藏移除", "remove-favorite", true));
   if (isPlaylistView()) actions.push(actionButton("从此播放列表移除", "remove-playlist", true));
-  return actions;
+  // R505（负责人要求）: 手机上不再提供「打开包含的文件夹」「分享外部链接」「删除歌曲」。
+  // R500 曾把这三项发到手机，理由是 fnOS App 的 WebView 也给同一套宿主桥；用起来则不然：
+  // 前两项都是文件管理器的代理动作（手机上弹出另一个 App 的面板，或落回 showFileDetails
+  // 的死胡同），删除是唯一一枚 danger 项却紧挨着播放类动作，误触代价最大。桌面保持原样。
+  // 判定沿用菜单本来的分界线 760px，与右键/长按、分页、选择态同一口径；过滤放在这里而不是
+  // trackContextActionButtons，是为了让菜单与「歌曲操作」对话框永远一致（R500 的初衷）。
+  const hidden = isMobileActionLayout() ? MOBILE_HIDDEN_TRACK_ACTIONS : null;
+  return hidden
+    ? actions.filter(button => !hidden.has(/data-track-action="([^"]+)"/.exec(button)?.[1] || ""))
+    : actions;
 }
-function desktopTrackContextActionButtons(trackId) {
+function isMobileActionLayout() {
+  return Boolean(window.matchMedia?.("(max-width: 760px)")?.matches);
+}
+function trackContextActionButtons(trackId) {
+  // The row itself already plays on tap and on double click, so 播放 and 插播所选
+  // 项目 are not repeated in the menu. Everything else is shared with the 歌曲操作
+  // dialog, including the mobile opt-outs (they live in trackActionButtons so the
+  // two surfaces cannot disagree again — that disagreement is what R500 set out to
+  // fix, and R505 re-splits it deliberately, by width rather than by surface).
   return trackActionButtons(trackId).filter(button =>
     !/data-track-action="(?:play|insert)"/.test(button)
-  );
-}
-function mobileTrackContextActionButtons(trackId) {
-  return desktopTrackContextActionButtons(trackId).filter(button =>
-    !/data-track-action="(?:open-folder|share|delete-file)"/.test(button)
   );
 }
 function bindTrackActionButtons(container) {
@@ -9704,18 +9975,24 @@ async function resolveTrackLocation(trackId) {
   return data;
 }
 async function openContainingFolder(trackId) {
+  let location;
   try {
-    const location = await resolveTrackLocation(trackId);
+    location = await resolveTrackLocation(trackId);
     const folder = String(location.folder || "");
     if (!folder) throw new Error("无法获取歌曲所在文件夹");
     // fnOS 的文件管理入口接收目录路径；传入完整文件路径会被宿主当作“打开文件”处理。
     await runTrimHostAction("openFileManager", [folder]);
-    return true;
   } catch (error) {
     console.warn("openFileManager failed", error);
     alert(error.message || "飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
     return false;
   }
+  // The host only navigates to the directory, so landing there still leaves the
+  // song to be hunted down among hundreds of files. Locating it is ours, and a
+  // shell this player cannot read (the phone file manager, a plain browser tab)
+  // must not turn a folder that did open into an alert.
+  await locateNativeFile(location).catch(() => false);
+  return true;
 }
 function externalShareDateValue(date) {
   const offset = date.getTimezoneOffset() * 60000;
@@ -9782,16 +10059,24 @@ async function openExternalShareDetails() {
   }
 }
 async function shareTrack(trackId) {
+  let location;
   try {
-    const location = await resolveTrackLocation(trackId);
+    location = await resolveTrackLocation(trackId);
     await runTrimHostAction(null);
-    resetExternalShareDialog(location);
-    $("externalShareDialog").showModal();
-    return;
   } catch (error) {
     console.warn("fnOS file sharing handoff failed", error);
     alert(error.message || "无法调用飞牛外链服务，请从飞牛应用入口打开 fnAudio 后重试");
+    return;
   }
+  // Right-click share goes straight to fnOS's own panel. The built-in panel stays
+  // as the fallback for the cases where that hand-off cannot land (no desktop
+  // shell, an fnOS build whose file manager markup differs), and it creates the
+  // same link through the same share service.
+  resetExternalShareDialog(location);
+  if (await openNativeExternalShare(location)) return;
+  // The failed attempt left the file manager in front of us.
+  raiseHostWindow();
+  $("externalShareDialog").showModal();
 }
 async function createExternalShareLink() {
   const location = state.externalShareLocation;
@@ -9811,8 +10096,15 @@ async function createExternalShareLink() {
   $("externalShareStatus").textContent = "正在创建...";
   try {
     const defaultResponse = await runTrimHostAction("query", [{ req: "appcgi.sharesvr.share.link.default" }]);
-    const defaultLink = String(defaultResponse?.data?.defaultLink || "").replace(/\/$/, "");
-    if (defaultResponse?.result !== "succ" || !defaultLink) throw new Error(defaultResponse?.errmsg || "无法读取飞牛外链地址");
+    let defaultLink = String(defaultResponse?.data?.defaultLink || "").replace(/\/$/, "");
+    if (defaultResponse?.result !== "succ" || !defaultLink) {
+      // The host answers this on the desktop shell; a phone that only carries the
+      // Flutter bridge may not route it. The page already sits on the NAS origin,
+      // which is where /s/<id> is served, so its origin is the same link.
+      const origin = String(globalThis.location?.origin || "");
+      defaultLink = /^https?:\/\//.test(origin) ? origin.replace(/\/$/, "") : "";
+    }
+    if (!defaultLink) throw new Error(defaultResponse?.errmsg || "无法读取飞牛外链地址");
     const payload = {
       name: String(location.path || "").split("/").pop() || "fnAudio",
       files: [String(location.path)],
@@ -9820,24 +10112,187 @@ async function createExternalShareLink() {
     };
     if (passwordEnabled) payload.passwd = password;
     if (expiryEnabled) payload.validTo = validTo;
-    // query forwards the raw fnOS request; unlike the open gateway API, its
-    // arguments belong beside req, not inside a data envelope (see file.rm).
-    const created = await runTrimHostAction("query", [{ req: "appcgi.sharesvr.share.link.create", ...payload }]);
+    // share.link.create is not shaped like file.rm: the file manager puts every
+    // argument under `data` (`{req, data:{name, files, maxAccess, passwd,
+    // validTo}}`), and a flat body comes back as errno 3000001 "Invalid Params"
+    // with all the field names still correct. Reading the request off the shell's
+    // own WebSocket is what settled this — the flat form had never worked, on the
+    // desktop either, which is why the phone (no native file manager to right-click
+    // in) was the only place anyone noticed.
+    const created = await runTrimHostAction("query", [{
+      req: "appcgi.sharesvr.share.link.create",
+      data: payload,
+    }]);
     const id = String(created?.data?.id || "");
     if (created?.result !== "succ" || !id || !defaultLink) throw new Error(created?.errmsg || "create failed");
     $("externalShareUrl").value = `${defaultLink}/s/${id}`;
     $("externalSharePasswordResult").hidden = !passwordEnabled;
     $("externalSharePasswordResult").textContent = passwordEnabled ? `密码：${password}` : "";
+    // A link built from the NAS's LAN address cannot be opened from cellular data.
+    // Saying so beats letting someone send it to a friend and hear "it doesn't
+    // open" — the address is the NAS's own choice, not something this panel set.
+    // The host is read with a regex rather than `new URL` so the check does not
+    // depend on a global that some embedded webviews do not expose.
+    const shareHost = String(defaultLink).replace(/^[a-z]+:\/\//i, "").split("/")[0].split(":")[0].toLowerCase();
+    const localOnlyAddress = /^(?:10\.|127\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(shareHost) || shareHost === "localhost";
+    const hint = $("externalShareHint");
+    if (hint) {
+      hint.hidden = !localOnlyAddress;
+      hint.textContent = localOnlyAddress
+        ? "这是局域网地址，只有连在同一网络的设备能打开。要发给外网的人，请先在飞牛系统中配置远程访问。"
+        : "";
+    }
+    $("externalShareStatus").textContent = "";
     $("externalShareForm").hidden = true;
     $("externalShareResult").hidden = false;
   } catch (error) {
     console.warn("create external share failed", error);
+    if (error?.hostUnavailable) {
+      // A phone webview that does not route sharesvr requests cannot reach the
+      // file manager's menu either, so the details fallback below would only
+      // replace one dead end with another. Say what works instead.
+      $("externalShareStatus").textContent = `${error.message || "当前飞牛宿主不提供外链服务"}，请在飞牛「文件管理」里右键该文件创建分享链接`;
+      return;
+    }
     $("externalShareStatus").textContent = error.message || "创建失败，正在尝试打开飞牛文件详情";
     if (await openExternalShareDetails()) {
       $("externalShareStatus").textContent = "创建未完成，已请求打开飞牛文件详情，请在文件管理中检查或创建外部链接";
     }
   } finally {
     button.disabled = false;
+  }
+}
+function parentShellDocument() {
+  // The player runs in an iframe of the fnOS desktop, on the desktop's own origin
+  // (/cgi/ThirdParty/fnaudio/index.cgi/), so the document that hosts the file
+  // manager is readable. In a plain browser tab there is no parent to read and
+  // this returns null instead of throwing a SecurityError.
+  try {
+    const shell = window.parent;
+    if (!shell || shell === window) return null;
+    const doc = shell.document;
+    return doc && doc.documentElement ? doc : null;
+  } catch (error) {
+    return null;
+  }
+}
+function raiseHostWindow() {
+  // fnOS stacks app windows and raises one on press. The native hand-off opens
+  // the file manager first, so when it fails the built-in panel would open behind
+  // the window we just brought up — visible as "nothing happened". A press on our
+  // own frame raises us exactly the way a click on the player would.
+  const frame = typeof window === "undefined" ? null : window.frameElement;
+  if (!frame) return false;
+  const view = (frame.ownerDocument && frame.ownerDocument.defaultView) || window;
+  if (typeof view.MouseEvent !== "function") return false;
+  const init = { bubbles: true, cancelable: true, button: 0, buttons: 1 };
+  frame.dispatchEvent(new view.MouseEvent("mousedown", init));
+  frame.dispatchEvent(new view.MouseEvent("mouseup", init));
+  return true;
+}
+async function waitForElement(probe, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const found = probe();
+    if (found) return found;
+    if (Date.now() >= deadline) return null;
+    await new Promise(resolve => setTimeout(resolve, 120));
+  }
+}
+// How many list boxes the locate step pages through before handing over to the
+// file manager's own search. Eight boxes cover a few hundred rows, which is
+// roughly where typing into the search field becomes the cheaper way to a row.
+const NATIVE_FILE_SCAN_PAGES = 8;
+async function findNativeFileRow(shell, location) {
+  const bridge = globalThis.fnAudioNativeShare;
+  const path = String(location?.path || "");
+  const folder = String(location?.folder || "");
+  const fileName = path.split("/").pop();
+  if (!bridge || !shell || !path || !folder || !fileName) return null;
+  // Nothing is read until the window lists that folder. The previous listing can
+  // still be on screen while the host switches folders, and scanning it would page
+  // the wrong directory around and then read rows that belong to another place.
+  const listed = await waitForElement(() => bridge.hasTable(shell) && bridge.isFolderListing(shell, folder) ? true : null, 8000);
+  if (!listed) return null;
+  const rendered = bridge.findFileRow(shell, path);
+  if (rendered) return rendered;
+  const scroller = bridge.findListScroller(shell);
+  if (scroller) {
+    for (let page = 0; page < NATIVE_FILE_SCAN_PAGES; page += 1) {
+      if (!bridge.scrollListBy(scroller, Math.round(scroller.clientHeight * 0.8))) break;
+      const found = await waitForElement(() => bridge.findFileRow(shell, path), 400);
+      if (found) return found;
+    }
+  }
+  // Column sorting and paging belong to the user, so paging is a shortcut rather
+  // than a guarantee. The search field filters inside the open folder and reaches
+  // the row whatever the list is ordered by.
+  const input = bridge.findSearchInput(shell);
+  if (!input) return null;
+  bridge.typeInto(input, bridge.searchTerm(fileName));
+  return await waitForElement(() => bridge.findFileRow(shell, path), 8000);
+}
+async function selectNativeFileRow(shell, location) {
+  // True only once the row is on screen *and* selected, so "the folder opened" and
+  // "the song was located" stay distinguishable — to the caller and to a test.
+  const bridge = globalThis.fnAudioNativeShare;
+  if (!bridge || !shell) return false;
+  const row = await findNativeFileRow(shell, location);
+  if (!row) return false;
+  const scroller = bridge.findListScroller(shell);
+  if (scroller) bridge.revealRow(row, scroller);
+  bridge.selectRow(row);
+  return await waitForElement(() => bridge.isRowSelected(bridge.findFileRow(shell, location)) ? true : null, 2000) === true;
+}
+async function locateNativeFile(location) {
+  const shell = parentShellDocument();
+  if (!shell) return false;
+  return selectNativeFileRow(shell, location);
+}
+async function openNativeExternalShare(location) {
+  // The panel the user asked for is the file manager's own 「分享外部链接」, and it
+  // has no entry point: its bundle has no message listener, no global and no
+  // route, `openFileManager` only navigates to a folder, and a file path leaves the
+  // list where it was. So the player drives that menu itself — open the folder,
+  // find the song's row, right-click it, click the item. Every step is a bounded
+  // wait; any step that does not land returns false and the caller falls back to
+  // the built-in panel, which creates the same link through the same share service.
+  const shell = parentShellDocument();
+  const bridge = globalThis.fnAudioNativeShare;
+  const fileName = String(location?.path || "").split("/").pop();
+  const folder = String(location?.folder || "");
+  if (!shell || !bridge || !fileName || !folder) return false;
+  try {
+    await runTrimHostAction("openFileManager", [folder]);
+  } catch (error) {
+    console.warn("openFileManager failed", error);
+    return false;
+  }
+  const row = await findNativeFileRow(shell, location);
+  if (!row) return false;
+  bridge.openContextMenu(bridge.nameCellOf(row) || row);
+  const menuItem = await waitForElement(() => bridge.findMenuItem(shell, "分享外部链接"), 5000);
+  if (!menuItem) return false;
+  return bridge.activate(menuItem);
+}
+async function openExternalShareInFileManager() {
+  const location = state.externalShareLocation;
+  if (!location?.folder) {
+    $("externalShareStatus").textContent = "无法获取歌曲所在文件夹";
+    return false;
+  }
+  if (await openNativeExternalShare(location)) {
+    $("externalShareDialog").close();
+    return true;
+  }
+  try {
+    await runTrimHostAction("openFileManager", [String(location.folder)]);
+    $("externalShareStatus").textContent = "已打开飞牛文件管理，右键该文件可选择「分享外部链接」";
+    return true;
+  } catch (error) {
+    console.warn("openFileManager failed", error);
+    $("externalShareStatus").textContent = error.message || "无法打开飞牛文件管理，请从飞牛应用入口打开 fnAudio 后重试";
+    return false;
   }
 }
 async function copyExternalShareLink() {
@@ -9953,14 +10408,12 @@ function openTrackActionDialog(trackId) {
   bindTrackActionButtons(list);
   $("trackActionDialog").showModal();
 }
-function openTrackContextMenu(trackId, x, y, mobile = false) {
+function openTrackContextMenu(trackId, x, y) {
   const item = itemById(trackId);
   const menu = $("trackContextMenu");
   if (!item || !menu) return;
   state.actionTrackId = String(trackId);
-  const actions = mobile
-    ? mobileTrackContextActionButtons(trackId)
-    : desktopTrackContextActionButtons(trackId);
+  const actions = trackContextActionButtons(trackId);
   menu.innerHTML = `<strong class="track-context-title">${escapeHtml(displayTrackTitle(item) || "歌曲操作")}</strong><div class="track-context-actions">${actions.join("")}</div>`;
   menu.hidden = false;
   menu.style.left = `${Math.max(8, x)}px`;
@@ -10053,7 +10506,10 @@ async function toggleShuffle() {
   syncState();
 }
 function savePlaylistFromDialog() {
-  const playlist = createPlaylist($("playlistNameInput").value, state.pendingPlaylistTrackIds || (state.pendingPlaylistTrack ? [state.pendingPlaylistTrack] : []));
+  const pending = state.pendingPlaylistTracks?.length
+    ? state.pendingPlaylistTracks
+    : (state.pendingPlaylistTrackIds || (state.pendingPlaylistTrack ? [state.pendingPlaylistTrack] : []));
+  const playlist = createPlaylist($("playlistNameInput").value, pending);
   if (!playlist) return;
   $("playlistDialog").close();
   setView(`playlist:${playlist.id}`);
@@ -10397,6 +10853,15 @@ async function pushToDevice(deviceId, item = currentItem()) {
       state.remoteBaseSeconds = 0;
       state.remoteSnapshotAt = Date.now();
       updateRemoteUi();
+    } else if (data.core) {
+      // The load reply already carries the authoritative core snapshot, and by
+      // then core holds position 0 plus *this* track's duration. Projecting it
+      // here is what makes the time readout land with the click. Without it a
+      // DAC load repainted only the artist line and the rail kept the previous
+      // track's duration until an SSE frame or the 5s status poll corrected it -
+      // measured at 2.4s to 5.2s, which is exactly the "DAC feels slower than
+      // Volumio" complaint.
+      applyRemotePlaybackSnapshot(remoteSnapshotFromCore(data.core, deviceId));
     }
     state.dacStrategy = data.strategy || null;
     if (isDacTarget(deviceId) && item) {
@@ -10691,6 +11156,7 @@ $("shareExpiryEnabled").onchange = syncExternalShareOptions;
 $("sharePasswordEnabled").onchange = syncExternalShareOptions;
 $("shareAccessEnabled").onchange = syncExternalShareOptions;
 $("createExternalShare").onclick = createExternalShareLink;
+$("openExternalShareInFileManager").onclick = openExternalShareInFileManager;
 $("copyExternalShare").onclick = copyExternalShareLink;
 $("openExternalShareDetails").onclick = openExternalShareDetails;
 $("favoriteCurrentBtn").onclick = toggleCurrentFavorite;
@@ -10724,7 +11190,7 @@ $("deviceSearchInput").addEventListener("input", event => {
   state.deviceSearchQuery = event.target.value || "";
   // Signature caching would swallow a filter-only change, so clear it first.
   state.deviceTargetsSignature = "";
-  renderDeviceTargets(state.deviceTargetsRendered, state.playTarget || "local");
+  renderDeviceTargets(state.deviceTargetsRendered, resolvedDeviceTarget(state.deviceTargetsRendered, state.playTarget || "local"));
 });
 $("scanDevices").onclick = () => loadDevices(true);
 $("playBtn").onclick = () => {

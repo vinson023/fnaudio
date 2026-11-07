@@ -239,8 +239,8 @@ function setupGroups(request, groups = null) {
   assert.deepEqual(Array.from(await ordinary.run(), item => item.id), ["disc", "release"]);
   assert.deepEqual(JSON.parse(JSON.stringify(ordinaryQueries)), [
     { view: "folders", root: "/music", folder: "disc", subtree: 1 },
-    { view: "albums", group: "release" },
-  ], "a folder row covers its whole subtree while an album row keeps its existing query contract");
+    { view: "albums", group: "release", sort: "track_no", dir: "asc" },
+  ], "a folder row covers its whole subtree while an album row is resolved in album-detail order (track_no asc, R499)");
   const empty = setupGroups(() => { throw new Error("empty selection must not fetch"); }, []);
   assert.equal((await empty.run()).length, 0);
   console.log("Selected group batch cleanup and context regression checks passed.");

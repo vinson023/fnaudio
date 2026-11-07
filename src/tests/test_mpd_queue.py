@@ -9,7 +9,14 @@ from unittest import mock
 sys.path.insert(0, "app/server")
 
 from playback.models import TrackRef
-from services.mpd_service import MAX_MPD_PROC_CMDLINE_BYTES, MAX_MPD_QUEUE_ENTRIES, MpdService, _config_int, _config_text
+from services.mpd_service import (
+    MAX_MPD_PROC_CMDLINE_BYTES,
+    MAX_MPD_QUEUE_ENTRIES,
+    QUEUE_REPLACE_STOP_GRACE,
+    MpdService,
+    _config_int,
+    _config_text,
+)
 
 
 class MpdQueueTests(unittest.TestCase):
@@ -1113,5 +1120,81 @@ class MpdQueueTests(unittest.TestCase):
         service.stop.assert_called_once()
 
 
+    @mock.patch("services.mpd_service.mpd_replace_queue")
+    def test_queue_rewrite_is_flagged_while_mpd_is_being_rewritten(self, replace_queue):
+        """R501: the `clear` that opens a queue replacement stops the playing song.
+
+        The transport listener reads every unexplained PLAYING -> STOPPED as "the
+        managed track ended" and advances the logical queue; right after a
+        replacement that queue is the *new* one at index 0, so "play this folder"
+        landed on its second song.  `suppress_stop_transition` cannot express this
+        case: it is a fixed window, and the addid phase of a 531-song folder takes
+        about a second, which outlives any value that would still be safe for a
+        short track.  The flag therefore has to be up for the whole command.
+        """
+        service = self.make_service()
+        observed = []
+
+        def replace(*_args, **_kwargs):
+            observed.append(service._queue_replacement_in_flight())
+            return {"ok": True, "song_ids": {"a": "11"}}
+
+        replace_queue.side_effect = replace
+        queue = [TrackRef.from_mapping({"id": "a", "path": "/music/a.flac"})]
+        service.sync_playback_queue(queue, "a")
+
+        self.assertEqual(observed, [True], "the flag must be up while MPD is being rewritten")
+        self.assertEqual(service._queue_replace_depth, 0, "the flag must come down when the command returns")
+        self.assertTrue(
+            service._queue_replacement_in_flight(),
+            "a status poll already in flight when the command returned still belongs to it",
+        )
+        service._queue_replace_finished_at -= QUEUE_REPLACE_STOP_GRACE + 0.1
+        self.assertFalse(service._queue_replacement_in_flight())
+
+    def test_a_stop_caused_by_a_queue_rewrite_never_reaches_the_transport_listener(self):
+        """The decision the bug actually rode on: listener skipped, not merely logged."""
+        service = self.make_service()
+        payload = {
+            "status": {
+                "transport": {"state": "STOPPED"},
+                "raw": {"state": "stop"},
+                "position": {"rel_seconds": 12.0, "duration_seconds": 200.0},
+            }
+        }
+        calls = []
+        service.set_status_listener(lambda *args: calls.append(args))
+
+        def run_one_iteration():
+            service._last_transport = "PLAYING"
+            service._idle_stop.clear()
+
+            def idle_once(*_args, **_kwargs):
+                service._idle_stop.set()
+                return {"changed": ["player"]}
+
+            with mock.patch("services.mpd_service.mpd_idle", side_effect=idle_once), \
+                 mock.patch.object(MpdService, "refresh_status", return_value=payload):
+                service._idle_loop()
+
+        queue = [TrackRef.from_mapping({"id": "a", "path": "/music/a.flac"})]
+        with mock.patch(
+            "services.mpd_service.mpd_replace_queue",
+            return_value={"ok": True, "song_ids": {"a": "11"}},
+        ):
+            service.sync_playback_queue(queue, "a")
+
+        run_one_iteration()
+        self.assertEqual(calls, [], "a queue rewrite stops MPD itself; that is not a track end")
+
+        # The same STOPPED, read a moment later, is an ordinary end and must keep
+        # advancing the queue — the guard is the command, not "stops are ignored".
+        service._queue_replace_finished_at -= QUEUE_REPLACE_STOP_GRACE + 0.1
+        run_one_iteration()
+        self.assertEqual(len(calls), 1, "an ordinary end must still advance the queue")
+        self.assertEqual(calls[0][:2], ("PLAYING", "STOPPED"))
+
+
 if __name__ == "__main__":
+
     unittest.main()

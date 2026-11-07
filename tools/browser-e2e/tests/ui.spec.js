@@ -190,6 +190,180 @@ test("desktop library, context menu, device picker and settings are functional",
   expect(consoleErrors).toEqual([]);
 });
 
+test("group rows play everything under them from the right-click menu", async ({ page }) => {
+  // R499: the group menu lost 播放 in 0.1.172 while `runGroupAction()` kept the
+  // branch, so for two years the menu could not reach it.  This drives the real
+  // menu on a real album and artist row and reads the queue the player reports.
+  const unexpected = [];
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    const location = message.location?.() || {};
+    // Actually playing a track points <audio> at media/fixture-N, which this
+    // fixture does not serve. That 404 belongs to the harness, not to the app,
+    // so it is the one console error this test tolerates.
+    if (/\/media\/fixture-/.test(String(location.url || ""))) return;
+    unexpected.push(`${message.text()} @ ${location.url || "<inline>"}`);
+  });
+  await loadLibrary(page, { width: 1440, height: 900 });
+  const menu = page.locator("#trackContextMenu");
+
+  await page.locator("[data-view='albums']").click();
+  await expect(page.locator(".album-group-row")).toHaveCount(3);
+  await page.locator(".album-group-row").filter({ hasText: "Native DSD" }).click({ button: "right" });
+  await expect(menu).toBeVisible();
+  expect(await menu.locator("[data-group-action]").evaluateAll(nodes => nodes.map(node => node.dataset.groupAction)))
+    .toEqual(["play", "queue", "playlist", "open"]);
+  await menu.locator("[data-group-action='play']").click();
+  await expect(menu).toBeHidden();
+  await expect(page.locator("#queueCount")).toHaveText("2");
+  await expect(page.locator("#nowTitle")).toHaveText("DSD Reference");
+
+  await page.locator("[data-view='artists']").click();
+  await expect(page.locator(".group-row").filter({ hasText: "Lab Artist" })).toHaveCount(1);
+  await page.locator(".group-row").filter({ hasText: "Lab Artist" }).click({ button: "right" });
+  await expect(menu).toBeVisible();
+  await menu.locator("[data-group-action='play']").click();
+  await expect(menu).toBeHidden();
+  await expect(page.locator("#queueCount")).toHaveText("2");
+  await expect(page.locator("#nowTitle")).toHaveText("DSD Reference");
+  expect(unexpected).toEqual([]);
+});
+
+test("album and genre detail pages offer 播放全部 in their own breadcrumb", async ({ page }) => {
+  // R501: `data-play-all` used to be rendered only on the category-detail header,
+  // which the album and genre detail pages replace with their breadcrumb -- so the
+  // two views a user reaches by opening a row had no way to play the page, only
+  // double-clicking row by row.  Drive the real buttons and check the queue the
+  // player reports lines up with what the page is showing.
+  const unexpected = [];
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    const location = message.location?.() || {};
+    if (/\/media\/fixture-/.test(String(location.url || ""))) return;
+    unexpected.push(`${message.text()} @ ${location.url || "<inline>"}`);
+  });
+  const pageRowTitles = selector => page.locator(`${selector} .track .track-title`).evaluateAll(nodes => nodes.map(node => node.textContent.trim()));
+
+  await loadLibrary(page, { width: 1440, height: 900 });
+  await page.locator("[data-view='albums']").click();
+  await expect(page.locator(".album-group-row")).toHaveCount(3);
+  await page.locator(".album-group-row").filter({ hasText: "Native DSD" }).click();
+  const albumPlayAll = page.locator(".album-detail-breadcrumb [data-play-all]");
+  await expect(albumPlayAll).toBeVisible();
+  await expect(albumPlayAll).toHaveText("播放全部");
+  const albumRows = await pageRowTitles(".album-detail-track-list");
+  expect(albumRows.length).toBeGreaterThan(1);
+  await albumPlayAll.click();
+  await expect(page.locator("#queueCount")).toHaveText(String(albumRows.length));
+  // The album opens in track order, so the queue has to start on the first row
+  // the page lists -- not on whatever the album list happened to sort by.
+  await expect(page.locator("#nowTitle")).toHaveText(albumRows[0]);
+
+  await page.locator(".album-detail-breadcrumb [data-group-back]").click();
+  await expect(page.locator(".album-group-row")).toHaveCount(3);
+
+  // Genre has no `track_no` order, so only the invariant "queue starts on the
+  // first row and holds the whole page" is asserted here.
+  await page.locator("[data-view='genres']").click();
+  await expect(page.locator(".group-row")).toHaveCount(1);
+  await page.locator(".group-row").filter({ hasText: "未分类" }).click();
+  const genrePlayAll = page.locator(".category-tracks-breadcrumb [data-play-all]");
+  await expect(genrePlayAll).toBeVisible();
+  const genrePageRows = await pageRowTitles("#trackList");
+  expect(genrePageRows.length).toBe(4);
+  await genrePlayAll.click();
+  await expect(page.locator("#queueCount")).toHaveText(String(genrePageRows.length));
+  await expect(page.locator("#nowTitle")).toHaveText(genrePageRows[0]);
+  expect(unexpected).toEqual([]);
+});
+
+test("phone hold opens the group menu and flat lists carry their own 播放全部", async ({ page }) => {
+  // R504: on a phone the group rows had no entry point at all -- `contextmenu`
+  // returned early below 761px and there was no hold timer -- so 播放 was only
+  // reachable with a mouse.  The flat lists have no row to hold, so their whole-
+  // list action belongs in the toolbar instead.
+  const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
+  const openView = async view => {
+    if ((page.viewportSize()?.width ?? 1440) <= 760) await page.locator("#mobileNavBtn").click();
+    await page.locator(`[data-view='${view}']`).click();
+  };
+
+  await openView("albums");
+  await expect(page.locator(".album-group-row")).toHaveCount(3);
+  // The fixture does not publish a per-album count, so the expected size and the
+  // expected first track are read from the album's own detail page -- which is
+  // also the order the hold's 播放 has to reproduce.
+  const albumRow = page.locator(".album-group-row").filter({ hasText: "Native DSD" });
+  await albumRow.click();
+  const albumTracks = await page.locator(".album-detail-track-list .track .track-title").evaluateAll(nodes => nodes.map(node => node.textContent.trim()));
+  expect(albumTracks.length).toBeGreaterThan(1);
+  await page.locator(".album-detail-breadcrumb [data-group-back]").click();
+  await expect(page.locator(".album-group-row")).toHaveCount(3);
+  await albumRow.evaluate(async node => {
+    const box = node.getBoundingClientRect();
+    const base = {
+      bubbles: true, cancelable: true, pointerId: 1, pointerType: "touch", isPrimary: true,
+      button: 0, clientX: Math.round(box.left + 40), clientY: Math.round(box.top + box.height / 2),
+    };
+    node.dispatchEvent(new PointerEvent("pointerdown", base));
+    await new Promise(resolve => setTimeout(resolve, 750));
+    node.dispatchEvent(new PointerEvent("pointerup", base));
+  });
+  const menu = page.locator("#trackContextMenu");
+  await expect(menu).toBeVisible();
+  await expect(menu.locator("[data-group-action]").first()).toHaveAttribute("data-group-action", "play");
+  // The release that ends the hold must not also open the album: the row would
+  // then navigate away and take the menu with it.
+  await expect(page.locator(".album-detail-breadcrumb")).toHaveCount(0);
+  await menu.locator("[data-group-action='play']").click();
+  await expect(page.locator("#queueCount")).toHaveText(String(albumTracks.length));
+  await expect(page.locator("#nowTitle")).toHaveText(albumTracks[0]);
+
+  await openView("all");
+  const allBar = page.locator("#listToolbar [data-play-all]");
+  await expect(allBar).toBeVisible();
+  await expect(allBar).toHaveText("播放全部");
+  // #allCount is not hydrated by the fixture, so the number the bar itself prints
+  // is the one the queue has to match.
+  const allBarText = (await page.locator("#listToolbar span").first().textContent()) || "";
+  const allCount = Number(allBarText.replace(/[^0-9]/g, ""));
+  expect(allCount).toBeGreaterThan(0);
+  await allBar.click();
+  await expect(page.locator("#queueCount")).toHaveText(String(allCount));
+
+  await openView("random100");
+  await expect(page.locator("#listToolbar [data-play-all]")).toBeVisible();
+  // The fixture has no audio bytes, so asking the player to start a track leaves
+  // generic "Failed to load resource" lines; anything else is a real error.
+  expect(consoleErrors.filter(text => !/Failed to load resource/.test(text))).toEqual([]);
+});
+
+// R505: the owner asked for 打开包含的文件夹 / 分享外部链接 / 删除歌曲 to disappear on
+// phones. All three are file-manager proxy actions (on a phone they either launch
+// another app's panel or fall into showFileDetails), and 删除 is the only danger item
+// sitting right next to the playback group. Pin both sides of the width line.
+test("phone track menu drops the three file actions", async ({ page }) => {
+  const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
+  const menu = page.locator("#trackContextMenu");
+  const actionsOf = async () => menu.locator("[data-track-action]")
+    .evaluateAll(nodes => nodes.map(node => node.dataset.trackAction));
+
+  await page.locator(".track").first().click({ button: "right" });
+  await expect(menu).toBeVisible();
+  const phoneActions = await actionsOf();
+  expect(phoneActions).toEqual(expect.arrayContaining(["queue", "favorite", "playlist", "info"]));
+  expect(phoneActions).not.toContain("open-folder");
+  expect(phoneActions).not.toContain("share");
+  expect(phoneActions).not.toContain("delete-file");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(".track").first().click({ button: "right" });
+  await expect(menu).toBeVisible();
+  const desktopActions = await actionsOf();
+  expect(desktopActions).toEqual(expect.arrayContaining(["open-folder", "share", "delete-file"]));
+  expect(consoleErrors).toEqual([]);
+});
+
 test("mobile search, menu, scrolling surface and footer stay usable", async ({ page }) => {
   const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
   // The top bar is retired below 761px: both phone controls are gone from the

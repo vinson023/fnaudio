@@ -46,7 +46,11 @@ const context = {
   audio: { currentTime: 0, duration: NaN },
 };
 vm.createContext(context);
+// `applyRemotePlaybackSnapshot` asks the shipped target policy whether a frame
+// belongs to this output, so the real module is loaded instead of a stub.
+vm.runInContext(fs.readFileSync("app/ui/playback_target_policy.js", "utf8"), context);
 vm.runInContext([
+  functionSource("sameDeviceTarget"),
   functionSource("playbackSeconds"),
   functionSource("remoteStateVersion"),
   constSource("TRANSPORT_EXTRAPOLATION_LIMIT_SECONDS"),

@@ -2706,6 +2706,19 @@ def playback_load_selected(handler, target_id, item, position=0):
     # delayed startup restore to write the old persisted session afterward.
     cancel_playback_restore_retry()
     target_kind = playback_target_kind(target_id)
+    # A DLNA cast and local playback share this device's output. Choosing a
+    # library track here takes the output back, so the renderer session has to
+    # end before the load is dispatched: otherwise every later renderer poll
+    # still reports the cast as active (MPD is playing *something*) and the UI
+    # keeps repainting the cast over the track that was just selected, which is
+    # what made playback jump back and forth between recently pushed songs.
+    # Pushing to another UPnP device (dlna_push) does not touch this output and
+    # therefore leaves an incoming cast alone.
+    if target_kind != "dlna_push" and DLNA_PROTOCOL is not None:
+        try:
+            DLNA_PROTOCOL.renderer.supersede("local playback started")
+        except Exception:
+            pass
     PLAYBACK_CORE.set_target("local" if target_kind == "browser" else target_id, target_kind)
     context = {
         "handler": handler,
@@ -3479,6 +3492,12 @@ def initialize_dlna_services(server):
         return int(hashlib.sha256(signature.encode("utf-8")).hexdigest()[:8], 16)
 
     def renderer_state_changed(state):
+        if state.get("superseded") is True:
+            # The session was ended by local playback taking the shared output.
+            # It still carries its URI (so a controller can press Play again),
+            # and publishing that URI here would put a one-item "external" queue
+            # back into Playback Core over the library track that just started.
+            return
         uri = str(state.get("uri") or "")
         title = str(state.get("title") or os.path.basename(urllib.parse.urlparse(uri).path) or "DLNA input")
         PLAYBACK_CORE.sync_external_session(

@@ -113,7 +113,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # unrecorded 0.2.125/0.2.129 releases grew the tracked surface by one file and
 # 475 lines; the move arithmetic above stays at the historical 9,695/8,530.
 JAVA_TOTAL_FILES = 47
-JAVA_TOTAL_LINES = 10422
+JAVA_TOTAL_LINES = 10424
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

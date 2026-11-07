@@ -1,6 +1,8 @@
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, "app/server")
 
@@ -63,6 +65,72 @@ class PlaybackQueueTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertTrue(response["ok"])
             self.assertEqual(metadata.track_ids, ["current"])
+
+
+class LocalLoadSupersedesCastTests(unittest.TestCase):
+    """Starting a library track here must end an incoming DLNA cast.
+
+    The renderer shares this device's output, so a cast that is left registered
+    after local playback starts keeps claiming the transport row on every
+    status poll: the UI then repaints the pushed song over the track the user
+    just chose, and stops the local element with it.
+    """
+
+    def _load(self, target_id):
+        events = []
+
+        class Renderer:
+            def supersede(self, reason=""):
+                events.append(("supersede", reason))
+                return True
+
+        class Protocol:
+            renderer = Renderer()
+
+        class Core:
+            def set_target(self, target, kind):
+                events.append(("target", target, kind))
+
+            def dispatch(self, command):
+                return {"ok": True, "state": {"queue": [], "current": ""}, "result": {"ok": True}}
+
+            def snapshot(self):
+                return {"queue": [], "current": ""}
+
+        with tempfile.TemporaryDirectory() as root:
+            handler = types.SimpleNamespace(server=types.SimpleNamespace(config={"cache_dir": root}))
+            previous_protocol, previous_core = server.DLNA_PROTOCOL, server.PLAYBACK_CORE
+            server.DLNA_PROTOCOL, server.PLAYBACK_CORE = Protocol(), Core()
+            try:
+                with mock.patch.object(server, "save_current_playback_session", return_value=7):
+                    response, status = server.playback_load_selected(
+                        handler, target_id, {"id": "track-1", "title": "Track"}, 0
+                    )
+            finally:
+                server.DLNA_PROTOCOL, server.PLAYBACK_CORE = previous_protocol, previous_core
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        return events
+
+    def test_a_local_load_supersedes_the_cast_before_the_core_switches_target(self):
+        events = self._load("local")
+
+        self.assertEqual(events[0][0], "supersede", "the cast must end before the target moves")
+        self.assertTrue(events[0][1])
+        self.assertEqual(events[1][0], "target")
+
+    def test_a_load_on_a_usb_dac_supersedes_the_cast(self):
+        events = self._load("mpd")
+
+        self.assertEqual([event[0] for event in events], ["supersede", "target"])
+
+    def test_pushing_to_another_device_leaves_the_incoming_cast_alone(self):
+        # A dlna_push load drives a remote renderer, not this device's output, so
+        # cutting a local cast there would silence playback the user never touched.
+        events = self._load("dlna_push:uuid:remote-speaker")
+
+        self.assertEqual([event[0] for event in events], ["target"])
 
 
 if __name__ == "__main__":

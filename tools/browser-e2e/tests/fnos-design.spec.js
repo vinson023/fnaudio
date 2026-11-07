@@ -1832,6 +1832,11 @@ for(const width of [320,1440]) {
     expect(shareGeometry[0].width, 'external-share cancel action must remain wide enough').toBeGreaterThanOrEqual(80);
     expect(shareGeometry[1].width, 'external-share confirm action must remain wide enough').toBeGreaterThanOrEqual(80);
     expect(shareGeometry[1].right, 'external-share actions must stay inside the dialog').toBeLessThanOrEqual(width - 8);
+    // fnOS exposes no share panel, so the dialog offers a hand-off to the file
+    // manager next to the file it refers to. It must still fit the dialog row.
+    const nativeLink = page.locator('#openExternalShareInFileManager');
+    await expect(nativeLink).toBeVisible();
+    expect(await nativeLink.evaluate(el => el.getBoundingClientRect().right), 'the file-manager hand-off must stay inside the dialog').toBeLessThanOrEqual(width - 8);
     await screenshot(page,info,'external-share');
     await page.locator('#cancelExternalShare').click();
   });

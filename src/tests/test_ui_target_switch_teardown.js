@@ -101,10 +101,6 @@ function setup(overrides, contextOverrides) {
     scheduleUserStateSave: () => calls.push("scheduleUserStateSave"),
     scheduleDeviceRefresh: () => calls.push("scheduleDeviceRefresh"),
     stableDeviceTargets: value => value,
-    resolvedDeviceTarget: (targets, reported) => {
-      const id = String(reported || "local");
-      return targets.some(target => String(target.id || "") === id) ? id : "local";
-    },
     recoverUnavailablePlaybackTarget: async () => calls.push("recoverUnavailablePlaybackTarget"),
     stopRemoteEventStream: () => { state.remoteEventStreamOpen = false; calls.push("stopRemoteEventStream"); },
     startRemoteEventStream: () => { state.remoteEventStreamOpen = true; calls.push("startRemoteEventStream"); },
@@ -117,11 +113,18 @@ function setup(overrides, contextOverrides) {
   };
   Object.assign(context, contextOverrides || {});
   vm.createContext(context);
+  // The real target policy, not a stub: `loadDevices` now asks it whether two
+  // spellings name one output, and a stub here would silently diverge from the
+  // shipped rule (the teardown assertions would then pass or fail for the wrong
+  // reason).
+  vm.runInContext(fs.readFileSync("app/ui/playback_target_policy.js", "utf8"), context);
   vm.runInContext([
     functionSource("setPlayButton"),
     functionSource("stopLocalAudio"),
     functionSource("localIsPlayingNow"),
     functionSource("selectPlaybackTarget"),
+    functionSource("resolvedDeviceTarget"),
+    functionSource("sameDeviceTarget"),
     functionSource("loadDevices"),
     "globalThis.h = { selectPlaybackTarget, loadDevices, localIsPlayingNow, stopLocalAudio };",
   ].join("\n"), context);
@@ -224,9 +227,14 @@ async function flush() {
     "the switch must never send a stop control request");
 
   const devicesBody = functionSource("loadDevices");
-  const reconcileAt = devicesBody.indexOf("if (previousTarget !== currentTarget) {");
+  // A spelling-only difference ("mpd" vs "mpd:<stable id>") is the same output and
+  // must not tear the element down, so the teardown sits behind `sameTarget`.
+  const sameAt = devicesBody.indexOf("const sameTarget = sameDeviceTarget(previousTarget, currentTarget);");
+  const reconcileAt = devicesBody.indexOf("if (!sameTarget && previousTarget !== currentTarget) {");
   const remoteGateAt = devicesBody.indexOf("if (isRemoteTarget())", reconcileAt);
   const reconcileTeardownAt = devicesBody.indexOf("if (localIsPlayingNow()) stopLocalAudio();", reconcileAt);
+  assert.ok(sameAt >= 0 && sameAt < reconcileAt,
+    "the reconcile path must name the same output before it decides to tear down");
   assert.ok(reconcileAt >= 0 && remoteGateAt > reconcileAt && reconcileTeardownAt > remoteGateAt,
     "the reconcile teardown must stay inside the changed-target block and behind the device gate");
   assert.equal(devicesBody.split("stopLocalAudio();").length - 1, 1, "exactly one teardown per reconcile path");

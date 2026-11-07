@@ -18,6 +18,11 @@ const candidatePresentation = fs.readFileSync("app/ui/metadata_candidate_present
 const renderPolicy = fs.readFileSync("app/ui/library_render_policy.js", "utf8");
 const snapshotReusePolicy = fs.readFileSync("app/ui/library_snapshot_reuse_policy.js", "utf8");
 const rowSignaturePolicy = fs.readFileSync("app/ui/library_row_signature_policy.js", "utf8");
+// `validateRestoredPlaybackTarget` resolves a saved target against the device
+// list through the shipped policy, so the harness loads the real module.
+const targetPolicyContext = { globalThis: {} };
+vm.runInNewContext(fs.readFileSync("app/ui/playback_target_policy.js", "utf8"), targetPolicyContext);
+const targetPolicyApi = targetPolicyContext.globalThis.fnAudioPlaybackTargetPolicy;
 const pageSizePolicy = fs.readFileSync("app/ui/library_page_size_policy.js", "utf8");
 const pageSnapshotPolicy = fs.readFileSync("app/ui/library_page_snapshot_policy.js", "utf8");
 const statusRefreshPolicy = fs.readFileSync("app/ui/library_status_refresh_policy.js", "utf8");
@@ -554,7 +559,7 @@ assert.match(app, /const pool = fnAudioBatchRequestPool\(groups, fnAudioBatchReq
 assert.match(app, /const locationPool = fnAudioBatchRequestPool\(ids, fnAudioBatchRequestPool\.DEFAULT_CONCURRENCY, resolveTrackLocation\);/);
 assert.match(app, /for \(let index = 0; index < batches\.length; index \+= 1\) \{\s*\/\/ A large favorite\/playlist[\s\S]*?cacheLibraryItems\(await pool\.get\(index\), false\);\s*\}\s*\} finally \{[\s\S]*?pool\.cancel\("item resolution finished"\);\s*\}\s*state\.itemCache\.trim\(new Set/, "ID hydration must defer cache eviction until all batches are written and cancel queued work on exit");
 assert.match(app, /fnAudioDeviceTargetPresentation\.stableTargets\(targets, displayText\)/);
-assert.match(app, /return targets\.some\(target => String\(target\.id \|\| ""\) === targetId\) \? targetId : "local"/);
+assert.match(app, /return globalThis\.fnAudioPlaybackTargetPolicy\.resolvePublished\(targets, reportedTarget\) \|\| "local";/);
 assert.match(app, /fetchJson: \(requestUrl, requestMessage, requestSignal\) => fetchJsonChecked\(/, "Library loader must preserve checked API responses");
 assert.match(app, /async function fetchJsonChecked\(input, init = \{\}, fallbackMessage = "请求失败", options = \{\}\)[\s\S]*?fnAudioResponseJsonLoader\.read\(\{[\s\S]*?timeoutMs: 15000,[\s\S]*?onTimeout: \(\) => \{ try \{ controller\?\.abort\(\);/, "Library response loading must bound headers and JSON-body parsing before it occupies an in-flight slot indefinitely");
 assert.match(app, /const strictBody = options\?\.strictBody === true;[\s\S]*?if \(strictBody && globalThis\.fnAudioResponseJsonLoader\.parsedBody\(result\.bodyStatus\) === false\) \{[\s\S]*?error\.name = "ResponseError";[\s\S]*?error\.bodyStatus = result\.bodyStatus;[\s\S]*?throw error;\s*\}\s*return data;/, "Only the strict caller may fail on an unreadable body, and it must still return a parsed one");
@@ -973,6 +978,7 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     const context = runUi(validateTargetSource, "validateRestoredPlaybackTarget", {
       state,
       isRemoteTarget: () => true,
+      fnAudioPlaybackTargetPolicy: targetPolicyApi,
       displayText: uiDisplayText,
       updateDeviceLabel: () => { calls.push("label"); },
       recoverUnavailablePlaybackTarget: async (notify, expected) => {
@@ -1021,6 +1027,8 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
   // to lose a live cast, and it also blanked the panel.
   const loadDevicesSource = appSlice("async function loadDevices(forceRefresh = false) {",
     "function cancelDeviceLoad() {", "loadDevices")
+    + appSlice("function resolvedDeviceTarget(",
+      "async function recoverUnavailablePlaybackTarget(notify", "resolvedDeviceTarget")
     + appSlice("function stableDeviceTargets(",
       "async function recoverUnavailablePlaybackTarget(notify", "stableDeviceTargets");
 
@@ -1047,6 +1055,7 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
       $: id => nodes[id],
       displayText: uiDisplayText,
       isRemoteTarget: () => false,
+      fnAudioPlaybackTargetPolicy: targetPolicyApi,
       renderDeviceTargets: (targets, current) => {
         calls.push(["render", targets.length, current]);
       },
@@ -1272,8 +1281,8 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.equal(gateContext.backgroundBlocked(), false, "the deadline is the only thing that releases it");
     const binder = app.match(/function bindTrackListInteractions\([\s\S]*?\n\}/);
     assert.ok(binder, "the track list interaction binder must remain one top-level function");
-    assert.equal(countOccurrences(binder[0], "libraryInteractionBlockedFor(event.target, list)"), 3,
-      "click, contextmenu and pointerdown all have to consult the same predicate");
+    assert.equal(countOccurrences(binder[0], "libraryInteractionBlockedFor(event.target, list)"), 4,
+      "click, contextmenu, the song hold and the group hold all have to consult the same predicate");
     assert.equal(binder[0].includes("state.libraryInteractionBlocked"), false,
       "the binder may not read the flag directly, or navigation would be swallowed again");
   }

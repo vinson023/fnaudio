@@ -108,6 +108,7 @@
     </aside>
     <section class="content">
       <label class="mobile-library-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input id="mobileSearchInput" type="search" placeholder="搜索歌曲、歌手或专辑" aria-label="搜索歌曲、歌手或专辑" autocomplete="off" enterkeyhint="search"><button class="search-clear" id="mobileSearchClearBtn" type="button" title="清除搜索" aria-label="清除搜索" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></label>
+      <div class="list-toolbar" id="listToolbar" hidden></div>
       <div class="library-scroll" id="libraryScroll">
         <div class="table-head" id="tableHead"></div>
         <div id="trackList" class="track-list"></div>
@@ -340,7 +341,7 @@
     <div class="dialog-head"><h2 id="externalShareDialogTitle">创建外部链接</h2><button class="icon-button dialog-close-button" id="closeExternalShareDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button>
     </div>
     <div id="externalShareForm">
-      <div class="external-share-file"><span class="external-share-file-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg></span><strong id="externalShareFileName">歌曲文件</strong></div>
+      <div class="external-share-file"><span class="external-share-file-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg></span><strong id="externalShareFileName">歌曲文件</strong><button class="external-share-native-link" id="openExternalShareInFileManager" type="button">在文件管理中打开</button></div>
       <div class="external-share-options">
         <div class="external-share-option"><div><strong id="shareExpiryLabel">到期时间</strong><span id="shareExpirySummary">链接永久有效</span></div><label class="switch-control"><input id="shareExpiryEnabled" type="checkbox" aria-labelledby="shareExpiryLabel"><span></span></label></div>
         <div class="external-share-detail" id="shareExpiryDetail" hidden><input id="shareExpiryInput" type="datetime-local" aria-label="到期时间"></div>
@@ -352,7 +353,7 @@
       <p class="dialog-help external-share-status" id="externalShareStatus"></p>
       <div class="external-share-footer"><button class="secondary-button" id="cancelExternalShare" type="button">取消</button><button class="primary-button" id="createExternalShare" type="button">确定</button></div>
     </div>
-    <div class="external-share-result" id="externalShareResult" hidden><strong>外部链接已创建</strong><input id="externalShareUrl" type="text" readonly aria-label="外部链接"><p id="externalSharePasswordResult" hidden></p><div class="external-share-footer"><button class="secondary-button" id="openExternalShareDetails" type="button">文件详情</button><button class="primary-button" id="copyExternalShare" type="button">复制链接</button></div></div>
+    <div class="external-share-result" id="externalShareResult" hidden><strong>外部链接已创建</strong><input id="externalShareUrl" type="text" readonly aria-label="外部链接"><p id="externalSharePasswordResult" hidden></p><p class="external-share-hint" id="externalShareHint" hidden></p><div class="external-share-footer"><button class="secondary-button" id="openExternalShareDetails" type="button">文件详情</button><button class="primary-button" id="copyExternalShare" type="button">复制链接</button></div></div>
   </dialog>
   <dialog id="deleteTrackDialog" class="native-delete-dialog" aria-labelledby="deleteTrackTitle" aria-describedby="deleteTrackDescription" data-dialog-initial-focus="cancelDeleteTrack">
     <div class="native-delete-title">
@@ -402,6 +403,7 @@
   <script src="response_json_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="metadata_request_loader.js?v=__FNAUDIO_ASSET_BUILD__"></script>
     <script src="playback_target_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+    <script src="native_share_bridge.js?v=__FNAUDIO_ASSET_BUILD__"></script>
     <script src="library_track_filter_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="library_root_label_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="library_query_params.js?v=__FNAUDIO_ASSET_BUILD__"></script>

@@ -5,11 +5,26 @@ from threading import RLock, Thread
 from typing import Any, Callable, Dict
 import math
 import time
+import urllib.parse
 from .next_queue import MAX_NEXT_QUEUE_ENTRIES, bounded_next_queue
 from .backend_schedule import BackendOperation, schedule_latest, take_latest
 from .renderer_presentation import metadata_fields, normalize_renderer_media
 
 MAX_RENDERER_SEEK_SECONDS = 24 * 60 * 60
+
+
+def _same_media_uri(left: str, right: str) -> bool:
+    """Compare an AVTransport URI with the URI the backend says it is playing.
+
+    MPD reports the address it was handed, but escaping is not normalized, so
+    ``%20`` and a literal space name the same stream.  An empty backend value
+    is never a match: nothing playing cannot own a session.
+    """
+    if not left or not right:
+        return False
+    first = urllib.parse.unquote(str(left).strip())
+    second = urllib.parse.unquote(str(right).strip())
+    return bool(first) and first == second
 
 
 def _backend_result(result: Any) -> Dict[str, Any]:
@@ -44,6 +59,10 @@ class DlnaRendererState:
     next_queue: list[Dict[str, str]] = field(default_factory=list)
     next_queue_dropped: int = 0
     transport: str = "STOPPED"
+    # A superseded session keeps its URI so a controller can press Play again,
+    # but it no longer describes what the device is playing. Consumers must
+    # treat it as historical rather than as an idle cast.
+    superseded: bool = False
     position: float = 0.0
     duration: float = 0.0
     volume: int = 100
@@ -99,6 +118,7 @@ class DlnaRenderer:
             self.state.metadata = safe_metadata
             self.state.title, self.state.artist, self.state.art_url = metadata_fields(safe_metadata, safe_uri)
             self.state.transport = "STOPPED"
+            self.state.superseded = False
             self.state.position = 0.0
             self.state.duration = 0.0
             self.state.last_error = ""
@@ -107,6 +127,39 @@ class DlnaRenderer:
             self._backend_active_observed = False
             self.state.updated_at = time.time()
         self._notify()
+
+    def supersede(self, reason: str = "") -> bool:
+        """End the transport session because another input took the output.
+
+        A DLNA renderer shares one backend with local playback.  When the user
+        starts a library track, the cast is over even though MPD happily keeps
+        reporting PLAYING for the file it was just handed; leaving the session
+        in place made every renderer status poll claim the cast was still
+        playing, so the browser repainted the cast over the track the user had
+        just started (and paused the local element with it).
+
+        The URI and its metadata are deliberately retained: a controller that
+        presses Play again gets the same source re-opened instead of "no
+        transport URI".
+        """
+        with self._lock:
+            if not self.state.uri:
+                return False
+            if self.state.transport == "STOPPED" and not self._backend_active_observed:
+                return False
+            # Cancel an in-flight load for the superseded source so it cannot
+            # publish PLAYING after the local track has taken the output.
+            self._load_generation += 1
+            self._loading_uri = ""
+            self._backend_active_observed = False
+            self.state.transport = "STOPPED"
+            self.state.superseded = True
+            self.state.position = 0.0
+            self.state.duration = 0.0
+            self.state.last_error = ""
+            self.state.updated_at = time.time()
+        self._notify()
+        return True
 
     def set_next_uri(self, uri: str, metadata: str = "") -> None:
         with self._lock:
@@ -147,6 +200,9 @@ class DlnaRenderer:
             generation = self._load_generation
             self._loading_uri = uri
             self.state.transport = "TRANSITIONING"
+            # Play is the controller reclaiming the output, so whatever took it
+            # away earlier no longer applies.
+            self.state.superseded = False
             self.state.last_error = ""
             self.state.updated_at = time.time()
         self._notify()
@@ -351,6 +407,12 @@ class DlnaRenderer:
             transport = backend.get("transport") or {}
             position = backend.get("position") or {}
             raw = backend.get("raw") or {}
+            song = backend.get("song") or {}
+            backend_file = ""
+            if isinstance(song, dict):
+                backend_file = str(song.get("file") or "")
+            if not backend_file:
+                backend_file = str(raw.get("file") or "")
             backend_error = str(raw.get("error") or "").strip()
             backend_transport = str(transport.get("state") or "").upper()
             # Preserve the UPnP session while MPD has not yet confirmed a
@@ -361,7 +423,35 @@ class DlnaRenderer:
                     # The backend read raced a newer URI/control command.
                     # Never project the old MPD snapshot onto the new session.
                     return self._project_state_locked()
-                if backend_transport in ("PLAYING", "PAUSED_PLAYBACK", "PAUSED"):
+                # The backend is shared with local playback, so its transport
+                # says nothing about *this* session unless it is running this
+                # session's URI.  Projecting MPD's PLAYING onto a stale URI is
+                # what made a paused cast reappear over every locally started
+                # track on each renderer poll.
+                session_uri = str(self.state.uri or "")
+                owns_output = bool(session_uri) and _same_media_uri(session_uri, backend_file)
+                if not session_uri:
+                    result["transport"] = "STOPPED"
+                    result["position"] = 0.0
+                    result["duration"] = 0.0
+                elif not owns_output and not self._loading_uri:
+                    if self.state.transport != "STOPPED":
+                        self.state.transport = "STOPPED"
+                        self.state.position = 0.0
+                        self.state.duration = 0.0
+                        self.state.updated_at = time.time()
+                        notify = True
+                    self._backend_active_observed = False
+                    result["transport"] = "STOPPED"
+                    result["position"] = 0.0
+                    result["duration"] = 0.0
+                elif not owns_output:
+                    # A source is still being opened; do not project the track
+                    # that is leaving the output onto the arriving session.
+                    result["transport"] = str(self.state.transport or "TRANSITIONING")
+                    result["position"] = 0.0
+                    result["duration"] = 0.0
+                elif backend_transport in ("PLAYING", "PAUSED_PLAYBACK", "PAUSED"):
                     self._backend_active_observed = True
                     result["transport"] = backend_transport
                     result["position"] = _safe_position(position.get("rel_seconds"))

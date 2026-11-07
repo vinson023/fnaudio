@@ -111,21 +111,69 @@ test('containing-folder action waits for host failure and reports it', async () 
   assert.equal(h.alerts.length, 1);
 });
 
-test('share sends raw SDK query fields at top level', async () => {
+test('share nests every field in the data envelope the share service reads', async () => {
   const requests = [];
   const h = harness({query: async request => {
     requests.push(request);
     if (request.req.endsWith('.default')) return {result: 'succ', data: {defaultLink: 'https://share.example/'}};
-    assert.equal(request.data, undefined, 'SDK query forwards raw request without flattening data');
-    assert.deepEqual(Array.from(request.files), ['/vol1/music/song.flac']);
-    assert.equal(request.name, 'song.flac');
-    assert.equal(request.maxAccess, 0);
+    // fnOS reads share.link.create arguments from `data`. Its own file manager
+    // sends {req, data:{name, files, maxAccess, passwd, validTo}}; the flat form
+    // is answered with errno 3000001 "Invalid Params" while every field name is
+    // still correct, which reads like a permissions problem and sent this code
+    // through three unrelated fixes before the request was read off the wire.
+    assert.equal(request.name, undefined, 'fields must not also sit beside req');
+    assert.deepEqual(Array.from(request.data.files), ['/vol1/music/song.flac']);
+    assert.equal(request.data.name, 'song.flac');
+    assert.equal(request.data.maxAccess, 0);
+    return {result: 'succ', data: {id: 'link-id'}};
+  }});
+  h.node('sharePasswordEnabled').checked = true;
+  h.node('sharePasswordInput').value = 'Abcd1234';
+  await h.context.createExternalShareLink();
+  const create = requests.find(request => request.req.endsWith('.create'));
+  assert.equal(create.data.passwd, 'Abcd1234', 'the password rides inside the envelope too');
+  assert.equal(h.node('externalSharePasswordResult').hidden, false);
+  assert.equal(h.node('externalShareHint').hidden, true, 'a public share host needs no warning');
+  assert.equal(h.node('externalShareUrl').value, 'https://share.example/s/link-id');
+  assert.equal(h.node('externalShareResult').hidden, false);
+});
+
+test('share falls back to the page origin when the host will not name a default link', async () => {
+  const h = harness({query: async request => {
+    if (request.req.endsWith('.default')) return {result: 'fail', errmsg: 'unsupported'};
+    return {result: 'succ', data: {id: 'link-id'}};
+  }});
+  // The page is served from the NAS itself, and /s/<id> is served from the same
+  // origin, so a host that cannot answer share.link.default still leaves a usable
+  // link — that is the phone case, where only the Flutter bridge is present.
+  h.context.location = {origin: 'https://nas.example'};
+  await h.context.createExternalShareLink();
+  assert.equal(h.node('externalShareUrl').value, 'https://nas.example/s/link-id');
+});
+
+test('a LAN share link warns that it only opens on the same network', async () => {
+  const h = harness({query: async request => {
+    if (request.req.endsWith('.default')) return {result: 'succ', data: {defaultLink: 'http://192.168.1.5:5666'}};
     return {result: 'succ', data: {id: 'link-id'}};
   }});
   await h.context.createExternalShareLink();
-  assert.equal(requests.length, 2);
-  assert.equal(h.node('externalShareUrl').value, 'https://share.example/s/link-id');
-  assert.equal(h.node('externalShareResult').hidden, false);
+  // A NAS that has no remote-access address answers with its LAN one; the link
+  // still works, but only from the same network. Saying so is what keeps
+  // "分享出去打不开" from looking like a broken panel.
+  assert.equal(h.node('externalShareHint').hidden, false);
+  assert.match(h.node('externalShareHint').textContent, /局域网/);
+  assert.equal(h.node('externalShareUrl').value, 'http://192.168.1.5:5666/s/link-id');
+});
+
+test('a host without the share service names the path that still works', async () => {
+  let details = 0;
+  const h = harness({showFileDetails: async () => { details += 1; return true; }});
+  // No query method at all, so runTrimHostAction reports hostUnavailable. The
+  // file-details fallback is not offered: on that host the file manager's menu is
+  // unreachable as well, so it would only replace one dead end with another.
+  await h.context.createExternalShareLink();
+  assert.equal(details, 0);
+  assert.match(h.node('externalShareStatus').textContent, /文件管理/);
 });
 
 test('failed share defaults do not create an unusable external link', async () => {

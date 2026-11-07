@@ -146,7 +146,15 @@ class DlnaProtocolTests(unittest.TestCase):
             ).encode("utf-8")
 
         def status():
-            return {"transport": {"state": "PLAYING"}, "position": {"rel_seconds": 60, "duration_seconds": 180}}
+            # currentsong must name the URI the renderer handed the backend,
+            # otherwise the seek would be resolved against a session the
+            # renderer no longer believes owns the output (position 0 instead
+            # of 60s), and the relative target would be computed from nothing.
+            return {
+                "transport": {"state": "PLAYING"},
+                "position": {"rel_seconds": 60, "duration_seconds": 180},
+                "song": {"file": "http://198.51.100.20/test.mp3"},
+            }
 
         with mock.patch.object(self.renderer, "_status", status), \
              mock.patch.object(self.renderer, "command", return_value={"ok": True, "queued": True}) as command:
@@ -207,7 +215,7 @@ class DlnaProtocolTests(unittest.TestCase):
     def setUp(self):
         self.loads = []
         self.controls = []
-        self.renderer = DlnaRenderer(self._load, self._control, self._status)
+        self.renderer = self._new_renderer()
         self.service = DlnaProtocolService(
             lambda: "http://198.51.100.24:18080",
             self.renderer,
@@ -252,9 +260,34 @@ class DlnaProtocolTests(unittest.TestCase):
         self.controls.append((action, position))
         return {"ok": True}
 
-    @staticmethod
-    def _status():
-        return {"transport": {"state": "STOPPED"}, "position": {"rel_seconds": 0, "duration_seconds": 0}}
+    def _backend_status(self, state):
+        # Model the shared backend honestly: MPD plays whatever file it was last
+        # handed and names that file in currentsong. The renderer only trusts the
+        # backend transport when the backend is running *this* session's URI, so a
+        # double that reports a state without naming a file would describe a
+        # session nobody owns and every snapshot would read STOPPED.
+        transport = str(state.transport or "STOPPED")
+        return {
+            "transport": {"state": transport},
+            "position": {"rel_seconds": state.position, "duration_seconds": state.duration},
+            "song": {"file": state.uri},
+        }
+
+    def _new_renderer(self, status=None):
+        """A renderer whose status double names the file *that* renderer loaded.
+
+        A shared ``_status`` helper would answer for ``self.renderer`` only, so a
+        test that builds its own renderer would have the backend report an empty
+        file and the session would look like nobody's.
+        """
+        bound = {}
+
+        def mirror():
+            return self._backend_status(bound["renderer"].state)
+
+        renderer = DlnaRenderer(self._load, self._control, status or mirror)
+        bound["renderer"] = renderer
+        return renderer
 
     def test_renderer_description_and_profiles(self):
         description = self.service.description("renderer").decode("utf-8")
@@ -917,7 +950,7 @@ class DlnaProtocolTests(unittest.TestCase):
             controls.append((action, position))
             return {"ok": True}
 
-        renderer = DlnaRenderer(load, control, self._status)
+        renderer = DlnaRenderer(load, control, lambda: self._backend_status(renderer.state))
         renderer.set_uri("http://example.test/blocked.flac")
         renderer.play()
         self.assertTrue(started.wait(1))
@@ -1217,6 +1250,7 @@ class DlnaProtocolTests(unittest.TestCase):
             return {
                 "transport": {"state": "PLAYING"},
                 "position": {"rel_seconds": 12, "duration_seconds": 120},
+                "song": {"file": "http://example.test/old.flac"},
             }
 
         renderer = DlnaRenderer(self._load, self._control, slow_status)
@@ -1233,7 +1267,7 @@ class DlnaProtocolTests(unittest.TestCase):
         self.assertEqual(result["state"]["transport"], "STOPPED")
 
     def test_bursty_renderer_controls_coalesce_to_one_backend_thread(self):
-        renderer = DlnaRenderer(self._load, self._control, self._status)
+        renderer = self._new_renderer()
         renderer.set_uri("http://example.test/current.flac")
         with mock.patch("dlna.renderer.Thread") as thread:
             renderer.command("pause")
@@ -1246,7 +1280,7 @@ class DlnaProtocolTests(unittest.TestCase):
         self.assertGreaterEqual(state["backend_coalesced"], 2)
 
     def test_backend_worker_admission_holds_renderer_state_lock(self):
-        renderer = DlnaRenderer(self._load, self._control, self._status)
+        renderer = self._new_renderer()
         renderer.set_uri("http://example.test/current.flac")
         original_lock = renderer._lock
 
@@ -1275,7 +1309,7 @@ class DlnaProtocolTests(unittest.TestCase):
             renderer.command("pause")
 
     def test_backend_thread_start_failure_releases_latch_for_retry(self):
-        renderer = DlnaRenderer(self._load, self._control, self._status)
+        renderer = self._new_renderer()
         renderer.set_uri("http://example.test/current.flac")
         with mock.patch("dlna.renderer.Thread") as thread:
             thread.return_value.start.side_effect = RuntimeError("no threads")
@@ -1304,7 +1338,7 @@ class DlnaProtocolTests(unittest.TestCase):
             controls.append((action, position))
             return {"ok": True}
 
-        renderer = DlnaRenderer(slow_load, control, self._status)
+        renderer = DlnaRenderer(slow_load, control, lambda: self._backend_status(renderer.state))
         renderer.set_uri("http://example.test/slow.flac")
         self.assertTrue(renderer.command("play")["ok"])
         self.assertTrue(started.wait(1))
@@ -1325,7 +1359,7 @@ class DlnaProtocolTests(unittest.TestCase):
             controls.append((action, position))
             return {"ok": True}
 
-        renderer = DlnaRenderer(self._load, control, self._status)
+        renderer = DlnaRenderer(self._load, control, lambda: self._backend_status(renderer.state))
         renderer.set_uri("http://example.test/current.flac")
         original_notify = renderer._notify
         blocked_once = {"value": False}
@@ -1352,7 +1386,7 @@ class DlnaProtocolTests(unittest.TestCase):
         self.assertEqual(renderer.snapshot()["transport"], "STOPPED")
 
     def test_pause_then_play_reloads_the_paused_uri(self):
-        renderer = DlnaRenderer(self._load, self._control, self._status)
+        renderer = self._new_renderer()
         renderer.set_uri("http://example.test/resume.flac")
 
         renderer.command("play")
@@ -1372,6 +1406,7 @@ class DlnaProtocolTests(unittest.TestCase):
             lambda: {
                 "transport": {"state": "PAUSED"},
                 "position": {"rel_seconds": 0, "duration_seconds": 12},
+                "song": {"file": "http://example.test/failure.flac"},
                 "raw": {"error": "Failed to open ALSA device"},
             },
         )
@@ -1383,6 +1418,87 @@ class DlnaProtocolTests(unittest.TestCase):
 
         self.assertEqual(state["transport"], "STOPPED")
         self.assertIn("Failed to open ALSA device", state["last_error"])
+
+    def test_a_backend_playing_another_file_ends_the_renderer_session(self):
+        # fnAudio's MPD is shared by local playback and the renderer, so MPD's
+        # transport says nothing about the cast unless it is running the cast's
+        # URI. After a cast was paused and a library track started, MPD reported
+        # PLAYING for that library file and this projection used to stamp PLAYING
+        # onto the still-registered cast URI: every 1.5s poll then claimed the
+        # cast was live again, took the transport row back, paused the local
+        # element and repainted the cast — the "jumping between pushed songs".
+        renderer = DlnaRenderer(
+            self._load,
+            self._control,
+            lambda: {
+                "transport": {"state": "PLAYING"},
+                "position": {"rel_seconds": 30, "duration_seconds": 180},
+                "song": {"file": "file:///vol1/music/local-track.flac"},
+            },
+        )
+        renderer.set_uri("http://example.test/pushed.flac")
+        renderer.command("play")
+        self.assertTrue(self._wait_for(lambda: len(self.loads) == 1))
+
+        state = renderer.snapshot()
+
+        self.assertEqual(state["transport"], "STOPPED")
+        self.assertEqual(state["position"], 0.0)
+        self.assertEqual(state["uri"], "http://example.test/pushed.flac")
+
+    def test_a_percent_escaped_backend_file_still_belongs_to_the_session(self):
+        # MPD echoes the address it was handed, and escaping is not normalized on
+        # the way back, so a literal space and %20 name the same stream. Refusing
+        # that match would cut a live cast the moment its title had a space in it.
+        renderer = DlnaRenderer(
+            self._load,
+            self._control,
+            lambda: {
+                "transport": {"state": "PLAYING"},
+                "position": {"rel_seconds": 4, "duration_seconds": 180},
+                "song": {"file": "http://example.test/My%20Song.flac"},
+            },
+        )
+        renderer.set_uri("http://example.test/My Song.flac")
+
+        self.assertEqual(renderer.snapshot()["transport"], "PLAYING")
+
+    def test_supersede_ends_the_session_and_keeps_the_uri_for_the_caster(self):
+        renderer = self._new_renderer()
+        renderer.set_uri("http://example.test/cast.flac")
+        self.assertFalse(renderer.supersede("local playback started"), "an idle session has nothing to end")
+        renderer.command("play")
+        self.assertTrue(self._wait_for(lambda: len(self.loads) == 1))
+
+        states = []
+        renderer.add_state_listener(lambda state: states.append(dict(state)))
+        self.assertTrue(renderer.supersede("local playback started"))
+
+        state = renderer.snapshot()
+        self.assertEqual(state["transport"], "STOPPED")
+        self.assertEqual(state["position"], 0.0)
+        self.assertEqual(state["uri"], "http://example.test/cast.flac")
+        self.assertTrue(state["superseded"])
+        self.assertTrue(states, "listeners are how Playback Core learns the cast ended")
+        self.assertTrue(states[-1]["superseded"] is True)
+        self.assertEqual(states[-1]["transport"], "STOPPED")
+
+    def test_a_caster_can_reclaim_the_output_after_being_superseded(self):
+        renderer = self._new_renderer()
+        renderer.set_uri("http://example.test/cast.flac")
+        renderer.command("play")
+        self.assertTrue(self._wait_for(lambda: len(self.loads) == 1))
+        self.assertTrue(renderer.supersede("local playback started"))
+
+        renderer.command("play")
+
+        self.assertFalse(renderer.snapshot()["superseded"])
+        self.assertTrue(self._wait_for(lambda: len(self.loads) == 2))
+        self.assertEqual(self.loads[1], ("http://example.test/cast.flac", 0.0))
+        self.assertTrue(
+            self._wait_for(lambda: renderer.snapshot()["transport"] == "PLAYING"),
+            "pressing Play again must resume the same source",
+        )
 
     @mock.patch("dlna.control_point.soap_request")
     def test_renderer_protocol_info_is_parsed_into_mime_capabilities(self, request):

@@ -57,6 +57,11 @@ MAX_MPD_HANDSHAKE_TIMEOUT_SECONDS = 0.35
 MAX_MPD_LOG_TAIL_BYTES = 8192
 MAX_OUTPUT_CAPS_COLD_SHARE_SECONDS = 5.0
 MAX_MPD_QUEUE_ENTRIES = 50000
+# How long after a native queue rewrite a STOPPED status is still read as the
+# consequence of that command.  The flag itself covers the whole command; this
+# only covers a status poll that was already in flight when it returned, so it
+# has to outlive one round trip to MPD and nothing more.
+QUEUE_REPLACE_STOP_GRACE = 1.5
 # MPD indexes a whole library in the background.  Measured on the fnOS host, a
 # pathless ``update`` of the 62,684-song library committed 580 seconds after it
 # was issued (``stats.songs`` went 23,483 -> 63,550 in one step), so the worker
@@ -217,6 +222,12 @@ class MpdService:
         self._status_listener = None
         self._last_transport = ""
         self._suppress_stop_until = 0.0
+        # Depth and finish time of a native queue rewrite.  `clear` stops the song
+        # that is playing at that moment, and that STOPPED is a command of ours,
+        # not the end of a track (see `_replacing_native_queue`).
+        self._queue_replace_lock = threading.Lock()
+        self._queue_replace_depth = 0
+        self._queue_replace_finished_at = 0.0
         self._queue_lock = threading.RLock()
         # MPD exposes one process-wide queue. Queue replacement, transport
         # controls and Renderer loads must therefore be serialized even when
@@ -334,6 +345,40 @@ class MpdService:
     def suppress_stop_transition(self, seconds: float = 2.0) -> None:
         """Mark an upcoming STOPPED event as command-driven, not track end."""
         self._suppress_stop_until = max(self._suppress_stop_until, time.monotonic() + max(0.1, seconds))
+
+    @contextmanager
+    def _replacing_native_queue(self):
+        """Hold the transport listener back while MPD's queue is rewritten.
+
+        ``mpd_replace_queue`` opens with ``clear``, so a queue replacement that
+        happens to arrive while a song plays stops that song first.  The idle
+        listener reads every PLAYING -> STOPPED as "the managed track ended" and
+        advances the logical queue — which, right after a replacement, is the
+        *new* queue at index 0, so playback lands on its second song (R501:
+        "play this folder" jumped from the first track to queue[1]).
+        ``suppress_stop_transition`` cannot express this: it is a fixed window
+        and the addid phase of a large queue outlives any value that would still
+        be safe for a short track.  The flag is exact — it is set for the whole
+        command and cleared when the command returns, and the small grace after
+        it covers a status poll that was already in flight.
+        """
+        with self._queue_replace_lock:
+            self._queue_replace_depth += 1
+        try:
+            yield
+        finally:
+            with self._queue_replace_lock:
+                self._queue_replace_depth -= 1
+                if self._queue_replace_depth <= 0:
+                    self._queue_replace_depth = 0
+                    self._queue_replace_finished_at = time.monotonic()
+
+    def _queue_replacement_in_flight(self) -> bool:
+        with self._queue_replace_lock:
+            if self._queue_replace_depth > 0:
+                return True
+            finished_at = self._queue_replace_finished_at
+        return bool(finished_at) and time.monotonic() - finished_at < QUEUE_REPLACE_STOP_GRACE
 
     def _find_binary(self) -> str:
         candidates = [
@@ -850,7 +895,7 @@ class MpdService:
             )
         fingerprint = tuple((entry["track_id"], entry["uri"]) for entry in entries)
         self._wait_for_recovery_window()
-        with self._command_lock, self._queue_lock:
+        with self._command_lock, self._queue_lock, self._replacing_native_queue():
             reusable = fingerprint == self._queue_fingerprint and bool(self._queue_song_ids)
             selected_song_id = self._queue_song_ids.get(str(current_track_id or "")) if reusable else ""
             if selected_song_id and play:
@@ -1715,8 +1760,10 @@ class MpdService:
                 position_payload = dict(status_payload.get("position") or {})
                 backend_track_id = self.track_id_for_status(refreshed)
                 self._update_recovery_checkpoint(refreshed, backend_track_id)
-                suppressed_stop = transport == "STOPPED" and time.monotonic() <= self._suppress_stop_until
-                if suppressed_stop:
+                suppressed_by_command = time.monotonic() <= self._suppress_stop_until
+                suppressed_by_replace = self._queue_replacement_in_flight()
+                suppressed_stop = transport == "STOPPED" and (suppressed_by_command or suppressed_by_replace)
+                if suppressed_by_command:
                     self._suppress_stop_until = 0.0
                 natural_end = bool(
                     transport == "STOPPED"

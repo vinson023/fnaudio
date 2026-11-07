@@ -253,7 +253,7 @@ if (!/tag_write_enabled:\s*tagWriteInput\.checked/.test(source)) {
 
 requireText("window.FnAudioNative", "Android bridge detection is missing");
 requireText("function resolvedDeviceTarget", "Device menu must recover from a stale target during discovery");
-requireText('return targets.some(target => String(target.id || "") === targetId) ? targetId : "local"', "Device menu must fall back to local playback when the current target is unavailable");
+requireText('return globalThis.fnAudioPlaybackTargetPolicy.resolvePublished(targets, reportedTarget) || "local";', "Device menu must resolve a saved target alias and fall back to local playback when the target is unavailable");
 requireText("async function validateRestoredPlaybackTarget()", "Restored Android playback must validate a saved remote target");
 requireText("await validateRestoredPlaybackTarget();", "Playback restoration must wait for remote-target validation");
 requireText('data.error === "playback_target_not_found"', "A disappeared Renderer must fall back without exposing an internal error");
