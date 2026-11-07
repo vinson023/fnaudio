@@ -117,7 +117,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 /* Header buttons, playlist delete, and overflow-only title scrolling */
 .top-icon-button:hover{border-color:var(--ui-border)}
 
-.playlist-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:13px}.playlist-toolbar-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}.list-toolbar{flex:0 0 auto}.list-toolbar[hidden]{display:none}.danger-button{border:1px solid var(--ui-danger);background:var(--ui-danger-bg);color:var(--ui-danger);border-radius:7px;padding:7px 10px}.danger-button:hover{background:var(--ui-danger-bg);border-color:var(--ui-danger)}
+.playlist-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:13px}.playlist-toolbar-actions{display:flex;align-items:center;gap:8px;flex:0 0 auto}.danger-button{border:1px solid var(--ui-danger);background:var(--ui-danger-bg);color:var(--ui-danger);border-radius:7px;padding:7px 10px}.danger-button:hover{background:var(--ui-danger-bg);border-color:var(--ui-danger)}
 @media(max-width:760px){.now-playing .is-overflowing{animation:marquee 16s linear infinite!important}.danger-button{padding:7px 9px}
 }
 

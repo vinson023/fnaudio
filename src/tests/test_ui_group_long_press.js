@@ -8,13 +8,14 @@
 //   A. 分组行列表（文件夹 / 专辑 / 歌手 / 作曲者 / 类型）：行本身就代表一叠歌，
 //      入口是右键（桌面）与长按（手机），动作是同一个菜单里的「播放」。
 //   B. 平铺歌曲列表（全部音乐 / DSD / 最近添加 / 随机 100 首 / 播放列表 / 收藏 /
-//      当前队列）：没有行可以按，入口是列表顶部的「播放全部」按钮。
+//      当前队列）：没有行可以按。R504 曾在列表顶部放「播放全部」，R508 按负责人
+//      要求撤掉——现在这些列表只剩计数（播放列表与队列另带自己的删除 / 清空）。
 //
 // 这个文件钉三件事：
 //   1. 长按只在手机宽度 + 手指 + 主键时成立，鼠标与桌面宽度不许抢跑；
 //   2. 长按抬起后的那次 click 必须被吃掉 —— 否则专辑行会被「打开专辑」，菜单刚
 //      弹出就被导航走，看起来像长按没生效；
-//   3. 平铺列表的「播放全部」确实接到了 `playAll`（同一个 data-play-all 绑定）。
+//   3. 列表顶部不再有「播放全部」；详情页与分类头的那两处按 R508 的边界保留。
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -153,34 +154,45 @@ function pointer(overrides = {}) {
   assert.equal(timers.length, 1);
 }
 
-// --- 3. 平铺列表的「播放全部」：四类视图 + 三条既有工具条 -------------------
-const flatViews = sourceBetween("const FLAT_PLAY_ALL_VIEWS", "state.libraryStatus");
-assert.match(flatViews, /new Set\(\["all", "dsd", "recent", "random100"\]\)/, "the flat views are exactly all / dsd / recent / random100");
-for (const view of ["queue", "favorites", "playlists"]) {
-  assert.ok(!flatViews.includes(`"${view}"`), `${view} has its own toolbar and must not be listed twice`);
-}
+// --- 3. R508：列表顶部不再有「播放全部」 -------------------------------------
+// 负责人「取消掉所有列表里面的『播放全部』按钮」。播放列表 / 收藏 / 队列原来就有
+// 的计数条保留（删除播放列表 / 清空队列也挂在它上面），不再带按钮；平铺列表整条
+// 工具条连同 #listToolbar 一起撤掉。整页播放入口只剩详情页与分类头那三处。
+assert.equal(source.includes("FLAT_PLAY_ALL_VIEWS"), false, "the flat play-all view set is gone");
+assert.equal(source.includes("playAllBar"), false, "the constructor that injected the button is gone");
+assert.equal(source.includes("renderFlatListToolbar"), false, "the flat toolbar renderer is gone");
 
-const toolbarChain = sourceBetween("const playAllBar =", "const listHtml");
-assert.match(toolbarChain, /<button type="button" class="secondary-button" data-play-all>播放全部<\/button>/, "the bar must carry the same data-play-all binding the detail pages use");
-// 播放列表 / 收藏 / 当前队列 / 四个平铺视图：四条调用点，都过同一枚构造器。
-const bars = toolbarChain.match(/playAllBar\(/g) || [];
-assert.equal(bars.length, 4, `playlist / favorites / queue / flat views must all route through playAllBar, found ${bars.length}`);
-assert.match(toolbarChain, /FLAT_PLAY_ALL_VIEWS\.has\(state\.view\)/, "the flat branch has to be reachable");
-// 绑定面：同一个 data-play-all 选择器把每一枚按钮接到 playAll 上。
-assert.match(source, /document\.querySelectorAll\("\[data-play-all\]"\)\.forEach\(b => b\.onclick = playAll\)/, "every 播放全部 button shares one binding");
+const countBarDef = sourceBetween("const countBar =", "const playlistToolbar =");
+assert.match(countBarDef, /class="playlist-toolbar"/, "the count bar itself stays for playlists / favorites / queue");
+assert.equal(/data-play-all/.test(countBarDef), false, "the shared bar must not carry a 播放全部 button");
 
-// --- 4. 平铺工具条必须挂在 #trackList 外面 -----------------------------------
-// 提交器的键控复用要求列表每个顶层子节点都带 key；把工具条塞进列表会让
-// `nextKeySet.size === next.length` 不成立、整条键控路径失效，退化成整表替换，
-// 表现就是「元数据补全后整表闪一下」。这条钉的是那个位置，不是文案。
+// 三个调用点：播放列表 / 收藏 / 队列。平铺视图那条分支已经删掉。
+const toolbarChain = sourceBetween("const playlistToolbar =", "const listHtml =");
+const barCalls = toolbarChain.split("\n").filter(line => line.includes("countBar("));
+assert.equal(barCalls.length, 3, `playlist / favorites / queue must all route through countBar, found ${barCalls.length}`);
+barCalls.forEach(line => assert.equal(/data-play-all/.test(line), false, "no call site may put 播放全部 back"));
+assert.match(toolbarChain, /data-delete-playlist/, "the playlist count bar keeps 删除播放列表");
+assert.match(toolbarChain, /data-clear-queue/, "the queue count bar keeps 清空队列");
+
+// 边界：撤的是「列表里面的」。专辑详情与类型详情面包屑的按钮按负责人选择保留，
+// 分类详情头（艺术家 / 类型根下钻）那一处也留着。
+const albumDetail = sourceBetween("function renderAlbumDetail", "function trackRowSelectionKey");
+assert.match(albumDetail, /data-play-all/, "the album detail breadcrumb keeps its 播放全部");
+const genreTracks = sourceBetween("function renderGenreTracks", "function renderFolders");
+assert.match(genreTracks, /data-play-all/, "the genre detail breadcrumb keeps its 播放全部");
+// 绑定面：留下的按钮仍然共用同一个 data-play-all 选择器。
+assert.match(source, /document\.querySelectorAll\("\[data-play-all\]"\)\.forEach\(b => b\.onclick = playAll\)/, "every remaining 播放全部 button shares one binding");
+
+// --- 4. 平铺列表不再有独立工具条节点 -----------------------------------------
+// R504 把它挂在 #trackList 外面是为了保住键控复用（混进列表会让
+// `nextKeySet.size === next.length` 不成立，退化成整表替换）。节点现在整个撤了，
+// 这条继续钉住「不许把任何工具条塞回列表」。
 const listMarkup = sourceBetween("const listHtml =", "if (!window.matchMedia");
-assert.equal(listMarkup.includes("flatToolbar"), false, "the flat bar must stay outside #trackList or keyed row reuse dies");
-const flatCommit = sourceBetween("const listChanged =", "if (listChanged) {");
-assert.match(flatCommit, /renderFlatListToolbar\(flatToolbar\)/, "the flat bar has to be committed on every render");
-const flatFn = sourceBetween("function renderFlatListToolbar", "function commitTrackListHtml");
-assert.match(flatFn, /\$\("listToolbar"\)/, "it renders into its own container");
-assert.match(flatFn, /querySelectorAll\("\[data-play-all\]"\)\.forEach\(button => button\.onclick = playAll\)/, "and binds 播放全部 itself, since it is outside the list commit");
+assert.equal(listMarkup.includes("flatToolbar"), false, "no toolbar may be spliced into #trackList or keyed row reuse dies");
+// 注意别用 includes("listToolbar")：`playlistToolbar` 里含有这个子串。
+assert.equal(/\blistToolbar\b/.test(listMarkup), false, "the flat container is gone from the list markup");
 const page = fs.readFileSync(path.join(__dirname, "..", "app", "ui", "index.html"), "utf8");
-assert.match(page, /<div class="list-toolbar" id="listToolbar" hidden><\/div>/, "index.html has to carry the container");
+assert.equal(page.includes("listToolbar"), false, "index.html no longer carries the flat toolbar container");
+assert.equal(page.includes("list-toolbar"), false, "nor its class");
 
-console.log("group long press + flat play-all: ok");
+console.log("group long press + list toolbars: ok");

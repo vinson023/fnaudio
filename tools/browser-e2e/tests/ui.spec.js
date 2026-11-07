@@ -277,11 +277,11 @@ test("album and genre detail pages offer 播放全部 in their own breadcrumb", 
   expect(unexpected).toEqual([]);
 });
 
-test("phone hold opens the group menu and flat lists carry their own 播放全部", async ({ page }) => {
+test("phone hold opens the group menu and list toolbars drop 播放全部", async ({ page }) => {
   // R504: on a phone the group rows had no entry point at all -- `contextmenu`
   // returned early below 761px and there was no hold timer -- so 播放 was only
-  // reachable with a mouse.  The flat lists have no row to hold, so their whole-
-  // list action belongs in the toolbar instead.
+  // reachable with a mouse.  R508 then removed 播放全部 from every list toolbar
+  // (the owner: 取消掉所有列表里面的「播放全部」按钮); the detail pages keep theirs.
   const consoleErrors = await loadLibrary(page, { width: 390, height: 844 });
   const openView = async view => {
     if ((page.viewportSize()?.width ?? 1440) <= 760) await page.locator("#mobileNavBtn").click();
@@ -319,20 +319,30 @@ test("phone hold opens the group menu and flat lists carry their own 播放全�
   await expect(page.locator("#queueCount")).toHaveText(String(albumTracks.length));
   await expect(page.locator("#nowTitle")).toHaveText(albumTracks[0]);
 
+  // R508: 负责人要求取消所有列表里的「播放全部」。平铺列表（全部 / DSD / 最近 /
+  // 随机 100）本来就只为这条按钮挂过 #listToolbar，现在整条撤掉。
   await openView("all");
-  const allBar = page.locator("#listToolbar [data-play-all]");
-  await expect(allBar).toBeVisible();
-  await expect(allBar).toHaveText("播放全部");
-  // #allCount is not hydrated by the fixture, so the number the bar itself prints
-  // is the one the queue has to match.
-  const allBarText = (await page.locator("#listToolbar span").first().textContent()) || "";
-  const allCount = Number(allBarText.replace(/[^0-9]/g, ""));
-  expect(allCount).toBeGreaterThan(0);
-  await allBar.click();
-  await expect(page.locator("#queueCount")).toHaveText(String(allCount));
+  await expect(page.locator("#listToolbar")).toHaveCount(0);
+  await expect(page.locator("[data-play-all]")).toHaveCount(0);
 
   await openView("random100");
-  await expect(page.locator("#listToolbar [data-play-all]")).toBeVisible();
+  await expect(page.locator("#listToolbar")).toHaveCount(0);
+  await expect(page.locator(".playlist-toolbar")).toHaveCount(0);
+
+  // 播放列表 / 收藏 / 队列原来就有计数条，它还要承载 删除播放列表 与 清空队列，
+  // 所以留着——但里面的按钮必须已经不在。
+  await openView("queue");
+  const queueBar = page.locator(".playlist-toolbar").first();
+  await expect(queueBar).toBeVisible();
+  await expect(queueBar).toContainText("首歌曲");
+  await expect(queueBar.locator("[data-clear-queue]")).toHaveCount(1);
+  await expect(queueBar.locator("[data-play-all]")).toHaveCount(0);
+
+  await openView("favorites");
+  const favoritesBar = page.locator(".playlist-toolbar").first();
+  await expect(favoritesBar).toBeVisible();
+  await expect(favoritesBar).toContainText("首收藏歌曲");
+  await expect(favoritesBar.locator("[data-play-all]")).toHaveCount(0);
   // The fixture has no audio bytes, so asking the player to start a track leaves
   // generic "Failed to load resource" lines; anything else is a real error.
   expect(consoleErrors.filter(text => !/Failed to load resource/.test(text))).toEqual([]);

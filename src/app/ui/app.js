@@ -140,9 +140,6 @@ const DEFAULT_TRACK_COLUMNS = ["title", "track_no", "format", "album"];
 const DEFAULT_LIBRARY_TRACK_COLUMNS = ["title", "artist", "album", "size", "format"];
 const DEFAULT_ALBUM_DETAIL_TRACK_COLUMNS = ["track_no", ...DEFAULT_LIBRARY_TRACK_COLUMNS];
 const PAGED_LIBRARY_VIEWS = new Set(["all", "dsd", "recent", "random100", "folders", "albums", "artists", "composers", "genres"]);
-// R504: 这四类视图没有分组行（没有东西可以右键），整页播放因此走顶部工具条上的
-// 「播放全部」按钮，而不是右键菜单。
-const FLAT_PLAY_ALL_VIEWS = new Set(["all", "dsd", "recent", "random100"]);
 // R505（负责人要求）: 手机上不提供这三项文件类动作——打开包含的文件夹 / 分享外部链接 /
 // 删除歌曲。三者都要落到飞牛文件管理器，手机上只会弹出另一个 App 的面板或落回
 // showFileDetails；删除还是唯一一枚 danger 项，却紧挨着播放类动作。桌面保持原样。
@@ -3717,17 +3714,6 @@ function invalidateLibraryResponseForTrack(trackId) {
   state.libraryResponseCache.deleteWhere(value => Array.isArray(value?.items)
     && value.items.some(item => String(item?.id || "") === id));
 }
-function renderFlatListToolbar(markup = "") {
-  const host = $("listToolbar");
-  if (!host) return;
-  // Same rule as the playlist nav: re-writing identical markup on every status
-  // tick would throw away the button that is currently being pressed.
-  if (host.dataset.fnaudioFlatToolbar === markup) return;
-  host.dataset.fnaudioFlatToolbar = markup;
-  host.innerHTML = markup;
-  host.hidden = !markup;
-  host.querySelectorAll("[data-play-all]").forEach(button => button.onclick = playAll);
-}
 function commitTrackListHtml(listHtml) {
   const list = $("trackList");
   if (!list) return false;
@@ -4117,29 +4103,20 @@ function render() {
   const clientPageTotal = clientPage?.total ?? null;
   const albumDetail = isAlbumDetailView();
   const genreDetail = state.view === "genres" && Boolean(state.groupName);
-  // R504: 平铺列表（全部音乐 / DSD / 最近添加 / 随机 100 首）本身没有「行」可以
-  // 右键，它们的等价物就是列表顶部这一行里的「播放全部」。播放列表 / 收藏 / 队列
-  // 原来已经有这条工具条，只补按钮。
-  //
-  // 这四个视图的工具条挂在 #trackList **外面**（`renderFlatListToolbar`）：提交器
-  // 的键控复用要求列表的每个顶层子节点都带 key（`nextKeySet.size === next.length`），
-  // 混进一个没有 key 的工具条会让整条键控路径失效、退化成整表 innerHTML 替换——
-  // 那正是「元数据补全后整表闪一下、封面全部重解码」的老毛病（e2e
-  // `metadata completion patches the existing song row without a list flash` 钉的
-  // 就是它，本轮实测：把工具条塞进列表，`sameNode` 立刻变 false）。
-  const playAllBar = (countText, extraActions = "") => `<div class="playlist-toolbar"><span>${countText}</span><div class="playlist-toolbar-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button>${extraActions}</div></div>`;
+  // R508（负责人要求「取消掉所有列表里面的『播放全部』按钮」）: 列表顶部不再有
+  // 「播放全部」。播放列表 / 收藏 / 队列原本就有的这条工具条只留计数与它们自己的
+  // 动作（删除播放列表 / 清空队列）；整页播放入口只剩专辑详情与类型详情的面包屑，
+  // 分组行仍然靠右键 / 手机长按。
+  const countBar = (countText, extraActions = "") => `<div class="playlist-toolbar"><span>${countText}</span>${extraActions ? `<div class="playlist-toolbar-actions">${extraActions}</div>` : ""}</div>`;
   const playlistToolbar = isPlaylistView() && currentPlaylist()
-    ? playAllBar(`${clientPageTotal} 首歌曲`, `<button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button>`)
+    ? countBar(`${clientPageTotal} 首歌曲`, `<button type="button" class="danger-button" data-delete-playlist="${escapeHtml(currentPlaylist().id)}">删除播放列表</button>`)
     : state.view === "favorites"
-      ? playAllBar(`${clientPageTotal} 首收藏歌曲`)
+      ? countBar(`${clientPageTotal} 首收藏歌曲`)
       : state.view === "queue"
-        ? playAllBar(`${state.queue.length} 首歌曲`, `<button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button>`)
+        ? countBar(`${state.queue.length} 首歌曲`, `<button type="button" class="danger-button" data-clear-queue ${state.queue.length ? "" : "disabled"}>清空队列</button>`)
       : isGroup && state.groupName && !albumDetail && !genreDetail
       ? `<div class="category-detail"><div class="category-detail-main">${groupIcon(isCreatorView() ? "albums" : state.view, list)}<div><strong>${escapeHtml(state.groupName)}</strong><span>${isCreatorView() ? `${escapeHtml(currentCreatorName())} · ` : ""}${libraryCount(state.pageTotal || list.length)} 首歌曲</span></div></div><div class="category-detail-actions"><button type="button" class="secondary-button" data-play-all>播放全部</button><button type="button" class="secondary-button" data-group-back>返回分类</button></div></div>`
       : "";
-  const flatToolbar = FLAT_PLAY_ALL_VIEWS.has(state.view)
-    ? playAllBar(`${libraryCount(state.pageTotal || list.length)} 首歌曲`)
-    : "";
   const listHtml = isFolder
     ? renderFolders(folderState)
     : isGroupRoot
@@ -4176,8 +4153,6 @@ function render() {
     listLength: list.length,
   }) === true;
   const listChanged = deferListCommit ? false : commitTrackListHtml(listHtml);
-  // Its own node, outside #trackList: see the comment on `flatToolbar`.
-  renderFlatListToolbar(flatToolbar);
   if (listChanged) {
     // Attach group-specific local/online fallback handlers before the shared
     // scheduler can assign image sources, including legacy WebViews without IO.
@@ -6125,7 +6100,7 @@ function updateLibraryStatusDecorations() {
       : currentView === "favorites"
         ? { title: "还没有收藏歌曲", text: "在歌曲操作菜单或播放器中收藏歌曲后，会显示在这里。" }
         : currentView === "queue"
-          ? { title: "当前队列为空", text: "播放歌曲或使用“播放全部”后，歌曲会出现在当前队列。" }
+          ? { title: "当前队列为空", text: "从音乐库播放歌曲后，歌曲会出现在当前队列。" }
           : null;
   if (emptyTitle) setTextContentIfChanged(emptyTitle, emptyContext?.title || "还没有音乐");
   if (emptyText && emptyContext) {
