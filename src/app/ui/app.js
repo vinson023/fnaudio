@@ -4251,7 +4251,15 @@ function render() {
         }
         if (row.dataset.groupType === "folder") {
           event.preventDefault();
-          if (!window.matchMedia("(max-width: 760px)").matches) setGroupSelection([row.dataset.groupKey]);
+          // R513（负责人「移动端文件夹改为单击进入」）: 桌面上文件夹沿用「单击
+          // 选中、双击进入」的桌面语义；手机上没有双击这回事，原先这一分支把
+          // 单击整个吞掉——点一下屏幕什么也不发生，只能长按开菜单再选「打开」，
+          // 或者连点两下碰运气。手机端改为单击直接进入。
+          //
+          // 长按仍然优先：按住超过阈值那一刻 `suppressGroupClick` 已经记下一次
+          // 抑制，抬手产生的这次 click 在上面的分支就返回了，不会再往下钻一层。
+          if (window.matchMedia("(max-width: 760px)").matches) openGroupRow(row);
+          else setGroupSelection([row.dataset.groupKey]);
           return;
         }
         if (!window.matchMedia("(max-width: 760px)").matches && state.selectedGroupKeys.size) {

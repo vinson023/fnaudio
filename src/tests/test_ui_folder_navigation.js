@@ -10,8 +10,14 @@ const source = binding[0];
 
 assert.match(source, /row\.ondblclick\s*=\s*event\s*=>[\s\S]*?openGroupRow\(row\)/,
   "folder rows must open on double click");
-assert.match(source, /row\.dataset\.groupType\s*===\s*"folder"[\s\S]*?return;/,
-  "folder row single click must stop before the shared openGroupRow path");
+// R513（负责人「移动端文件夹改为单击进入」）: 单击分支现在是两条路——手机直接进入，
+// 桌面只选中（双击才进）。断言写成「手机这一支先于桌面那一支出现」，否则把两句话
+// 调换顺序也能通过，而调换就是回归。
+assert.match(
+  source,
+  /row\.dataset\.groupType\s*===\s*"folder"[\s\S]*?matchMedia\("\(max-width: 760px\)"\)\.matches\)\s*openGroupRow\(row\);[\s\S]*?else\s*setGroupSelection\(\[row\.dataset\.groupKey\]\);[\s\S]*?return;/,
+  "a phone tap must enter the folder while a desktop click only selects it",
+);
 
 const setView = app.match(/function setView\(view\) \{[\s\S]*?\n\}/);
 assert.ok(setView, "setView must remain an independently inspectable function");

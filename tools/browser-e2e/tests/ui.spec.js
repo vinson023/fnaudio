@@ -536,3 +536,38 @@ test("mobile settings can add a music folder through the server browser", async 
   await expect(page.locator("#librarySettingsStatus")).toContainText("已添加目录");
   await expect(browser).not.toHaveAttribute("open", "");
 });
+
+test("a phone tap opens a folder row while a desktop click only selects it", async ({ page }) => {
+  // R513（负责人「移动端文件夹改为单击进入」）。 Before this the folder branch of the
+  // click handler swallowed the tap on a phone: the row highlighted nothing, opened
+  // nothing, and the only way in was the hold menu's 打开 — which read as "the tap
+  // did not work".  Desktop keeps the explorer idiom (single click selects, double
+  // click enters), so both halves are asserted here against the same markup.
+  await loadLibrary(page, { width: 390, height: 844 });
+  await page.route("**/api/library/folders**", route => route.fulfill({
+    json: { folders: [{ name: "Live", path: "/fixture/music/Live", root: "/fixture/music", track_count: 1 }], count: 1 },
+  }));
+  await page.locator("#mobileNavBtn").click();
+  await page.locator("[data-view='folders']").click();
+  const phoneRow = page.locator(".folder-group-row").first();
+  await expect(phoneRow).toBeVisible();
+  await phoneRow.click();
+  // The breadcrumb only exists once the folder has been entered.
+  await expect(page.locator(".folder-breadcrumb")).toBeVisible();
+  await expect(page.locator(".folder-crumb.is-current")).toHaveText("Live");
+
+  // A fresh load puts the view back on the library root, so the desktop half
+  // starts from the same place the phone half did.
+  await loadLibrary(page, { width: 1440, height: 900 });
+  await page.locator("[data-view='folders']").click();
+  const desktopRow = page.locator(".folder-group-row").first();
+  await expect(desktopRow).toBeVisible();
+  await desktopRow.click();
+  // A desktop single click selects the row and must not leave the folder list: at
+  // the library root there is no current-folder crumb, and only entering the folder
+  // creates one.
+  await expect(desktopRow).toHaveClass(/is-selected/);
+  await expect(page.locator(".folder-crumb.is-current")).toHaveCount(0);
+  await desktopRow.dblclick();
+  await expect(page.locator(".folder-crumb.is-current")).toHaveText("Live");
+});
