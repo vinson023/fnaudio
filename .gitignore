@@ -69,3 +69,9 @@ references/moOde/
 .vscode/
 Thumbs.db
 .DS_Store
+
+# Android 正式签名材料：keystore 与环境变量文件。丢失即失去覆盖升级身份，
+# 由 tools/gen_release_keystore.py 生成，必须离线加密另存一份。
+.secrets/
+*.jks
+*.keystore

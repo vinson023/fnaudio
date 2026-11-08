@@ -45,17 +45,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_android_emulator.
 
 ### Release 签名
 
-正式包不会内置仓库密钥。构建机器必须通过 Gradle properties 或环境变量提供 keystore：
+正式包不会内置仓库密钥。发布 keystore 已生成在仓库根的 `.secrets/`（被 `.gitignore` 排除），
+四项签名材料在 `.secrets/release-signing.env`，构建时由 `tools/load_signing_env.ps1` 读进进程：
 
 ```powershell
-$env:FNAUDIO_RELEASE_STORE_FILE = 'E:\secrets\fnaudio-release.jks'
+.\tools\load_signing_env.ps1 -ThenBuild -AndroidSdkRoot D:\fnAudio\tools\android-sdk
+```
+
+手工设置时同样只需四项环境变量：
+
+```powershell
+$env:FNAUDIO_RELEASE_STORE_FILE = 'D:\fnAudio\.secrets\fnaudio-release.jks'
 $env:FNAUDIO_RELEASE_STORE_PASSWORD = '...'
 $env:FNAUDIO_RELEASE_KEY_ALIAS = 'fnaudio'
 $env:FNAUDIO_RELEASE_KEY_PASSWORD = '...'
 .\gradlew.bat :app:assembleRelease
 ```
 
-也可以使用 `-PfnaudioReleaseStoreFile=...` 等同名 Gradle properties。密钥文件和密码不得提交到 Git；未提供完整参数或 keystore 不存在时，`assembleRelease` 会明确失败，不能误产出未签名发布包。
+也可以使用 `-PfnaudioReleaseStoreFile=...` 等同名 Gradle properties。密钥文件和密码不得提交到 Git；未提供完整参数或 keystore 不存在时，`assembleRelease` 会明确失败，不能误产出未签名发布包。keystore 丢了就再也发不出能覆盖升级的包，详见 `docs/ANDROID_RELEASE.md`。
 
 ## 与 fnAudio 服务端的配套要求
 

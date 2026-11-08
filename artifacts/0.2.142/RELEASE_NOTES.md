@@ -7,21 +7,27 @@
 ## 下载
 
 - `fnaudio-0.2.142-fnpack.fpk`：fnOS 安装包，在应用中心「手动安装 → 从电脑上传」升级，这是 fnOS 上唯一会刷新登记版本的路径。
-- `fnaudio-0.2.142-debug.apk`：Android Debug 测试包，使用调试签名，仅供测试；与正式包签名身份不同，安装前需先卸载已装正式版。
+- `fnaudio-android-0.2.142-release.apk`：**正式签名包**，可直接覆盖安装此前的正式版（同一把密钥）。从调试包切过来必须先卸载一次——两者签名身份不同。
+- `fnaudio-0.2.142-debug.apk`：调试签名测试包，仅供开发调试，**不能**作为正式升级包。
 
 ## 校验
 
 | 文件 | 大小 | SHA-256 |
 | --- | --- | --- |
 | `fnaudio-0.2.142-fnpack.fpk` | 5,413,977 字节 | `0E50159F87E1E91A4264BE98D56E79499A4FAC3FD6880CFA814BBD310A53F81F` |
+| `fnaudio-android-0.2.142-release.apk` | 12,899,031 字节 | `E33BACAA5A5F0FE6E604697E6BDFE5E88B62165B239F9A46B346A960E6329BE4` |
 | `fnaudio-0.2.142-debug.apk` | 15,527,931 字节 | `EEC44D972E5818363C3FC6E3B7E3BDA0C6181F2B144AEC49F3BF5F818350C602` |
+
+正式包签名证书：`CN=fnAudio, OU=fnAudio, O=fnAudio, L=Shenzhen, ST=Guangdong, C=CN`，RSA 4096，证书 SHA-256 指纹 `DF:88:31:F8:FD:09:11:8F:26:A1:16:BE:CD:7D:DA:44:FA:C6:2C:B2:B0:4F:0D:CB:FB:BB:FF:CB:39:32:76:59`。`ANDROID_SHA256SUMS` 记录的是正式包这一行。
 
 ## 验证
 
 - FPK 由 `tools/build_release.ps1` 从唯一的 `src/` 构建，351 个文件、资源戳 `0.2.142-6a04789ae082`，包结构、manifest 身份（`version = 0.2.142`）、data share、lifecycle 脚本与 `SHA256SUMS`／`SOURCE_PROVENANCE.json` 互校全部通过（`Validated: True`，`git_provenance_status: clean`，`git_tracked_edits: 0`）。
 - **包内图标逐个核对**：根层 `ICON.PNG` 3,040 B／`ICON_256.PNG` 15,315 B，`app.tgz` 内 `ui/images/` 九张（含字面量 `icon_{0}.png`）与工作区 `src/app/ui/images/` 的 md5 逐张相等；旧图的 2,354 B 白底版已不存在于包内。
 - 三张图的判据是「形状未改、只改颜色」：音符蒙版按「蓝度（B−R）」从原图提取，音符轮廓一像素未动；描边在 1024 画布上腐蚀 8 px 取 alpha 差集生成，缩到 256 为 2 px、缩到 64 为 0.5 px。
-- APK 内置的 73 个 assets 条目与 `src/app/ui` 逐字节一致（零缺失、零多余、零差异）；`versionName 0.2.142`／`versionCode 400`。
+- APK 内置的 80 个 assets 与 `src/app/ui` 逐字节一致（零缺失、零多余、零差异；另有 2 个 Gradle 生成的 dexopt baseline profile）；`versionName 0.2.142`／`versionCode 400`。
+- **正式包签名已验**：`apksigner verify --verbose --print-certs` 报 `Verifies`，v1（JAR）与 v2 两种方案均为 true，签名者 1 人、证书 DN 与上表一致、RSA 4096，证书 SHA-256 与 keystore 里的那把逐字相同；`aapt dump badging` 读到 `package name='com.fnaudio.client' versionCode='400' versionName='0.2.142'`。
+- **签名材料位置**：keystore 在 `.secrets/fnaudio-release.jks`（PKCS12、RSA 4096、有效期 30 年、alias `fnaudio`），四项环境变量在 `.secrets/release-signing.env`，`.secrets/` 已被 `.gitignore` 排除，不进仓库、不进 `SOURCE_MANIFEST`。构建入口 `tools/load_signing_env.ps1 -ThenBuild` 负责把变量读进进程再调 `build_android_release.ps1`；`tools/gen_release_keystore.py` 只在没有 keystore 时生成，默认拒绝覆盖——换掉密钥等于让所有已装正式版无法升级。
 - 门禁：前端 JS 单元测试 **126 个文件全部通过**；离线 Python `Ran 3226 tests` / `OK (skipped=8)`；`SOURCE_MANIFEST.sha256` 818 条新鲜。
 - 归档自带校验可用：`tools/verify_release_evidence.ps1 -ArtifactDirectory artifacts/0.2.142` 返回 `Validated: True`、`AndroidValidated: True`、`EvidenceComplete: True`。
 - 版本坐标八处（`VERSION`、`src/manifest`、`build.gradle` 的 `versionName`／`versionCode` 400、`README.md`、`ARCHITECTURE.md`、`docs/SOURCE_INVENTORY.md`、`android-client/README.md`、`RECOVERY.md`）改完当刻先跑 `test_release_version` 通过（2/2）。
@@ -32,4 +38,4 @@
 - `192.168.5.20` 本次未升级：机器 ping 通，但 22 与 18080 端口都不通，连不上。它上面还停着 0.2.141 的旧图标，恢复后跑一次 `deploy_fpk.py` 或 `tools/push_icons.py` 即可。
 - 飞牛 App 会缓存应用中心图标，升级后若仍显示旧图，杀掉 App 重开。
 - 专辑页与类型页没有一键播整张的按钮，要整张播放从任意一行右键／长按选「播放」（0.2.140 的既定形态）。
-- 仓库里发的仍是调试签名 APK，正式签名缺 keystore（`build_android_release.ps1` 会拒绝运行）。
+- 正式签名 keystore 只存在于本机 `.secrets/`，**没有离线加密备份就不要再发正式版**：它一旦丢失，新包再也覆盖不上已安装的正式版，用户只能卸载重装（本地数据全丢）。备份时连同 `.secrets/release-signing.env` 里的密码一起存进密码管理器。
