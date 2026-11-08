@@ -8539,6 +8539,51 @@ function metadataTaskCounts(status = {}) {
     workers: Number(status.fetch_workers || 0),
   };
 }
+// A count on its own ("失败 2 · 未匹配 155") never tells the operator what to
+// fix; the status payload now samples the terminal jobs, so every counter can
+// name its job type and, in the log dialog, the track itself (R519).
+const METADATA_JOB_TYPE_LABELS = Object.freeze({
+  lyrics: "歌词",
+  track: "歌曲信息",
+  track_artwork: "封面",
+  tag_write: "Tag 写回",
+  album: "专辑",
+  artist: "艺术家",
+  composer: "作曲者",
+});
+function metadataJobTypeLabel(type) {
+  const key = String(type || "").trim();
+  return METADATA_JOB_TYPE_LABELS[key] || (key ? key : "任务");
+}
+function metadataIssueTypes(issueCounts, stateKey) {
+  const rows = [];
+  Object.entries(issueCounts && typeof issueCounts === "object" ? issueCounts : {}).forEach(([type, value]) => {
+    const count = Number(value?.[stateKey] || 0);
+    if (!Number.isFinite(count) || count <= 0) return;
+    rows.push({ type, label: metadataJobTypeLabel(type), count });
+  });
+  rows.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
+  return rows;
+}
+function metadataIssueTypeText(issueCounts, stateKey) {
+  return metadataIssueTypes(issueCounts, stateKey).map(row => `${row.label} ${row.count}`).join("、");
+}
+function metadataIssueCountersText(status = {}) {
+  const counts = metadataTaskCounts(status);
+  const failed = metadataIssueTypeText(status.issue_counts, "failed");
+  const noMatch = metadataIssueTypeText(status.issue_counts, "no_match");
+  return `失败 ${counts.failed}${failed ? `（${failed}）` : ""} · 未匹配 ${counts.noMatch}${noMatch ? `（${noMatch}）` : ""}`;
+}
+function metadataIssueSampleText(status = {}, limit = 3) {
+  const jobs = Array.isArray(status.issue_jobs) ? status.issue_jobs : [];
+  return jobs.slice(0, limit).map(job => {
+    const name = [job.title, job.artist].filter(Boolean).join(" - ") || "未知歌曲";
+    const kind = `${metadataJobTypeLabel(job.job_type)}${job.status === "failed" ? "失败" : "未匹配"}`;
+    const error = job.status === "failed" && job.error ? String(job.error) : "";
+    const reason = error ? `：${error.length > 40 ? `${error.slice(0, 40)}…` : error}` : "";
+    return `${name}（${kind}${reason}）`;
+  }).join("、");
+}
 // A provider that is cooling down is the only explanation for a run of failures,
 // so the reason stays on the pane next to the counters instead of hiding in a
 // single summary sentence (R494).
@@ -8591,6 +8636,14 @@ function renderMetadataTaskState(status = {}) {
       const count = document.createElement("b");
       count.textContent = String(value);
       if (label === "失败" && value > 0) count.classList.add("is-bad");
+      // The counters are the entry point now: a non-zero failure or no-match
+      // value opens the log dialog on its issue detail instead of leaving the
+      // number unexplained on the pane (R519).
+      if ((label === "失败" || label === "未匹配") && value > 0) {
+        item.dataset.metadataStatIssues = label === "失败" ? "failed" : "no_match";
+        item.tabIndex = 0;
+        item.title = "查看失败与未匹配明细";
+      }
       item.append(name, count);
       stats.append(item);
     });
@@ -8619,23 +8672,86 @@ function metadataLogFilterMatches(entry) {
   if (filter === "done") return entry.level === "info";
   return true;
 }
+function renderMetadataLogIssues(status = {}) {
+  const section = $("metadataLogIssues");
+  if (!section) return;
+  const jobs = Array.isArray(status.issue_jobs) ? status.issue_jobs : [];
+  const counts = metadataTaskCounts(status);
+  const total = counts.failed + counts.noMatch;
+  // "已完成" is a positive view; the issue block belongs to the other two.
+  section.hidden = (state.metadataLogFilter || "all") === "done" || total === 0;
+  if (section.hidden) return;
+  const summary = $("metadataLogIssuesSummary");
+  if (summary) summary.textContent = metadataIssueCountersText(status);
+  const list = $("metadataLogIssuesList");
+  if (list) {
+    list.replaceChildren();
+    jobs.forEach(job => {
+      const failed = job.status === "failed";
+      const attempts = Number(job.attempts || 0);
+      const row = document.createElement("div");
+      row.className = `metadata-log-issue ${failed ? "is-failed" : "is-no-match"}`;
+      // Only a track the current page can resolve becomes actionable; a row
+      // that cannot open anything must not look clickable.
+      const track = job.track_id ? itemById(job.track_id) : null;
+      if (track) {
+        row.setAttribute("role", "button");
+        row.tabIndex = 0;
+        row.dataset.metadataIssueTrack = String(job.track_id);
+        row.title = "打开这首歌的元数据补全";
+      }
+      const badge = document.createElement("span");
+      badge.className = "metadata-log-issue-badge";
+      badge.textContent = failed ? "失败" : "未匹配";
+      const name = document.createElement("strong");
+      name.textContent = [job.title, job.artist].filter(Boolean).join(" · ") || "未知歌曲";
+      const type = document.createElement("span");
+      type.className = "metadata-log-issue-type";
+      type.textContent = metadataJobTypeLabel(job.job_type);
+      const reason = document.createElement("span");
+      reason.className = "metadata-log-issue-reason";
+      reason.textContent = failed
+        ? (job.error ? `尝试 ${attempts} 次：${job.error}` : `尝试 ${attempts} 次后失败`)
+        : "数据源没有返回可用结果";
+      row.append(badge, name, type, reason);
+      list.append(row);
+    });
+  }
+  const note = $("metadataLogIssuesNote");
+  if (note) {
+    const hidden = Math.max(0, total - jobs.length);
+    note.textContent = !jobs.length
+      ? "服务端没有返回明细，只能看到计数；刷新一次状态或升级到带明细的版本后再看。"
+      : (hidden > 0
+        ? `按最近更新排序，这里列出 ${jobs.length} 条，另有 ${hidden} 条未展开；复制日志会带上这 ${jobs.length} 条。`
+        : "按最近更新排序；复制日志会带上这些明细。");
+  }
+}
 function renderMetadataLog() {
   const list = $("metadataLogList");
   if (!list) return;
   const counts = metadataTaskCounts(state.metadataStatus);
   const summary = $("metadataLogSummary");
   if (summary) {
-    summary.textContent = `队列 ${counts.pending} 项 · 失败 ${counts.failed} · 未匹配 ${counts.noMatch} · 待写入 ${counts.writing}`;
+    summary.textContent = `队列 ${counts.pending} 项 · ${metadataIssueCountersText(state.metadataStatus)} · 待写入 ${counts.writing}`;
   }
   document.querySelectorAll("[data-metadata-log-filter]").forEach(button => {
     button.setAttribute("aria-pressed", String(button.dataset.metadataLogFilter === (state.metadataLogFilter || "all")));
   });
+  renderMetadataLogIssues(state.metadataStatus);
   const entries = (Array.isArray(state.metadataLog) ? state.metadataLog : []).filter(metadataLogFilterMatches);
   list.replaceChildren();
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "dialog-help";
-    empty.textContent = state.metadataLog?.length ? "当前筛选下没有记录。" : "还没有记录；补全、重试或测试数据源后会出现在这里。";
+    // Opening from a counter lands on the issue filter, which may legitimately
+    // have no session events; the rows above are the queue's current state, so
+    // say that instead of a bare "no records" (R519).
+    const issuesVisible = (state.metadataLogFilter || "all") === "issue"
+      && ((state.metadataStatus?.issue_jobs || []).length > 0);
+    empty.textContent = issuesVisible
+      ? "本次会话没有新的失败或未匹配事件；上面的明细是后台队列的当前状态。"
+      : (state.metadataLog?.length ? "当前筛选下没有记录。" : "还没有记录；补全、重试或测试数据源后会出现在这里。");
     list.append(empty);
     return;
   }
@@ -8654,9 +8770,26 @@ function renderMetadataLog() {
   });
 }
 function metadataLogText() {
-  return (Array.isArray(state.metadataLog) ? state.metadataLog : [])
-    .map(entry => `${metadataLogStamp(entry.at)}\t${entry.scope || "任务"}\t${entry.text}`)
-    .join("\n");
+  const lines = (Array.isArray(state.metadataLog) ? state.metadataLog : [])
+    .map(entry => `${metadataLogStamp(entry.at)}\t${entry.scope || "任务"}\t${entry.text}`);
+  // The copied log has to answer the same question as the dialog: a count
+  // that cannot name its tracks is what made the old log useless (R519).
+  const jobs = Array.isArray(state.metadataStatus?.issue_jobs) ? state.metadataStatus.issue_jobs : [];
+  if (jobs.length) {
+    lines.push("", `失败与未匹配明细（${metadataIssueCountersText(state.metadataStatus)}）：`);
+    jobs.forEach(job => {
+      const name = [job.title, job.artist].filter(Boolean).join(" - ") || "未知歌曲";
+      const failed = job.status === "failed";
+      const error = failed && job.error ? `：${job.error}` : "";
+      lines.push(`${failed ? "失败" : "未匹配"}\t${metadataJobTypeLabel(job.job_type)}\t${name}${error}`);
+    });
+  }
+  return lines.join("\n");
+}
+function openMetadataIssueLog() {
+  state.metadataLogFilter = "issue";
+  renderMetadataLog();
+  $("metadataLogDialog")?.showModal();
 }
 async function copyMetadataLog() {
   const note = $("metadataLogNote");
@@ -8714,7 +8847,8 @@ async function loadMetadataStatus() {
     statusNode.textContent = "";
     if (!state.metadataLog.length) {
       const counts = metadataTaskCounts(liveStatus);
-      pushMetadataLog("info", "任务", `读取后台状态：队列 ${counts.pending} 项，失败 ${counts.failed} 项，未匹配 ${counts.noMatch} 项`);
+      const sample = metadataIssueSampleText(liveStatus);
+      pushMetadataLog("info", "任务", `读取后台状态：队列 ${counts.pending} 项，${metadataIssueCountersText(liveStatus)}${sample ? `；例如 ${sample}` : ""}`);
     }
     const providerAlert = metadataProviderFailureText(liveStatus);
     if (providerAlert && providerAlert !== state.metadataProviderAlert) {
@@ -11130,6 +11264,34 @@ $("metadataLogFilters").addEventListener("click", event => {
   if (!button) return;
   state.metadataLogFilter = button.dataset.metadataLogFilter || "all";
   renderMetadataLog();
+});
+// Both counters and detail rows open the same dialog the button does, so the
+// question "失败的是哪些" is one tap away from the number (R519).
+$("metadataTaskStats").addEventListener("click", event => {
+  if (event.target.closest?.("[data-metadata-stat-issues]")) openMetadataIssueLog();
+});
+$("metadataTaskStats").addEventListener("keydown", event => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  if (!event.target.closest?.("[data-metadata-stat-issues]")) return;
+  event.preventDefault();
+  openMetadataIssueLog();
+});
+function openMetadataIssueTrack(row) {
+  const trackId = row?.dataset?.metadataIssueTrack || "";
+  if (!trackId) return;
+  $("metadataLogDialog")?.close();
+  openMetadataCandidateDialog(trackId);
+}
+$("metadataLogIssuesList").addEventListener("click", event => {
+  const row = event.target.closest?.("[data-metadata-issue-track]");
+  if (row) openMetadataIssueTrack(row);
+});
+$("metadataLogIssuesList").addEventListener("keydown", event => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest?.("[data-metadata-issue-track]");
+  if (!row) return;
+  event.preventDefault();
+  openMetadataIssueTrack(row);
 });
 $("refreshMetadataBtn").onclick = refreshMetadataLibrary;
 $("deviceSearchInput").addEventListener("input", event => {

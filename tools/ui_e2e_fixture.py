@@ -105,6 +105,36 @@ def metadata_status_payload():
             "track": {"pending": 56},
             "tag_write": {"pending": 18},
         },
+        # Counts alone cannot say what failed, so the service also ships a
+        # bounded sample and a per-type breakdown; the fixture carries the same
+        # shape or the dialog would only ever be exercised with numbers (R519).
+        "issue_counts": {
+            "lyrics": {"failed": 2, "no_match": 6},
+            "track_artwork": {"failed": 0, "no_match": 2},
+            "tag_write": {"failed": 4, "no_match": 0},
+        },
+        "issue_jobs": [
+            {
+                "job_type": "tag_write", "status": "failed", "track_id": "fixture-1",
+                "title": "晨光", "artist": "测试歌手", "attempts": 3,
+                "updated_at": 1730000400, "error": "permission denied",
+            },
+            {
+                "job_type": "tag_write", "status": "failed", "track_id": "fixture-2",
+                "title": "DSD Reference", "artist": "Lab Artist", "attempts": 2,
+                "updated_at": 1730000300, "error": "provider unavailable",
+            },
+            {
+                "job_type": "lyrics", "status": "no_match", "track_id": "fixture-3",
+                "title": "No Artwork", "artist": "", "attempts": 1,
+                "updated_at": 1730000200, "error": "",
+            },
+            {
+                "job_type": "track_artwork", "status": "no_match", "track_id": "fixture-4",
+                "title": "Already Covered", "artist": "Lab Artist", "attempts": 1,
+                "updated_at": 1730000100, "error": "",
+            },
+        ],
         "track_matches": {"auto": 21, "confirmed": 3, "review": 2},
     }
 

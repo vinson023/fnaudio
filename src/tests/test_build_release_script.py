@@ -921,8 +921,12 @@ $payload | ConvertTo-Json -Compress
         self.assertEqual(rows["TRAILING_COMMENT"], "NOMATCH")
         # And the file the release actually ships still satisfies its own gate, so
         # tightening the pattern cannot be what breaks the next build (R178 lesson).
-        self.assertTrue(rows["REALFILE"].startswith("[3"),
-                        "the shipped build.gradle no longer satisfies its own gate: %r" % rows["REALFILE"])
+        # The assertion reads "a number on the key's own line", not a version
+        # range: the previous `startswith("[3")` check encoded the 3xx era and
+        # broke the moment versionCode crossed into 400 (R519).
+        self.assertRegex(rows["REALFILE"], r"^\[\d+\]$",
+                         "the shipped build.gradle no longer satisfies its own gate: %r" % rows["REALFILE"])
+        self.assertGreater(int(rows["REALFILE"].strip("[]")), 0)
 
     def test_no_multiline_pattern_in_tools_reads_across_line_boundaries(self):
         r"""Keeps the whole \s family shut, not just the two sites that already broke.

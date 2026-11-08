@@ -333,6 +333,11 @@
   <dialog id="metadataLogDialog" class="metadata-log-dialog" aria-labelledby="metadataLogTitle">
     <div class="dialog-head"><div><h2 id="metadataLogTitle">补全日志</h2><p class="dialog-help" id="metadataLogSummary"></p></div><button class="icon-button dialog-close-button" id="closeMetadataLogDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div>
     <div class="metadata-log-filters" id="metadataLogFilters"><button type="button" data-metadata-log-filter="all" aria-pressed="true">全部</button><button type="button" data-metadata-log-filter="issue" aria-pressed="false">失败与未匹配</button><button type="button" data-metadata-log-filter="done" aria-pressed="false">已完成</button></div>
+    <section class="metadata-log-issues" id="metadataLogIssues" aria-label="失败与未匹配明细" hidden>
+      <div class="metadata-log-issues-head"><strong>失败与未匹配明细</strong><span id="metadataLogIssuesSummary"></span></div>
+      <div class="metadata-log-issues-list" id="metadataLogIssuesList" role="group" aria-label="失败与未匹配的歌曲"></div>
+      <p class="dialog-help" id="metadataLogIssuesNote"></p>
+    </section>
     <div class="metadata-log-list" id="metadataLogList" role="log"></div>
     <div class="metadata-log-footer"><span class="dialog-help" id="metadataLogNote">只记录本次页面会话里发生的事件，逐曲历史不会长期保存。</span><button class="secondary-button" id="copyMetadataLogBtn" type="button">复制</button><button class="secondary-button" id="closeMetadataLogBtn" type="button">关闭</button></div>
   </dialog>

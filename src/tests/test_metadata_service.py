@@ -3514,6 +3514,49 @@ class MetadataServiceTests(unittest.TestCase):
             self.assertEqual(job["status"], "failed")
             self.assertNotIn("path", job)
 
+    def test_status_names_each_failed_and_no_match_job(self):
+        # "失败 2 · 未匹配 155" without names is what made the completion log
+        # unactionable; the snapshot has to carry the track and the reason (R519).
+        with tempfile.TemporaryDirectory() as root:
+            config = self._config(root)
+            music = config["library_paths"][0]
+            first = self._item("one", os.path.join(music, "one.flac"), "Visible Title", 1)
+            second = self._item("two", os.path.join(music, "two.flac"), "Another Title", 2)
+            save_items_to_sqlite(config, [first, second], "first")
+            service = MetadataService(config)
+            with service._connect() as conn:
+                service._upsert_job(conn, "lyrics:one", "lyrics", "one", dict(first), 100)
+                service._upsert_job(conn, "lyrics:two", "lyrics", "two", dict(second), 100)
+                service._upsert_job(
+                    conn, "album:key", "album", "key",
+                    {"name": "Example Album", "artist": "Example Artist"}, 50,
+                )
+                conn.execute(
+                    "UPDATE metadata_jobs SET status='failed',attempts=3,last_error='provider unavailable' WHERE job_key='lyrics:one'"
+                )
+                conn.execute("UPDATE metadata_jobs SET status='no_match',attempts=1 WHERE job_key='lyrics:two'")
+                conn.execute("UPDATE metadata_jobs SET status='no_match',attempts=1,last_error='' WHERE job_key='album:key'")
+            status = service.status()
+            # The breakdown names the job type behind each counter.
+            self.assertEqual(status["issue_counts"]["lyrics"], {"failed": 1, "no_match": 1})
+            self.assertEqual(status["issue_counts"]["album"], {"failed": 0, "no_match": 1})
+            failed = [job for job in status["issue_jobs"] if job["status"] == "failed"]
+            no_match = [job for job in status["issue_jobs"] if job["status"] == "no_match"]
+            # Failures come first so a long no_match run cannot bury them.
+            self.assertEqual([job["title"] for job in failed], ["Visible Title"])
+            self.assertEqual(failed[0]["job_type"], "lyrics")
+            self.assertEqual(failed[0]["track_id"], "one")
+            self.assertEqual(failed[0]["attempts"], 3)
+            self.assertEqual(failed[0]["error"], "provider unavailable")
+            # Entity jobs have no library row, so the payload names them.
+            names = {(job["job_type"], job["title"]) for job in no_match}
+            self.assertIn(("lyrics", "Another Title"), names)
+            self.assertIn(("album", "Example Album"), names)
+            # A status payload must never carry the media path.
+            for job in status["issue_jobs"]:
+                self.assertNotIn("path", job)
+                self.assertNotIn(os.path.join(music, "one.flac"), json.dumps(job, ensure_ascii=False))
+
     def test_shared_entity_survives_until_last_track_is_deleted(self):
         with tempfile.TemporaryDirectory() as root:
             config = self._config(root, grace=0)

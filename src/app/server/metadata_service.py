@@ -243,6 +243,55 @@ RUNNING_JOB_STALE_SECONDS = 15 * 60
 # coalesces bursty readers without turning the metadata queue into stale
 # state. Mutating job paths also invalidate it eagerly.
 STATUS_CACHE_TTL_SECONDS = 0.75
+# A bare count ("失败 2 · 未匹配 155") leaves the operator with no way to act:
+# the log cannot say which tracks failed or why.  The snapshot therefore carries
+# a bounded sample of the terminal rows, split between the two states so a run
+# of no_match rows cannot crowd the failures out of the list (R519).
+STATUS_ISSUE_FAILED_SAMPLE = 8
+STATUS_ISSUE_NO_MATCH_SAMPLE = 12
+STATUS_ISSUE_ERROR_CHARS = 240
+# Job types whose entity_key is a track id, so the display name comes from the
+# library row.  Entity jobs (album/artist/composer) keep it in their payload.
+TRACK_SCOPED_JOB_TYPES = ("lyrics", "track", "track_artwork", "tag_write")
+
+
+def _status_issue_payload(raw):
+    """Parse a persisted job payload, tolerating rows written by older builds."""
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _status_issue_job(row):
+    """Describe one failed/no_match job without exposing the media path."""
+    job_type = _provider_text(row["job_type"], 32) or "unknown"
+    status = "no_match" if str(row["status"] or "") == "no_match" else "failed"
+    payload = _status_issue_payload(row["payload_json"])
+    track_id = ""
+    if job_type in TRACK_SCOPED_JOB_TYPES:
+        title = str(row["track_title"] or "").strip()
+        artist = str(row["track_artist"] or "").strip()
+        track_id = str(row["track_id"] or "").strip()
+        if not title:
+            title = str(payload.get("title") or "").strip()
+            artist = artist or str(payload.get("artist") or "").strip()
+        if not title:
+            title = "已不在曲库的歌曲"
+    else:
+        title = str(payload.get("name") or "").strip() or str(payload.get("title") or "").strip() or "未知条目"
+        artist = str(payload.get("artist") or "").strip()
+    return {
+        "job_type": job_type,
+        "status": status,
+        "track_id": track_id[:64],
+        "title": title[:200],
+        "artist": artist[:200],
+        "attempts": nonnegative_int(row["attempts"]),
+        "updated_at": bounded_epoch(row["updated_at"]),
+        "error": str(row["last_error"] or "").strip()[:STATUS_ISSUE_ERROR_CHARS],
+    }
 
 
 def _cache_entry_is_fresh(cached_at, now, ttl):
@@ -2439,6 +2488,8 @@ class MetadataService:
         counts = {}
         job_types = {}
         tag_jobs = []
+        issue_counts = {}
+        issue_jobs = []
         track_matches = {}
         metadata_updated_at = 0
         artwork_bytes = 0
@@ -2496,6 +2547,34 @@ class MetadataService:
                         "updated_at": bounded_epoch(row["updated_at"]),
                         "error": str(row["last_error"] or "")[:500],
                     })
+            # The counters say how many; these two queries say which and why.
+            # Both are bounded by the status cache (STATUS_CACHE_TTL_SECONDS) and
+            # read through idx_metadata_jobs_status_updated, so a library with a
+            # large no_match backlog costs an index walk, not a table sort.
+            for row in conn.execute(
+                """SELECT job_type,status,COUNT(*) AS count FROM metadata_jobs
+                   WHERE status IN ('failed','no_match') GROUP BY job_type,status"""
+            ):
+                job_type = _provider_text(row["job_type"], 32) or "unknown"
+                bucket = issue_counts.setdefault(job_type, {"failed": 0, "no_match": 0})
+                bucket["no_match" if str(row["status"] or "") == "no_match" else "failed"] = nonnegative_int(row["count"])
+            if tracks_table:
+                issue_sql = (
+                    """SELECT j.job_type,j.status,j.entity_key,j.attempts,j.updated_at,j.last_error,j.payload_json,
+                              t.id AS track_id,t.title AS track_title,t.artist AS track_artist
+                         FROM metadata_jobs j LEFT JOIN tracks t ON t.id=j.entity_key
+                        WHERE j.status=? ORDER BY j.updated_at DESC LIMIT ?"""
+                )
+            else:
+                issue_sql = (
+                    """SELECT j.job_type,j.status,j.entity_key,j.attempts,j.updated_at,j.last_error,j.payload_json,
+                              '' AS track_id,'' AS track_title,'' AS track_artist
+                         FROM metadata_jobs j
+                        WHERE j.status=? ORDER BY j.updated_at DESC LIMIT ?"""
+                )
+            for status, limit in (("failed", STATUS_ISSUE_FAILED_SAMPLE), ("no_match", STATUS_ISSUE_NO_MATCH_SAMPLE)):
+                for row in conn.execute(issue_sql, (status, limit)):
+                    issue_jobs.append(_status_issue_job(row))
         return {
             "jobs": counts,
             "job_types": job_types,
@@ -2505,6 +2584,8 @@ class MetadataService:
             "track_matches": track_matches,
             "metadata_updated_at": metadata_updated_at,
             "tag_jobs": tag_jobs,
+            "issue_counts": issue_counts,
+            "issue_jobs": issue_jobs,
         }
 
     @property
@@ -2684,6 +2765,9 @@ class MetadataService:
                 last_error TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_metadata_jobs_pending ON metadata_jobs(status,next_attempt_at,priority);
+            -- Newest terminal rows per state feed the status pane's issue list;
+            -- without this the sample query sorts every no_match row.
+            CREATE INDEX IF NOT EXISTS idx_metadata_jobs_status_updated ON metadata_jobs(status,updated_at DESC);
             CREATE TABLE IF NOT EXISTS metadata_state (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
@@ -5502,6 +5586,7 @@ class MetadataService:
                 database = {
                     "jobs": {}, "job_types": {}, "artwork_bytes": 0,
                     "entities": 0, "lyrics": 0, "track_matches": {}, "tag_jobs": [],
+                    "issue_counts": {}, "issue_jobs": [],
                 }
             with self._status_cache_lock:
                 self._status_cache_loading = False
@@ -5564,6 +5649,8 @@ class MetadataService:
             "provider_failures": self.providers.failure_snapshot(),
             "provider_activity": self.providers.activity_snapshot(),
             "tag_jobs": database["tag_jobs"],
+            "issue_counts": database.get("issue_counts") or {},
+            "issue_jobs": database.get("issue_jobs") or [],
             "last_tag_write_at": self.last_tag_write_at,
             "last_reconcile": self.last_reconcile,
             "last_error": self.last_error,

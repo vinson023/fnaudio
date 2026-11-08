@@ -571,3 +571,60 @@ test("a phone tap opens a folder row while a desktop click only selects it", asy
   await desktopRow.dblclick();
   await expect(page.locator(".folder-crumb.is-current")).toHaveText("Live");
 });
+
+test("completion log names the failed and unmatched tracks instead of only counting them", async ({ page }) => {
+  // R519: the log used to print "失败 2 · 未匹配 155" and stop there, which is a
+  // number nobody can act on.  The counters are the entry point now and the
+  // dialog has to answer "which track, which job, what error".
+  await loadLibrary(page, { width: 1440, height: 900 });
+  await page.locator("#mobileSettingsNavBtn").click();
+  await page.locator("[data-settings-tab='metadata']").click();
+
+  const failedCounter = page.locator('[data-metadata-stat-issues="failed"]');
+  await expect(failedCounter).toBeVisible();
+  await expect(failedCounter).toContainText("6");
+  await failedCounter.click();
+
+  await expect(page.locator("#metadataLogDialog")).toBeVisible();
+  await expect(page.locator("#metadataLogIssues")).toBeVisible();
+  // The summary splits the counters by job type instead of repeating the total.
+  await expect(page.locator("#metadataLogSummary")).toContainText("失败 6（Tag 写回 4、歌词 2）");
+  await expect(page.locator("#metadataLogSummary")).toContainText("未匹配 8（歌词 6、封面 2）");
+
+  const rows = page.locator("#metadataLogIssuesList .metadata-log-issue");
+  await expect(rows).toHaveCount(4);
+  await expect(rows.first()).toContainText("晨光");
+  await expect(rows.first()).toContainText("Tag 写回");
+  await expect(rows.first()).toContainText("permission denied");
+  await expect(page.locator("#metadataLogIssuesNote")).toContainText("另有 10 条未展开");
+
+  // A named track is actionable, but only when the loaded page can resolve it.
+  await expect(rows.first()).toHaveAttribute("role", "button");
+  await expect(rows.first()).toHaveAttribute("data-metadata-issue-track", "fixture-1");
+  await expect(rows.last()).toHaveAttribute("role", "button");
+
+  await page.locator("#closeMetadataLogBtn").click();
+  await expect(page.locator("#metadataLogDialog")).toBeHidden();
+});
+
+test("the issue detail still fits a phone screen", async ({ page }) => {
+  // The detail block adds height to a dialog that already had a fixed window on
+  // a phone; the flex column has to keep both the rows and the footer reachable.
+  await loadLibrary(page, { width: 390, height: 844 });
+  await page.locator("#mobileNavBtn").click();
+  await page.locator("#mobileSettingsNavBtn").click();
+  await page.locator("[data-settings-tab='metadata']").click();
+
+  const failedCounter = page.locator('[data-metadata-stat-issues="failed"]');
+  await failedCounter.scrollIntoViewIfNeeded();
+  await failedCounter.click();
+
+  await expect(page.locator("#metadataLogDialog")).toBeVisible();
+  await expect(page.locator("#metadataLogIssuesList .metadata-log-issue").first()).toBeVisible();
+  const box = await page.locator("#metadataLogDialog").boundingBox();
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(845);
+  await expect(page.locator("#closeMetadataLogBtn")).toBeVisible();
+  await page.locator("#closeMetadataLogBtn").click();
+  await expect(page.locator("#metadataLogDialog")).toBeHidden();
+});
