@@ -9,4 +9,18 @@
         <item name="android:navigationBarColor">@color/fnaudio_surface</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+
+    <!-- Television surfaces are dark-only: a light theme on a 55-inch panel in
+         a dim room is genuinely uncomfortable, and every streaming client
+         settled on the same answer. -->
+    <style name="Theme.FnAudio.Tv" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="colorPrimary">@color/fnaudio_blue</item>
+        <item name="colorAccent">@color/fnaudio_blue</item>
+        <item name="android:windowBackground">#FF07080A</item>
+        <item name="android:colorBackground">#FF07080A</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#FF07080A</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
 </resources>

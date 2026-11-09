@@ -112,8 +112,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # not a measurement of a living file.  R456 re-measured them after the two
 # unrecorded 0.2.125/0.2.129 releases grew the tracked surface by one file and
 # 475 lines; the move arithmetic above stays at the historical 9,695/8,530.
-JAVA_TOTAL_FILES = 47
-JAVA_TOTAL_LINES = 10452
+# R524 re-measured again: the television client added 13 files / 3,542 lines to
+# the tracked surface (12 classes under ``com.fnaudio.client.tv`` plus one
+# instrumentation test) without touching a single audited face.
+JAVA_TOTAL_FILES = 60
+JAVA_TOTAL_LINES = 14024
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

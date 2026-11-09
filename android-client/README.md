@@ -64,6 +64,25 @@ $env:FNAUDIO_RELEASE_KEY_PASSWORD = '...'
 
 也可以使用 `-PfnaudioReleaseStoreFile=...` 等同名 Gradle properties。密钥文件和密码不得提交到 Git；未提供完整参数或 keystore 不存在时，`assembleRelease` 会明确失败，不能误产出未签名发布包。keystore 丢了就再也发不出能覆盖升级的包，详见 `docs/ANDROID_RELEASE.md`。
 
+## 电视端（Android TV）
+
+同一个 APK 里还有一个电视界面：清单中 `TvLoginActivity` 带 `LEANBACK_LAUNCHER` + banner，手机入口仍是 `LAUNCHER`，两者共用 `ConnectionProfile`／`SecureProfileStore`／`FnOsAuthClient`，所以手机上登录过的 NAS 可以直接在电视上点「连接」。代码在 `app/src/main/java/com/fnaudio/client/tv/`，**没有引入任何新依赖**（Gradle 离线缓存里没有 `androidx.tv`／Leanback／Compose for TV）。
+
+- 界面：左侧固定栏（首页／专辑／艺术家／曲目／队列／正在播放）+ 内容区 + 底部常驻播放条；首页是 hero + 三排横向 shelf，全屏播放页左封面右「接下来」。
+- 焦点：遥控器只有四向键，因此每个 shelf 是独立 `RecyclerView`（自身焦点搜索跨不了行），`TvShelfNavigator` 维护行注册表按列索引上下换行；侧栏上下、侧栏→内容、卡片→侧栏、hero↔首排全部显式接线，不依赖 `FocusFinder` 的几何猜测。
+- 播放：不走 `PlaybackService`（`MediaSessionService` 的后台握手对电视没有意义），`TvPlayer` 直接在 Activity 内持有 `ExoPlayer`；随机语义与服务器 `next_track()` 对齐（每次独立抽取，不预洗牌）。
+- 数据：`TvApi` 只读，复用 `HttpClientFactory`，请求头与 Cookie 规则与手机端一致；流地址 `media/<id>?transcode=original`，封面 `cover/<id>?size=`。
+
+构建与本地验收：
+
+```powershell
+.\gradlew.bat :app:assembleEmulator --offline   # 产物 app\build\outputs\apk\emulator\app-emulator.apk
+$env:ANDROID_HOME = 'D:\fnAudio\tools\android-sdk'
+& "$env:ANDROID_HOME\emulator\emulator.exe" -avd fnaudio-tv   # 1080p / 320dpi，即 960x540dp
+```
+
+没有 NAS 时用 `python tools/tv-mock/server.py`（开发用，不随产品发布）：它在本机 `127.0.0.1:18099` 起一个 fnOS 网关替身，实现 WebSocket 登录与 `library`／`groups`／`cover`／`media` 四个只读接口；模拟器里填 `10.0.2.2:18099` 即可。存档连接由 `TvMockSeedTest` 写入——`SecureProfileStore` 用 AndroidKeyStore 加密，`adb push`／`run-as` 都写不进去，只能在应用进程内落盘。
+
 ## 与 fnAudio 服务端的配套要求
 
 必须安装 `fnAudio 0.2.14` 或更新版本。该版本包含 MPD/DLNA 服务端状态同步、Renderer 后台自动推进、DSD 原始推送、远程 MediaSession、启动 token 刷新、API scope 授权和播放快照契约。网页桥在选择当前设备时使用 ExoPlayer；选择 USB DAC、MPD 或 DLNA 时切换为仅镜像状态和转发控制的远程播放器。
