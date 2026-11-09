@@ -115,8 +115,10 @@ DEBT_AFTER_MOVE_OUT = 8530
 # R524 re-measured again: the television client added 13 files / 3,542 lines to
 # the tracked surface (12 classes under ``com.fnaudio.client.tv`` plus one
 # instrumentation test) without touching a single audited face.
+# R530 re-measured after the television feature round: no new file, +620 lines,
+# all inside the two television classes TvApi and TvMainActivity.
 JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14024
+JAVA_TOTAL_LINES = 14644
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

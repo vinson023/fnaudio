@@ -37,6 +37,11 @@ ARTISTS = [
 COUNT_PER_ALBUM = 4
 COVER_CACHE: dict[str, bytes] = {}
 
+# Genre and composer labels exist so the television's genre/composer pages have
+# rows to draw. The real library derives them from tags.
+GENRES = ("电子", "民谣", "爵士")
+COMPOSERS = ("高远", "苏黎")
+
 
 def build_library():
     tracks = []
@@ -56,7 +61,12 @@ def build_library():
                     "artist": artist,
                     "album": album,
                     "duration": 180 + number * 17,
-                    "format": "FLAC",
+                    # Every fifth row is DSD so the television's DSD page is not
+                    # permanently empty, which is what a hand check would
+                    # otherwise read as a broken query.
+                    "format": "DSD64" if seq % 5 == 0 else "FLAC",
+                    "genre": GENRES[seq % len(GENRES)],
+                    "composer": COMPOSERS[(seq // COUNT_PER_ALBUM) % len(COMPOSERS)],
                     "track_no": number,
                     "cover_url": "cover/" + track_id,
                 })
@@ -73,6 +83,18 @@ def build_library():
 
 
 TRACKS, ALBUMS, ARTISTS_ROWS = build_library()
+
+
+def creator_rows(field: str):
+    """Group tracks by one label column, mirroring the server's group shape."""
+    grouped: dict[str, list] = {}
+    for row in TRACKS:
+        label = row[field]
+        grouped.setdefault(label, []).append(row)
+    return [{"name": label,
+             "track_count": len(rows),
+             "cover_track_id": rows[0]["id"]}
+            for label, rows in grouped.items()]
 
 
 def cover_png(track_id: str) -> bytes:
@@ -158,9 +180,34 @@ class Handler(BaseHTTPRequestHandler):
             return
         if rest == "/api/library/groups":
             view = (query.get("view") or [""])[0]
-            rows = ALBUMS if view == "albums" else ARTISTS_ROWS
+            if view == "genres":
+                rows = creator_rows("genre")
+            elif view == "composers":
+                rows = creator_rows("composer")
+            elif view == "artists":
+                rows = ARTISTS_ROWS
+            else:
+                rows = ALBUMS
             self.send_json({"groups": rows, "count": len(rows),
                             "limit": len(rows), "offset": 0, "paged": True})
+            return
+        if rest == "/api/library/items":
+            wanted = set(filter(None, (query.get("ids") or [""])[0].split(",")))
+            rows = [row for row in TRACKS if row["id"] in wanted]
+            self.send_json({"items": rows, "total": len(rows), "paged": True})
+            return
+        if rest == "/api/state/user":
+            self.send_json({"state": {
+                "initialized": True,
+                "revision": 1,
+                "favorites": [row["id"] for row in TRACKS[1:5]],
+                "playlists": [
+                    {"id": "p1", "name": "夜间驾驶",
+                     "trackIds": [row["id"] for row in TRACKS[4:9]]},
+                    {"id": "p2", "name": "周末清晨",
+                     "trackIds": [row["id"] for row in TRACKS[9:13]]},
+                ],
+            }})
             return
         if rest == "/api/library":
             self.handle_library(query)
@@ -181,16 +228,23 @@ class Handler(BaseHTTPRequestHandler):
     def handle_library(self, query):
         album = (query.get("album") or [""])[0]
         search = (query.get("search") or [""])[0].lower()
+        group = (query.get("group") or [""])[0]
         view = (query.get("view") or ["all"])[0]
         rows = list(TRACKS)
         if album:
             rows = [row for row in rows if row["album"] == album]
+        if group:
+            rows = [row for row in rows
+                    if group in (row["album"], row["artist"],
+                                 row["genre"], row["composer"])]
         if search:
             rows = [row for row in rows if search in row["artist"].lower()
                     or search in row["album"].lower()
                     or search in row["title"].lower()]
         if view == "recent":
             rows = list(reversed(rows))
+        elif view == "dsd":
+            rows = [row for row in rows if row["format"].startswith("DSD")]
         limit = int((query.get("limit") or ["100"])[0])
         self.send_json({"items": rows[:limit], "total": len(rows),
                         "has_more": False, "paged": True})

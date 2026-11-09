@@ -15,8 +15,10 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
@@ -80,7 +82,41 @@ public final class TvApi {
         }
     }
 
+    /** One saved playlist as {@code /api/state/user} stores it. */
+    public static final class Playlist {
+        public final String id;
+        public final String name;
+        public final List<String> trackIds;
+
+        Playlist(String id, String name, List<String> trackIds) {
+            this.id = id;
+            this.name = name;
+            this.trackIds = trackIds;
+        }
+    }
+
+    /**
+     * Favourites and playlists from the account state.
+     *
+     * <p>The phone client keeps these lists in the WebView and mirrors them to
+     * {@code /api/state/user}. The TV reads the same document so a playlist
+     * built on the phone shows up in the living room without a second login,
+     * and it only ever reads: writing needs the revision-based merge the phone
+     * performs, which the ten-foot client has no way to drive.
+     */
+    public static final class UserState {
+        public final List<String> favoriteIds;
+        public final List<Playlist> playlists;
+
+        UserState(List<String> favoriteIds, List<Playlist> playlists) {
+            this.favoriteIds = favoriteIds;
+            this.playlists = playlists;
+        }
+    }
+
     private static final int PAGE_LIMIT_MAX = 500;
+    /** Ids per hydration request; the server caps the query string well above this. */
+    private static final int IDS_PAGE = 100;
 
     private final Context context;
     private final ConnectionProfile profile;
@@ -149,7 +185,152 @@ public final class TvApi {
                 + clampLimit(limit)), false);
     }
 
-    /** Number of tracks the server currently knows about, for the rail badge. */
+    /** Grouping rows of a single-creator view: {@code genres} or {@code composers}. */
+    public List<Group> groupsByView(String view, int limit) throws IOException {
+        HttpUrl url = baseBuilder("api/library/groups")
+                .addQueryParameter("view", view)
+                .addQueryParameter("paged", "1")
+                .addQueryParameter("limit", String.valueOf(clampLimit(limit)))
+                .build();
+        return parseGroups(request(url), false);
+    }
+
+    /** Tracks of a flat library view: {@code dsd}, {@code random100}, {@code all}. */
+    public List<Track> tracksByView(String view, int limit) throws IOException {
+        HttpUrl url = baseBuilder("api/library")
+                .addQueryParameter("paged", "1")
+                .addQueryParameter("view", view)
+                .addQueryParameter("sort", "title")
+                .addQueryParameter("dir", "asc")
+                .addQueryParameter("limit", String.valueOf(clampLimit(limit)))
+                .build();
+        return parseTracks(request(url));
+    }
+
+    /**
+     * Full-library search over title, artist and album.
+     *
+     * <p>The route is the one the phone's search box already drives: the server
+     * decides which columns match, so the TV does not re-implement the tokens.
+     */
+    public List<Track> searchTracks(String query, int limit) throws IOException {
+        HttpUrl url = baseBuilder("api/library")
+                .addQueryParameter("paged", "1")
+                .addQueryParameter("view", "all")
+                .addQueryParameter("search", query == null ? "" : query)
+                .addQueryParameter("sort", "title")
+                .addQueryParameter("dir", "asc")
+                .addQueryParameter("limit", String.valueOf(clampLimit(limit)))
+                .build();
+        return parseTracks(request(url));
+    }
+
+    /**
+     * Hydrates a list of track ids into full rows, preserving the caller's order.
+     *
+     * <p>Favourites and playlists only remember ids, and a saved order is what
+     * the viewer recognises, so the response is re-sequenced here instead of
+     * letting the server's row order decide. Ids the library no longer holds
+     * (a deleted file, a rescan) simply drop out.
+     */
+    public List<Track> tracksByIds(List<String> ids) throws IOException {
+        if (ids == null || ids.isEmpty()) return Collections.emptyList();
+        Map<String, Track> byId = new LinkedHashMap<>();
+        for (int start = 0; start < ids.size(); start += IDS_PAGE) {
+            int end = Math.min(ids.size(), start + IDS_PAGE);
+            StringBuilder joined = new StringBuilder();
+            for (int index = start; index < end; index++) {
+                if (joined.length() > 0) joined.append(',');
+                joined.append(ids.get(index));
+            }
+            HttpUrl url = baseBuilder("api/library/items")
+                    .addQueryParameter("ids", joined.toString())
+                    .build();
+            for (Track track : parseTracks(request(url))) {
+                if (!byId.containsKey(track.id)) byId.put(track.id, track);
+            }
+        }
+        List<Track> ordered = new ArrayList<>(byId.size());
+        for (String id : ids) {
+            Track track = byId.get(id);
+            if (track != null) ordered.add(track);
+        }
+        return ordered;
+    }
+
+    /**
+     * Tracks of one creator label inside a creator view.
+     *
+     * <p>{@code view} must be {@code genres} or {@code composers}; the server
+     * matches {@code group} against the column that view projects, which is the
+     * same pair the phone client sends when a genre or composer row is opened.
+     */
+    public List<Track> creatorTracks(String view, String name, int limit) throws IOException {
+        HttpUrl url = baseBuilder("api/library")
+                .addQueryParameter("paged", "1")
+                .addQueryParameter("view", view)
+                .addQueryParameter("group", name == null ? "" : name)
+                .addQueryParameter("sort", "album")
+                .addQueryParameter("dir", "asc")
+                .addQueryParameter("limit", String.valueOf(clampLimit(limit)))
+                .build();
+        return parseTracks(request(url));
+    }
+
+    /** Favourites and playlists for the connected account. */
+    public UserState userState() throws IOException {
+        JSONObject payload = request("api/state/user");
+        JSONObject state;
+        try {
+            state = payload.getJSONObject("state");
+        } catch (JSONException missing) {
+            return new UserState(Collections.emptyList(), Collections.emptyList());
+        }
+        return new UserState(readIds(state, "favorites"), readPlaylists(state));
+    }
+
+    private static List<String> readIds(JSONObject row, String key) {
+        JSONArray rows;
+        try {
+            rows = row.getJSONArray(key);
+        } catch (JSONException missing) {
+            return Collections.emptyList();
+        }
+        List<String> ids = new ArrayList<>(rows.length());
+        for (int index = 0; index < rows.length(); index++) {
+            String id;
+            try {
+                id = rows.getString(index).trim();
+            } catch (JSONException notAString) {
+                continue;
+            }
+            if (!id.isEmpty()) ids.add(id);
+        }
+        return ids;
+    }
+
+    private static List<Playlist> readPlaylists(JSONObject row) {
+        JSONArray rows;
+        try {
+            rows = row.getJSONArray("playlists");
+        } catch (JSONException missing) {
+            return Collections.emptyList();
+        }
+        List<Playlist> playlists = new ArrayList<>(rows.length());
+        for (int index = 0; index < rows.length(); index++) {
+            JSONObject entry;
+            try {
+                entry = rows.getJSONObject(index);
+            } catch (JSONException notAnObject) {
+                continue;
+            }
+            String id = text(entry, "id", "");
+            String name = text(entry, "name", "");
+            if (id.isEmpty() || name.isEmpty()) continue;
+            playlists.add(new Playlist(id, name, readIds(entry, "trackIds")));
+        }
+        return playlists;
+    }
     // --------------------------------------------------------------- artwork
 
     /**

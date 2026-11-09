@@ -56,7 +56,11 @@ foreach ($file in $files) {
 
 $temporary = Join-Path $repoRoot (".SOURCE_MANIFEST.{0}.tmp" -f [guid]::NewGuid().ToString("N"))
 try {
-    $lines | Set-Content -LiteralPath $temporary -Encoding ASCII
+    # WriteAllText with joined LF, not Set-Content: Windows PowerShell 5.1's
+    # Set-Content terminates every line with CRLF, which the repository rules
+    # (``* text=auto eol=lf``) then rewrite on the next checkout, so the
+    # working copy and the index disagree until someone strips the CRs by hand.
+    [IO.File]::WriteAllText($temporary, (($lines -join "`n") + "`n"), [Text.Encoding]::ASCII)
     Move-Item -LiteralPath $temporary -Destination $output -Force
 }
 finally {

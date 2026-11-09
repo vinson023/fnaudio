@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Standalone television package, merged into every tv* build type.
+         The combined APK exposes the phone client through
+         android.intent.category.LAUNCHER and the television client through
+         LEANBACK_LAUNCHER. Vendor launchers on many domestic televisions only
+         enumerate plain LAUNCHER activities, so installing that APK on a TV
+         opens the phone UI. Here the phone entry is removed and the television
+         login takes its place, which leaves exactly one icon on every launcher
+         and always lands on the remote-friendly UI. -->
+    <application
+        android:label="fnAudio TV"
+        tools:replace="android:label">
+
+        <activity android:name=".ui.LoginActivity">
+            <intent-filter tools:node="remove">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".tv.TvLoginActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

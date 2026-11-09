@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -24,7 +25,9 @@ import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -51,6 +54,9 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
     private final List<View> railItems = new ArrayList<>();
     /** Rail entries in visual order, including the now-playing action. */
     private final List<View> railFocusables = new ArrayList<>();
+    /** Rail entry per {@code PAGE_*} constant, so inserting an action cannot
+     * shift which entry the highlight returns to. */
+    private final Map<Integer, View> railPageItems = new HashMap<>();
 
     private SecureProfileStore store;
     private ConnectionProfile profile;
@@ -121,9 +127,18 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
 
         rail = new LinearLayout(this);
         rail.setOrientation(LinearLayout.VERTICAL);
-        rail.setBackgroundColor(0xFF0B0D11);
         rail.setPadding(0, TvUi.dp(this, 36), 0, TvUi.dp(this, 96));
-        body.addView(rail, new LinearLayout.LayoutParams(
+
+        // Ten entries no longer fit a 540dp-tall screen at 4K-friendly text
+        // sizes. The rail scrolls; the remote's focus search brings the
+        // highlighted entry back into view on its own.
+        ScrollView railScroll = new ScrollView(this);
+        railScroll.setBackgroundColor(0xFF0B0D11);
+        railScroll.setVerticalScrollBarEnabled(false);
+        railScroll.setFocusable(false);
+        railScroll.addView(rail, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        body.addView(railScroll, new LinearLayout.LayoutParams(
                 TvUi.dp(this, 136), ViewGroup.LayoutParams.MATCH_PARENT));
 
         addRailBrand();
@@ -133,7 +148,11 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         addRailItem("艺术家", PAGE_ARTISTS);
         addRailItem("曲目", PAGE_TRACKS);
         addRailItem("队列", PAGE_QUEUE);
+        addRailAction("收藏", this::openFavorites);
+        addRailAction("播放列表", this::openPlaylists);
         addRailAction("正在播放", this::openNowPlaying);
+        addRailAction("搜索", this::openSearch);
+        addRailAction("设置", this::openSettings);
 
         FrameLayout content = new FrameLayout(this);
         body.addView(content, new LinearLayout.LayoutParams(
@@ -203,6 +222,7 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         rail.addView(item);
         railItems.add(item);
         railFocusables.add(item);
+        railPageItems.put(page, item);
     }
 
     /** Rail entry that runs an action instead of switching pages. */
@@ -374,12 +394,19 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         scroll.addView(column);
 
         navigator.attach(scroll, TvUi.dp(this, 24));
-        // Up out of the first row returns to the hero; anything else is a dead
-        // end the remote would otherwise punish by dropping the highlight.
+        // Up out of the first row returns to the quick entries, then to the
+        // hero; anything else is a dead end the remote would otherwise punish
+        // by dropping the highlight.
         navigator.setEdgeListener((from, position, direction) -> {
-            if (direction < 0 && heroAction != null) {
-                heroAction.requestFocus();
-                return true;
+            if (direction < 0) {
+                if (quickChips != null && quickChips.getChildCount() > 0) {
+                    quickChips.getChildAt(0).requestFocus();
+                    return true;
+                }
+                if (heroAction != null) {
+                    heroAction.requestFocus();
+                    return true;
+                }
             }
             return false;
         });
@@ -388,6 +415,8 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         FrameLayout hero = buildHero();
         column.addView(hero, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, TvUi.dp(this, 196)));
+
+        column.addView(buildQuickChips());
 
         TvShelfView recent = new TvShelfView(this, navigator, artwork, "最近添加", 118);
         recent.setOnItemClick((item, position) -> {
@@ -423,6 +452,87 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
     private TextView heroMeta;
     private TextView heroAction;
     private ImageView heroBackdrop;
+    @Nullable private LinearLayout quickChips;
+
+    /**
+     * The library views that are not worth a permanent rail entry.
+     *
+     * <p>Genres, composers, DSD and the random hundred are browsed far less
+     * often than albums or artists, so they live one press below the hero
+     * instead of lengthening the rail to the point where the last entry only
+     * exists after scrolling.
+     */
+    private LinearLayout buildQuickChips() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(TvUi.dp(this, 32), TvUi.dp(this, 14),
+                TvUi.dp(this, 32), TvUi.dp(this, 4));
+        quickChips = row;
+
+        addQuickChip(row, "类型", () -> showCreatorGroups("类型", "genres"));
+        addQuickChip(row, "作曲者", () -> showCreatorGroups("作曲者", "composers"));
+        addQuickChip(row, "DSD", () -> openFlatView("DSD 音乐", "dsd"));
+        addQuickChip(row, "随机 100", () -> openFlatView("随机 100 首", "random100"));
+        return row;
+    }
+
+    private void addQuickChip(LinearLayout row, String label, Runnable action) {
+        TextView chip = new TextView(this);
+        chip.setText(label);
+        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        chip.setGravity(Gravity.CENTER);
+        chip.setFocusable(true);
+        chip.setFocusableInTouchMode(false);
+        chip.setPadding(TvUi.dp(this, 22), 0, TvUi.dp(this, 22), 0);
+
+        GradientDrawable idle = chipBackground(false);
+        GradientDrawable focused = chipBackground(true);
+        android.graphics.drawable.StateListDrawable states =
+                new android.graphics.drawable.StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_focused}, focused);
+        states.addState(new int[]{}, idle);
+        chip.setBackground(states);
+        chip.setForeground(TvUi.focusRing(this, 20f));
+        chip.setTextColor(TvUi.TEXT_2);
+        chip.setOnFocusChangeListener((view, hasFocus) ->
+                ((TextView) view).setTextColor(hasFocus ? TvUi.TEXT : TvUi.TEXT_2));
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, TvUi.dp(this, 40));
+        params.rightMargin = TvUi.dp(this, 10);
+        chip.setLayoutParams(params);
+
+        chip.setOnClickListener(view -> action.run());
+        chip.setOnKeyListener((view, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                return navigator.focusRow(0, 0);
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                if (heroAction != null && heroAction.getVisibility() == View.VISIBLE) {
+                    heroAction.requestFocus();
+                    return true;
+                }
+                return false;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && row.indexOfChild(view) == 0) {
+                focusRail();
+                return true;
+            }
+            return false;
+        });
+        row.addView(chip);
+    }
+
+    private GradientDrawable chipBackground(boolean focused) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setCornerRadius(TvUi.dp(this, 20));
+        drawable.setColor(focused ? TvUi.PANEL_RAISED : 0xFF14171B);
+        drawable.setStroke(Math.max(1, TvUi.dp(this, 1)),
+                focused ? TvUi.ACCENT : 0xFF272B31);
+        return drawable;
+    }
 
     private FrameLayout buildHero() {
         FrameLayout hero = new FrameLayout(this);
@@ -575,6 +685,10 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         heroAction.setOnKeyListener((view, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (quickChips != null && quickChips.getChildCount() > 0) {
+                    quickChips.getChildAt(0).requestFocus();
+                    return true;
+                }
                 return navigator.focusRow(0, 0);
             }
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
@@ -595,8 +709,9 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
 
     /** Puts the highlight back on the rail entry of the page being shown. */
     private void focusRail() {
-        if (railItems.isEmpty()) return;
-        railItems.get(currentPage).requestFocus();
+        View entry = railPageItems.get(currentPage);
+        if (entry == null && !railFocusables.isEmpty()) entry = railFocusables.get(0);
+        if (entry != null) entry.requestFocus();
     }
 
     private void showAlbumsPage() {
@@ -717,6 +832,19 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
     private void openTrackCollection(String title, String subtitle,
                                      Callable<List<TvApi.Track>> loader,
                                      String coverKey) {
+        openTrackCollection(title, subtitle, loader, coverKey, null);
+    }
+
+    /**
+     * Pushes a track list.
+     *
+     * <p>{@code back} exists because not every push comes from a rail page: a
+     * playlist list and a genre grid both sit one level above the tracks they
+     * open, and Back has to return there rather than skipping to the home page.
+     */
+    private void openTrackCollection(String title, String subtitle,
+                                     Callable<List<TvApi.Track>> loader,
+                                     String coverKey, @Nullable Runnable back) {
         final int originPage = currentPage;
         LinearLayout container = new LinearLayout(this);
         container.setOrientation(LinearLayout.VERTICAL);
@@ -768,7 +896,12 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         contentHost.addView(container);
         backAction = () -> {
             backAction = null;
+            if (back != null) {
+                back.run();
+                return;
+            }
             selectPage(originPage);
+            focusRail();
         };
         final java.util.concurrent.atomic.AtomicReference<List<TvApi.Track>> holder =
                 new java.util.concurrent.atomic.AtomicReference<>(new ArrayList<>());
@@ -785,8 +918,8 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
                     // The group subtitle already carries its track count for
                     // both albums and artists, so appending another one printed
                     // "余温乐队 · 4 首 · 4 首".
-                    detail.setText(subtitle.contains("首")
-                            ? subtitle
+                    detail.setText(subtitle.contains("首") ? subtitle
+                            : subtitle.isEmpty() ? tracks.size() + " 首"
                             : subtitle + " · " + tracks.size() + " 首");
                     list.focusFirst();
                 });
@@ -794,6 +927,311 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
                 runOnUiThread(() -> showError(error));
             }
         });
+    }
+
+    // ------------------------------------------------------- account & views
+
+    /** Favourites: ids live in the account state, rows come from the library. */
+    private void openFavorites() {
+        openTrackCollection("收藏歌曲", "来自你的账号", () -> {
+            TvApi.UserState state = api.userState();
+            return api.tracksByIds(state.favoriteIds);
+        }, "");
+    }
+
+    /** Playlist names, then the tracks of the one that is opened. */
+    private void openPlaylists() {
+        final int origin = currentPage;
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.addView(pageHeading("播放列表"));
+
+        FrameLayout stack = new FrameLayout(this);
+        container.addView(stack, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(TvUi.dp(this, 32), 0, TvUi.dp(this, 32), TvUi.dp(this, 72));
+        scroll.addView(column);
+        stack.addView(scroll);
+
+        View loading = loadingView("正在载入播放列表…");
+        stack.addView(loading, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        contentHost.removeAllViews();
+        contentHost.addView(container);
+        backAction = () -> {
+            backAction = null;
+            selectPage(origin);
+            focusRail();
+        };
+        contentFocusAction = () -> {
+            if (column.getChildCount() > 0) column.getChildAt(0).requestFocus();
+        };
+
+        io.execute(() -> {
+            try {
+                TvApi.UserState state = api.userState();
+                runOnUiThread(() -> {
+                    loading.setVisibility(View.GONE);
+                    if (state.playlists.isEmpty()) {
+                        column.addView(emptyHint("还没有播放列表，可以在手机上新建后再回到电视"));
+                        return;
+                    }
+                    for (TvApi.Playlist playlist : state.playlists) {
+                        LinearLayout row = menuRow(playlist.name,
+                                playlist.trackIds.size() + " 首");
+                        row.setOnClickListener(view -> openPlaylist(playlist));
+                        column.addView(row);
+                    }
+                    contentFocusAction.run();
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> loading.setVisibility(View.GONE));
+                runOnUiThread(() -> showError(error));
+            }
+        });
+    }
+
+    private void openPlaylist(TvApi.Playlist playlist) {
+        openTrackCollection(playlist.name, playlist.trackIds.size() + " 首 · 播放列表",
+                () -> api.tracksByIds(playlist.trackIds), "", this::openPlaylists);
+    }
+
+    /** Genre or composer grid; a card opens that creator's tracks. */
+    private void showCreatorGroups(String title, String view) {
+        View page = buildBrowseGrid(title, () -> api.groupsByView(view, 200),
+                group -> openTrackCollection(group.name, group.subtitle,
+                        () -> api.creatorTracks(view, group.name, 200), group.coverKey,
+                        () -> showCreatorGroups(title, view)));
+        contentHost.removeAllViews();
+        contentHost.addView(page);
+        backAction = () -> {
+            backAction = null;
+            selectPage(PAGE_HOME);
+            focusRail();
+        };
+    }
+
+    /** A flat library view played as one list: DSD or the random hundred. */
+    private void openFlatView(String title, String view) {
+        openTrackCollection(title, "", () -> api.tracksByView(view, 300), "");
+    }
+
+    /** Text search over title, artist and album. */
+    private void openSearch() {
+        final int origin = currentPage;
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.addView(pageHeading("搜索"));
+
+        EditText field = new EditText(this);
+        field.setSingleLine(true);
+        field.setHint("输入歌名、歌手或专辑，按搜索键确认");
+        field.setHintTextColor(TvUi.TEXT_3);
+        field.setTextColor(TvUi.TEXT);
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+        field.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        GradientDrawable fieldBackground = new GradientDrawable();
+        fieldBackground.setShape(GradientDrawable.RECTANGLE);
+        fieldBackground.setCornerRadius(TvUi.dp(this, 10));
+        fieldBackground.setColor(0xFF14171B);
+        fieldBackground.setStroke(Math.max(1, TvUi.dp(this, 1)), 0xFF272B31);
+        field.setBackground(fieldBackground);
+        field.setPadding(TvUi.dp(this, 18), 0, TvUi.dp(this, 18), 0);
+        LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, TvUi.dp(this, 46));
+        fieldParams.leftMargin = TvUi.dp(this, 32);
+        fieldParams.rightMargin = TvUi.dp(this, 32);
+        fieldParams.bottomMargin = TvUi.dp(this, 10);
+        container.addView(field, fieldParams);
+
+        TextView status = new TextView(this);
+        status.setText("输入关键词后按搜索键");
+        status.setTextColor(TvUi.TEXT_3);
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        status.setPadding(TvUi.dp(this, 34), 0, TvUi.dp(this, 32), TvUi.dp(this, 6));
+        container.addView(status);
+
+        TvTrackListView list = new TvTrackListView(this, artwork);
+        container.addView(list, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        list.setOnLeftEdge(position -> {
+            focusRail();
+            return true;
+        });
+
+        final List<TvApi.Track> results = new ArrayList<>();
+        list.setOnTrackClick((track, position) -> player.play(results, position));
+
+        contentHost.removeAllViews();
+        contentHost.addView(container);
+        backAction = () -> {
+            backAction = null;
+            selectPage(origin);
+            focusRail();
+        };
+        contentFocusAction = field::requestFocus;
+
+        Runnable submit = () -> {
+            String query = field.getText().toString().trim();
+            if (query.isEmpty()) {
+                status.setText("请输入关键词");
+                return;
+            }
+            status.setText("正在搜索…");
+            io.execute(() -> {
+                try {
+                    List<TvApi.Track> tracks = api.searchTracks(query, 200);
+                    runOnUiThread(() -> {
+                        results.clear();
+                        results.addAll(tracks);
+                        list.setTracks(tracks);
+                        list.setNowPlayingId(currentTrackId());
+                        status.setText(tracks.isEmpty()
+                                ? "没有找到匹配的歌曲" : "找到 " + tracks.size() + " 首");
+                        if (!tracks.isEmpty()) list.focusFirst();
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> showError(error));
+                }
+            });
+        };
+        field.setOnEditorActionListener((view, actionId, event) -> {
+            submit.run();
+            return true;
+        });
+        // A remote without a usable soft keyboard can still re-run the last
+        // query: OK on the list plays, and Back returns to the rail.
+        field.setOnKeyListener((view, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                list.focusFirst();
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                focusRail();
+                return true;
+            }
+            return false;
+        });
+        field.requestFocus();
+    }
+
+    /** Connection details, switching server, and signing out. */
+    private void openSettings() {
+        final int origin = currentPage;
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.addView(pageHeading("设置"));
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(TvUi.dp(this, 32), 0, TvUi.dp(this, 32), TvUi.dp(this, 72));
+        scroll.addView(column);
+        container.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        column.addView(infoRow("当前连接", profileName()));
+        column.addView(infoRow("服务器", profile.host + ":" + profile.port));
+        column.addView(infoRow("客户端版本", com.fnaudio.client.BuildConfig.VERSION_NAME));
+
+        LinearLayout switchServer = menuRow("切换服务器", "回到连接页选择另一个已保存的设备");
+        switchServer.setOnClickListener(view -> {
+            store.setActive("");
+            startActivity(new Intent(this, TvLoginActivity.class));
+            finish();
+        });
+        column.addView(switchServer);
+
+        LinearLayout logout = menuRow("退出登录", "清除这台电视上的登录状态");
+        logout.setOnClickListener(view -> {
+            store.setActive("");
+            startActivity(new Intent(this, TvLoginActivity.class));
+            finish();
+        });
+        column.addView(logout);
+
+        contentHost.removeAllViews();
+        contentHost.addView(container);
+        backAction = () -> {
+            backAction = null;
+            selectPage(origin);
+            focusRail();
+        };
+        contentFocusAction = () -> {
+            if (column.getChildCount() > 2) column.getChildAt(2).requestFocus();
+        };
+    }
+
+    private LinearLayout menuRow(String label, String detail) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(TvUi.dp(this, 18), 0, TvUi.dp(this, 18), 0);
+        row.setFocusable(true);
+        row.setFocusableInTouchMode(false);
+        row.setClickable(true);
+        row.setBackground(railBackground(false));
+        row.setForeground(TvUi.focusRing(this, 10f));
+
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextColor(TvUi.TEXT);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+        row.addView(name, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView meta = new TextView(this);
+        meta.setText(detail);
+        meta.setTextColor(TvUi.TEXT_3);
+        meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        row.addView(meta);
+
+        row.setOnFocusChangeListener((view, hasFocus) ->
+                view.setBackground(railBackground(hasFocus)));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, TvUi.dp(this, 52));
+        params.bottomMargin = TvUi.dp(this, 2);
+        row.setLayoutParams(params);
+        return row;
+    }
+
+    private View infoRow(String label, String value) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(TvUi.dp(this, 18), 0, TvUi.dp(this, 18), 0);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, TvUi.dp(this, 44));
+        row.setLayoutParams(params);
+
+        TextView name = new TextView(this);
+        name.setText(label);
+        name.setTextColor(TvUi.TEXT_3);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        row.addView(name, new LinearLayout.LayoutParams(
+                TvUi.dp(this, 160), ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView detail = new TextView(this);
+        detail.setText(value);
+        detail.setTextColor(TvUi.TEXT);
+        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        row.addView(detail);
+        return row;
+    }
+
+    private TextView emptyHint(String text) {
+        TextView hint = new TextView(this);
+        hint.setText(text);
+        hint.setTextColor(TvUi.TEXT_3);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        hint.setPadding(TvUi.dp(this, 16), TvUi.dp(this, 20), 0, 0);
+        return hint;
     }
 
     private void showQueuePage() {
@@ -959,7 +1397,8 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
             }
             if (currentPage != PAGE_HOME) {
                 selectPage(PAGE_HOME);
-                railItems.get(PAGE_HOME).requestFocus();
+                View home = railPageItems.get(PAGE_HOME);
+                if (home != null) home.requestFocus();
                 return true;
             }
             if (nowPlaying != null && player.current() != null) {

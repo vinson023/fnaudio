@@ -17,6 +17,7 @@
 param(
     [string]$EnvFile,
     [switch]$ThenBuild,
+    [switch]$ThenBuildTv,
     [string]$OutputRoot,
     [string]$AndroidSdkRoot
 )
@@ -63,13 +64,17 @@ if (-not (Test-Path -LiteralPath $storeFile -PathType Leaf)) {
 }
 Write-Host "signing material loaded: $storeFile (alias $keyAlias)"
 
-if (-not $ThenBuild) {
-    Write-Host "Variables set for this process only. Re-run with -ThenBuild to build the release APK."
+if (-not $ThenBuild -and -not $ThenBuildTv) {
+    Write-Host "Variables set for this process only. Re-run with -ThenBuild to build the release APK, or -ThenBuildTv for the television APKs."
     exit 0
 }
 
 $arguments = @{}
 if ($OutputRoot) { $arguments["OutputRoot"] = $OutputRoot }
 if ($AndroidSdkRoot) { $arguments["AndroidSdkRoot"] = $AndroidSdkRoot }
+if ($ThenBuildTv) {
+    & (Join-Path $PSScriptRoot "build_tv_apk.ps1") @arguments
+    exit $LASTEXITCODE
+}
 & (Join-Path $PSScriptRoot "build_android_release.ps1") @arguments
 exit $LASTEXITCODE
