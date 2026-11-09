@@ -3,10 +3,11 @@
 - **修好了应用中心列表里不显示图标的问题**。之前只有点进详情页才看得到音符，列表里一直是灰底占位图。原因是应用入口配置里把图标写成了模板 `images/icon_{0}.png`，而飞牛应用中心**不做占位符替换**——它把这个字符串原样拼进图片地址，列表侧拿不到确切文件名就退回默认占位图。现在改成具体文件名 `images/icon_256.png`（飞牛自家应用也是这么写的），列表与详情页都能正常显示。
 - **图标重画**。旧图标是临时脚本画的，符头压扁、横梁拉平，缩到列表里像一个方框加两个点。这一版以 0.2.144 的原版为准逐像素量出几何重画：正圆符头、16 宽符干（右缘与符头最右点相切）、下倾 12.2° 的横梁带垂直切口与圆角。画完又按飞牛自家图标的观感把主体占比从 52%×68% 放大到 **60%×78%**，在一排系统应用里不再显小。
 - **服务端代码零改动**。这一版只动了 `app/ui/config` 里的一个图标路径和图标本体，其余与服务端相关的实现完全没变；FPK 必须跟着升一次版本号，是为了让应用中心重新读配置。
+- **电视端就在这个 APK 里**，没有单独的 TV 包。手机与电视是同一个安装文件的双入口：手机走常规桌面图标，电视走 `LEANBACK_LAUNCHER` 入口（`TvLoginActivity`）。这一版电视端的代码一行没改，跟着新图标与版本号一起出包，已经重新验证过能正常启动、登录、进首页。
 
 ## 下载
 
-- `fnaudio-android-0.2.146-release.apk`：**正式签名包**，可直接覆盖安装此前的正式版（同一把密钥）。从调试包切过来必须先卸载一次——两者签名身份不同。
+- `fnaudio-android-0.2.146-release.apk`：**正式签名包**，可直接覆盖安装此前的正式版（同一把密钥）。从调试包切过来必须先卸载一次——两者签名身份不同。**电视／电视盒子也装这一个**，装完在电视桌面的「应用」里会多出一个 fnAudio 图标；部分机型只在「推荐」里显示，找不到就去「应用 → 全部应用」或「媒体播放器」分类里翻。
 - `fnaudio-0.2.146-fnpack.fpk`：fnOS 安装包，在应用中心「手动安装 → 从电脑上传」升级。**想在列表里看到图标必须装这个**：图标路径写在包里，只升 APK 不会改应用中心的登记。
 - `fnaudio-android-0.2.146-debug.apk`：调试签名测试包，仅供开发调试，**不能**作为正式升级包。
 
@@ -29,11 +30,13 @@
 - 正式包签名已验：`apksigner verify --verbose --print-certs` 报 `Verifies`，v1（JAR）与 v2 均为 true，签名者 1 人、证书 DN 与上表一致、RSA 4096；`aapt dump badging` 读到 `versionCode='404' versionName='0.2.146'`（调试包同）。
 - **测试机 `192.168.5.141` 已升级**：`VERSION=0.2.146`、`ASSET_STAMP=v=0.2.146-2934596bde7a`、`/api/health` `ok:true`（mpd 与 dlna 均在跑）、远端包 sha256 复算等于本地，旧树备份在 `upgrade-backups/20261109-201053`；曲库 117 首不变。远端 `target/ui/config` 已随包变成 `images/icon_256.png`，两个图标文件 md5 与本地一致；飞牛 App 随后请求 `/app-center-static/serviceicon/fnaudio/ui/images/icon_256.png` 返回 200，列表图标正常显示。
 - 门禁：前端 JS 单元测试 **127 个文件全部通过**；离线 Python `Ran 3227 tests` / `OK (skipped=7)`；浏览器 e2e **107 条全绿**；`SOURCE_MANIFEST.sha256` 834 条新鲜。
+- **电视入口在正式包里实测过**：`aapt dump badging` 读到 `leanback-launchable-activity: com.fnaudio.client.tv.TvLoginActivity`（banner 为 `tv_banner.png`），dex 里 `TvMainActivity`／`TvLoginActivity`／`TvShelfNavigator`／`TvPlayer`／`TvNowPlayingOverlay` 全部在。在 1080p／320dpi（即 960×540dp）的 TV 模拟器装上 0.2.146 后，启动页列出已存连接、遥控器 OK 两次进主界面，侧栏、推荐位、最近添加、底部播放条都正常渲染（`mCurrentFocus` 依次落在 `TvLoginActivity` → `TvMainActivity`）。模拟器用的是排除 arm64 原生库的 `emulator` 变体（`libgojni.so` 仅 arm64，x86_64 镜像装不了），正式包与它的差别只有这一个库。
 - 版本坐标八处（`VERSION`、`src/manifest`、`build.gradle` 的 `versionName`／`versionCode 404`、`README.md`、`ARCHITECTURE.md`、`RECOVERY.md`、`docs/SOURCE_INVENTORY.md`、`android-client/README.md`）按「功能提交 → 版本号 + 清单提交 → 打包」的顺序出包，provenance 因此是干净的。
 
 ## 已知限制
 
 - **图标有尺寸规范**：包根层 `ICON.PNG` 必须是 64×64、`ICON_256.PNG` 必须是 256×256，PNG、sRGB、≤1024 KB、正方形、圆角矩形风格。系统其实不校验（有的应用塞 512 顶替也能装），但这一版按规范来，没有用大图占位——256 已经是按 256 展示位 1:1 出的，再大只会被缩回去。
+- **电视端仍只在模拟器上验过，没上过真电视／盒子**。真机的解码能力、遥控器按键码（个别厂商会给方向键发非标准 keyCode）、以及 4K 电视上的缩放都还没实测。装上去若有焦点跳错或黑屏，把电视型号和系统版本告诉我。
 - **`192.168.5.20` 仍未升级**：ping 100% 丢包、22 与 18080 都连不上，它上面还停在 0.2.141。恢复后跑一次 `tools/deploy_fpk.py --host 192.168.5.20 --user admin --sudo --fpk artifacts/0.2.146/fnaudio-0.2.146-fnpack.fpk` 即可补齐。
 - 飞牛 App 会缓存应用中心图标，升级后若仍显示旧图，杀掉 App 重开。
 - 正式签名 keystore 只存在于本机 `.secrets/`，**没有离线加密备份就不要再发正式版**：它一旦丢失，新包再也覆盖不上已安装的正式版，用户只能卸载重装（本地数据全丢）。备份时连同 `.secrets/release-signing.env` 里的密码一起存进密码管理器。
