@@ -328,6 +328,13 @@ test("phone hold opens the group menu and list toolbars drop 播放全部", asyn
   await expect(queueBar).toContainText("首歌曲");
   await expect(queueBar.locator("[data-clear-queue]")).toHaveCount(1);
   await expect(queueBar.locator("[data-play-all]")).toHaveCount(0);
+  // R523: 队列是「所见即所播」——显示顺序恒等于入队顺序，也就是真正的播放顺序。
+  // 列头因此不再提供排序按钮（那会是一个点了没有任何变化的死按钮），第一行就是
+  // 刚入队那组的第一首，也正是现在正在播的那首；按标题重排时它不在这里。
+  // 手机上表头本身是隐藏的，所以这两条只数 DOM，不要求可见。
+  expect(await page.locator("#tableHead .track-head-label").count()).toBeGreaterThan(0);
+  expect(await page.locator("#tableHead [data-track-sort]").count()).toBe(0);
+  await expect(page.locator("#trackList .track .track-title").first()).toHaveText(albumTracks[0]);
 
   await openView("favorites");
   const favoritesBar = page.locator(".playlist-toolbar").first();

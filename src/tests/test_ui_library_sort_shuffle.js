@@ -144,8 +144,14 @@ for (const file of fs.readdirSync(uiDir)) {
 // `ui/host_privacy_policy.js`.  Deleting it would strand a module index.html still
 // ships and the Android bundle still embeds, so that removal belongs to the
 // bundled-UI round tracked in docs/REAL_DEVICE_GOALS.md rather than to an offline
-// pass.  Empty this list when that decision lands; a second orphan fails here.
-const pendingOrphans = ["effectiveProfile"];
+// pass.  Empty this list when that decision lands; any unlisted orphan fails.
+// R523: `compareTrackValue()` joined the list when the queue stopped sorting —
+// `sortTracks()` calls `fnAudioTrackSortPolicy.compare` directly, so nothing in
+// app.js reads this wrapper any more.  It cannot simply be deleted: two tests
+// (`test_ui_preference_write_guard.js`, `test_ui_queue_columns.js`) use its
+// declaration as the end marker of a source slice, so removing it means touching
+// those slices in the same change.  Left as a registered orphan instead.
+const pendingOrphans = ["effectiveProfile", "compareTrackValue"];
 const declared = [];
 for (const line of face.split("\n")) {
   const match = /^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(line);

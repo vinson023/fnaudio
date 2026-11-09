@@ -52,11 +52,27 @@ const queueContext = {
 };
 vm.runInNewContext(`${sourceBetween("function queueDisplayEntries", "function groupFallbackIcon")}; this.queue = { queueDisplayEntries, currentQueuePage };`, queueContext);
 
-assert.equal(queueContext.queue.currentQueuePage(), 2);
+// R523: 队列是「所见即所播」——显示顺序恒等于入队顺序，也就是真正的播放
+// 顺序。排序键只作用于列表视图，不再重排队列。
+assert.equal(queueContext.queue.currentQueuePage(), 1);
 assert.deepEqual(
   queueContext.queue.queueDisplayEntries().map(entry => entry.queueIndex),
-  [2, 1, 3, 0],
+  [0, 1, 2, 3],
 );
+queueContext.state.sortKey = "artist";
+queueContext.state.sortDir = "desc";
+assert.deepEqual(
+  queueContext.queue.queueDisplayEntries().map(entry => entry.queueIndex),
+  [0, 1, 2, 3],
+  "changing the list sort key must not reorder the queue",
+);
+const queueEntriesSource = sourceBetween("function queueDisplayEntries", "function currentQueuePage");
+assert.doesNotMatch(queueEntriesSource, /compareTrackValue|\.sort\(|sortKey|sortDirectionFactor/,
+  "the queue view must read the queue array in place, without any sort path");
+// The same rule has to reach the header: a sortable column header in the queue
+// would be a control that cannot change anything.
+assert.match(source, /const sortableKeys = state\.view === "queue" \? \[\] : sortOptionsForView\(\)\.map\(\(\[key\]\) => key\);/,
+  "the queue header must render labels instead of dead sort buttons");
 
 const queueRefreshContext = {
   state: { view: "queue", index: 3, page: 1 },

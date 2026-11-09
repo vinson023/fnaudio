@@ -368,10 +368,11 @@ state.renderedTrackListHtml = null;
 // Queue rows deliberately remain uncached because their inline playing marker
 // follows the current queue index.
 state.trackRowsMarkupCache = typeof WeakMap === "function" ? new WeakMap() : null;
-// Queue pagination and current-track定位 can ask for the same sorted window
-// during one render. Keep only the latest bounded result; replacing the queue
-// array or changing search/sort naturally invalidates it.
-state.queueDisplayCache = { queue: null, search: "", sortKey: "", direction: 1, entries: [] };
+// Queue pagination and current-track定位 can ask for the same window during one
+// render. Keep only the latest bounded result; replacing the queue array or
+// changing search naturally invalidates it. 排序键不进缓存键：队列恒按入队
+// 顺序显示，改排序并不影响这份结果（R523）。
+state.queueDisplayCache = { queue: null, search: "", entries: [] };
 state.filteredTracksCache = { signature: null, tracks: [] };
 state.hydratingIds = new Set();
 // Missing items are normally a transient state while the library refreshes.
@@ -3067,21 +3068,20 @@ function clientPagedTracks() {
   return clientPagedResult().tracks;
 }
 function queueDisplayEntries() {
+  // R523: 队列是「所见即所播」。列表视图的排序键管列表，但不再重排队列——
+  // 显示顺序恒等于入队顺序，也就是真正的播放顺序。搜索只做过滤，过滤后的
+  // 位置仍是队列原序，分页与「正在播放」定位都直接基于它。
   const search = currentQueryText().toLowerCase();
-  const direction = sortDirectionFactor();
   const cache = state.queueDisplayCache;
-  if (cache && cache.queue === state.queue && cache.search === search && cache.sortKey === (state.sortKey || "title") && cache.direction === direction) {
+  if (cache && cache.queue === state.queue && cache.search === search) {
     return cache.entries;
   }
   const entries = state.queue
     .map((item, queueIndex) => ({ item, queueIndex }))
-    .filter(({ item }) => !search || trackMatchesSearch(item, search))
-    .sort((left, right) => compareTrackValue(left.item, right.item, state.sortKey || "title") * direction || left.queueIndex - right.queueIndex);
+    .filter(({ item }) => !search || trackMatchesSearch(item, search));
   if (cache) {
     cache.queue = state.queue;
     cache.search = search;
-    cache.sortKey = state.sortKey || "title";
-    cache.direction = direction;
     cache.entries = entries;
   }
   return entries;
@@ -3346,6 +3346,9 @@ function renderTableHead(target = $("tableHead")) {
   const currentSort = state.sortKey || "title";
   const groupMode = (isCreatorView() && !currentCreatorName()) || (state.view === "genres" && !state.groupName);
   const mode = groupMode ? "group" : (isAlbumCollectionView() ? "album-collection" : "tracks");
+  // R523: 队列恒按入队顺序（= 播放顺序）显示，排序键对它无效。表头因此不再
+  // 提供排序控件，否则就是一个点了不会有任何变化的死按钮。
+  const sortableKeys = state.view === "queue" ? [] : sortOptionsForView().map(([key]) => key);
   const shared = globalThis.fnAudioTrackTablePresentation?.tableHeadPresentation?.({
     mode,
     columns,
@@ -3354,7 +3357,7 @@ function renderTableHead(target = $("tableHead")) {
     currentSort,
     sortDir: state.sortDir,
     groupSortKey: groupViews[state.view],
-    sortableSortKeys: sortOptionsForView().map(([key]) => key),
+    sortableSortKeys: sortableKeys,
   });
   let template = document.body.style.getPropertyValue("--fnaudio-track-columns").trim();
   if (!template) template = trackGridTemplate();
@@ -3363,7 +3366,7 @@ function renderTableHead(target = $("tableHead")) {
     markup = shared.markup;
   } else {
     const renderHeader = (key, label, sortKey) => {
-      const sortable = sortKey && sortOptionsForView().some(([value]) => value === sortKey);
+      const sortable = sortKey && sortableKeys.includes(sortKey);
       const indicator = currentSort === sortKey
         ? `<span class="track-sort-indicator" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${state.sortDir === "asc" ? "m6 14 6-6 6 6" : "m6 10 6 6 6-6"}"/></svg></span>`
         : "";
