@@ -1,5 +1,6 @@
 # fnAudio 以后的目标（Android 审计面）
 
+> 当前发布清单范围（2026-11-09 · R521）：**47 个文件 / 10,452 行** Java。相对 R506 的 +28 行全部落在 `LoginActivity`：登录期间把按钮从「登录」换成「取消登录」，并让它中断在途的 fnOS 握手与 FN Connect 解析（`cancelLogin()` + 两个 `cancel()` + `setBusy` 文案切换），另有一枚契约测试钉住该行为。没有新增文件，也没有碰审计面里已登记的任何一枚类；本文件仍是「以后的目标」，不因这 +28 行回到逐轮排期。
 > 当前发布清单范围（2026-11-07 · R506）：**47 个文件 / 10,424 行** Java。这一面相对 R456 的增量全部落在 `MainActivity` 的捆绑脚本清单上，没有一处是播放或登录实现：R498 补 `native_share_bridge.js`（`index.html` 声明了它，而本清单的守卫要求声明过的脚本必须由 APK 内联，不能留给 NAS 资产，因此这一行是守卫强制的结果而非实现改动；该模块在安卓上不会生效——WebView 里没有可读的飞牛桌面父文档，`parentShellDocument()` 返回 null 直接落到内置面板——登记它是为了让两端脚本集合保持同源）；R506 再把 `response_json_loader.js` 与 `metadata_request_loader.js` 从清单末尾挪回 `metadata_response_policy.js` 之后，两项一直都有内联，只是排在了页面声明顺序之外，`src/tests/test_android_bundled_scripts.py` 现在同时钉住覆盖、顺序与真 Java 跑完的内联结果。实现审计仍是独立后续目标。
 
 > 当前发布清单范围（2026-11-02 · R456）：**47 个文件 / 10,422 行** Java。0.2.125／0.2.129 两次发布未记账，按现盘与发布清单重新取证后补记本行：新增 `PinnedHttpsInstrumentedTest`、`MainActivityWebViewInstrumentedTest` 两枚仪器测试，并在 `HttpClientFactory`／`MainActivity`／`PlaybackService` 等既有面加入证书固定观察者与原生登出。本轮未改 Java 实现，实现审计仍是独立后续目标；下方 R258 的 9,947 行及迁出时快照保留用于追溯。

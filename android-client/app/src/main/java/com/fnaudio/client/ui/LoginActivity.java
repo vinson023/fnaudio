@@ -31,6 +31,11 @@ public final class LoginActivity extends AppCompatActivity {
     public static final String EXTRA_PREFILL_PROFILE_ID = "prefill_profile_id";
     private static final int REQUEST_HISTORY = 701;
     private static final int REQUEST_FN_CONNECT_SETTINGS = 702;
+    // Same two values as the layout: the idle button is white-on-blue-brand,
+    // the cancel label drops to slate so a running attempt reads as an escape
+    // hatch rather than a second submit.
+    private static final int LOGIN_BUTTON_TEXT = 0xff176bef;
+    private static final int LOGIN_BUTTON_CANCEL_TEXT = 0xff475569;
 
     private EditText profileName;
     private EditText host;
@@ -146,7 +151,14 @@ public final class LoginActivity extends AppCompatActivity {
         loginStatus = findViewById(R.id.loginStatus);
 
         if (port.getText().toString().trim().isEmpty()) port.setText("5666");
-        loginButton.setOnClickListener(view -> loginWithPassword());
+        // One button, two jobs. While a login attempt is in flight it reads
+        // 取消登录 and aborts that attempt; otherwise it starts one. Keeping it
+        // enabled is the point — a disabled button during a 30 s timeout leaves
+        // the user with no way out of a wrong address.
+        loginButton.setOnClickListener(view -> {
+            if (busy) cancelLogin();
+            else loginWithPassword();
+        });
         passwordVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(password, passwordVisibilityButton, "密码"));
         accessCodeVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(accessCode, accessCodeVisibilityButton, "访问码"));
         historyButton.setOnClickListener(view -> startActivityForResult(
@@ -544,7 +556,10 @@ public final class LoginActivity extends AppCompatActivity {
 
     private void setBusy(boolean value, String status) {
         busy = value;
-        loginButton.setEnabled(!value);
+        loginButton.setEnabled(true);
+        loginButton.setText(value ? "取消登录" : "登录");
+        loginButton.setTextColor(value ? LOGIN_BUTTON_CANCEL_TEXT : LOGIN_BUTTON_TEXT);
+        loginButton.setContentDescription(value ? "取消登录" : "登录");
         historyButton.setEnabled(!value);
         progressRow.setVisibility(value ? View.VISIBLE : View.GONE);
         loginStatus.setText(status);
@@ -559,6 +574,19 @@ public final class LoginActivity extends AppCompatActivity {
         fnId.setEnabled(!value);
         fnConnectButton.setEnabled(!value);
         fnConnectSettingsButton.setEnabled(!value);
+    }
+
+    /** Abort whatever is in flight: FN Connect resolution and/or the fnOS handshake. */
+    private void cancelLogin() {
+        if (!busy) return;
+        // Both calls are silent by construction: FnOsAuthClient.cancel() clears
+        // its deliverCallback flag, FnConnectResolver.cancel() bumps the call
+        // generation. Neither reaches the callbacks above, so the cancelled run
+        // cannot toast an error or fight this reset.
+        authClient.cancel();
+        if (fnConnectResolver != null) fnConnectResolver.cancel();
+        setBusy(false, "");
+        Toast.makeText(LoginActivity.this, "已取消登录", Toast.LENGTH_SHORT).show();
     }
 
     private void hideKeyboard() {
