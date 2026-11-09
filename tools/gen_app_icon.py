@@ -76,6 +76,13 @@ GLYPH_BOTTOM = HEAD_RIGHT[1] + HEAD_RIGHT_R
 CENTER_DX = (CANVAS - (GLYPH_RIGHT - GLYPH_LEFT)) / 2 - GLYPH_LEFT
 CENTER_DY = (CANVAS - (GLYPH_BOTTOM - GLYPH_TOP)) / 2 - GLYPH_TOP
 
+# 图形占画布的比：原版量出来是 52% 宽、68% 高，而 fnOS 自家图标多在 60~77%
+# （设置图标那只齿轮约 76%，机器上 16 个应用的中位数约 66%）。
+# 1.15 把主体放大到 60% x 78%，与系统那排图标并排时不再显得缩；再多就顶到边了。
+# 想让它显得更饱满就调这个值——以画布中心等比缩放，比例不变，只改大小。
+# 1.0 表示与 0.2.144 那版逐像素对齐。
+GLYPH_SCALE = 1.15
+
 
 def _s(v: float) -> float:
     return v * SUPERSAMPLE
@@ -196,6 +203,15 @@ def render(size: int) -> Image.Image:
             fill=255,
         )
 
+    if GLYPH_SCALE != 1.0:
+        # 以画布中心等比放大：几何比例一律不动，只是整体变大变小。
+        # 在 8 倍画布上重采样，落到目标尺寸仍然干净。
+        scaled = round(work * GLYPH_SCALE)
+        grown = symbol.resize((scaled, scaled), Image.LANCZOS)
+        symbol = Image.new("L", (work, work), 0)
+        offset = round((work - scaled) / 2)
+        symbol.paste(grown, (offset, offset))
+
     icon = _background(work)
     colored = Image.new("RGBA", (work, work), SYMBOL + (255,))
     colored.putalpha(symbol)
@@ -213,9 +229,17 @@ def write(path: Path, image: Image.Image) -> None:
 
 
 def main() -> int:
+    global GLYPH_SCALE
     parser = argparse.ArgumentParser()
     parser.add_argument("--preview", help="只输出预览到这个目录，不改源码")
+    parser.add_argument(
+        "--scale",
+        type=float,
+        help="临时覆盖 GLYPH_SCALE（只影响本次运行，用来对比不同主体占比）",
+    )
     args = parser.parse_args()
+    if args.scale:
+        GLYPH_SCALE = args.scale
 
     sizes = (16, 24, 48, 64, 72, 96, 128, 256)
     if args.preview:
