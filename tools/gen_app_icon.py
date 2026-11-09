@@ -6,218 +6,200 @@
 
 为什么要有这个脚本：
   这枚图标以前是临时脚本画的，没留档，于是每轮调整都在重新猜参数（R515 蓝底白音符、
-  R516 改回白底蓝音符并加描边），结果笔画比例一直不协调——符头偏小、符干偏粗、
-  斜梁与符干的交角是硬拐角，缩到 48px 就是一团蓝。现在把几何写成参数，
-  改动可见、可回退。
+  R516 改回白底蓝音符、R526 凭印象重画成「平梁 + 小符头」，结果缩略图里读作一个方框）。
+  现在几何全部**从基线版本逐个像素量出来**，写在常量里，改动可见、可回退。
 
-为什么超采样：
-  PIL 的 `ellipse` / `polygon` 没有抗锯齿，256 直接画出来边缘是台阶，
-  应用中心再把 256 缩到 60 左右显示，台阶会变成毛边。这里在 8 倍画布上画，
-  最后按目标尺寸 LANCZOS 收，边缘才是干净的。
+原版是什么：
+  两个**圆形**符头（不是压扁的椭圆），符干垂直、宽约符头直径的 1/4，紧跟符头右缘；
+  横梁是斜的（下倾约 13°），厚度约为符干 1.3 倍；右音符整体比左音符低 12px。
+  底色是纯白（#FEFEFE），无描边、无渐变、无投影；蓝色是单一实色（#1071FD）。
+
+为什么要超采样：
+  PIL 的 `ellipse` / `polygon` 没有抗锯齿，256 直接画出来边缘是台阶。这里在 8 倍
+  画布上画，最后按目标尺寸 LANCZOS 收，16px 档才是干净的。
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_IMAGES = ROOT / "src" / "app" / "ui" / "images"
 
-# 底色与描边。fnOS 应用中心把图标放在白色卡片上，所以本体必须是白底、
-# 靠一圈很淡的蓝灰描边把自己和卡片分开；纯白无描边会糊进背景里（R515 的问题）。
 CANVAS = 256
 SUPERSAMPLE = 8
-CORNER_RADIUS = 58
-BACKGROUND_TOP = (255, 255, 255)
-BACKGROUND_BOTTOM = (240, 245, 255)
-OUTLINE = (214, 224, 240)
-SYMBOL_TOP = (56, 116, 240)
-SYMBOL_BOTTOM = (28, 76, 205)
+# 圆角半径从原图量出：y=0 处首个不透明像素在 x≈46，圆角是直径 92 的圆弧。
+CORNER_RADIUS = 48
+# 原图背景是 254,254,254 的纯色，没有渐变——应用中心把它放在白卡片上仍然分得清，
+# 因为圆角外侧是透明的，靠的是投影留给卡片的留白。
+BACKGROUND = (254, 254, 254)
+# 原图符号内部取样恒为 16,113,253，是实色，不是渐变。
+SYMBOL = (16, 113, 253)
 
-# 音符几何，全部以 256 画布为坐标系。
-#
-# 梁是**水平**的，两个符头同高。这不是偷懒：双八分音符在乐谱里只在两音不同高时
-# 才斜梁，同音高就是平梁；而且第一版试过 -7° 的斜梁，垂直符干与斜梁上边缘
-# 不可能严丝合缝，符干顶部会各露出一小块三角形台阶——8 倍超采样下反而更显眼。
-# 平梁让「梁 + 两根符干」融成一个干净的 U 形，缩到 16px 也不散。
-# 头身比照着乐谱来：符头高约 33、宽约 42，符干宽 10（≈符头的 1/4），
-# 梁厚 19（≈符干的 2 倍）。第一版梁厚给到 26，与符头几乎等粗，
-# 缩到 64px 就成了「方块 + 两个点」。
-HEAD_RX = 20.0
-HEAD_RY = 14.5
-HEAD_TILT = -22.0
-HEAD_LEFT = (96.0, 177.0)
-HEAD_RIGHT = (158.0, 177.0)
-STEM_WIDTH = 11.0
-STEM_TOP = 66.0
-BEAM_HEIGHT = 16.0
-# 符干在符头中心右移 rx 的这个比例上：0.55 时符干右缘正好被符头在
-# 「下探到 ry*0.62」的那一点包住，交界处看不到直角缺口。
-STEM_OFFSET = 0.55
-STEM_OVERLAP = 0.62
-# 小尺寸下按比例加粗笔画。16px 时符干只有 0.6 个像素宽，不加粗就是一团模糊
-# 的蓝点；这是所有细节图标在 16/24 的通病，只能靠加粗换一点可读性。
-STEM_MIN_PX = 1.6
-# 符号相对整块图标的占比。按 108/256 画出来只占 42% 宽，放进应用中心的
-# 60px 卡片里显得缩手缩脚；1.20 之后约 52% 宽、64% 高，和同类音乐 App 接近。
-SYMBOL_SCALE = 1.20
-# 24px 及以下再放大一档：整块图标只有 24 像素时，符号按 52% 画出来只有
-# 12px 宽，符头会被压成小方块。放到 68% 宽，形状才还认得出是音符。
-SYMBOL_SCALE_SMALL = 1.55
+# ---- 几何（全部以 256 画布为坐标，来自对 0.2.x 基线 ICON_256.PNG 的逐像素测量）----
+# 左符头：圆心 (82,178)、半径 29.5 → 覆盖 x 52.5..111.5、y 148.5..207.5
+HEAD_LEFT = (82.0, 178.0)
+HEAD_LEFT_R = 29.5
+# 右符头比左边低 12px、小 1.5px（原图就是不对称的，照抄）
+HEAD_RIGHT = (158.0, 190.0)
+HEAD_RIGHT_R = 28.0
+# 符干宽 16，右缘与符头右缘对齐（乐谱里符干贴在符头右侧）
+STEM_WIDTH = 16.0
+# 符干画到符头圆心就停：符头是实心圆，圆心以下的符干本来就被盖住；而符干右缘
+# 与符头最右点相切，只要往下多伸一点，圆已经变窄，那截就会从符头底下探出个小方脚。
+STEM_INSIDE = 0.0
+# 横梁：平行四边形，两端是**垂直**切口（不是垂直于梁轴），上边缘实测斜率 0.2155，
+# 在 x=114/150/186 处为 48/56/64；竖直厚度 21。
+BEAM_TOP_LEFT = (95.5, 44.5)
+BEAM_TOP_RIGHT = (186.0, 64.0)
+BEAM_BOTTOM_RIGHT = (186.0, 85.0)
+BEAM_BOTTOM_LEFT = (95.5, 65.5)
+# 原图是描边类字形，上边缘两个外角是圆的（半径约 4.5）；下面两个角与符干相接，
+# 是内凹拼接，保持直角——倒圆反而会在梁底开出一个口子。
+BEAM_CORNER = 4.5
+
+# 小尺寸下按比例加粗：16px 时符干只有 1px，不加粗就是一条虚边。
+STEM_MIN_PX = 1.3
+STEM_WEIGHT_MAX = 1.30
+
+# 原图的符号并不居中：包围盒是 x 52.5..186、y 44.5..218，横向偏左 8.75、
+# 纵向偏下 3.25。形状比例一律不动，只把包围盒摆到画布正中——应用中心里
+# 一排图标并排时，偏左的那个一眼就能看出歪。
+GLYPH_LEFT = HEAD_LEFT[0] - HEAD_LEFT_R
+GLYPH_RIGHT = BEAM_BOTTOM_RIGHT[0]
+GLYPH_TOP = BEAM_TOP_LEFT[1]
+GLYPH_BOTTOM = HEAD_RIGHT[1] + HEAD_RIGHT_R
+CENTER_DX = (CANVAS - (GLYPH_RIGHT - GLYPH_LEFT)) / 2 - GLYPH_LEFT
+CENTER_DY = (CANVAS - (GLYPH_BOTTOM - GLYPH_TOP)) / 2 - GLYPH_TOP
 
 
 def _s(v: float) -> float:
     return v * SUPERSAMPLE
 
 
-def _background(size: int, target: int) -> Image.Image:
-    """白到极淡蓝的纵向渐变，裁成圆角。
+def _gx(x: float) -> float:
+    """设计坐标 -> 超采样像素坐标（横向），含整体居中。"""
+    return _s(x + CENTER_DX)
 
-    ``target`` 是最终落盘的像素尺寸：描边宽度按它反算，这样文件从 16 到 256
-    都恰好有一条约 1.2 物理像素的淡边。按设计尺寸给固定 1px 是不行的——
-    256 上的 1px 缩到 60（应用中心卡片里的实际显示尺寸）只剩 0.2px，边就没了。
-    """
-    gradient = Image.new("RGB", (1, size), BACKGROUND_TOP)
-    pixels = gradient.load()
-    for y in range(size):
-        t = y / max(1, size - 1)
-        pixels[0, y] = tuple(
-            round(BACKGROUND_TOP[i] + (BACKGROUND_BOTTOM[i] - BACKGROUND_TOP[i]) * t)
-            for i in range(3)
-        )
-    gradient = gradient.resize((size, size), Image.BILINEAR)
 
+def _gy(y: float) -> float:
+    """设计坐标 -> 超采样像素坐标（纵向），含整体居中。"""
+    return _s(y + CENTER_DY)
+
+
+def _background(size: int) -> Image.Image:
+    """纯白圆角方块，圆角外全透明。"""
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, size - 1, size - 1), radius=_s(CORNER_RADIUS), fill=255
     )
-
-    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    layer.paste(gradient, (0, 0), mask)
-
-    # 描边画在圆角内侧，且只描一圈很淡的线：压在渐变上面而不是外面，
-    # 否则圆角外侧会出现一层比背景更白的毛边。
-    stroke = max(1, round(_s(1.2 * CANVAS / target)))
-    outline = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ImageDraw.Draw(outline).rounded_rectangle(
-        (0, 0, size - 1, size - 1),
-        radius=_s(CORNER_RADIUS),
-        outline=OUTLINE + (255,),
-        width=stroke,
-    )
-    layer = Image.alpha_composite(layer, Image.composite(outline, Image.new("RGBA", layer.size, (0, 0, 0, 0)), mask))
+    layer = Image.new("RGBA", (size, size), BACKGROUND + (255,))
+    layer.putalpha(mask)
     return layer
 
 
-def _scaled(x: float, y: float, scale: float) -> tuple[float, float]:
-    """把设计坐标围绕画布中心缩放。"""
-    half = CANVAS / 2
-    return (half + (x - half) * scale, half + (y - half) * scale)
-
-
-def _head(
-    draw: ImageDraw.ImageDraw,
-    cx: float,
-    cy: float,
-    rx: float,
-    ry: float,
-    color: tuple[int, int, int, int],
-) -> None:
-    """椭圆符头。单独一层画完再转，避免 rotate 把整个画布带偏。"""
-    # 旋转后的包围盒留一点余量，否则 -20° 的两端会被裁掉。
-    pad = max(rx, ry) * 1.6
-    box = (
-        int(_s(cx - pad)),
-        int(_s(cy - pad)),
-        int(_s(cx + pad)),
-        int(_s(cy + pad)),
-    )
-    layer = Image.new("RGBA", (box[2] - box[0], box[3] - box[1]), (0, 0, 0, 0))
-    local = ImageDraw.Draw(layer)
-    lcx = (box[2] - box[0]) / 2
-    lcy = (box[3] - box[1]) / 2
-    local.ellipse(
-        (lcx - _s(rx), lcy - _s(ry), lcx + _s(rx), lcy + _s(ry)),
-        fill=color,
-    )
-    layer = layer.rotate(HEAD_TILT, resample=Image.BICUBIC, center=(lcx, lcy))
-    draw._image.alpha_composite(layer, (box[0], box[1]))
-
-
 def _weight_for(size: int) -> float:
-    """目标尺寸越小，笔画按设计值放大得越多。"""
-    if size >= 48:
-        return 1.0
+    """目标尺寸越小，符干与横梁按比例加粗得越多。"""
     stem_px = STEM_WIDTH * size / CANVAS
-    return max(1.0, STEM_MIN_PX / max(stem_px, 1e-6))
+    if stem_px >= STEM_MIN_PX:
+        return 1.0
+    return min(STEM_WEIGHT_MAX, STEM_MIN_PX / max(stem_px, 1e-6))
 
 
-def _symbol_mask(size: int, weight: float = 1.0, scale: float = SYMBOL_SCALE) -> Image.Image:
-    """音符的形状蒙版，白色不透明；颜色另外用渐变贴上去。"""
-    mask = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(mask)
-    white = (255, 255, 255, 255)
+def _rounded_polygon(points: list[tuple[float, float]], radii: list[float]) -> list[tuple[float, float]]:
+    """把多边形的顶点按半径倒圆，返回可直接交给 ``ImageDraw.polygon`` 的点序列。
 
-    rx, ry = HEAD_RX * scale, HEAD_RY * scale
-    stem_w = STEM_WIDTH * scale * weight
-    beam_h = BEAM_HEIGHT * scale * weight
-    stem_top = _scaled(0, STEM_TOP, scale)[1]
-    heads = [_scaled(HEAD_LEFT[0], HEAD_LEFT[1], scale), _scaled(HEAD_RIGHT[0], HEAD_RIGHT[1], scale)]
+    ``radii[i]`` 为 0 表示该顶点保留直角。圆角用圆弧点采样（每 90° 取 10 段），
+    在 8 倍画布上已经看不出折线。
+    """
+    out: list[tuple[float, float]] = []
+    count = len(points)
+    for i, corner in enumerate(points):
+        radius = radii[i]
+        if radius <= 0:
+            out.append(corner)
+            continue
+        prev = points[(i - 1) % count]
+        nxt = points[(i + 1) % count]
+        # 由顶点指向两侧邻点的单位向量
+        ux, uy = prev[0] - corner[0], prev[1] - corner[1]
+        vx, vy = nxt[0] - corner[0], nxt[1] - corner[1]
+        lu, lv = math.hypot(ux, uy), math.hypot(vx, vy)
+        ux, uy, vx, vy = ux / lu, uy / lu, vx / lv, vy / lv
+        # 两条边的夹角 -> 切点到顶点的距离
+        cos_phi = max(-1.0, min(1.0, ux * vx + uy * vy))
+        phi = math.acos(cos_phi)
+        if phi <= 1e-6 or phi >= math.pi - 1e-6:
+            out.append(corner)
+            continue
+        tangent = radius / math.tan(phi / 2)
+        # 圆心在角平分线上
+        bis_x, bis_y = ux + vx, uy + vy
+        bis_len = math.hypot(bis_x, bis_y)
+        if bis_len < 1e-9:
+            out.append(corner)
+            continue
+        center_dist = radius / math.sin(phi / 2)
+        cx = corner[0] + bis_x / bis_len * center_dist
+        cy = corner[1] + bis_y / bis_len * center_dist
 
-    for cx, cy in heads:
-        _head(draw, cx, cy, rx, ry, white)
-        # 符干贴着符头右侧、往下伸进符头，接头藏在符头里，不会露出直角。
-        stem_x = cx + rx * STEM_OFFSET
-        draw.rectangle(
-            (_s(stem_x - stem_w / 2), _s(stem_top),
-             _s(stem_x + stem_w / 2), _s(cy + ry * STEM_OVERLAP)),
-            fill=white,
-        )
-
-    draw.rectangle(
-        (_s(heads[0][0] + rx * STEM_OFFSET - stem_w / 2), _s(stem_top),
-         _s(heads[1][0] + rx * STEM_OFFSET + stem_w / 2), _s(stem_top + beam_h)),
-        fill=white,
-    )
-    return mask
-
-
-def _symbol_color(size: int, weight: float = 1.0, scale: float = SYMBOL_SCALE) -> Image.Image:
-    gradient = Image.new("RGB", (1, size), SYMBOL_TOP)
-    pixels = gradient.load()
-    for y in range(size):
-        t = y / max(1, size - 1)
-        pixels[0, y] = tuple(
-            round(SYMBOL_TOP[i] + (SYMBOL_BOTTOM[i] - SYMBOL_TOP[i]) * t) for i in range(3)
-        )
-    gradient = gradient.resize((size, size), Image.BILINEAR)
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(gradient, (0, 0), _symbol_mask(size, weight, scale).split()[3])
+        start = (corner[0] + ux * tangent, corner[1] + uy * tangent)
+        end = (corner[0] + vx * tangent, corner[1] + vy * tangent)
+        out.append(start)
+        a0 = math.atan2(start[1] - cy, start[0] - cx)
+        a1 = math.atan2(end[1] - cy, end[0] - cx)
+        delta = a1 - a0
+        while delta > math.pi:
+            delta -= 2 * math.pi
+        while delta < -math.pi:
+            delta += 2 * math.pi
+        steps = 10
+        for step in range(1, steps):
+            angle = a0 + delta * step / steps
+            out.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+        out.append(end)
     return out
 
 
 def render(size: int) -> Image.Image:
     work = _s(CANVAS)
     weight = _weight_for(size)
-    scale = SYMBOL_SCALE if size > 24 else SYMBOL_SCALE_SMALL
-    icon = _background(work, size)
+    symbol = Image.new("L", (work, work), 0)
+    draw = ImageDraw.Draw(symbol)
 
-    # 极淡的落影：让音符从背景上「浮」起来一点点。alpha 压得很低，
-    # 因为应用中心的小尺寸会把任何深色都放大成脏边。
-    shadow = Image.new("RGBA", (work, work), (0, 0, 0, 0))
-    shadow.paste(
-        (24, 52, 132, 46),
-        (0, 0),
-        _symbol_mask(work, weight, scale).split()[3],
+    beam = _rounded_polygon(
+        [BEAM_TOP_LEFT, BEAM_TOP_RIGHT, BEAM_BOTTOM_RIGHT, BEAM_BOTTOM_LEFT],
+        [BEAM_CORNER, BEAM_CORNER, 0.0, 0.0],
     )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=_s(2.2)))
-    icon = Image.alpha_composite(icon, shadow)
+    draw.polygon([(_gx(x), _gy(y)) for x, y in beam], fill=255)
 
-    icon = Image.alpha_composite(icon, _symbol_color(work, weight, scale))
-    return icon.resize((size, size), Image.LANCZOS)
+    # 符干：从横梁下缘往上退 2px 再往下画，上端那截藏在梁里看不见；
+    # 下端停在符头圆心，圆心以下会被符头盖住，露不出来。
+    for (cx, cy), radius in ((HEAD_LEFT, HEAD_LEFT_R), (HEAD_RIGHT, HEAD_RIGHT_R)):
+        stem_right = cx + radius
+        stem_left = stem_right - STEM_WIDTH * weight
+        top = BEAM_BOTTOM_LEFT[1] + (stem_left - BEAM_BOTTOM_LEFT[0]) * (
+            BEAM_BOTTOM_RIGHT[1] - BEAM_BOTTOM_LEFT[1]
+        ) / (BEAM_BOTTOM_RIGHT[0] - BEAM_BOTTOM_LEFT[0])
+        draw.rectangle(
+            (_gx(stem_left), _gy(top - 2),
+             _gx(stem_right), _gy(cy + radius * STEM_INSIDE)),
+            fill=255,
+        )
+        draw.ellipse(
+            (_gx(cx - radius), _gy(cy - radius),
+             _gx(cx + radius), _gy(cy + radius)),
+            fill=255,
+        )
+
+    icon = _background(work)
+    colored = Image.new("RGBA", (work, work), SYMBOL + (255,))
+    colored.putalpha(symbol)
+    return Image.alpha_composite(icon, colored).resize((size, size), Image.LANCZOS)
 
 
 def write(path: Path, image: Image.Image) -> None:
@@ -240,7 +222,7 @@ def main() -> int:
         out = Path(args.preview)
         for size in sizes:
             write(out / f"icon_{size}.png", render(size))
-        write(out / "icon_256_sheet.png", render(1024))
+        write(out / "icon_1024.png", render(1024))
         return 0
 
     for size in sizes:
