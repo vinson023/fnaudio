@@ -22,7 +22,9 @@ import com.fnaudio.client.network.HttpClientFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -58,7 +60,12 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
     private TvPlayerBar playerBar;
     private TvPlayerScreen playerScreen;
     private FrameLayout pageHost;
-    private TvHomePage homePage;
+    private FrameLayout detailHost;
+    @Nullable private TvDetailPage detailPage;
+    /** Pages are kept, not rebuilt: switching tabs must not reset scroll or focus. */
+    private final Map<Integer, View> pages = new HashMap<>();
+    private boolean detailOpen;
+    @Nullable private TvHomePage homePage;
 
     private int currentTab;
 
@@ -80,7 +87,6 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         setContentView(buildRoot());
         TvUi.hideSystemBars(this);
         selectTab(0, false);
-        loadHome();
     }
 
     private ConnectionProfile resolveProfile() {
@@ -101,6 +107,11 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         pageHost = new FrameLayout(this);
         pageHost.setClipChildren(false);
         root.addView(pageHost, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        detailHost = new FrameLayout(this);
+        detailHost.setVisibility(View.GONE);
+        root.addView(detailHost, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         tabBar = new TvTabBar(this, TITLES);
@@ -143,6 +154,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         int bottom = playerBar.getVisibility() == View.VISIBLE
                 ? TvTheme.dp(this, TvTheme.PLAYER_BAR_H) : TvTheme.dp(this, 24f);
         pageHost.setPadding(0, top, 0, bottom);
+        detailHost.setPadding(0, top, 0, bottom);
     }
 
     private View placeholder(String title) {
@@ -157,32 +169,49 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
     // ------------------------------------------------------------------ 页面
 
     private void selectTab(int index, boolean focusContent) {
+        if (detailOpen) closeDetail(false);
         currentTab = index;
         tabBar.select(index, false);
         pageHost.removeAllViews();
-        if (index == 0) {
-            if (homePage == null) {
-                homePage = new TvHomePage(this, artwork);
-                homePage.setOnCardOpen(this::openCard);
-                homePage.setOnTopEdge(this::focusTabs);
-            }
-            pageHost.addView(homePage, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            if (focusContent) homePage.focusFirst();
+        View page = pageFor(index);
+        pageHost.addView(page, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (focusContent) focusPage(page);
+    }
+
+    private View pageFor(int index) {
+        View cached = pages.get(index);
+        if (cached != null) return cached;
+        View page;
+        switch (index) {
+            case 0: page = createHomePage(); break;
+            case 1: page = createLibraryPage(); break;
+            case 2: page = createMinePage(); break;
+            case 3: page = createSearchPage(); break;
+            default: page = placeholder(TITLES[index]); break;
+        }
+        pages.put(index, page);
+        return page;
+    }
+
+    private void focusPage(View page) {
+        if (page instanceof TvHomePage) {
+            ((TvHomePage) page).focusFirst();
+        } else if (page instanceof TvLibraryPage) {
+            ((TvLibraryPage) page).focusFirst();
+        } else if (page instanceof TvMinePage) {
+            ((TvMinePage) page).focusFirst();
+        } else if (page instanceof TvSearchPage) {
+            ((TvSearchPage) page).focusFirst();
         } else {
-            pageHost.addView(placeholder(TITLES[index]), new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            if (focusContent) tabBar.focusSelected();
+            tabBar.focusSelected();
         }
     }
 
-    private void loadHome() {
+    private View createHomePage() {
         homePage = new TvHomePage(this, artwork);
         homePage.setOnCardOpen(this::openCard);
         homePage.setOnTopEdge(this::focusTabs);
-        pageHost.removeAllViews();
-        pageHost.addView(homePage, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         homePage.showStatus("正在载入曲库…");
 
         io.execute(() -> {
@@ -196,22 +225,54 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
             final List<TvShelfData.Shelf> loaded = shelves;
             final String error = failure;
             main.post(() -> {
-                if (isFinishing()) return;
+                TvHomePage page = homePage;
+                if (isFinishing() || page == null) return;
                 if (loaded == null) {
-                    homePage.showStatus("曲库载入失败\n" + error);
+                    page.showStatus("曲库载入失败\n" + error);
                     return;
                 }
                 TvApi.Track resume = player.current();
-                homePage.render(loaded, resume, resume == null ? 0 : resumePercent());
-                homePage.focusFirst();
+                page.render(loaded, resume, resume == null ? 0 : resumePercent());
+                if (currentTab == 0 && !detailOpen) page.focusFirst();
             });
         });
+        return homePage;
+    }
+
+    private View createLibraryPage() {
+        TvLibraryPage page = new TvLibraryPage(this, api, artwork, io);
+        page.setOnPlay((track, index, queue) -> playQueue(queue, index));
+        page.setOnOpenCard(this::openDetail);
+        page.setOnTopEdge(this::focusTabs);
+        return page;
+    }
+
+    private View createMinePage() {
+        TvMinePage page = new TvMinePage(this, api, artwork, io);
+        page.setOnPlay((track, index, queue) -> playQueue(queue, index));
+        page.setOnOpenCard(this::openDetail);
+        page.setOnTopEdge(this::focusTabs);
+        return page;
+    }
+
+    private View createSearchPage() {
+        TvSearchPage page = new TvSearchPage(this, api, io);
+        page.setOnPlay((track, index, queue) -> playQueue(queue, index));
+        page.setOnTopEdge(this::focusTabs);
+        return page;
     }
 
     private int resumePercent() {
         long duration = player.duration();
         if (duration <= 0) return 8;
         return (int) Math.max(4, Math.min(99, player.position() * 100 / duration));
+    }
+
+    /** Starts {@code queue} at {@code index} and shows the now-playing page. */
+    private void playQueue(List<TvApi.Track> queue, int index) {
+        if (queue == null || queue.isEmpty()) return;
+        player.play(new ArrayList<>(queue), Math.max(0, index));
+        openPlayerScreen();
     }
 
     /**
@@ -224,21 +285,25 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
     private void openPlayerScreen() {
         if (player.current() == null) return;
         pageHost.setVisibility(View.INVISIBLE);
+        detailHost.setVisibility(View.INVISIBLE);
         playerBar.setVisibility(View.INVISIBLE);
         playerScreen.open();
     }
 
     private void closePlayerScreen() {
-        pageHost.setVisibility(View.VISIBLE);
+        pageHost.setVisibility(detailOpen ? View.INVISIBLE : View.VISIBLE);
+        detailHost.setVisibility(detailOpen ? View.VISIBLE : View.GONE);
         playerBar.setVisibility(player.current() == null ? View.GONE : View.VISIBLE);
-        if (currentTab == 0 && homePage != null) homePage.focusFirst();
-        else tabBar.focusSelected();
+        if (detailOpen && detailPage != null) {
+            detailPage.focusFirst();
+        } else {
+            focusPage(pageFor(currentTab));
+        }
     }
 
     private void openCard(TvCardItem item) {
         if (item.track == null) {
-            // Group cards open a detail page; that is period three of the plan,
-            // so the press is simply inert for now instead of blanking the page.
+            openDetail(item);
             return;
         }
         List<TvApi.Track> queue = item.queue.isEmpty()
@@ -251,8 +316,30 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
                 break;
             }
         }
-        player.play(queue, start);
-        openPlayerScreen();
+        playQueue(queue, start);
+    }
+
+    /** Opens an album, artist or playlist on top of the current page. */
+    private void openDetail(TvCardItem item) {
+        if (item == null || item.id == null || item.id.isEmpty()) return;
+        if (detailPage == null) {
+            detailPage = new TvDetailPage(this, api, artwork, io);
+            detailPage.setOnPlay((track, index, queue) -> playQueue(queue, index));
+            detailPage.setOnBack(() -> closeDetail(true));
+            detailHost.addView(detailPage, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        detailOpen = true;
+        pageHost.setVisibility(View.INVISIBLE);
+        detailHost.setVisibility(View.VISIBLE);
+        detailPage.open(item.id);
+    }
+
+    private void closeDetail(boolean restoreFocus) {
+        detailOpen = false;
+        detailHost.setVisibility(View.GONE);
+        if (!playerScreen.isOpen()) pageHost.setVisibility(View.VISIBLE);
+        if (restoreFocus) focusPage(pageFor(currentTab));
     }
 
     private void focusTabs() {
@@ -300,6 +387,9 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
                 && playerScreen.handleKey(keyCode, event)) {
             return true;
         }
+        if (detailOpen && detailPage != null && detailPage.handleKey(keyCode, event)) {
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (isFocusInside(tabBar)) {
                 if (currentTab != 0) {
@@ -313,7 +403,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && isFocusInside(tabBar)) {
-            if (currentTab == 0 && homePage != null) homePage.focusFirst();
+            focusPage(pageFor(currentTab));
             return true;
         }
         return super.onKeyDown(keyCode, event);

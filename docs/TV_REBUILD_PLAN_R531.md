@@ -1,9 +1,9 @@
 # fnAudio TV 端重构方案（R531）
 
-> 状态：第 1、2 期已实施并过模拟器验证，第 3、4 期待做
+> 状态：第 1–3 期已实施并过模拟器验证，第 4 期（登录复用 + 扫码配对）待做
 > 依据：`references/TVapp/` 内两份 APK 反编译实测（网易云音乐 TV 1.1.80、QQ 音乐 TV 9.0.0.39）+ fnAudio 现有 TV 端代码审计
 > 作者：AI
-> 日期：2026-11-10（v3：第 2 期落地，实施偏离记在 §12.1）
+> 日期：2026-11-10（v4：第 3 期落地，实施偏离记在 §12.1 / §12.2）
 
 ---
 
@@ -1036,14 +1036,25 @@ android-client/app/src/main/java/com/fnaudio/client/
 | 控制条高 21.6% 屏高 | 固定 117dp | 比例值要在 `onSizeChanged` 回写，会多拖一轮布局，首帧 `requestFocus` 时按钮高度还是 0（实测 `focus=false`） |
 | 封面 20s 转一圈 | 未做 | 见第 14 节待拍板第 3 条，本期先不做旋转 |
 
-### 第 3 期：资料库 / 我的 / 搜索 / 详情
+### 第 3 期：资料库 / 我的 / 搜索 / 详情（已完成）
 
-- `LibraryFragment`（二级 Tab + 4 列网格 + 列表）
-- `TvGridNavigator`
-- `MineFragment`（账号卡 + 统计 + 收藏 + 歌单）
-- `SearchFragment` + `SearchInputActivity`（系统输入法）
-- 三个详情页
-- `SettingsFragment`
+- `TvLibraryPage`（二级 Tab + 歌曲列表 / 专辑网格 / 艺术家网格）
+- `TvMinePage`（收藏 / 播放列表）
+- `TvSearchPage`（文本域 + 结果列表）
+- `TvDetailPage`（专辑 / 艺术家 / 播放列表三合一）
+- 通用件：`TvTrackList`（52dp 行）、`TvCardGrid`（198dp 四列 + 显式焦点图）、`TvChipTabs`（40dp 二级 Tab）
+- `TvGridNavigator` 不做：网格是静态的，行主序 `nextFocus*` 已经足够确定
+- 设置页留到第 4 期
+
+**§12.2 第 3 期的实施偏离**
+
+| 方案写的 | 实际做的 | 原因 |
+|---|---|---|
+| 三个详情页各写一个 | 一个 `TvDetailPage`，按卡片 id 前缀（`album:` / `artist:` / `playlist:`）决定取数 | 三页的差别只在「怎么拿到 track 列表」，头部、播放全部、返回、空态完全一样 |
+| `SearchFragment` + `SearchInputActivity` 两级 | 一个 `TvSearchPage`：输入框 + 结果同屏 | 电视上没有「键盘页」这一层，弹出输入法本身就要占满半屏；分两级反而多一次返回 |
+| 自带字母键盘 | 交给系统输入法 | 后端搜索是字面 `LIKE`，没有拼音索引，自造 A–Z 键盘只能打拉丁字符，对中文曲库等于不可用 |
+| `TvGridNavigator` | 行主序 `nextFocus*` | 网格 4 列固定、卡片等宽，几何搜索会挑对角线邻居；显式 id 更便宜也更确定 |
+| Fragment | 普通 View，主壳按 Tab 缓存 | 同第 1 期：没有分页、没有嵌套导航、没有进程死亡恢复 |
 
 ### 第 4 期：登录复用 + 扫码配对 + 打磨
 
