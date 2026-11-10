@@ -17,6 +17,7 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.fnaudio.client.data.ConnectionProfile;
+import com.fnaudio.client.data.PairingPayload;
 import com.fnaudio.client.data.SecureProfileStore;
 import com.fnaudio.client.network.FnOsAuthClient;
 

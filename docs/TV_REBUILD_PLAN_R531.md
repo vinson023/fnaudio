@@ -1064,9 +1064,15 @@ android-client/app/src/main/java/com/fnaudio/client/
 - `PairingPayload` + `PairingTransfer`：`fnaudio://pair?...` 编解码；传输白名单，**不含密码**
 - `TvQrCode`：自写二维码编码器（版本 1–6、纠错 M、字节模式），与参考实现逐模块一致
 
-**手机端（未做，需要拍板）**：`发送到电视` 页面 + 摄像头扫码。扫码要引入
-`com.journeyapps:zxing-android-embedded`（约 200 KB）并加 `CAMERA` 权限，这是本期唯一会动
-`android-client` 依赖与权限的地方，所以留到你确认。
+**手机端（已完成）**：`PairingSendActivity`（扫码 / 手填地址与六位码、选档案、发送）+ `PairingClient`。
+按你的决定引入 `com.journeyapps:zxing-android-embedded:4.3.0`（连带 `com.google.zxing:core:3.4.1`）
+与 `CAMERA` 权限，**两者只落在手机 APK**；电视端仍然只用自写编码器画码，APK 不增加体积。
+入口在「历史连接」页头部的「发到电视」。扫不了时同一页可手填地址与六位码，走同一个接口。
+
+**本期无法在这台机器上跑手机 UI**：手机 APK 只带 arm 原生库，x86 模拟器报
+`INSTALL_FAILED_NO_MATCHING_ABIS`，所以手机端是「构建 + 合并清单」验证（`CAMERA` 权限、
+zxing 的 `CaptureActivity`、`PairingSendActivity` 都在合并后的清单里），协议则用与
+`PairingClient` 完全同构的报文在宿主上 POST 到电视验证（200）。
 
 **§12.3 第 4 期的实施偏离**
 
@@ -1075,7 +1081,7 @@ android-client/app/src/main/java/com/fnaudio/client/
 | 引入 `com.google.zxing:core`（560 KB） | 自写 `TvQrCode`（~420 行，零依赖） | 电视端是 `--offline` 构建，加依赖等于每次换机器都要联网同步一次。自写的风险（「画得出但扫不动」）用两道验证抵掉：与 Python `qrcode` 参考实现在 8 种掩码 × 5 种长度上**逐模块 0 差异**；再把模拟器截图里的二维码反解回来，同样 **0/1089 失配** |
 | 电视连不上服务器时回 502 | 先回 200「已收到」，连接结果由电视自己显示 | 认证是回调式的，在请求线程里等它要加超时与锁；手机上看到 200 后就能收起键盘，电视上的遮罩会说明结果 |
 | 报文 AES-GCM 加密 | 未做 | 局域网 + 一次性码 + 60 秒窗口已经够用；加密留给以后，接口留了 `v=1` 版本位 |
-| 手机端扫码 | 本期不做 | 见上，要动依赖与权限 |
+| 手机端扫码 | 已做（zxing + CAMERA，仅手机 APK） | 负责人拍板「引 zxing，做完整扫码」 |
 
 ### 第 4 期（原计划内容，保留备查）
 

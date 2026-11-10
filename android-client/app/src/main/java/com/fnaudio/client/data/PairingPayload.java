@@ -1,4 +1,4 @@
-package com.fnaudio.client.tv;
+package com.fnaudio.client.data;
 
 import androidx.annotation.Nullable;
 
@@ -10,13 +10,13 @@ import androidx.annotation.Nullable;
  * picture, then pushes the profile over the LAN; anything sensitive travels in
  * that POST body, never in a string a camera can read from across the room.
  */
-final class PairingPayload {
+public final class PairingPayload {
     private static final String SCHEME = "fnaudio://pair";
     private static final String VERSION = "1";
 
-    final String host;
-    final int port;
-    final String code;
+    public final String host;
+    public final int port;
+    public final String code;
 
     private PairingPayload(String host, int port, String code) {
         this.host = host;
@@ -24,11 +24,11 @@ final class PairingPayload {
         this.code = code;
     }
 
-    static PairingPayload of(String host, int port, String code) {
+    public static PairingPayload of(String host, int port, String code) {
         return new PairingPayload(host, port, code);
     }
 
-    String toUri() {
+    public String toUri() {
         return SCHEME + "?v=" + VERSION + "&h=" + host + "&p=" + port + "&c=" + code;
     }
 
@@ -39,7 +39,7 @@ final class PairingPayload {
      *                                  scanner pointed at some other QR can say
      *                                  "不是 fnAudio 的配对码" instead of failing later
      */
-    static PairingPayload parse(@Nullable String raw) {
+    public static PairingPayload parse(@Nullable String raw) {
         if (raw == null) throw new IllegalArgumentException("空的二维码");
         String text = raw.trim();
         if (!text.startsWith(SCHEME)) throw new IllegalArgumentException("不是 fnAudio 的配对码");

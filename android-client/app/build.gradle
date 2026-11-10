@@ -164,6 +164,10 @@ dependencies {
     implementation "androidx.media3:media3-session:1.10.1"
     implementation "androidx.media3:media3-datasource-okhttp:1.10.1"
     implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    // QR scanning for the pairing screen. The television only *draws* a code
+    // (its encoder is hand-written, see TvQrCode), so the scanner lives in
+    // the phone APK alone.
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
     testImplementation "junit:junit:4.13.2"
     androidTestImplementation "androidx.test.ext:junit:1.2.1"
     androidTestImplementation "androidx.test:runner:1.6.2"

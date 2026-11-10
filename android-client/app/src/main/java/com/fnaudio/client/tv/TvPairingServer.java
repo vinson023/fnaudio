@@ -6,6 +6,7 @@ import android.os.Looper;
 import androidx.annotation.Nullable;
 
 import com.fnaudio.client.data.ConnectionProfile;
+import com.fnaudio.client.data.PairingTransfer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;

@@ -1,6 +1,4 @@
-package com.fnaudio.client.tv;
-
-import com.fnaudio.client.data.ConnectionProfile;
+package com.fnaudio.client.data;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -27,12 +25,12 @@ import org.json.JSONObject;
  *   <tr><td>password, token</td><td><b>never sent</b></td></tr>
  * </table>
  */
-final class PairingTransfer {
+public final class PairingTransfer {
     private PairingTransfer() {
     }
 
     /** Serialises the whitelist; the password is dropped even if it is set. */
-    static String encode(ConnectionProfile profile) throws JSONException {
+    public static String encode(ConnectionProfile profile) throws JSONException {
         JSONObject json = new JSONObject();
         json.put("name", profile.name);
         json.put("host", profile.host);
@@ -56,7 +54,7 @@ final class PairingTransfer {
      *                                  so the phone gets a stated reason instead
      *                                  of a television that silently fails later
      */
-    static ConnectionProfile decode(String body) {
+    public static ConnectionProfile decode(String body) {
         JSONObject json;
         try {
             json = new JSONObject(body);

@@ -46,6 +46,7 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
         emptyText = findViewById(R.id.historyEmptyText);
         findViewById(R.id.historyBackButton).setOnClickListener(view -> finish());
         findViewById(R.id.historyAddButton).setOnClickListener(view -> returnNewProfile());
+        findViewById(R.id.historyPairButton).setOnClickListener(view -> openPairing());
         renderHistory();
     }
 
@@ -170,6 +171,11 @@ public final class ConnectionHistoryActivity extends AppCompatActivity {
 
         card.setOnClickListener(view -> returnProfile(profile, RESULT_OK));
         return card;
+    }
+
+    /** Opens the pairing screen: pick a profile here, then scan the television. */
+    private void openPairing() {
+        startActivity(new Intent(this, PairingSendActivity.class));
     }
 
     private void returnProfile(ConnectionProfile profile, int resultCode) {

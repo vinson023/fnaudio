@@ -115,6 +115,12 @@ DEBT_AFTER_MOVE_OUT = 8530
 # R524 re-measured again: the television client added 13 files / 3,542 lines to
 # the tracked surface (12 classes under ``com.fnaudio.client.tv`` plus one
 # instrumentation test) without touching a single audited face.
+# R531 period four, phone half: +2 files / +355 lines (PairingSendActivity, the
+# scan-and-send screen, and PairingClient, the one-shot poster). PairingPayload
+# and PairingTransfer moved to com.fnaudio.client.data so both apps share them.
+# This is the round that finally added a Gradle dependency (zxing-android-
+# embedded) and a CAMERA permission, both confined to the phone APK.
+#
 # R531 period four re-measured after the television pairing round: +5 files /
 # +1,194 lines (TvQrCode, TvPairingCard, TvPairingServer, PairingPayload,
 # PairingTransfer), plus the rewritten TvLoginActivity. The phone half of the
@@ -140,8 +146,8 @@ DEBT_AFTER_MOVE_OUT = 8530
 #
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
-JAVA_TOTAL_FILES = 81
-JAVA_TOTAL_LINES = 17706
+JAVA_TOTAL_FILES = 83
+JAVA_TOTAL_LINES = 18061
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")
