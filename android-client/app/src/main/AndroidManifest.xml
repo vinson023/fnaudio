@@ -74,6 +74,16 @@
             android:launchMode="singleTask"
             android:theme="@style/Theme.FnAudio.Tv" />
 
+        <!-- Rebuilt shell (R531): top tabs, full-width pages, persistent player bar.
+             Kept alongside TvMainActivity until the rewrite lands, so the legacy
+             screen stays available as a fallback during the migration. -->
+        <activity
+            android:name=".tv.TvShellActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.FnAudio.Tv" />
+
         <service
             android:name=".playback.PlaybackService"
             android:exported="false"

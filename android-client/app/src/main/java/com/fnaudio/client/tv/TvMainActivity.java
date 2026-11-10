@@ -165,8 +165,9 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
         content.addView(buildNowPlayingStrip(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, TvUi.dp(this, 66), Gravity.BOTTOM));
 
-        nowPlaying = new TvNowPlayingOverlay(this, player, artwork);
+        nowPlaying = new TvNowPlayingOverlay(this, player, api, artwork);
         nowPlaying.setOnClose(() -> {
+            nowPlaying.hideLyrics();
             nowPlaying.setVisibility(View.GONE);
             focusRail();
         });
@@ -1442,6 +1443,7 @@ public final class TvMainActivity extends AppCompatActivity implements TvPlayer.
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (nowPlaying != null) nowPlaying.release();
         player.release();
         artwork.shutdown();
         io.shutdownNow();

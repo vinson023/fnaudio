@@ -350,8 +350,8 @@ public final class TvLoginActivity extends AppCompatActivity {
         authClient.authenticate(this, profile, profile.password, new FnOsAuthClient.Callback() {
             @Override public void onSuccess(ConnectionProfile authenticatedProfile) {
                 store.upsert(authenticatedProfile, true);
-                Intent intent = new Intent(TvLoginActivity.this, TvMainActivity.class);
-                intent.putExtra(TvMainActivity.EXTRA_PROFILE_ID, authenticatedProfile.id);
+                Intent intent = new Intent(TvLoginActivity.this, TvShellActivity.class);
+                intent.putExtra(TvShellActivity.EXTRA_PROFILE_ID, authenticatedProfile.id);
                 startActivity(intent);
                 finish();
             }

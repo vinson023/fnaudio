@@ -42,11 +42,13 @@ final class TvNowPlayingOverlay extends FrameLayout {
     private final ImageView backdrop;
     private final TvTrackListView queueList;
     private final TvArtworkLoader artwork;
+    private final TextView lyricsButton;
+    private final TvLyricsView lyrics;
 
     @Nullable private Runnable onClose;
     private long durationMs;
 
-    TvNowPlayingOverlay(Context context, TvPlayer player, TvArtworkLoader artwork) {
+    TvNowPlayingOverlay(Context context, TvPlayer player, TvApi api, TvArtworkLoader artwork) {
         super(context);
         this.player = player;
         this.artwork = artwork;
@@ -189,14 +191,6 @@ final class TvNowPlayingOverlay extends FrameLayout {
         body.addView(right, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.MATCH_PARENT, 0.9f));
 
-        TextView heading = new TextView(context);
-        heading.setText("接下来");
-        heading.setTextColor(TvUi.TEXT_2);
-        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
-        heading.setLetterSpacing(0.1f);
-        heading.setPadding(TvUi.dp(context, 12), 0, 0, TvUi.dp(context, 12));
-        right.addView(heading);
-
         queueList = new TvTrackListView(context, artwork);
         queueList.setOnTrackClick((track, position) -> player.playAt(position));
         // Up enters the queue; left is the way back to the transport buttons,
@@ -205,6 +199,28 @@ final class TvNowPlayingOverlay extends FrameLayout {
             playButton.requestFocus();
             return true;
         });
+
+        LinearLayout queueHeader = new LinearLayout(context);
+        queueHeader.setOrientation(LinearLayout.HORIZONTAL);
+        queueHeader.setGravity(Gravity.CENTER_VERTICAL);
+        queueHeader.setPadding(TvUi.dp(context, 12), 0, 0, TvUi.dp(context, 12));
+        right.addView(queueHeader);
+
+        TextView heading = new TextView(context);
+        heading.setText("接下来");
+        heading.setTextColor(TvUi.TEXT_2);
+        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        heading.setLetterSpacing(0.1f);
+        queueHeader.addView(heading, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        // The lyric page lives here rather than in the transport row: left and
+        // right seek while that row holds focus, so a sixth button there would
+        // be unreachable from a remote. Up from the first queue row reaches it.
+        lyricsButton = controlButton(context, "♪ 歌词");
+        lyricsButton.setOnClickListener(view -> openLyrics());
+        queueHeader.addView(lyricsButton);
+
         right.addView(queueList, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -222,6 +238,30 @@ final class TvNowPlayingOverlay extends FrameLayout {
         next.setOnKeyListener(toQueue);
         shuffleButton.setOnKeyListener(toQueue);
         repeatButton.setOnKeyListener(toQueue);
+
+        // Added last so it covers the whole surface; keep it out of the way of
+        // focus traversal by never becoming focusable itself.
+        lyrics = new TvLyricsView(context, api, artwork);
+        lyrics.setOnClose(lyricsButton::requestFocus);
+        addView(lyrics, new LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        lyrics.setVisibility(GONE);
+
+        // Bound after both fields exist: a blank final field referenced from a
+        // lambda declared earlier would not be definitely assigned yet.
+        queueList.setOnTopEdge(position -> {
+            if (position != 0) return false;
+            lyricsButton.requestFocus();
+            return true;
+        });
+        lyricsButton.setOnKeyListener((view, keyCode, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN
+                    && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                queueList.focusFirst();
+                return true;
+            }
+            return false;
+        });
 
         syncToggles();
     }
@@ -314,6 +354,7 @@ final class TvNowPlayingOverlay extends FrameLayout {
         backdrop.setImageDrawable(null);
         queueList.setTracks(new ArrayList<>());
         queueList.setNowPlayingId("");
+        lyrics.hide();
     }
 
     void onTrackChanged(@Nullable TvApi.Track track) {
@@ -328,6 +369,8 @@ final class TvNowPlayingOverlay extends FrameLayout {
         artwork.load(track.coverKey, cover);
         artwork.loadHires(track.coverKey, backdrop);
         total.setText(orDash(TvApi.formatDuration(track.durationMs)));
+        // Auto-advance while the lyric page is open must follow the new song.
+        if (lyrics.getVisibility() == VISIBLE) lyrics.show(track, 0);
         refreshQueue();
     }
 
@@ -341,6 +384,23 @@ final class TvNowPlayingOverlay extends FrameLayout {
                 : (int) Math.min(1000, Math.round(positionMs * 1000.0 / length)));
         elapsed.setText(orDash(TvApi.formatDuration(positionMs)));
         if (length > 0) total.setText(orDash(TvApi.formatDuration(length)));
+        lyrics.onProgress(positionMs);
+    }
+
+    /** Opens the lyric page for whatever is playing right now. */
+    private void openLyrics() {
+        TvApi.Track current = player.current();
+        if (current == null) return;
+        lyrics.show(current, player.position());
+    }
+
+    /** Drops the lyric page without touching playback. */
+    void hideLyrics() {
+        lyrics.hide();
+    }
+
+    void release() {
+        lyrics.release();
     }
 
     private void refreshQueue() {
@@ -357,6 +417,11 @@ final class TvNowPlayingOverlay extends FrameLayout {
     /** Handles remote keys while the overlay is visible. */
     boolean handleKey(int keyCode, KeyEvent event) {
         if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+        // The lyric page only claims Back; transport and seek keys still belong
+        // to the player underneath so the remote behaves the same on both pages.
+        if (lyrics.getVisibility() == VISIBLE && lyrics.handleKey(keyCode, event)) {
+            return true;
+        }
         switch (keyCode) {
             case KeyEvent.KEYCODE_BACK:
                 if (onClose != null) onClose.run();
@@ -373,13 +438,13 @@ final class TvNowPlayingOverlay extends FrameLayout {
                 player.previous();
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                if (isTransportFocused()) {
+                if (isTransportFocused() || lyrics.getVisibility() == VISIBLE) {
                     player.seekTo(Math.max(0, currentPosition() - 10000));
                     return true;
                 }
                 return false;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                if (isTransportFocused()) {
+                if (isTransportFocused() || lyrics.getVisibility() == VISIBLE) {
                     long length = durationMs > 0 ? durationMs : currentDuration();
                     player.seekTo(Math.min(Math.max(0, length - 1000),
                             currentPosition() + 10000));

@@ -104,6 +104,17 @@ final class TvTrackListView extends LinearLayout {
         adapter.leftEdge = listener;
     }
 
+    /**
+     * Up on the first row, for a control that sits above the list.
+     *
+     * <p>Only position 0 is offered: every other row lets the list move the
+     * highlight normally, otherwise the handler would swallow ordinary
+     * vertical navigation.
+     */
+    void setOnTopEdge(TvShelfView.OnEdge listener) {
+        adapter.topEdge = listener;
+    }
+
     /** Marks the row that is currently audible. */
     void setNowPlayingId(String trackId) {
         String next = trackId == null ? "" : trackId;
@@ -135,6 +146,7 @@ final class TvTrackListView extends LinearLayout {
         private final TvArtworkLoader loader;
         OnTrackClick clickListener;
         TvShelfView.OnEdge leftEdge;
+        TvShelfView.OnEdge topEdge;
         String currentId = "";
 
         Adapter(TvArtworkLoader loader) {
@@ -170,6 +182,10 @@ final class TvTrackListView extends LinearLayout {
             });
             holder.row.setOnKeyListener((view, keyCode, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP && topEdge != null) {
+                    int current = holder.getAdapterPosition();
+                    return current == 0 && topEdge.onEdge(current);
+                }
                 if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT || leftEdge == null) return false;
                 int current = holder.getAdapterPosition();
                 if (current < 0) return false;

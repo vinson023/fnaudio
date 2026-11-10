@@ -114,6 +114,33 @@ public final class TvApi {
         }
     }
 
+    /**
+     * One answer from {@code /api/lyrics}.
+     *
+     * <p>{@code pending} is not "no lyrics": the provider lookup is still queued
+     * and the caller is expected to ask again, which is why the state travels
+     * next to the body instead of being flattened into an empty string. The
+     * three terminal states ({@code no_match}, {@code failed}, empty) each carry
+     * a different sentence on screen, so they are kept apart here as well.
+     */
+    public static final class Lyrics {
+        public final String text;
+        public final boolean pending;
+        public final String status;
+        public final String error;
+
+        Lyrics(String text, boolean pending, String status, String error) {
+            this.text = text;
+            this.pending = pending;
+            this.status = status;
+            this.error = error;
+        }
+
+        static Lyrics empty() {
+            return new Lyrics("", false, "", "");
+        }
+    }
+
     private static final int PAGE_LIMIT_MAX = 500;
     /** Ids per hydration request; the server caps the query string well above this. */
     private static final int IDS_PAGE = 100;
@@ -275,6 +302,34 @@ public final class TvApi {
                 .addQueryParameter("limit", String.valueOf(clampLimit(limit)))
                 .build();
         return parseTracks(request(url));
+    }
+
+    /**
+     * Lyrics for one track, in whatever form the server already has.
+     *
+     * <p>{@code retry} mirrors the phone client's explicit re-query: the first
+     * open after a provider miss serves the stored verdict, and only a user
+     * action is allowed to spend another provider call. The body is usually LRC
+     * but a provider may hand back plain text, which the parser handles.
+     */
+    public Lyrics lyrics(String trackId, boolean retry) throws IOException {
+        HttpUrl url = baseBuilder("api/lyrics")
+                .addQueryParameter("track_id", trackId == null ? "" : trackId)
+                .addQueryParameter("retry", retry ? "1" : "0")
+                .build();
+        JSONObject payload = request(url);
+        // Deployments behind the CGI bridge sometimes wrap the projection in a
+        // transport envelope; unwrap once so a valid lyric is not read as empty.
+        JSONObject body = payload.optJSONObject("data");
+        if (body == null) body = payload;
+        boolean pending;
+        try {
+            pending = body.getBoolean("pending");
+        } catch (JSONException missing) {
+            pending = false;
+        }
+        return new Lyrics(text(body, "lyrics", ""), pending,
+                text(body, "status", ""), text(body, "error", ""));
     }
 
     /** Favourites and playlists for the connected account. */
