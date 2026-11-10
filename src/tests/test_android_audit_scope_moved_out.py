@@ -115,16 +115,22 @@ DEBT_AFTER_MOVE_OUT = 8530
 # R524 re-measured again: the television client added 13 files / 3,542 lines to
 # the tracked surface (12 classes under ``com.fnaudio.client.tv`` plus one
 # instrumentation test) without touching a single audited face.
-# R531 re-measured after the television rebuild (period 1): +9 files / +1,604
+# R531 period two re-measured after the now-playing page replaced the legacy
+# television front end: -8 files / -3,812 lines. The eight deleted classes are
+# TvMainActivity, TvNowPlayingOverlay, TvLyricsView, TvCardGridView, TvShelfView,
+# TvShelfNavigator, TvCardView and TvTrackListView; the six added ones are
+# TvPlayerScreen, TvLyricSource, TvLyricColumn, TvLyricLine, TvSeekStrip and
+# TvQueueSheet. The step is a net reduction on purpose: the old surface was a
+# second copy of the phone layout that the rebuild exists to replace.
+#
+# R531 period one re-measured after the television rebuild: +9 files / +1,604
 # lines, all new classes under ``com.fnaudio.client.tv`` (theme tokens, focus
-# card/row/tab-bar/player-bar, home page, shelf data, shell activity). The
-# legacy TvMainActivity is still present as a rollback path, so nothing was
-# deleted from the audited surface this round.
+# card/row/tab-bar/player-bar, home page, shelf data, shell activity).
 #
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
-JAVA_TOTAL_FILES = 71
-JAVA_TOTAL_LINES = 16822
+JAVA_TOTAL_FILES = 69
+JAVA_TOTAL_LINES = 15010
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

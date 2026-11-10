@@ -30,10 +30,10 @@ import java.util.concurrent.Executors;
  * The television shell: a top tab bar, a full-width page area, and the
  * persistent playback bar.
  *
- * <p>Replaces the legacy {@link TvMainActivity} layout, which spent 136dp of a
- * 960dp viewport on a vertical rail and stacked everything else into one
- * Activity. Here navigation is a 56dp bar across the top, pages swap inside the
- * container, and the player stays reachable without leaving the page.
+ * <p>Replaces the legacy screen, which spent 136dp of a 960dp viewport on a
+ * vertical rail and stacked everything else into one Activity. Here navigation
+ * is a 56dp bar across the top, pages swap inside the container, and the player
+ * stays reachable without leaving the page.
  *
  * <p>Pages are plain Views rather than Fragments. A Fragment buys nothing on a
  * television: there is no swipe paging, no nested navigation and no state to
@@ -56,6 +56,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
 
     private TvTabBar tabBar;
     private TvPlayerBar playerBar;
+    private TvPlayerScreen playerScreen;
     private FrameLayout pageHost;
     private TvHomePage homePage;
 
@@ -111,7 +112,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         playerBar = new TvPlayerBar(this);
         playerBar.setOnAction(new TvPlayerBar.OnAction() {
             @Override public void onOpen() {
-                player.toggle();
+                openPlayerScreen();
             }
 
             @Override public void onNext() {
@@ -126,6 +127,11 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         root.addView(playerBar, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, TvTheme.dp(this, TvTheme.PLAYER_BAR_H),
                 Gravity.BOTTOM));
+
+        playerScreen = new TvPlayerScreen(this, player, api, artwork);
+        playerScreen.setOnClose(this::closePlayerScreen);
+        root.addView(playerScreen, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         applyInsets();
         return root;
@@ -208,6 +214,27 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
         return (int) Math.max(4, Math.min(99, player.position() * 100 / duration));
     }
 
+    /**
+     * Covers the shell with the now-playing page.
+     *
+     * <p>The page and the bar go {@code INVISIBLE} rather than being covered
+     * visually: an overlay that only paints on top still leaves a hundred
+     * focusable cards underneath, and a remote's Up key will find them.
+     */
+    private void openPlayerScreen() {
+        if (player.current() == null) return;
+        pageHost.setVisibility(View.INVISIBLE);
+        playerBar.setVisibility(View.INVISIBLE);
+        playerScreen.open();
+    }
+
+    private void closePlayerScreen() {
+        pageHost.setVisibility(View.VISIBLE);
+        playerBar.setVisibility(player.current() == null ? View.GONE : View.VISIBLE);
+        if (currentTab == 0 && homePage != null) homePage.focusFirst();
+        else tabBar.focusSelected();
+    }
+
     private void openCard(TvCardItem item) {
         if (item.track == null) {
             // Group cards open a detail page; that is period three of the plan,
@@ -225,6 +252,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
             }
         }
         player.play(queue, start);
+        openPlayerScreen();
     }
 
     private void focusTabs() {
@@ -241,30 +269,37 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
             applyInsets();
             return;
         }
+        if (playerBar.getVisibility() != View.INVISIBLE) playerBar.setVisibility(View.VISIBLE);
         playerBar.bind(track, artwork, player.isPlaying());
-        playerBar.setVisibility(View.VISIBLE);
         applyInsets();
+        playerScreen.onTrackChanged(track);
     }
 
     @Override
     public void onPlayingChanged(boolean playing) {
         playerBar.setPlaying(playing);
+        playerScreen.onPlayingChanged(playing);
     }
 
     @Override
     public void onProgress(long positionMs, long durationMs) {
         playerBar.setProgress(positionMs, durationMs);
+        playerScreen.onProgress(positionMs, durationMs);
     }
 
     @Override
     public void onQueueChanged() {
-        // The shell shows no queue badge yet; the player page owns that in period two.
+        playerScreen.onQueueChanged();
     }
 
     // ------------------------------------------------------------------ 按键
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (playerScreen != null && playerScreen.isOpen()
+                && playerScreen.handleKey(keyCode, event)) {
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (isFocusInside(tabBar)) {
                 if (currentTab != 0) {
@@ -299,6 +334,7 @@ public final class TvShellActivity extends Activity implements TvPlayer.Listener
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        playerScreen.release();
         player.release();
         artwork.shutdown();
         io.shutdownNow();

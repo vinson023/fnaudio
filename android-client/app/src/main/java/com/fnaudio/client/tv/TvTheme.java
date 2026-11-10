@@ -64,6 +64,11 @@ final class TvTheme {
     static final float LIST_TITLE = 18f;
     static final float LIST_SUB = 14f;
     static final float LIST_META = 12f;
+    static final float PLAYER_TITLE = 21f;
+    static final float PLAYER_SUB = 16f;
+    static final float LYRIC_LINE = 18f;
+    static final float LYRIC_ACTIVE = 28f;
+    static final float HERO = 34f;
 
     // ------------------------------------------------------------ 动效
     /** Focus must feel attached to the remote; 140ms is the plan's number. */

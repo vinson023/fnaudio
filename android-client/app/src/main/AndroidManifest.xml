@@ -67,16 +67,9 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".tv.TvMainActivity"
-            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|uiMode"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/Theme.FnAudio.Tv" />
-
         <!-- Rebuilt shell (R531): top tabs, full-width pages, persistent player bar.
-             Kept alongside TvMainActivity until the rewrite lands, so the legacy
-             screen stays available as a fallback during the migration. -->
+             The legacy TvMainActivity was deleted in period two, once the player
+             page no longer needed its overlay and card grid. -->
         <activity
             android:name=".tv.TvShellActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|uiMode"
