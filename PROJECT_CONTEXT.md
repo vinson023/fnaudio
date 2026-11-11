@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R536 **withEndpoint 不再清掉 trustSelfSigned**。FN Connect 恢复连接时会把 profile 换到新地址，旧逻辑在这一步把「允许自签名证书」抹成 false，导致 HTTPS 下必然报证书校验失败；现在信任保留、只在 host 变化时丢弃 pin。
 - 2026-11-11：R534/R535 **FN Connect 公网/中继**。`fn: ["<id>.fnos.net:443"]` 是**浏览器门户**（会 302 到 `fnos.net/<id>/...`，拿不到 cookie），不能当 API 端点，相关改动已撤销；该 NAS 的公网 5667 端口本身不可达，所以「中继」是唯一可行的远程路径。现在 AUTO 模式在 HTTPS 下也会回落中继，PUBLIC 失败时明确提示改中继，并且优先探测局域网地址。
 - 2026-11-11：R533 **HTTPS 下 FN ID 登录**。`FnConnectResolver` 解析出的公网端点是裸 IP，证书按域名签发，用 IP 登录必然主机名校验失败；改为 HTTPS 时优先探测 `<FN ID>.fnos.net:443`，失败再回落地址探测。
 - 2026-11-11：R533 **播放设备改后台扫描**。`/api/playback/targets` 的被动新鲜度窗口从 15s 提到 60s，并新增常驻 keeper 线程（25s 一轮）持续刷新 DLNA 缓存，打开对话框不再触发扫描；前端状态区改为「后台更新中 / 上次更新」。

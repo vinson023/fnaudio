@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R535/R536: ConnectionProfile.withEndpoint keeps trustSelfSigned (it used to
+# clear it, so every FN Connect reconnect after the resolver moved the profile
+# to a new address failed certificate validation for users who had ticked
+# 允许自签名证书) and drops the pin when the host changes.
+#
 # R533/R534: LoginActivity routes an <id>.fnos.net name through the resolver,
 # FnOsAuthClient reports a DNS failure as a DNS failure instead of calling it an
 # access-code rejection, FnConnectResolver tries the LAN address first, and an
@@ -134,7 +139,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14816
+JAVA_TOTAL_LINES = 14837
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

@@ -168,10 +168,31 @@ public final class ConnectionProfile {
     }
 
     /** Keeps identity, credentials and session state while changing a resolved endpoint. */
+    /**
+     * Moves this profile to a different endpoint, keeping the user's choices.
+     *
+     * <p>This used to clear {@code trustSelfSigned}.  The FN Connect resolver
+     * moves a saved profile from the relay (127.0.0.1) to an address, or the
+     * other way round, every time it reconnects; clearing the flag there made a
+     * profile whose owner had ticked 允许自签名证书 fail with "HTTPS 证书校验失败"
+     * the moment the address changed (reported 2026-11-11).  Trusting a
+     * self-signed certificate is a decision about the device, not about one
+     * route to it.
+     *
+     * <p>The pin is the opposite: it names one certificate seen on one
+     * endpoint, so it is dropped when the host changes.  Comparing a new
+     * address's certificate against a fingerprint observed somewhere else could
+     * only ever produce a false mismatch.
+     */
     public ConnectionProfile withEndpoint(String nextHost, int nextPort, boolean nextHttps) {
+        String normalizedNextHost = normalizeHost(nextHost);
+        boolean hostChanged = !host.equalsIgnoreCase(normalizedNextHost);
+        boolean nextTrustSelfSigned = nextHttps && trustSelfSigned;
+        String nextCertificatePinSha256 = hostChanged || !nextHttps ? "" : certificatePinSha256;
         return new ConnectionProfile(
-                id, name, nextHost, nextPort, nextHttps, false, "", username, password,
-                token, longToken, false, fnConnectRelay, fnConnectMode, accessCode, System.currentTimeMillis());
+                id, name, normalizedNextHost, nextPort, nextHttps, nextTrustSelfSigned,
+                nextCertificatePinSha256, username, password, token, longToken, false,
+                fnConnectRelay, fnConnectMode, accessCode, System.currentTimeMillis());
     }
 
     public ConnectionProfile withCertificatePin(String nextCertificatePinSha256) {
