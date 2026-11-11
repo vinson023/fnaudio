@@ -249,6 +249,22 @@ public final class ConnectionProfile {
                 && username.equals(clean(candidateUsername));
     }
 
+    /**
+     * Whether this profile is a route the server handed us rather than an
+     * address the user typed.
+     *
+     * <p>Matters for TLS: an FN Connect route can be an address, a name the NAS
+     * has no certificate for, or a relay port, and the user never chose any of
+     * them — the resolver did. The official client treats those exactly this way
+     * (its Dart HttpClient registers a bad-certificate callback, and the
+     * payload even carries a {@code FnConnectBadCertificateReason} for logging
+     * why it was needed), which is why it can log in over FN ID while a strict
+     * client cannot.
+     */
+    public boolean isFnConnectRoute() {
+        return id.startsWith("fnconnect:") || name.startsWith("FN Connect - ");
+    }
+
     public String httpOrigin() {
         return (https ? "https" : "http") + "://" + authority();
     }

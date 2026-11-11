@@ -152,7 +152,15 @@ public final class HttpClientFactory {
     static boolean shouldTrustEndpoint(ConnectionProfile profile) {
         if (profile == null) return false;
         if (profile.trustSelfSigned) return true;
-        return isIpLiteral(profile.host);
+        if (isIpLiteral(profile.host)) return true;
+        // A route produced by FN Connect is not an address the user chose: it
+        // can be a bare address, a name the NAS holds no certificate for, or a
+        // relay port, and any of those would make hostname verification fail on
+        // a connection the server itself told us to make.  The official client
+        // accepts those certificates (it registers a bad-certificate callback
+        // and even reports a FnConnectBadCertificateReason), which is why the
+        // same account logs in there and was refused here.
+        return profile.isFnConnectRoute();
     }
 
     /** True for dotted-quad IPv4 and for anything shaped like IPv6. */

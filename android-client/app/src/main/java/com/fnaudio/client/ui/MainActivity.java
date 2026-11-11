@@ -293,8 +293,9 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     }
 
     private static boolean isFnConnectProfile(ConnectionProfile candidate) {
-        return candidate != null && (candidate.id.startsWith("fnconnect:")
-                || candidate.name.startsWith("FN Connect - "));
+        // One definition, shared with the TLS policy, so a profile cannot be
+        // routed as FN Connect here and verified as user-typed there.
+        return candidate != null && candidate.isFnConnectRoute();
     }
 
     private static String fnConnectId(ConnectionProfile candidate) {
