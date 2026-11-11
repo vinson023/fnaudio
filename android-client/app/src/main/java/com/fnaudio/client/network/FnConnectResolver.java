@@ -44,6 +44,11 @@ public final class FnConnectResolver {
     private static final int MAX_HOST_CHARS = 255;
     private static final long DIRECT_PROBE_BUDGET_MS = 8000L;
     private static final int DIRECT_PROBE_TIMEOUT_MS = 1800;
+    // FN Connect publishes the device under this zone, and this is the only
+    // spelling that carries a certificate the NAS can actually present.
+    private static final String FN_CONNECT_ZONE = ".fnos.net";
+    private static final int FN_CONNECT_DOMAIN_PORT = 443;
+    private static final int FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS = 2500;
     public enum Mode { AUTO, PUBLIC, RELAY }
     public interface Callback {
         void onResolved(ConnectionProfile profile);
@@ -332,6 +337,17 @@ public final class FnConnectResolver {
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
         long deadlineElapsedRealtime = SystemClock.elapsedRealtime() + DIRECT_PROBE_BUDGET_MS;
+        // HTTPS first tries the published name, because the addresses below are
+        // bare IPs and a NAS certificate is issued for a host name.  Reported
+        // 2026-11-11: signing in over the domain worked while signing in with the
+        // FN ID failed on the same account — the resolver handed back a public IP,
+        // the TLS handshake reached the right server, and hostname verification
+        // rejected it.  The IP probes stay as the fallback so plain HTTP, LAN-only
+        // devices and networks that block the zone behave exactly as before.
+        if (useHttps) {
+            ConnectionProfile viaDomain = domainEndpoint(fnId, generation, deadlineElapsedRealtime);
+            if (viaDomain != null) return viaDomain;
+        }
         ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps,
                 generation, deadlineElapsedRealtime);
         if (ipv6 != null) return ipv6;
@@ -357,6 +373,29 @@ public final class FnConnectResolver {
         }
         ConnectionProfile ipv6 = firstPublished(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps);
         return ipv6 != null ? ipv6 : firstPublished(fnId, ipv4Hosts, false, httpPort, httpsPort, useHttps);
+    }
+
+    /**
+     * The FN Connect name for this device, probed on 443.
+     *
+     * <p>Returns null when the name does not answer, which keeps every existing
+     * path working: a device that is only reachable inside the LAN, a network
+     * that blocks the zone, or an FN Connect deployment that has no public
+     * name all fall through to the address probes unchanged.
+     */
+    @Nullable
+    private ConnectionProfile domainEndpoint(String fnId, long generation, long deadlineElapsedRealtime) {
+        if (!isGenerationActive(generation)) return null;
+        long remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
+        if (remainingMs <= 0L) return null;
+        String host = fnId + FN_CONNECT_ZONE;
+        int timeoutMs = (int) Math.min(FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS, remainingMs);
+        if (!isReachable(host, FN_CONNECT_DOMAIN_PORT, generation, timeoutMs)) return null;
+        Log.i(TAG, "resolved reachable FN Connect domain endpoint");
+        // trustSelfSigned is false on purpose: the whole point of taking the
+        // named endpoint is that it presents a certificate matching that name.
+        return ConnectionProfile.create("", "FN Connect - " + fnId, host,
+                FN_CONNECT_DOMAIN_PORT, true, false, "", "");
     }
 
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,
