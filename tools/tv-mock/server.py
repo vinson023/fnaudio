@@ -42,34 +42,6 @@ COVER_CACHE: dict[str, bytes] = {}
 GENRES = ("电子", "民谣", "爵士")
 COMPOSERS = ("高远", "苏黎")
 
-# Lyrics for the television page: long enough that the highlight has to scroll
-# (24 lines at 6s intervals), and timed so the active line moves during a test.
-LYRIC_LINES = (
-    "灯光落下来 房间只剩呼吸",
-    "把音量调低 让夜色更清晰",
-    "街角的风 从窗缝里经过",
-    "像一段旧旋律 迟迟不肯停",
-    "你说过的话 我还记得",
-    "隔着这么多年 依旧温热",
-    "列车向北 掠过无名小站",
-    "每一盏灯 都在替谁说晚安",
-    "如果时间可以慢一点",
-    "让我把这一句唱完",
-    "吉他弦上 余音在打转",
-    "而你已经走得那么远",
-)
-
-
-def lyric_document(track_id: str) -> str:
-    """Deterministic LRC body so the same track always draws the same page."""
-    title = next((row["title"] for row in TRACKS if row["id"] == track_id), "")
-    rows = ["[ti:%s]" % title, "[ar:tv-mock]"]
-    for index in range(24):
-        seconds = index * 6
-        rows.append("[%02d:%02d.00]%s" % (seconds // 60, seconds % 60,
-                                          LYRIC_LINES[index % len(LYRIC_LINES)]))
-    return "\n".join(rows)
-
 
 def build_library():
     tracks = []
@@ -161,10 +133,8 @@ def _hsv(h, s, v):
     return r * 255, g * 255, b * 255
 
 
-def silent_wav(seconds: int = 120) -> bytes:
-    # Long enough that a test can seek around the lyrics without the queue
-    # advancing underneath it; 8kHz keeps the buffer at ~2 MB.
-    rate = 8000
+def silent_wav(seconds: int = 8) -> bytes:
+    rate = 22050
     samples = rate * seconds
     data = b"\x00\x00" * samples
     header = struct.pack("<4sI4s4sIHHIIHH4sI",
@@ -238,19 +208,6 @@ class Handler(BaseHTTPRequestHandler):
                      "trackIds": [row["id"] for row in TRACKS[9:13]]},
                 ],
             }})
-            return
-        if rest == "/api/lyrics":
-            track_id = (query.get("track_id") or [""])[0]
-            if not any(row["id"] == track_id for row in TRACKS):
-                self.send_json({"error": "track not found"})
-                return
-            # The last track answers "no match" on purpose so the television's
-            # empty state can be exercised without a real provider.
-            if TRACKS and track_id == TRACKS[-1]["id"]:
-                self.send_json({"lyrics": "", "status": "no_match", "pending": False})
-                return
-            self.send_json({"lyrics": lyric_document(track_id),
-                            "status": "ok", "pending": False, "source": "tv-mock"})
             return
         if rest == "/api/library":
             self.handle_library(query)

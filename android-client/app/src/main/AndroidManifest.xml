@@ -1,12 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Pairing: the phone scans the television's QR code. Declared as an
-         optional feature so the app still installs on a device without a
-         camera; that path falls back to typing the six-digit code. -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
-
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -42,12 +36,6 @@
             android:launchMode="singleTask" />
 
         <activity
-            android:name=".ui.PairingSendActivity"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:windowSoftInputMode="adjustResize" />
-
-        <activity
             android:name=".ui.ConnectionHistoryActivity"
             android:exported="false" />
 
@@ -79,11 +67,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Rebuilt shell (R531): top tabs, full-width pages, persistent player bar.
-             The legacy TvMainActivity was deleted in period two, once the player
-             page no longer needed its overlay and card grid. -->
         <activity
-            android:name=".tv.TvShellActivity"
+            android:name=".tv.TvMainActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|uiMode"
             android:exported="false"
             android:launchMode="singleTask"

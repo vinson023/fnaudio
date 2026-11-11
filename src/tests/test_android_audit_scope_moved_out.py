@@ -115,39 +115,10 @@ DEBT_AFTER_MOVE_OUT = 8530
 # R524 re-measured again: the television client added 13 files / 3,542 lines to
 # the tracked surface (12 classes under ``com.fnaudio.client.tv`` plus one
 # instrumentation test) without touching a single audited face.
-# R531 period four, phone half: +2 files / +355 lines (PairingSendActivity, the
-# scan-and-send screen, and PairingClient, the one-shot poster). PairingPayload
-# and PairingTransfer moved to com.fnaudio.client.data so both apps share them.
-# This is the round that finally added a Gradle dependency (zxing-android-
-# embedded) and a CAMERA permission, both confined to the phone APK.
-#
-# R531 period four re-measured after the television pairing round: +5 files /
-# +1,194 lines (TvQrCode, TvPairingCard, TvPairingServer, PairingPayload,
-# PairingTransfer), plus the rewritten TvLoginActivity. The phone half of the
-# feature is not in this round, so no dependency was added and no permission
-# changed.
-#
-# R531 period three re-measured after the library, mine, search and detail
-# pages landed: +7 files / +1,482 lines, all under com.fnaudio.client.tv
-# (TvTrackList, TvCardGrid, TvChipTabs as components; TvLibraryPage, TvMinePage,
-# TvSearchPage, TvDetailPage as pages). No legacy class came back.
-#
-# R531 period two re-measured after the now-playing page replaced the legacy
-# television front end: -8 files / -3,812 lines. The eight deleted classes are
-# TvMainActivity, TvNowPlayingOverlay, TvLyricsView, TvCardGridView, TvShelfView,
-# TvShelfNavigator, TvCardView and TvTrackListView; the six added ones are
-# TvPlayerScreen, TvLyricSource, TvLyricColumn, TvLyricLine, TvSeekStrip and
-# TvQueueSheet. The step is a net reduction on purpose: the old surface was a
-# second copy of the phone layout that the rebuild exists to replace.
-#
-# R531 period one re-measured after the television rebuild: +9 files / +1,604
-# lines, all new classes under ``com.fnaudio.client.tv`` (theme tokens, focus
-# card/row/tab-bar/player-bar, home page, shelf data, shell activity).
-#
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
-JAVA_TOTAL_FILES = 83
-JAVA_TOTAL_LINES = 18061
+JAVA_TOTAL_FILES = 60
+JAVA_TOTAL_LINES = 14644
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

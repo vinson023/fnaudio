@@ -109,19 +109,10 @@ class AndroidTvPackagingTests(unittest.TestCase):
         for method in ("searchTracks(", "userState(", "tracksByIds(",
                        "groupsByView(", "creatorTracks(", "tracksByView("):
             self.assertIn(method, api)
-        # Period two of the rebuild deleted the single-Activity screen that used
-        # to carry these labels, so the surface is asserted where it now lives:
-        # the shell owns the tabs, the shelf builder owns the favourites shelf,
-        # and the API owns the saved playlists. Keeping the assertion pointed at
-        # a deleted file would have turned the gate into a formality.
-        shell = (ANDROID_ROOT / "app" / "src" / "main" / "java" / "com" / "fnaudio" /
-                 "client" / "tv" / "TvShellActivity.java").read_text(encoding="utf-8")
-        for label in ('"资料库"', '"我的"', '"搜索"', '"设置"'):
-            self.assertIn(label, shell)
-        shelf = (ANDROID_ROOT / "app" / "src" / "main" / "java" / "com" / "fnaudio" /
-                 "client" / "tv" / "TvShelfData.java").read_text(encoding="utf-8")
-        self.assertIn("我的收藏", shelf)
-        self.assertIn("playlists", api, "the TV API must still expose saved playlists")
+        main = (ANDROID_ROOT / "app" / "src" / "main" / "java" / "com" / "fnaudio" /
+                "client" / "tv" / "TvMainActivity.java").read_text(encoding="utf-8")
+        for label in ('"收藏"', '"播放列表"', '"搜索"', '"设置"'):
+            self.assertIn(label, main)
 
 
 if __name__ == "__main__":
