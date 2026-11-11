@@ -417,24 +417,37 @@ public final class FnConnectResolver {
         if (addressEndpoint == null || !useHttps) return addressEndpoint;
         String host = publishedHost(fnId, data);
         String address = addressEndpoint.host;
-        if (host.isEmpty() || host.equalsIgnoreCase(address)) return addressEndpoint;
+        // Never hand a host to the URL builder that cannot appear there: an
+        // address endpoint always works, a malformed name fails with a message
+        // that says nothing about the parse that produced it.
+        if (host.isEmpty() || !isHostName(host) || host.equalsIgnoreCase(address)) return addressEndpoint;
         ConnectAddressOverride.pin(host, address);
         Log.i(TAG, "using the published name over the discovered address");
         return ConnectionProfile.create("", "FN Connect - " + fnId, host,
                 addressEndpoint.port, true, addressEndpoint.trustSelfSigned, "", "");
     }
 
-    /** Host part of the first {@code fn} entry, or the stable zone spelling. */
+    /**
+     * Host part of the first {@code fn} entry, or the stable zone spelling.
+     *
+     * <p>{@code fn} is an array, and {@code JSONObject.optString} renders an
+     * array as its JSON text — {@code [\"vinson023.fnos.net:443\"]} — which the
+     * bracket branch below then reads as an IPv6 literal.  The result carried
+     * the quote characters into the profile's host and produced
+     * {@code https://"vinson023.fnos.net:443":5667}, reported as
+     * "服务器地址无效" (2026-11-11).  Read the array as an array; only fall back
+     * to the scalar form when the field really is a string.
+     */
     private static String publishedHost(String fnId, JSONObject data) {
-        String raw = data == null ? "" : data.optString("fn", "");
-        String host = hostPart(raw);
-        if (!host.isEmpty()) return host;
         JSONArray published = data == null ? null : data.optJSONArray("fn");
         if (published != null) {
             for (int index = 0; index < published.length(); index++) {
-                host = hostPart(published.optString(index));
+                String host = hostPart(published.optString(index));
                 if (!host.isEmpty()) return host;
             }
+        } else if (data != null) {
+            String host = hostPart(data.optString("fn", ""));
+            if (!host.isEmpty()) return host;
         }
         return fnId.matches("[a-z0-9-]{3,64}") ? fnId + ".fnos.net" : "";
     }
@@ -443,17 +456,33 @@ public final class FnConnectResolver {
     private static String hostPart(String raw) {
         String value = raw == null ? "" : raw.trim();
         if (value.isEmpty()) return "";
+        // A JSON array rendered as text is not an endpoint, and its leading
+        // bracket must not be mistaken for an IPv6 literal.
+        if (value.startsWith("[") && value.indexOf('"') >= 0) return "";
         if (value.regionMatches(true, 0, "https://", 0, 8)) value = value.substring(8);
         else if (value.regionMatches(true, 0, "http://", 0, 7)) value = value.substring(7);
         int slash = value.indexOf('/');
         if (slash >= 0) value = value.substring(0, slash);
         if (value.startsWith("[")) {
             int close = value.indexOf(']');
-            return close > 1 ? value.substring(1, close) : "";
+            return close > 1 ? normalizeHost(unquote(value.substring(1, close))) : "";
         }
         int colon = value.lastIndexOf(':');
         if (colon >= 0) value = value.substring(0, colon);
-        return normalizeHost(value);
+        return normalizeHost(unquote(value));
+    }
+
+    private static String unquote(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.length() >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+            return trimmed.substring(1, trimmed.length() - 1);
+        }
+        return trimmed;
+    }
+
+    /** Rejects anything that cannot appear verbatim in a URL authority. */
+    private static boolean isHostName(String host) {
+        return host.matches("[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?");
     }
 
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,

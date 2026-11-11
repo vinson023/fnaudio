@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R539 **`fn` 数组解析修正**。`JSONObject.optString` 对 `JSONArray` 返回 JSON 文本，被 `hostPart` 当 IPv6 解析后 host 带引号、URL 非法；改为只用 `optJSONArray`，并加 `isHostName()` 兜底退回地址端点。
 - 2026-11-11：R538 **连地址、校验名字**。新增 `ConnectAddressOverride`（host→IP 覆盖表，装上 OkHttp 的 `dns`），`FnConnectResolver` 在 HTTPS 下返回 `fn` 域名 + 地址覆盖，于是 TLS 能用 Let's Encrypt 证书严格校验，不再依赖「信任所有证书」。
 - 2026-11-11：R537 **IP 端点按不可校验处理**。公共 CA 不给裸 IP 签证书，用公网 IPv4/IPv6 走 HTTPS 时主机名校验原理上必然失败；`HttpClientFactory.shouldTrustEndpoint` 现在把「是 IP 字面量」与「勾了自签名」一视同仁，且指纹为空时先信任、由认证流程记录指纹后再严格比对。
 - 2026-11-11：R536 **withEndpoint 不再清掉 trustSelfSigned**。FN Connect 恢复连接时会把 profile 换到新地址，旧逻辑在这一步把「允许自签名证书」抹成 false，导致 HTTPS 下必然报证书校验失败；现在信任保留、只在 host 变化时丢弃 pin。

@@ -108,7 +108,12 @@ public final class FnOsAuthClient {
                         .get()
                         .build();
             } catch (IllegalArgumentException malformed) {
-                finishError("访问码验证失败：服务器地址无效，请在连接设置里重新填写。");
+                // Name the origin that could not be turned into a URL: this
+                // branch fires before any request exists, so nothing else in the
+                // app can report what the address actually was.
+                Log.e(TAG, "cannot build the access-code request for " + profile.httpOrigin(), malformed);
+                finishError("访问码验证失败：连接地址无效（" + profile.httpOrigin()
+                        + "），请在连接设置里重新填写。");
                 return;
             }
             try {
