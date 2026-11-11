@@ -269,6 +269,59 @@ class DlnaNetworkTests(unittest.TestCase):
             control_point.UPNP_CACHE.clear()
             control_point.UPNP_CACHE.update(previous)
 
+    def test_reader_accepts_a_cache_the_keeper_refreshed_a_moment_ago(self):
+        # Reported 2026-11-11: opening 播放设备 started a scan almost every time.
+        # The passive window was 15 s, so any visit more than 15 s after the last
+        # one paid for discovery again.  The keeper now re-arms discovery on its
+        # own schedule and readers only fall back when it has clearly been stuck.
+        previous = dict(control_point.UPNP_CACHE)
+        try:
+            control_point.UPNP_CACHE.update(
+                {"stamp": time.time() - 40.0, "items": [], "refreshing": False})
+            self.assertFalse(
+                control_point.upnp_cache_needs_refresh(),
+                "a 40 s old cache must not make opening the device list a scan",
+            )
+            self.assertTrue(
+                control_point.upnp_cache_needs_refresh(control_point.UPNP_CACHE_KEEPALIVE_SECONDS),
+                "the keeper must still consider that cache due for a refresh",
+            )
+            control_point.UPNP_CACHE.update({"stamp": time.time() - 600.0})
+            self.assertTrue(
+                control_point.upnp_cache_needs_refresh(),
+                "a cache nobody has refreshed for minutes still has to trigger discovery",
+            )
+            self.assertGreater(control_point.UPNP_PASSIVE_MAX_AGE_SECONDS,
+                               control_point.UPNP_CACHE_KEEPALIVE_SECONDS)
+        finally:
+            control_point.UPNP_CACHE.clear()
+            control_point.UPNP_CACHE.update(previous)
+
+    def test_keepalive_keeper_discovers_without_any_client_request(self):
+        previous = dict(control_point.UPNP_CACHE)
+        previous_keeper = control_point._UPNP_KEEPER_THREAD
+        calls = []
+        try:
+            control_point.stop_upnp_cache_keeper()
+            control_point.UPNP_CACHE.clear()
+            control_point.UPNP_CACHE.update({"stamp": 0, "items": [], "refreshing": False})
+            with mock.patch.object(control_point, "refresh_upnp_cache_background",
+                                   side_effect=lambda: calls.append("refresh") or True):
+                self.assertTrue(control_point.start_upnp_cache_keeper())
+                self.assertFalse(control_point.start_upnp_cache_keeper(),
+                                 "a second start must not stack a second keeper")
+                deadline = time.time() + 5.0
+                while not calls and time.time() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(calls, "the keeper has to discover on its own, before any dialog opens")
+                control_point.stop_upnp_cache_keeper()
+            self.assertIsNone(control_point._UPNP_KEEPER_THREAD)
+        finally:
+            control_point.stop_upnp_cache_keeper()
+            control_point._UPNP_KEEPER_THREAD = previous_keeper
+            control_point.UPNP_CACHE.clear()
+            control_point.UPNP_CACHE.update(previous)
+
     def test_stale_discovery_worker_cannot_publish_after_shutdown_and_restart(self):
         previous_cache = dict(control_point.UPNP_CACHE)
         previous_generation = control_point._UPNP_REFRESH_GENERATION

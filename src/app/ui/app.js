@@ -7548,14 +7548,19 @@ async function loadDevices(forceRefresh = false) {
     renderDeviceTargets(targets, currentTarget);
     const scanButton = $("scanDevices");
     const refreshing = data.refreshing === true;
+    const available = Math.max(0, targets.length - 1);
     scanButton.disabled = refreshing;
-    scanButton.textContent = refreshing ? "正在扫描…" : "重新扫描";
+    scanButton.textContent = refreshing ? "更新中…" : "重新扫描";
     const status = $("deviceRefreshStatus");
     if (status) {
       status.classList.toggle("is-busy", refreshing);
+      // The server keeps this cache warm now, so a refresh that is running was
+      // already running before the dialog opened and the list below is populated:
+      // the user is not waiting for it.  "正在扫描局域网" read as a cold start on
+      // every open (reported 2026-11-11), which is exactly what this no longer is.
       status.textContent = refreshing
-        ? `正在扫描局域网 · 已发现 ${Math.max(0, targets.length - 1)} 台`
-        : `上次刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · ${Math.max(0, targets.length - 1)} 台可用`;
+        ? `后台更新中 · ${available} 台可用`
+        : `上次更新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · ${available} 台可用`;
     }
     if (refreshing && $("deviceDialog").open) scheduleDeviceRefresh();
   } catch (error) {

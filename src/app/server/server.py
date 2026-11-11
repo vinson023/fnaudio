@@ -80,6 +80,8 @@ from dlna.control_point import (
     find_service_url,
     refresh_upnp_cache_background,
     shutdown_upnp_cache_background,
+    start_upnp_cache_keeper,
+    stop_upnp_cache_keeper,
     seconds_to_upnp_time,
     upnp_cache_needs_refresh,
     upnp_cache_status,
@@ -3547,6 +3549,10 @@ def shutdown_runtime(server=None):
         lambda: stop_library_watcher(wait=True),
         lambda: shutdown_transcode_cache_worker(wait=True),
         lambda: shutdown_library_thumbnail_prewarm(wait=True),
+        # The keeper has to be gone before the cache is invalidated, otherwise a
+        # tick landing mid-shutdown would start a discovery generation that no
+        # one is left to consume.
+        lambda: stop_upnp_cache_keeper(),
         lambda: shutdown_upnp_cache_background(wait=True),
         lambda: DLNA_SSDP.stop() if DLNA_SSDP else None,
         lambda: DLNA_PROTOCOL.shutdown() if DLNA_PROTOCOL else None,
@@ -3710,6 +3716,19 @@ def main():
         enable_playback_restore_retry()
         restore_playback_session(config)
         initialize_dlna_services(server)
+        # Keep the renderer cache warm from here on.
+        #
+        # 播放设备 used to discover on open: `/api/playback/targets` refreshed
+        # whenever the cached list was older than a few seconds, so nearly every
+        # visit showed "正在扫描局域网" and waited for a discovery pass before it
+        # could show a device.  This thread refreshes on a schedule instead, and
+        # a reader only falls back to discovery when the keeper has been unable
+        # to refresh for a full minute. Failure is non-fatal: the dialog keeps
+        # working on the old on-demand path.
+        try:
+            start_upnp_cache_keeper()
+        except Exception as exc:
+            print("fnAudio renderer cache keeper unavailable: %s" % exc, flush=True)
         start_remote_output_monitor(server)
         if config.get("airplay_enabled"):
             started_airplay = AIRPLAY_SERVICE.start()

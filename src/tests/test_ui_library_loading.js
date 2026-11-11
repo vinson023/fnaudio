@@ -2071,6 +2071,17 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
     assert.equal(oldRequestSeq === state.libraryRequestSeq, false,
       "an old response must fail the generation check after a category switch");
   }
+  // Reported 2026-11-11: 播放设备 showed a scan on nearly every open. The server
+  // keeps that cache warm now, so a refresh that is running was already running
+  // before the dialog opened; the footer must say so instead of implying the user
+  // has to wait for a cold discovery pass.
+  assert.match(app, /后台更新中 · \$\{available\} 台可用/,
+    "a background refresh must be described as background, not as a scan the user is waiting for");
+  assert.doesNotMatch(app, /`正在扫描局域网/,
+    "opening the device list must not read as a cold scan");
+  assert.match(app, /scanButton\.textContent = refreshing \? "更新中…" : "重新扫描"/,
+    "only the busy state changes the scan button label");
+
   console.log("Library loading cancellation regression checks passed.");
 })().catch(error => {
   console.error(error);

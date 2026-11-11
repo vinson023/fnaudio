@@ -22,12 +22,28 @@ UPNP_CACHE = {
 _UPNP_CACHE_LOCK = threading.RLock()
 _UPNP_REFRESH_GENERATION = 0
 _UPNP_REFRESH_THREAD = None
+_UPNP_KEEPER_STOP = None
+_UPNP_KEEPER_THREAD = None
+_UPNP_KEEPER_LOCK = threading.RLock()
 UPNP_CAPABILITY_CACHE: Dict[str, Dict[str, Any]] = {}
 UPNP_CAPABILITY_CACHE_LIMIT = 256
 UPNP_MAX_DISCOVERED_DEVICES = 128
 UPNP_DISCOVERY_DEVICE_PROBE_LIMIT = 16
 UPNP_DISCOVERY_MAX_TRANSIENT_ERRORS = 8
 UPNP_DISCOVERY_PROBE_BUDGET_SECONDS = 12.0
+# How often the keeper thread re-arms discovery, and how old a cached list may be
+# before a reader triggers a scan itself.
+#
+# The device dialog used to start a fresh discovery on nearly every open: the
+# passive window was 15 s, and discovery can spend up to
+# UPNP_DISCOVERY_PROBE_BUDGET_SECONDS, so anyone opening the dialog more than
+# 15 s after the last visit paid that wait while staring at "正在扫描局域网".
+# The keeper keeps the cache warm so an open almost always finds it fresh, and
+# the passive window is wide enough to cover one full keepalive cycle plus a
+# slow discovery pass.
+UPNP_CACHE_KEEPALIVE_SECONDS = 25.0
+UPNP_PASSIVE_MAX_AGE_SECONDS = 60.0
+_UPNP_KEEPER_TICK_SECONDS = 5.0
 
 # Locations the previous discovery pass spent a description request on. This is the whole
 # rotation memory: it is bounded by UPNP_DISCOVERY_DEVICE_PROBE_LIMIT by construction, so it
@@ -586,6 +602,70 @@ def refresh_upnp_cache_background():
     return True
 
 
+def start_upnp_cache_keeper():
+    """Keep the renderer cache warm instead of discovering on first use.
+
+    Idempotent: a second call while the thread is alive returns False and leaves
+    the running keeper alone, which matters because server start-up can be
+    retried after a failed bind.
+    """
+    global _UPNP_KEEPER_STOP, _UPNP_KEEPER_THREAD
+    with _UPNP_KEEPER_LOCK:
+        existing = _UPNP_KEEPER_THREAD
+        if existing is not None and existing.is_alive():
+            return False
+        stop = threading.Event()
+
+        def loop():
+            # The first pass runs immediately: a fresh process has an empty cache,
+            # and the point of this thread is that no user request waits for the
+            # first answer.  Every later pass only re-arms discovery when the
+            # cache has actually aged past the keepalive window, so the loop costs
+            # one timestamp comparison most of the time.
+            while not stop.is_set():
+                try:
+                    if upnp_cache_needs_refresh(UPNP_CACHE_KEEPALIVE_SECONDS):
+                        refresh_upnp_cache_background()
+                except Exception:
+                    # Discovery is optional and the cache keeps the last known
+                    # renderers; one bad pass must not stop the keeper.
+                    pass
+                stop.wait(_UPNP_KEEPER_TICK_SECONDS)
+
+        thread = threading.Thread(target=loop, name="fnaudio-upnp-cache-keeper", daemon=True)
+        _UPNP_KEEPER_STOP = stop
+        _UPNP_KEEPER_THREAD = thread
+        try:
+            thread.start()
+        except Exception:
+            _UPNP_KEEPER_STOP = None
+            _UPNP_KEEPER_THREAD = None
+            return False
+    return True
+
+
+def stop_upnp_cache_keeper(timeout=2.0):
+    """Stop the keeper before the cache itself is invalidated on shutdown."""
+    global _UPNP_KEEPER_STOP, _UPNP_KEEPER_THREAD
+    with _UPNP_KEEPER_LOCK:
+        stop = _UPNP_KEEPER_STOP
+        thread = _UPNP_KEEPER_THREAD
+        _UPNP_KEEPER_STOP = None
+        _UPNP_KEEPER_THREAD = None
+    if stop is None:
+        return
+    stop.set()
+    if thread is None or thread is threading.current_thread():
+        return
+    try:
+        bounded_timeout = float(timeout)
+    except (TypeError, ValueError, OverflowError):
+        bounded_timeout = 2.0
+    if not math.isfinite(bounded_timeout):
+        bounded_timeout = 2.0
+    thread.join(timeout=max(0.0, bounded_timeout))
+
+
 def shutdown_upnp_cache_background(wait=True, timeout=3.0):
     """Invalidate and optionally wait for an in-flight discovery worker."""
     global _UPNP_REFRESH_GENERATION, _UPNP_REFRESH_THREAD
@@ -613,14 +693,19 @@ def cached_upnp_devices():
         return [dict(item) for item in (UPNP_CACHE.get("items") or ()) if isinstance(item, dict)]
 
 
-def upnp_cache_needs_refresh(max_age_seconds=15.0):
-    """Check cache age under the same lock used to admit discovery workers."""
+def upnp_cache_needs_refresh(max_age_seconds=UPNP_PASSIVE_MAX_AGE_SECONDS):
+    """Check cache age under the same lock used to admit discovery workers.
+
+    The default is the passive window, not the keepalive one: a reader should
+    only pay for discovery when the keeper has not managed to refresh for a
+    while, never merely because the last refresh is a few seconds old.
+    """
     try:
         maximum = max(0.0, float(max_age_seconds))
     except (TypeError, ValueError, OverflowError):
-        maximum = 15.0
+        maximum = UPNP_PASSIVE_MAX_AGE_SECONDS
     if not math.isfinite(maximum):
-        maximum = 15.0
+        maximum = UPNP_PASSIVE_MAX_AGE_SECONDS
     with _UPNP_CACHE_LOCK:
         try:
             stamp = float(UPNP_CACHE.get("stamp") or 0)
