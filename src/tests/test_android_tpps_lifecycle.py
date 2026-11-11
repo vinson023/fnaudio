@@ -55,11 +55,32 @@ class AndroidTppsLifecycleTests(unittest.TestCase):
         self.assertIn("client.dispatcher().executorService().shutdown();", source)
         self.assertIn("public void close()", source)
 
-    def test_http_client_limits_unpinned_self_signed_trust_to_authentication_bootstrap(self):
+    def test_http_client_admits_unpinned_trust_only_for_unverifiable_endpoints(self):
+        """Trust without a stored pin must never reach a verifiable endpoint.
+
+        R537 changed the gate on purpose: an endpoint addressed by a bare IP (or
+        handed over by FN Connect) cannot pass hostname verification at all, and
+        the pin can only be learned from the first successful connection, so
+        refusing to connect there was a deadlock — that is what made 公网 IPv4 /
+        IPv6 logins fail no matter how 允许自签名证书 was set.  The invariant that
+        survives is narrower and worth guarding: the permissive trust manager is
+        installed only behind shouldTrustEndpoint(), a recorded pin is always
+        enforced, and a pin that does not match is still a hard failure.
+        """
         source = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "HttpClientFactory.java").read_text(encoding="utf-8")
-        guarded = source[source.index("if (profile != null && profile.https && profile.trustSelfSigned"):
-                          source.index("        return builder.build();")]
+        guarded = source[source.index("boolean trustEndpoint = profile != null && profile.https"):
+                         source.index("        return builder.build();")]
+        self.assertIn("shouldTrustEndpoint(profile)", guarded)
         self.assertIn("!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()", guarded)
+        self.assertIn("trustPinnedSelfSigned(builder, profile.certificatePinSha256);", guarded)
+        self.assertIn("trustFirstUseSelfSigned(builder, null);", guarded)
+        self.assertNotIn("trustSelfSigned", guarded,
+                         "create() must not re-open the checkbox-only path: the gate is shouldTrustEndpoint")
+        policy = source[source.index("static boolean shouldTrustEndpoint"):
+                        source.index("static boolean isIpLiteral")]
+        self.assertIn("profile.trustSelfSigned", policy)
+        self.assertIn("isIpLiteral(profile.host)", policy)
+        self.assertIn("profile.isFnConnectRoute()", policy)
         self.assertIn("certificate pin is missing or invalid", source)
         self.assertIn("if (!CertificatePin.matches(normalizedPin, chain[0]))", source)
         bootstrap = source[source.index("public static OkHttpClient createAuthenticationClient"):source.index("    /**\n     * Creates the media client")]

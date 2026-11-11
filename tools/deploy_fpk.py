@@ -48,6 +48,16 @@ rollback(){
       bash "$CONTROL/cmd/main" stop >/dev/null 2>&1 || true
     if [ -d "$BACKUP/control" ]; then rm -rf "$CONTROL"; mv "$BACKUP/control" "$CONTROL"; fi
     if [ -d "$BACKUP/app" ]; then rm -rf "$APPDEST"; mv "$BACKUP/app" "$APPDEST"; fi
+    # The package's upgrade_callback rewrites $CONF/config.json, and that runs
+    # before the start/health checks that decide whether this rollback happens.
+    # Restoring only the app and control trees therefore left a rolled-back
+    # install with the new package's config — on 2026-11-11 that emptied
+    # library_paths, so the box came back up with an empty library and looked
+    # like the upgrade had deleted the user's music settings.  Put the file the
+    # user actually had back.
+    if [ -f "$BACKUP/config.json" ]; then
+      cp -p "$BACKUP/config.json" "$CONF/config.json" && say "restored pre-upgrade config.json"
+    fi
     [ -f "$CONTROL/cmd/main" ] && start_app >/dev/null 2>&1 || true
   fi
   rm -rf "$RUN"
@@ -58,6 +68,14 @@ trap rollback EXIT
 say "whoami=$(id -un) pkg=$PACKAGE"
 [ -f "$PACKAGE" ] || fail "package missing"
 mkdir -p "$BACKUP" "$RUN" || fail "cannot create work dirs"
+
+# Snapshot the settings as early as possible. The package's upgrade_callback
+# rewrites config.json, and a failure can happen at any step after that — the
+# stop step included, which is before the app trees are even moved. Taking the
+# copy here means rollback() can always put the user's settings back.
+if [ -f "$CONF/config.json" ]; then
+  cp -p "$CONF/config.json" "$BACKUP/config.json" && say "saved config.json"
+fi
 
 say "unpacking"
 tar -xf "$PACKAGE" -C "$RUN" || fail "outer tar failed"
