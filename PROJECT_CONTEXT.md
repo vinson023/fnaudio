@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R542 **`resolve` 丢失 HTTPS 选择**。`MainActivity` 用三参重载（`useHttps` 默认 false）恢复 FN Connect 连接，档案被降级成 http，NAS 302 到 https 后那一跳没有信任策略 → 证书失败。改为传 `candidate.https`，并让 http 的 FN Connect 档案也预装信任以覆盖重定向。
 - 2026-11-11：R541 **网页登录**。官方 App 是 Flutter AOT，Dart 代码不可反编译复用；改为用 WebView 打开飞牛自己的登录页（新增 `WebLoginActivity`），由官方页面处理证书/访问码/HTTPS，拿到会话 Cookie 后存成 `webSession` 档案。
 - 2026-11-11：R540 **对齐官方 App 的证书策略**。反编译 `fnos_1.37.3` 的 `libapp.so`，确认官方用 Dart `badCertificateCallback` 接受 FN Connect 路由的坏证书（还有 `FnConnectBadCertificateReason` 枚举）；我们新增 `ConnectionProfile.isFnConnectRoute()`，对服务端下发的路由一律接受证书，用户手填地址仍严格校验。
 - 2026-11-11：R539 **`fn` 数组解析修正**。`JSONObject.optString` 对 `JSONArray` 返回 JSON 文本，被 `hostPart` 当 IPv6 解析后 host 带引号、URL 非法；改为只用 `optJSONArray`，并加 `isHostName()` 兜底退回地址端点。

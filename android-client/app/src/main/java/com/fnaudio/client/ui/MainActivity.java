@@ -277,7 +277,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (fnConnectResolver != null) fnConnectResolver.close();
         fnConnectResolver = new FnConnectResolver(this);
         FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(candidate.fnConnectMode);
-        fnConnectResolver.resolve(fnId, connectMode, new FnConnectResolver.Callback() {
+        // Resolve with the profile's own HTTPS choice.
+        //
+        // The three-argument overload defaults useHttps to false, so every
+        // reconnect silently downgraded the plan to http://host:5666.  The NAS
+        // force-redirects that to https://host:5667, OkHttp follows the redirect,
+        // and the certificate for that https hop was never accepted because the
+        // profile said "not https" — reported 2026-11-11 as
+        // 「访问码验证失败：HTTPS 证书校验失败」 immediately after a successful
+        // sign-in, with the log showing a resolve that never switched to the
+        // published name.
+        fnConnectResolver.resolve(fnId, connectMode, candidate.https, new FnConnectResolver.Callback() {
             @Override public void onResolved(ConnectionProfile route) {
                 if (isFinishing() || isDestroyed()) return;
                 ConnectionProfile refreshed = candidate.withEndpoint(route.host, route.port, route.https);

@@ -45,12 +45,20 @@ public final class HttpClientFactory {
         // trust store and reject the same certificate the login just accepted.
         // Profiles that are neither self-signed nor addressed by IP keep the
         // platform default, and a recorded pin is always enforced.
-        if (profile != null && profile.https && shouldTrustEndpoint(profile)) {
+        boolean trustEndpoint = profile != null && profile.https && shouldTrustEndpoint(profile);
+        // An FN Connect plan can arrive as http and still be served over https:
+        // the NAS answers http://host:5666 with a 302 to https://host:5667, and
+        // OkHttp follows it.  That hop needs the same acceptance the profile
+        // would have had if it had said https from the start.
+        boolean trustRedirect = profile != null && !profile.https && profile.isFnConnectRoute();
+        if (trustEndpoint) {
             if (!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
                 trustPinnedSelfSigned(builder, profile.certificatePinSha256);
             } else {
                 trustFirstUseSelfSigned(builder, null);
             }
+        } else if (trustRedirect) {
+            trustFirstUseSelfSigned(builder, null);
         }
         return builder.build();
     }
