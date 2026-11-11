@@ -49,7 +49,6 @@ public final class LoginActivity extends AppCompatActivity {
     private ImageButton accessCodeVisibilityButton;
     private CheckBox savePassword;
     private Button loginButton;
-    private Button webLoginButton;
     private ImageButton historyButton;
     private EditText fnId;
     private ImageButton fnConnectButton;
@@ -143,7 +142,6 @@ public final class LoginActivity extends AppCompatActivity {
         accessCodeVisibilityButton = findViewById(R.id.accessCodeVisibilityButton);
         savePassword = findViewById(R.id.savePassword);
         loginButton = findViewById(R.id.loginButton);
-        webLoginButton = findViewById(R.id.webLoginButton);
         historyButton = findViewById(R.id.historyButton);
         fnId = findViewById(R.id.fnId);
         fnConnectButton = findViewById(R.id.fnConnectButton);
@@ -161,11 +159,6 @@ public final class LoginActivity extends AppCompatActivity {
             if (busy) cancelLogin();
             else loginWithPassword();
         });
-        // Signs in through fnOS's own page. The native path is kept for people
-        // who want a stored password and no browser, but this one has to win by
-        // default: it is the only route that gets the certificate, the access
-        // code and the address choice right without re-implementing them.
-        webLoginButton.setOnClickListener(view -> openWebLogin());
         passwordVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(password, passwordVisibilityButton, "密码"));
         accessCodeVisibilityButton.setOnClickListener(view -> toggleSecretVisibility(accessCode, accessCodeVisibilityButton, "访问码"));
         historyButton.setOnClickListener(view -> startActivityForResult(
@@ -191,36 +184,6 @@ public final class LoginActivity extends AppCompatActivity {
         field.setSelection(Math.max(0, Math.min(selection, field.length())));
         button.setImageResource(visible ? R.drawable.ic_visibility_off : R.drawable.ic_visibility);
         button.setContentDescription(visible ? "显示" + label : "隐藏" + label);
-    }
-
-    /**
-     * Opens fnOS's own login page for whatever the address field names.
-     *
-     * <p>A bare FN ID goes to its published entry, everything else is treated as
-     * an address and gets HTTPS with the configured port. The WebView then lets
-     * fnOS handle the certificate, the access-code challenge and HTTPS
-     * redirection itself, which is exactly the part the native client kept
-     * getting wrong.
-     */
-    private void openWebLogin() {
-        String raw = fnId.getText().toString().trim();
-        if (raw.isEmpty()) {
-            fnId.setError("请输入设备地址或 FN ID");
-            fnId.requestFocus();
-            return;
-        }
-        String value = raw.replaceFirst("(?i)^https?://", "").replaceFirst("/.*$", "");
-        String startUrl;
-        boolean bareId = !value.contains(".") && !value.contains(":");
-        if (bareId) {
-            startUrl = "https://" + value + ".fnos.net/";
-        } else {
-            boolean hasPort = value.matches(".*:\\d+$") || value.startsWith("[");
-            startUrl = "https://" + (hasPort ? value : value + ":5667") + "/";
-        }
-        Intent intent = new Intent(this, WebLoginActivity.class);
-        intent.putExtra(WebLoginActivity.EXTRA_START_URL, startUrl);
-        startActivity(intent);
     }
 
     private void openFnConnect() {
