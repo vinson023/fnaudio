@@ -130,6 +130,28 @@ class AppLifecycleScriptTests(unittest.TestCase):
         self.assertIn('rm -f "${PID_FILE}"\n  return 1', main)
         self.assertNotIn('server started but TCP port ${SERVER_PORT} is not ready yet\n}', main)
 
+    def test_server_listens_before_the_audio_backend_is_started(self):
+        # Reported 2026-11-11: with the USB DAC powered off, fnAudio refused to
+        # start at all; switching the DAC on first made it work.  The launcher
+        # below only waits a few seconds for the TCP port, and a cold MPD start
+        # against a missing device spends its ALSA probe timeout plus the ready
+        # handshake - so the port has to be bound before that work begins.
+        root = self.project_root()
+        source = (root / "src" / "app" / "server" / "server.py").read_text(encoding="utf-8")
+        # Scope to main(): the same two calls also appear in request handlers,
+        # where the on-demand audio start legitimately comes first.
+        main_at = source.index("def main(")
+        listen_at = source.index("BoundedThreadingHTTPServer((args.host, args.port)", main_at)
+        backend_at = source.index("MPD_OUTPUT.start_service()", main_at)
+        self.assertLess(
+            listen_at,
+            backend_at,
+            "the HTTP listener must be bound before the audio backend starts",
+        )
+        launcher = (root / "src" / "cmd" / "main").read_text(encoding="utf-8")
+        self.assertIn("for i in $(seq 1 60); do", launcher)
+        self.assertNotIn("for i in $(seq 1 12); do", launcher)
+
     def test_main_persists_backend_port_with_atomic_config_replacement(self):
         root = self.project_root()
         main = (root / "src" / "cmd" / "main").read_text(encoding="utf-8")

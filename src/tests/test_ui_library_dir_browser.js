@@ -71,4 +71,22 @@ assert.match(css, /\.library-dir-list\{[^}]*max-height:[^}]*overflow-y:auto/, "t
 assert.match(css, /\.library-dir-row\{[^}]*min-height:4[0-9]px/, "directory rows need a touch-sized target");
 assert.match(css, /@media\(max-width:760px\)\{[^}]*\.library-dir-list\{/, "the phone layout needs its own list height");
 
+// Reported 2026-11-11: an SMB share could be added from the Android client but
+// not from the NAS web UI.  The web UI only ever uses the fnOS picker, and the
+// picker lists nothing but the groups it is asked for - "remote" (fnOS 远程挂载,
+// mounted under /vol1/@mountmgr/...) was never requested, so the share was
+// simply not in the sidebar.  The browser route stays available as a fallback
+// because a share mounted by hand may appear under no group at all.
+assert.match(
+  app,
+  /sidebarGroup: \["myFiles", "otherShare", "external", "remote", "favorites"\]/,
+  "the fnOS picker must ask for remote mounts and external storage, not just 我的文件",
+);
+assert.match(index, /id="browseLibraryPathBtn"/, "the server browser needs its own always-visible button");
+assert.match(
+  app,
+  /\$\("browseLibraryPathBtn"\)\.onclick = \(\) => openLibraryDirBrowser\(""\)/,
+  "the browser button must open the server directory browser",
+);
+
 console.log("Library directory browser regression checks passed.");

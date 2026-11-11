@@ -98,6 +98,7 @@ import okhttp3.ResponseBody;
 public final class MainActivity extends AppCompatActivity implements NativePlaybackBridge.ControllerProvider, NativePlaybackBridge.HttpRequestHandler {
     public static final String EXTRA_PROFILE_ID = "profile_id";
     public static final String ACTION_OPEN_PLAYBACK = "com.fnaudio.client.action.OPEN_PLAYBACK";
+    private static final String TAG = "MainActivity";
     private static final long ROOT_BACK_CONFIRM_WINDOW_MS = 2200L;
     private static final int MAX_COVER_BYTES = 1024 * 1024;
     private static final int MAX_NATIVE_HTTP_RESPONSE_BYTES = 512 * 1024;
@@ -194,12 +195,27 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private void authenticateBeforeLoading(ConnectionProfile candidate, boolean passwordFallback) {
         String password = passwordFallback ? candidate.password : null;
+        try {
+            authenticate(candidate, password, passwordFallback);
+        } catch (RuntimeException error) {
+            // Building the TLS stack for a self-signed profile is where this used
+            // to die: SSLContext.init and the pinned trust manager are assembled on
+            // the calling thread, and a failure there threw straight out of the
+            // click handler, so the process exited before the error panel could
+            // even appear.  Whatever went wrong is a connection problem from the
+            // user's point of view, so it is reported like one.
+            Log.e(TAG, "authentication could not be started", error);
+            showError("连接 NAS 失败：无法建立安全连接（" + describeFailure(error) + "）");
+        }
+    }
+
+    private void authenticate(ConnectionProfile candidate, String password, boolean passwordFallback) {
         authClient.authenticate(this, candidate, password, new FnOsAuthClient.Callback() {
             @Override
             public void onSuccess(ConnectionProfile authenticatedProfile) {
                 if (isFinishing() || isDestroyed()) return;
                 SecureProfileStore store = new SecureProfileStore(MainActivity.this);
-                store.upsert(authenticatedProfile, true);
+                persistProfile(store, authenticatedProfile);
                 profile = authenticatedProfile;
                 boolean switchingServer = PlaybackRuntimeConfig.activate(profile);
                 if (switchingServer) stopService(new Intent(MainActivity.this, PlaybackService.class));
@@ -222,7 +238,10 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     return;
                 }
                 SecureProfileStore store = new SecureProfileStore(MainActivity.this);
-                store.upsert(candidate.withTokens("", ""), true);
+                // Losing the record is annoying; crashing on the way to the
+                // connection chooser is worse, and the store throws when the
+                // AndroidKeyStore key it depends on has been invalidated.
+                persistProfile(store, candidate.withTokens("", ""));
                 openConnectionChooser();
             }
         });
@@ -314,7 +333,16 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         settings.setUserAgentString(settings.getUserAgentString() + " fnAudio-Android/" + BuildConfig.VERSION_NAME);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
-        webResourceClient = HttpClientFactory.create(this, profile);
+        try {
+            webResourceClient = HttpClientFactory.create(this, profile);
+        } catch (RuntimeException error) {
+            // Same failure mode as the authentication client: a pinned profile
+            // whose TLS stack cannot be assembled throws here, and this runs on
+            // the UI thread right after a successful login.
+            Log.e(TAG, "could not build the web resource client", error);
+            showError("连接 NAS 失败：无法建立安全连接（" + describeFailure(error) + "）");
+            return;
+        }
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -416,7 +444,14 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     handler.proceed();
                 } else {
                     handler.cancel();
-                    String message = profile.trustSelfSigned && !profile.certificatePinSha256.isEmpty()
+                    // `profile` was null-checked in the branch above but read
+                    // unguarded here: a WebView still running from a previous
+                    // profile (the Activity is singleTask and recreates itself)
+                    // delivered this callback with no profile set, and the
+                    // resulting NPE on the UI thread killed the process.
+                    ConnectionProfile current = profile;
+                    String message = current != null && current.trustSelfSigned
+                            && !current.certificatePinSha256.isEmpty()
                             ? "服务器证书已变更或无法验证指纹，已拒绝加载页面。请确认 NAS 证书后重新建立连接。"
                             : "HTTPS 证书校验失败。请检查证书，或仅对可信 NAS 开启自签名证书兼容。";
                     showError(message);
@@ -1260,6 +1295,31 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             host = host.substring(1, host.length() - 1);
         }
         return host;
+    }
+
+    /**
+     * Saves a connection profile without letting a failure end the session.
+     *
+     * <p>{@link SecureProfileStore} throws when the AndroidKeyStore key it wraps
+     * the record with has been invalidated - a lock-screen change or an OTA is
+     * enough - and both call sites used to be on the main thread inside a
+     * callback, so the throw became a crash right after a successful login.
+     */
+    private void persistProfile(SecureProfileStore store, ConnectionProfile value) {
+        try {
+            store.upsert(value, true);
+        } catch (RuntimeException error) {
+            Log.e(TAG, "could not persist the connection profile", error);
+        }
+    }
+
+    /** A short reason for a failure that carries no user-facing message. */
+    private static String describeFailure(Throwable error) {
+        if (error == null) return "未知错误";
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        String message = cause.getMessage();
+        if (message == null || message.trim().isEmpty()) return cause.getClass().getSimpleName();
+        return message.length() > 80 ? message.substring(0, 80) + "…" : message;
     }
 
     private void showError(String message) {

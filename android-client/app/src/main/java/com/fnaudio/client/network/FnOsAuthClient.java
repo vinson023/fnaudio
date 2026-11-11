@@ -94,42 +94,60 @@ public final class FnOsAuthClient {
                 connectWebSocket("");
                 return;
             }
-            Request request = new Request.Builder()
-                    .url(profile.httpOrigin() + "/access_code_verify")
-                    .header("X-Access-Code", accessCode)
-                    .header("X-Access-Source", "web")
-                    .get()
-                    .build();
-            client.newCall(request).enqueue(new okhttp3.Callback() {
-                @Override public void onFailure(@NonNull okhttp3.Call call, @NonNull java.io.IOException exception) {
-                    finishError("访问码验证失败：" + readableError(exception));
-                }
-
-                @Override public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) {
-                    try (Response ignored = response) {
-                        if (!response.isSuccessful()) {
-                            finishError("访问码验证失败：HTTP " + response.code());
-                            return;
-                        }
-                        for (String setCookie : response.headers("Set-Cookie")) {
-                            String cookie = SessionCookies.accessCodeCookie(setCookie);
-                            if (!cookie.isEmpty()) {
-                                accessCodeCookie = cookie;
-                                CookieManager cookies = CookieManager.getInstance();
-                                cookies.setAcceptCookie(true);
-                                cookies.setCookie(profile.httpOrigin(), setCookie);
-                                cookies.flush();
-                                break;
-                            }
-                        }
-                        if (accessCodeCookie.isEmpty()) {
-                            finishError("访问码验证成功但未取得会话 Cookie。");
-                            return;
-                        }
-                        connectWebSocket(accessCodeCookie);
+            Request request;
+            try {
+                // An empty host only shows up in a stored profile, not in the form
+                // (which validates), and it makes the origin "https://:5667" -
+                // OkHttp rejects that with an IllegalArgumentException on the
+                // caller's thread, i.e. the UI thread, with the error panel not
+                // yet built.
+                request = new Request.Builder()
+                        .url(profile.httpOrigin() + "/access_code_verify")
+                        .header("X-Access-Code", accessCode)
+                        .header("X-Access-Source", "web")
+                        .get()
+                        .build();
+            } catch (IllegalArgumentException malformed) {
+                finishError("访问码验证失败：服务器地址无效，请在连接设置里重新填写。");
+                return;
+            }
+            try {
+                client.newCall(request).enqueue(new okhttp3.Callback() {
+                    @Override public void onFailure(@NonNull okhttp3.Call call, @NonNull java.io.IOException exception) {
+                        finishError("访问码验证失败：" + readableError(exception));
                     }
-                }
-            });
+
+                    @Override public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) {
+                        try (Response ignored = response) {
+                            if (!response.isSuccessful()) {
+                                finishError("访问码验证失败：HTTP " + response.code());
+                                return;
+                            }
+                            for (String setCookie : response.headers("Set-Cookie")) {
+                                String cookie = SessionCookies.accessCodeCookie(setCookie);
+                                if (!cookie.isEmpty()) {
+                                    accessCodeCookie = cookie;
+                                    CookieManager cookies = CookieManager.getInstance();
+                                    cookies.setAcceptCookie(true);
+                                    cookies.setCookie(profile.httpOrigin(), setCookie);
+                                    cookies.flush();
+                                    break;
+                                }
+                            }
+                            if (accessCodeCookie.isEmpty()) {
+                                finishError("访问码验证成功但未取得会话 Cookie。");
+                                return;
+                            }
+                            connectWebSocket(accessCodeCookie);
+                        }
+                    }
+                });
+            } catch (RuntimeException rejected) {
+                // The dispatcher is shut down by finishError/cancel, so a retry
+                // from the error panel can land here as RejectedExecutionException.
+                // The attempt is over either way; it must not reach the UI thread.
+                finishError("连接 NAS 失败：请稍后重试。");
+            }
         }
 
         private void connectWebSocket(String accessCookie) {

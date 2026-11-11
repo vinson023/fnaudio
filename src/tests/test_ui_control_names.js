@@ -93,7 +93,7 @@ for (const m of html.matchAll(CONTROL_RE)) {
   const resolved = accessibleName(tag, attr, m.index, innerText);
   controls.push({ tag, attr, offset: m.index, ...resolved });
 }
-assert.equal(controls.length, 108, "index.html declares 108 visible form controls, including the shared save bar, the R461 directory browser, the R494 log dialog and the R496 native share handoff; R489 removed the lyrics back and favourite buttons");
+assert.equal(controls.length, 109, "index.html declares 109 visible form controls, including the shared save bar, the R461 directory browser, the R494 log dialog, the R496 native share handoff and the R532 server-directory browse button; R489 removed the lyrics back and favourite buttons");
 assert.equal(controls.find(control => control.attr.id === "openExternalShareInFileManager")?.name, "在文件管理中打开");
 assert.equal(controls.find(control => control.attr.id === "saveMetadataTagSettingsBtn")?.name, "保存 Tag 写回设置");
 assert.equal(controls.find(control => control.attr.id === "settingsSaveBtn")?.name, "保存更改");

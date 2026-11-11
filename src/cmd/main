@@ -253,7 +253,12 @@ start_process() (
   nohup "${cmd[@]}" >> "${LOG_FILE}" 2>&1 &
   printf "%s" "$!" > "${PID_FILE}"
   chmod 600 "${PID_FILE}" 2>/dev/null || true
-  for i in $(seq 1 12); do
+  # 60 x 0.5 s.  The server binds its port before it starts the audio backend
+  # (see server.py), so the normal case answers in well under a second; the
+  # wider window only covers a slow first start on a loaded box.  It used to be
+  # 6 s, which a cold MPD start against a powered-off USB DAC could exceed all
+  # by itself - the app then looked like it refused to start.
+  for i in $(seq 1 60); do
     port_ready "${SERVER_PORT}" && return 0
     if ! check_process "$!"; then
       log_msg "fnAudio server exited during startup; see log above"

@@ -9066,7 +9066,12 @@ async function chooseLibraryPath() {
       directory: true,
       title: "选择音乐目录",
       okText: "确认授权",
-      sidebarGroup: ["myFiles", "otherShare", "favorites"],
+      // "remote" is fnOS 远程挂载 (SMB/NFS shares land in /vol1/@mountmgr/...)
+      // and "external" is USB storage.  Both were missing, so the picker started
+      // at 我的文件 and never showed a mounted share - the reason a share could be
+      // added from the Android client (which uses the server-side browser) but not
+      // from the NAS web UI.  See SidebarGroup in the fnOS SDK docs.
+      sidebarGroup: ["myFiles", "otherShare", "external", "remote", "favorites"],
     }], { dialog: $("folderDialog"), timeoutMs: 120000 });
     if (response && response.code != null && response.code !== 0) {
       throw new Error(response.msg || "目录授权失败");
@@ -11255,6 +11260,10 @@ $("saveMetadataProvidersBtn").onclick = saveMetadataProviderPaneSettings;
 $("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
 $("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
 $("chooseLibraryPathBtn").onclick = chooseLibraryPath;
+// Always reachable, not only when the host picker is missing: the fnOS
+// picker only lists the groups it is asked for, and a share mounted by
+// hand through /etc/fstab may not appear under any of them.
+$("browseLibraryPathBtn").onclick = () => openLibraryDirBrowser("");
 $("closeLibraryDirDialog").onclick = () => $("libraryDirDialog").close();
 $("libraryDirUpBtn").onclick = () => { void loadLibraryDir(state.libraryDirParent || ""); };
 $("libraryDirAddBtn").onclick = addCurrentLibraryDir;

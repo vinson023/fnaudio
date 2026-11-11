@@ -3646,12 +3646,6 @@ def main():
         save_current_playback_session(config)
 
     MPD_SERVICE.set_status_listener(on_mpd_transport)
-    try:
-        started_mpd = MPD_OUTPUT.start_service()
-        if started_mpd.get("ok") is False and not started_mpd.get("running"):
-            print("fnAudio MPD optional backend unavailable: %s" % (started_mpd.get("message") or started_mpd), flush=True)
-    except Exception as exc:
-        print("fnAudio MPD optional backend failed to start: %s" % exc, flush=True)
     if args.port is None:
         args.port = config["server_port"]
     else:
@@ -3659,33 +3653,6 @@ def main():
     if not config.get("cache_dir"):
         config["cache_dir"] = os.path.join(os.path.dirname(os.path.abspath(args.config)), "transcode")
     cleanup_transcode_cache_if_due(config, True)
-    # Pooling idle read handles is `config.py`'s default. The first-screen breakdown
-    # recorded in CHANGELOG_AI.md (2026-09-17) measured a cold page at 2.67ms with
-    # 1.46ms of it spent reopening the index, which is why reuse is the shipped
-    # default, and that default now survives `save_config`. Startup must not inject
-    # a second copy of it: an injected key is invisible to every other configuration
-    # reader and gets dropped from disk on the first settings save.
-    load_library_cache(config)
-    # Existing indexes may predate thumbnail assets. Warm them after startup
-    # as well as after future scans, without delaying the HTTP listener.
-    # Do not materialize the whole SQLite library during startup just to warm
-    # thumbnails.  When an existing index is authoritative, MUSIC_CACHE may
-    # intentionally contain no rows; loading all rows here competed with the
-    # first `/api/library` request and made the initial list appear to stall.
-    # Scan completion already schedules bounded library prewarm, while visible
-    # pages use the interactive cover scheduler on demand.
-    # Only seed the first visible window during cold start.  Passing the
-    # entire in-memory index still made ``bounded_unique_items`` walk tens of
-    # thousands of rows before the listener could accept the first request.
-    # Scan completion continues the bounded background warmup for the rest.
-    startup_items = MUSIC_CACHE.get("items") if isinstance(MUSIC_CACHE, dict) else []
-    if not isinstance(startup_items, (list, tuple)):
-        startup_items = []
-    prewarm_library_thumbnails(startup_items[:STARTUP_THUMBNAIL_PREWARM_LIMIT], config, cached_cover_for_item)
-    METADATA_SERVICE = MetadataService(config)
-    sync_metadata_workers(METADATA_SERVICE, config)
-    enable_playback_restore_retry()
-    restore_playback_session(config)
     web_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ui"))
     save_proxy_port(web_root, args.port)
     server = None
@@ -3699,6 +3666,49 @@ def main():
         server.config = config
         server.config_path = args.config
         server.web_root = web_root
+        # Bind and listen before the audio backend starts.
+        #
+        # `src/cmd/main` gives the new server 6 s to answer on its port before it
+        # kills the process and reports a failed start.  A cold MPD start spends
+        # an ALSA probe (aplay can block up to 5 s) plus a 5 s ready handshake,
+        # and when the USB DAC is powered off both run into their timeouts - so
+        # the whole application failed to start whenever the DAC was not on
+        # first.  Binding here makes the port answer in well under a second; the
+        # warm-up below still finishes before requests are served, but it can no
+        # longer be mistaken for a dead process.
+        try:
+            started_mpd = MPD_OUTPUT.start_service()
+            if started_mpd.get("ok") is False and not started_mpd.get("running"):
+                print("fnAudio MPD optional backend unavailable: %s" % (started_mpd.get("message") or started_mpd), flush=True)
+        except Exception as exc:
+            print("fnAudio MPD optional backend failed to start: %s" % exc, flush=True)
+        # Pooling idle read handles is `config.py`'s default. The first-screen breakdown
+        # recorded in CHANGELOG_AI.md (2026-09-17) measured a cold page at 2.67ms with
+        # 1.46ms of it spent reopening the index, which is why reuse is the shipped
+        # default, and that default now survives `save_config`. Startup must not inject
+        # a second copy of it: an injected key is invisible to every other configuration
+        # reader and gets dropped from disk on the first settings save.
+        load_library_cache(config)
+        # Existing indexes may predate thumbnail assets. Warm them after startup
+        # as well as after future scans, without delaying the HTTP listener.
+        # Do not materialize the whole SQLite library during startup just to warm
+        # thumbnails.  When an existing index is authoritative, MUSIC_CACHE may
+        # intentionally contain no rows; loading all rows here competed with the
+        # first `/api/library` request and made the initial list appear to stall.
+        # Scan completion already schedules bounded library prewarm, while visible
+        # pages use the interactive cover scheduler on demand.
+        # Only seed the first visible window during cold start.  Passing the
+        # entire in-memory index still made ``bounded_unique_items`` walk tens of
+        # thousands of rows before the listener could accept the first request.
+        # Scan completion continues the bounded background warmup for the rest.
+        startup_items = MUSIC_CACHE.get("items") if isinstance(MUSIC_CACHE, dict) else []
+        if not isinstance(startup_items, (list, tuple)):
+            startup_items = []
+        prewarm_library_thumbnails(startup_items[:STARTUP_THUMBNAIL_PREWARM_LIMIT], config, cached_cover_for_item)
+        METADATA_SERVICE = MetadataService(config)
+        sync_metadata_workers(METADATA_SERVICE, config)
+        enable_playback_restore_retry()
+        restore_playback_session(config)
         initialize_dlna_services(server)
         start_remote_output_monitor(server)
         if config.get("airplay_enabled"):
