@@ -195,18 +195,24 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
 
     private void authenticateBeforeLoading(ConnectionProfile candidate, boolean passwordFallback) {
         String password = passwordFallback ? candidate.password : null;
-        try {
-            authenticate(candidate, password, passwordFallback);
-        } catch (RuntimeException error) {
-            // Building the TLS stack for a self-signed profile is where this used
-            // to die: SSLContext.init and the pinned trust manager are assembled on
-            // the calling thread, and a failure there threw straight out of the
-            // click handler, so the process exited before the error panel could
-            // even appear.  Whatever went wrong is a connection problem from the
-            // user's point of view, so it is reported like one.
-            Log.e(TAG, "authentication could not be started", error);
-            showError("连接 NAS 失败：无法建立安全连接（" + describeFailure(error) + "）");
-        }
+        // Start the attempt off the UI thread.
+        //
+        // Reported 2026-11-11: with 强制 HTTPS on the NAS, connecting produced
+        // `无法建立安全连接（NetworkOnMainThreadException）` and never reached the
+        // server.  Something in the start path touches a socket on the calling
+        // thread, and the throw happens before any OkHttp callback can run, so
+        // there is no way to report it as an ordinary failure.  FnOsAuthClient
+        // already delivers every callback on the main looper, so only the start
+        // has to move; doing so also means a slow DNS lookup or TLS handshake can
+        // no longer freeze the first frame.
+        new Thread(() -> {
+            try {
+                authenticate(candidate, password, passwordFallback);
+            } catch (RuntimeException error) {
+                Log.e(TAG, "authentication could not be started", error);
+                showError("连接 NAS 失败：无法建立安全连接（" + describeFailure(error) + "）");
+            }
+        }, "fnaudio-auth-start").start();
     }
 
     private void authenticate(ConnectionProfile candidate, String password, boolean passwordFallback) {

@@ -5999,7 +5999,16 @@ function validateLibraryResponse(url, data) {
   return data;
 }
 async function fetchLibraryResponse(url, message, refresh = false, signal = undefined) {
-  return globalThis.fnAudioLibraryResponseLoader.loadLibraryResponse({
+  const loader = globalThis.fnAudioLibraryResponseLoader;
+  if (!loader || typeof loader.loadLibraryResponse !== "function") {
+    // The module script never arrived (a dropped or rejected request is permanent
+    // for this page load).  Reading the property anyway threw a TypeError that
+    // surfaced as "Cannot read properties of undefined" in the list, which says
+    // nothing about what to do; the watchdog in index.html reloads once, and this
+    // covers the retry itself being the one that got lost.
+    throw new Error("页面资源未完整加载，请刷新页面后重试");
+  }
+  return loader.loadLibraryResponse({
     url,
     message,
     refresh,
@@ -7592,6 +7601,14 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   const paths = collectLibraryPaths();
   if (!paths.length) {
     if (status) status.textContent = "请先选择音乐目录";
+    return false;
+  }
+  // Refuse to write before the existing roots have been read.  When the status
+  // request failed the pane renders an empty list, so saving whatever was just
+  // picked would silently replace every configured directory with that one —
+  // exactly what "目录全部丢失，重新添加也只能添加一个" looked like on 2026-11-11.
+  if (!Array.isArray(state.libraryStatus?.library_paths)) {
+    if (status) status.textContent = "还没有读取到已配置的目录，请刷新页面后再保存，避免覆盖原有目录";
     return false;
   }
   const response = await apiFetch("api/config/library", {

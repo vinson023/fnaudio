@@ -15,6 +15,20 @@ assert.match(app, /status\.exists === true[\s\S]*?status\.readable === true/, 'H
 assert.match(app, /last_error/, 'Health rendering must expose the last scan error');
 assert.match(css, /\.library-health/, 'Library health must have a dedicated layout style');
 
+
+// Reported 2026-11-11: after 强制 HTTPS the library page died with
+// "Cannot read properties of undefined (reading 'loadLibraryResponse')" because
+// one module script came back 403, and the empty pane then let a single new
+// directory replace every configured one.  Both halves are pinned here: the page
+// reloads once when a module is missing, and saving refuses to run before the
+// existing roots have been read.
+assert.match(index, /id="module-watchdog"/, 'index must watch for a missing module script');
+assert.match(index, /fnAudioLibraryResponseLoader: 'library_response_loader\.js'/, 'the watchdog must name the module it needs');
+assert.match(index, /sessionStorage\.setItem\(flag, '1'\)/, 'the reload must be attempted once per session');
+assert.match(app, /页面资源未完整加载/, 'a missing loader must be reported instead of throwing a TypeError');
+assert.match(app, /if \(!Array\.isArray\(state\.libraryStatus\?\.library_paths\)\) \{/, 'saving must refuse before the roots were read');
+assert.match(app, /避免覆盖原有目录/, 'the refusal must say why, so the user does not think the save worked');
+
 console.log('Library settings health UI regression checks passed');
 
 const vm = require('node:vm');

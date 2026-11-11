@@ -117,13 +117,17 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R532 second pass: +6 lines, all in MainActivity, which now starts the
+# authentication attempt on a worker thread (NetworkOnMainThreadException on
+# HTTPS profiles happened before any callback could report it).
+#
 # R532 re-measured after the reported-crash round: same 60 files, +78 lines.
 # MainActivity grew the persistProfile/describeFailure helpers and guards around
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14722
+JAVA_TOTAL_LINES = 14728
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

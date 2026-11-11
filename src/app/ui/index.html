@@ -438,6 +438,43 @@
   <script src="library_full_list_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="fnos-ui.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="app.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script id="module-watchdog">
+  /* A module script that fails to load is permanent for that page load, and the
+   * symptom is not obvious: the page renders, then a single action throws
+   * "Cannot read properties of undefined (reading 'loadLibraryResponse')".
+   * Reported 2026-11-11 — one static request came back 403 (nginx, 166 bytes)
+   * while the same URL had answered 200 thirty seconds earlier, so the whole
+   * library page died although the server and the configuration were fine.
+   * Reload once, with a fresh cache key, when a required global is missing.
+   * The flag lives in sessionStorage so a genuinely broken build cannot loop. */
+  (function () {
+    var required = {
+      fnAudioLibraryResponseLoader: 'library_response_loader.js',
+      fnAudioLibraryRenderPolicy: 'library_render_policy.js',
+      fnAudioViewPresentation: 'view_presentation.js',
+    };
+    var flag = 'fnaudio.moduleReloaded';
+    function missing() {
+      var names = [];
+      for (var name in required) {
+        if (!required.hasOwnProperty(name)) continue;
+        if (typeof window[name] === 'undefined') names.push(required[name]);
+      }
+      return names;
+    }
+    if (!missing().length) {
+      try { sessionStorage.removeItem(flag); } catch (error) { }
+      return;
+    }
+    var already = '';
+    try { already = sessionStorage.getItem(flag) || ''; } catch (error) { }
+    if (already) return;
+    try { sessionStorage.setItem(flag, '1'); } catch (error) { }
+    var url = new URL(window.location.href);
+    url.searchParams.set('reload', String(Date.now()));
+    window.location.replace(url.toString());
+  })();
+  </script>
 </body>
 </html>
 

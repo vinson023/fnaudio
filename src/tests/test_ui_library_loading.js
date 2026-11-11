@@ -523,7 +523,11 @@ assert.match(app, /function clearLibraryResponseCaches\(\)/, "Library response c
 assert.match(app, /for \(const request of state\.libraryResponseInflight\.values\(\)\)[\s\S]*?request\?\.__fnAudioAbort\?\.\(\);[\s\S]*?state\.libraryResponseInflight\.clear\(\);/, "Library response invalidation must cancel stale requests before clearing the in-flight map");
 assert.match(app, /state\.albumMetadata\.clear\?\.\(\);/, "Library invalidation must clear derived album metadata");
 assert.match(app, /function libraryResponseWeight\(data\)/);
-assert.match(app, /globalThis\.fnAudioLibraryResponseLoader\.loadLibraryResponse\(/, "Library loading must use the shared response loader");
+assert.match(app, /const loader = globalThis\.fnAudioLibraryResponseLoader;/, "Library loading must read the shared loader once");
+assert.match(app, /loader\.loadLibraryResponse\(/, "Library loading must use the shared response loader");
+// R532: a module script that never arrived must be reported, not thrown as a
+// TypeError from a property read on undefined.
+assert.match(app, /页面资源未完整加载/, "a missing loader module must produce a readable message");
 assert.match(loader, /if \(!refresh && cache\.has\(url\)\) return Promise\.resolve\(cache\.get\(url\)\);/, "Library response cache reads must refresh LRU order");
 assert.match(loader, /if \(inflight\.has\(url\)\)[\s\S]*?return existing;/, "Concurrent identical library loads must share one request unless the existing request was aborted");
 assert.match(loader, /existing\?\.__fnAudioAbortSignal\?\.aborted === true/, "An aborted library request must not capture its replacement");
