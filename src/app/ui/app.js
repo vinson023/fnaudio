@@ -9055,56 +9055,6 @@ async function runTrimHostAction(method, args = [], { dialog = null, timeoutMs =
     if (restoreDialog && !dialog.open) dialog.showModal();
   }
 }
-async function chooseLibraryPath() {
-  const status = $("librarySettingsStatus");
-  const button = $("chooseLibraryPathBtn");
-  if (button?.disabled) return false;
-  if (button) button.disabled = true;
-  if (status) status.textContent = "正在打开目录选择窗口...";
-  try {
-    const response = await runTrimHostAction("pickUserFile", [{
-      directory: true,
-      title: "选择音乐目录",
-      okText: "确认授权",
-      // "remote" is fnOS 远程挂载 (SMB/NFS shares land in /vol1/@mountmgr/...)
-      // and "external" is USB storage.  Both were missing, so the picker started
-      // at 我的文件 and never showed a mounted share - the reason a share could be
-      // added from the Android client (which uses the server-side browser) but not
-      // from the NAS web UI.  See SidebarGroup in the fnOS SDK docs.
-      sidebarGroup: ["myFiles", "otherShare", "external", "remote", "favorites"],
-    }], { dialog: $("folderDialog"), timeoutMs: 120000 });
-    if (response && response.code != null && response.code !== 0) {
-      throw new Error(response.msg || "目录授权失败");
-    }
-    const selected = (Array.isArray(response?.data)
-      ? response.data
-      : (Array.isArray(response) ? response : []))
-      .filter(value => typeof value === "string" && value.trim()).map(value => value.trim());
-    if (!selected.length) {
-      if (status) status.textContent = "未选择音乐目录。";
-      return false;
-    }
-    const current = collectLibraryPaths();
-    const merged = [...new Set([...current, ...selected].map(value => String(value || "").trim()).filter(Boolean))];
-    renderLibraryPathInputs(merged);
-    if (status) status.textContent = `已选择 ${selected.length || 1} 个目录，请点击“保存音乐库设置”。`;
-    return true;
-  } catch (error) {
-    // Only a missing host falls back: the fnOS picker does not exist in the
-    // Android client or in a standalone browser, and silently doing nothing was
-    // the reported bug.  A denial or a timeout keeps its own message.
-    if (error && error.hostUnavailable) {
-      if (status) status.textContent = "当前环境没有飞牛目录选择器，已切换为服务器目录浏览。";
-      openLibraryDirBrowser("");
-      return false;
-    }
-    if (status) status.textContent = error.message || "打开目录选择窗口失败";
-    return false;
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
-
 function openLibraryDirBrowser(path = "") {
   const dialog = $("libraryDirDialog");
   if (!dialog) return false;
@@ -11259,11 +11209,12 @@ $("saveMetadataSettingsBtn").onclick = saveMetadataOverviewPaneSettings;
 $("saveMetadataProvidersBtn").onclick = saveMetadataProviderPaneSettings;
 $("saveMetadataTagSettingsBtn").onclick = saveMetadataTagPaneSettings;
 $("savePlaybackSettingsBtn").onclick = savePlaybackPaneSettings;
-$("chooseLibraryPathBtn").onclick = chooseLibraryPath;
-// Always reachable, not only when the host picker is missing: the fnOS
-// picker only lists the groups it is asked for, and a share mounted by
-// hand through /etc/fstab may not appear under any of them.
-$("browseLibraryPathBtn").onclick = () => openLibraryDirBrowser("");
+// One entry, not two.  The fnOS host picker could not see fnOS 远程挂载
+// (it only lists the sidebar groups it is asked for, and shares live under
+// /vol1/@mountmgr/...), so adding a mounted folder required the server-side
+// browser anyway.  The browser is a superset - it lists the volume roots
+// and every mount point - so the picker is gone and this button opens it.
+$("chooseLibraryPathBtn").onclick = () => openLibraryDirBrowser("");
 $("closeLibraryDirDialog").onclick = () => $("libraryDirDialog").close();
 $("libraryDirUpBtn").onclick = () => { void loadLibraryDir(state.libraryDirParent || ""); };
 $("libraryDirAddBtn").onclick = addCurrentLibraryDir;

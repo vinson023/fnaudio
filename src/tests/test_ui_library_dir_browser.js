@@ -5,30 +5,15 @@ const index = fs.readFileSync("app/ui/index.html", "utf8");
 const app = fs.readFileSync("app/ui/app.js", "utf8");
 const css = fs.readFileSync("app/ui/app.css", "utf8");
 
-// R461: the fnOS host picker (pickUserFile) only exists inside the fnOS App or
-// desktop WebView.  The Android client and any standalone browser have no host,
-// so tapping "选择音乐目录" must fall back to the server-side directory browser
-// instead of silently doing nothing.
-assert.match(app, /async function chooseLibraryPath\(\)/, "the picker entry point must stay named");
-assert.match(app, /function hostUnavailable\(message\)/, "the missing-host case needs its own marker");
-assert.match(
-  app,
-  /catch \(error\) \{[\s\S]*?if \(error && error\.hostUnavailable\) \{[\s\S]*?当前环境没有飞牛目录选择器，已切换为服务器目录浏览。[\s\S]*?openLibraryDirBrowser\(""\);[\s\S]*?return false;/,
-  "a host-less environment must fall back to the server directory browser",
-);
-// A denial or a timeout reached the host, so it must keep reporting itself
-// instead of being papered over by another dialog.
-assert.match(
-  app,
-  /status\.textContent = error\.message \|\| "打开目录选择窗口失败";[\s\S]*?return false;/,
-  "host failures that are not 'no host' must still report their own message",
-);
-assert.doesNotMatch(
-  app,
-  /if \(!host\) throw new Error\("无法连接飞牛宿主/,
-  "the missing-host errors must carry the hostUnavailable marker",
-);
-assert.match(app, /function openLibraryDirBrowser\(path = ""\)/, "the fallback browser needs an entry point");
+// R532: the fnOS host picker is gone.  It could not see fnOS 远程挂载 (it only
+// lists the sidebar groups it is asked for, and shares live under
+// /vol1/@mountmgr/...), so adding a mounted folder needed the server browser
+// anyway; keeping both left two buttons that did the same job.  The browser is a
+// superset - volume roots plus every mount point - so it is now the only entry.
+assert.doesNotMatch(app, /pickUserFile/, "the fnOS host picker must not be offered any more");
+assert.doesNotMatch(app, /async function chooseLibraryPath\(\)/, "the picker entry point is gone");
+assert.match(app, /function hostUnavailable\(message\)/, "other host actions still need the missing-host marker");
+assert.match(app, /function openLibraryDirBrowser\(path = ""\)/, "the browser needs an entry point");
 assert.match(app, /async function loadLibraryDir\(path = ""\)/, "the browser must load listings by path");
 assert.match(app, /apiFetch\(`api\/library\/dirs\$\{query\}`\)/, "the browser must call the server listing route");
 assert.match(app, /function renderLibraryDirListing\(data = \{\}\)/, "listings need a renderer");
@@ -72,21 +57,19 @@ assert.match(css, /\.library-dir-row\{[^}]*min-height:4[0-9]px/, "directory rows
 assert.match(css, /@media\(max-width:760px\)\{[^}]*\.library-dir-list\{/, "the phone layout needs its own list height");
 
 // Reported 2026-11-11: an SMB share could be added from the Android client but
-// not from the NAS web UI.  The web UI only ever uses the fnOS picker, and the
-// picker lists nothing but the groups it is asked for - "remote" (fnOS 远程挂载,
-// mounted under /vol1/@mountmgr/...) was never requested, so the share was
-// simply not in the sidebar.  The browser route stays available as a fallback
-// because a share mounted by hand may appear under no group at all.
+// not from the NAS web UI.  The web UI was stuck on the fnOS host picker, which
+// only lists the sidebar groups it is asked for - "remote" (fnOS 远程挂载, under
+// /vol1/@mountmgr/...) was never requested - so the share was not in the sidebar
+// at all.  R532 removes the picker instead of patching its sidebar: the server
+// browser lists the volume roots and every mount point, so it is a superset and
+// the pane now has exactly one entry point.
+assert.doesNotMatch(app, /pickUserFile/, "the fnOS host picker must not be offered any more");
+assert.doesNotMatch(index, /browseLibraryPathBtn/, "one entry point only: the second button is gone");
 assert.match(
   app,
-  /sidebarGroup: \["myFiles", "otherShare", "external", "remote", "favorites"\]/,
-  "the fnOS picker must ask for remote mounts and external storage, not just 我的文件",
+  /\$\("chooseLibraryPathBtn"\)\.onclick = \(\) => openLibraryDirBrowser\(""\)/,
+  "the single entry point must open the server directory browser",
 );
-assert.match(index, /id="browseLibraryPathBtn"/, "the server browser needs its own always-visible button");
-assert.match(
-  app,
-  /\$\("browseLibraryPathBtn"\)\.onclick = \(\) => openLibraryDirBrowser\(""\)/,
-  "the browser button must open the server directory browser",
-);
+assert.match(index, /id="chooseLibraryPathBtn"[^>]*>\+ 添加目录</, "the remaining entry keeps its label");
 
 console.log("Library directory browser regression checks passed.");

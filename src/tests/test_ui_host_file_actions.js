@@ -37,10 +37,6 @@ function harness(sdk) {
     $: node, state: { externalShareLocation: {path: '/vol1/music/song.flac'} },
     getTrimSdk: async () => sdk,
     collectLibraryPaths: () => ['/vol1/existing'],
-    renderLibraryPathInputs: paths => { context.paths = Array.from(paths); },
-    // The server-side directory browser is a separate dialog with its own fetch
-    // path; the picker contract only cares that it is opened, and with which path.
-    openLibraryDirBrowser: path => { context.browsedFrom = path; return true; },
     resolveTrackLocation: async () => ({path: '/vol1/music/song.flac', folder: '/vol1/music'}),
     resetExternalShareDialog: location => { context.state.externalShareLocation = location; },
     alert: message => alerts.push(message), console: {warn() {}},
@@ -51,7 +47,7 @@ function harness(sdk) {
     clearTimeout: id => timers.delete(id),
   };
   vm.createContext(context);
-  for (const name of ['hostUnavailable', 'runTrimHostAction', 'chooseLibraryPath', 'openContainingFolder',
+  for (const name of ['hostUnavailable', 'runTrimHostAction', 'openContainingFolder',
     'openExternalShareDetails', 'shareTrack', 'createExternalShareLink']) {
     const source = app.match(new RegExp('^(?:async )?function ' + name + '\\([^]*?^}', 'm'))?.[0];
     if (source) vm.runInContext(source, context);
@@ -60,43 +56,6 @@ function harness(sdk) {
     for (let i = 0; i < 30; i++) await Promise.resolve();
   }, expire() { for (const callback of [...timers.values()]) callback(); }};
 }
-
-test('directory picker releases modal blocking and restores settings after selection', async () => {
-  let h;
-  h = harness({ready: async () => {}, pickUserFile: async options => {
-    assert.equal(h.node('folderDialog').open, false, 'settings modal must release the host picker');
-    assert.equal(options.directory, true);
-    return {code: 0, data: ['/vol1/music']};
-  }});
-  h.node('folderDialog').open = true;
-  assert.equal(await h.context.chooseLibraryPath(), true);
-  assert.deepEqual(h.context.paths, ['/vol1/existing', '/vol1/music']);
-  assert.equal(h.node('folderDialog').open, true);
-  assert.equal(h.node('chooseLibraryPathBtn').disabled, false);
-});
-
-test('picker cancellation restores settings and preserves existing directories', async () => {
-  const h = harness({pickUserFile: async () => undefined});
-  h.node('folderDialog').open = true;
-  assert.equal(await h.context.chooseLibraryPath(), false);
-  assert.equal(h.node('folderDialog').open, true);
-  assert.equal(h.context.paths, undefined);
-});
-
-test('stalled SDK readiness times out, unlocks picker and never dispatches late', async () => {
-  let ready, picks = 0;
-  const h = harness({ready: () => new Promise(resolve => { ready = resolve; }),
-    pickUserFile: async () => { picks++; return {code: 0, data: ['/late']}; }});
-  const pending = h.context.chooseLibraryPath();
-  await h.flush();
-  h.expire();
-  await h.flush();
-  assert.match(h.node('librarySettingsStatus').textContent, /超时/);
-  assert.equal(await pending, false);
-  assert.equal(h.node('chooseLibraryPathBtn').disabled, false);
-  ready(); await h.flush();
-  assert.equal(picks, 0);
-});
 
 test('containing-folder action waits for host failure and reports it', async () => {
   let reject, path;
@@ -209,46 +168,6 @@ test('stalled folder handoff returns an actionable timeout', async () => {
   await pending;
 });
 
-test('picker timeout ignores late selection and restores the settings modal', async () => {
-  let select;
-  const h = harness({pickUserFile: () => new Promise(resolve => { select = resolve; })});
-  h.node('folderDialog').open = true;
-  const pending = h.context.chooseLibraryPath();
-  await h.flush();
-  assert.equal(h.node('folderDialog').open, false);
-  assert.deepEqual(h.timeoutDurations, [10000, 120000], 'readiness and picker have separate bounded waits');
-  assert.equal(await h.context.chooseLibraryPath(), false, 'duplicate click must not open another picker');
-  h.expire(); await h.flush();
-  assert.equal(await pending, false);
-  assert.equal(h.node('folderDialog').open, true);
-  select({code: 0, data: ['/late']}); await h.flush();
-  assert.equal(h.context.paths, undefined);
-  assert.equal(h.timers.size, 0);
-});
-
-test('standalone browser and authorization denial preserve configured roots', async () => {
-  let calls = 0;
-  const sdk = {isStandaloneWeb: true, pickUserFile: async () => {
-    calls++; return {code: 5, msg: '授权被拒绝'};
-  }};
-  const h = harness(sdk);
-  // A standalone browser has no fnOS host at all, so the picker cannot be
-  // offered: the settings pane must hand over to the server-side browser
-  // instead of doing nothing.
-  assert.equal(await h.context.chooseLibraryPath(), false);
-  assert.equal(calls, 0);
-  assert.equal(h.context.browsedFrom, '', 'standalone browser falls back to the server directory browser');
-  assert.equal(h.context.paths, undefined, 'the fallback must not invent a directory');
-  sdk.isStandaloneWeb = false;
-  h.context.browsedFrom = undefined;
-  assert.equal(await h.context.chooseLibraryPath(), false);
-  // A denial is a different failure: the host was reached and said no, so it
-  // must be reported rather than papered over by another dialog.
-  assert.equal(h.node('librarySettingsStatus').textContent, '授权被拒绝');
-  assert.equal(h.context.browsedFrom, undefined, 'a denial must not open the fallback browser');
-  assert.equal(h.context.paths, undefined);
-});
-
 test('share query timeout reenables creation and awaits details fallback', async () => {
   let details = 0;
   const h = harness({query: () => new Promise(() => {}),
@@ -296,27 +215,4 @@ test('official SDK ready waits on the existing initialization without retrying i
   assert.equal(initialized, 0, 'repeated ready calls do not restart the SDK connector');
   release(); await Promise.all([first, second]);
   assert.equal(completed, 2);
-});
-
-test('real SDK can be manually retried after readiness timeout without replaying old picker', async () => {
-  const sdk = await bundledSdk();
-  let release, picks = 0;
-  sdk.initPromise = new Promise(resolve => { release = resolve; });
-  sdk.isStandaloneWeb = false;
-  sdk.osConnector = {methods: {pickUserFile: async () => {
-    picks++; return {code: 0, data: ['/vol1/recovered']};
-  }}};
-  const h = harness(sdk);
-  const pending = h.context.chooseLibraryPath();
-  await h.flush();
-  assert.deepEqual(h.timeoutDurations, [10000]);
-  h.expire(); await h.flush();
-  assert.equal(await pending, false);
-  assert.equal(h.node('chooseLibraryPathBtn').disabled, false);
-  release(); await h.flush();
-  assert.equal(picks, 0, 'late readiness must not automatically replay a timed-out request');
-  assert.equal(await h.context.chooseLibraryPath(), true);
-  assert.equal(picks, 1, 'only the explicit retry opens the picker');
-  assert.deepEqual(h.context.paths, ['/vol1/existing', '/vol1/recovered']);
-  assert.equal(h.timers.size, 0);
 });
