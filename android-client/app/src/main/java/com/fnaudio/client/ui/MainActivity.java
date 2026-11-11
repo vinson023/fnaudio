@@ -1297,6 +1297,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             return actualPort == expectedPort;
         }
         if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
+        // An FN Connect route is matched by host alone.
+        //
+        // The NAS force-redirects http://host:5666 to https://host:5667, so
+        // requiring the same scheme and port marked the redirect as a foreign
+        // origin: the request then went out without the session token, nginx
+        // answered with the login page, and the panel reported
+        // 「读取歌曲列表失败（响应体不完整）」 after a successful sign-in
+        // (2026-11-11, nginx log showed HTTP/1.1 302 followed by HTTP/2.0 200).
+        if (candidate.isFnConnectRoute()) {
+            return comparableHost(candidate.host).equals(comparableHost(uri.getHost()));
+        }
         String expectedScheme = candidate.https ? "https" : "http";
         if (!expectedScheme.equalsIgnoreCase(uri.getScheme())
                 || !comparableHost(candidate.host).equals(comparableHost(uri.getHost()))) return false;

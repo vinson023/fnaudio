@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R545 **FN Connect 路由按 host 判同源**。NAS 把 http 302 到另一个端口上的 https，`sameProfileOrigin` 严格比对 scheme+port，导致跳转后的请求不带 token、收到登录页 HTML；现对 FN Connect 路由只比对 host。
 - 2026-11-11：R544 **Host 必须是地址形态**。把 FN Connect 的 host 换成公开域名后，`Host` 头也变了，fnOS 不再返回本应用的 CGI 接口 → 登录成功但「读取歌曲列表失败（响应体不完整）」。已撤掉域名替换，直接返回探测到的地址，证书按 IP 分支信任。
 - 2026-11-11：R543 **主线程关连接池导致崩溃**。令牌被拒回退密码时，`Session.cancel()` 在 UI 线程调 `connectionPool().evictAll()` 关闭 TLS socket，进程被杀；改为独立线程执行。
 - 2026-11-11：R542 **`resolve` 丢失 HTTPS 选择**。`MainActivity` 用三参重载（`useHttps` 默认 false）恢复 FN Connect 连接，档案被降级成 http，NAS 302 到 https 后那一跳没有信任策略 → 证书失败。改为传 `candidate.https`，并让 http 的 FN Connect 档案也预装信任以覆盖重定向。

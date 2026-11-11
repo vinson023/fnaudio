@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R545: +11 lines. sameProfileOrigin matches an FN Connect route by host alone;
+# the NAS redirects http to https on a different port, and the strict check made
+# that redirect look foreign, so the retried request carried no token and the
+# panel received the login page instead of JSON.
+#
 # R544: -84 lines. FnConnectResolver returns the address that answered instead of
 # substituting the published host name — the name ends up in the Host header, and
 # fnOS only serves this app for an address-shaped Host, which turned every API
@@ -174,7 +179,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 62
-JAVA_TOTAL_LINES = 15403
+JAVA_TOTAL_LINES = 15414
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")
