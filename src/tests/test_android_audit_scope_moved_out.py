@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R546: +12 lines. The WebView SSL callback accepts the same endpoints the HTTP
+# clients accept. POSTs cannot be proxied through OkHttp (WebView hides the body
+# from shouldInterceptRequest), so they hit this callback, and the old rule
+# required a pin that could only exist after a POST had already succeeded.
+#
 # R545: +11 lines. sameProfileOrigin matches an FN Connect route by host alone;
 # the NAS redirects http to https on a different port, and the strict check made
 # that redirect look foreign, so the retried request carried no token and the
@@ -179,7 +184,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 62
-JAVA_TOTAL_LINES = 15414
+JAVA_TOTAL_LINES = 15426
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

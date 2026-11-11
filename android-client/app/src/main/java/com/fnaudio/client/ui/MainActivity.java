@@ -454,10 +454,22 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 String observedPin = CertificatePin.of(error.getCertificate());
                 Uri errorUri = error.getUrl() == null ? null : Uri.parse(error.getUrl());
-                if (profile != null && profile.https && profile.trustSelfSigned
-                        && sameProfileOrigin(profile, errorUri)
-                        && !profile.certificatePinSha256.isEmpty()
-                        && profile.certificatePinSha256.equals(observedPin)) {
+                // POST requests cannot be proxied: WebView does not expose the
+                // request body to shouldInterceptRequest, so only GETs go through
+                // the OkHttp client that knows how to accept this endpoint's
+                // certificate.  A POST therefore hits this callback instead, and
+                // the old condition demanded a stored pin that only exists after
+                // some earlier request already succeeded — which never happens,
+                // because every POST is cancelled here.  That is why the panel
+                // showed 「读取歌曲列表失败（响应体不完整）」 right after a
+                // successful sign-in while /api/library never even reached nginx
+                // (2026-11-11).  Accept the same endpoints the HTTP clients accept.
+                boolean acceptableEndpoint = profile != null && profile.https
+                        && (profile.trustSelfSigned || profile.isFnConnectRoute() || profile.webSession);
+                boolean pinAgrees = profile != null
+                        && (profile.certificatePinSha256.isEmpty()
+                        || profile.certificatePinSha256.equals(observedPin));
+                if (acceptableEndpoint && pinAgrees && sameProfileOrigin(profile, errorUri)) {
                     handler.proceed();
                 } else {
                     handler.cancel();
