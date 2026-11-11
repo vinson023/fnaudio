@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R538 **连地址、校验名字**。新增 `ConnectAddressOverride`（host→IP 覆盖表，装上 OkHttp 的 `dns`），`FnConnectResolver` 在 HTTPS 下返回 `fn` 域名 + 地址覆盖，于是 TLS 能用 Let's Encrypt 证书严格校验，不再依赖「信任所有证书」。
 - 2026-11-11：R537 **IP 端点按不可校验处理**。公共 CA 不给裸 IP 签证书，用公网 IPv4/IPv6 走 HTTPS 时主机名校验原理上必然失败；`HttpClientFactory.shouldTrustEndpoint` 现在把「是 IP 字面量」与「勾了自签名」一视同仁，且指纹为空时先信任、由认证流程记录指纹后再严格比对。
 - 2026-11-11：R536 **withEndpoint 不再清掉 trustSelfSigned**。FN Connect 恢复连接时会把 profile 换到新地址，旧逻辑在这一步把「允许自签名证书」抹成 false，导致 HTTPS 下必然报证书校验失败；现在信任保留、只在 host 变化时丢弃 pin。
 - 2026-11-11：R534/R535 **FN Connect 公网/中继**。`fn: ["<id>.fnos.net:443"]` 是**浏览器门户**（会 302 到 `fnos.net/<id>/...`，拿不到 cookie），不能当 API 端点，相关改动已撤销；该 NAS 的公网 5667 端口本身不可达，所以「中继」是唯一可行的远程路径。现在 AUTO 模式在 HTTPS 下也会回落中继，PUBLIC 失败时明确提示改中继，并且优先探测局域网地址。

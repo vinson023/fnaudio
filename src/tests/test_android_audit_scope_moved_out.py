@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R538: +170 lines, one new file. ConnectAddressOverride lets a profile keep the
+# host name its certificate belongs to while connecting to the address FN Connect
+# discovered, so TLS verifies a real public-CA certificate instead of trusting
+# every certificate just because the endpoint was reached by address.
+#
 # R537: HttpClientFactory.shouldTrustEndpoint treats a bare IP address as a
 # certificate it cannot verify (no CA issues certificates for addresses), and a
 # trusted endpoint without a pin now connects instead of silently falling back
@@ -143,8 +148,8 @@ DEBT_AFTER_MOVE_OUT = 8530
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
-JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14893
+JAVA_TOTAL_FILES = 61
+JAVA_TOTAL_LINES = 15063
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

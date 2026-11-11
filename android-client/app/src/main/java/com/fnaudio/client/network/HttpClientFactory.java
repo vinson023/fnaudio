@@ -28,6 +28,10 @@ public final class HttpClientFactory {
 
     public static OkHttpClient create(@Nullable Context context, ConnectionProfile profile) {
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                // A profile may keep a certificate-bearing host name while the
+                // address that name should reach was already discovered by FN
+                // Connect.  See ConnectAddressOverride.
+                .dns(ConnectAddressOverride.DNS)
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
