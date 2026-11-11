@@ -117,6 +117,10 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R541: +332 lines, one new file (WebLoginActivity) plus its layout. Signing in
+# through fnOS's own web page in a WebView, instead of re-implementing the
+# handshake; the session it establishes is stored as a webSession profile.
+#
 # R540: +25 lines. ConnectionProfile.isFnConnectRoute() is now the single
 # definition of "a route the server handed us", and the TLS policy accepts the
 # certificate of any such route — matching the official client, whose Dart
@@ -154,8 +158,8 @@ DEBT_AFTER_MOVE_OUT = 8530
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
-JAVA_TOTAL_FILES = 61
-JAVA_TOTAL_LINES = 15122
+JAVA_TOTAL_FILES = 62
+JAVA_TOTAL_LINES = 15454
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

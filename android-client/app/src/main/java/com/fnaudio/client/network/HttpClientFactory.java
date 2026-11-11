@@ -153,6 +153,11 @@ public final class HttpClientFactory {
         if (profile == null) return false;
         if (profile.trustSelfSigned) return true;
         if (isIpLiteral(profile.host)) return true;
+        // A web session was established inside a WebView, where the user already
+        // answered the certificate question for this origin. Applying a stricter
+        // rule to the sub-resources of that very session would load a blank page
+        // right after a successful sign-in.
+        if (profile.webSession) return true;
         // A route produced by FN Connect is not an address the user chose: it
         // can be a bare address, a name the NAS holds no certificate for, or a
         // relay port, and any of those would make hostname verification fail on
