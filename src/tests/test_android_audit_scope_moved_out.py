@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R544: -84 lines. FnConnectResolver returns the address that answered instead of
+# substituting the published host name — the name ends up in the Host header, and
+# fnOS only serves this app for an address-shaped Host, which turned every API
+# call into a non-JSON response after a successful login.
+#
 # R543: +15 lines. FnOsAuthClient.Session.cancel() drains the OkHttp pool on a
 # throwaway thread; doing it inline killed the process whenever a rejected token
 # fell back to the saved password (Android 13, RealConnectionPool.evictAll ->
@@ -169,7 +174,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 62
-JAVA_TOTAL_LINES = 15487
+JAVA_TOTAL_LINES = 15403
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")
