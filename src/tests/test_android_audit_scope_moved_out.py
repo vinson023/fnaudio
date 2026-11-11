@@ -117,6 +117,10 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R548: +29 lines. MainActivity forces an FN Connect profile onto HTTPS at the
+# single entry point every path goes through, and logs the first few unexpected
+# (non-200 / text-html) resource responses so the next diagnosis needs no build.
+#
 # R547: +10 lines. An FN ID forces HTTPS: the form checkbox could come back
 # unticked from an old profile and the whole session then ran over http:5666,
 # where every request was a 302 to https and the library request never completed.
@@ -188,7 +192,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 62
-JAVA_TOTAL_LINES = 15436
+JAVA_TOTAL_LINES = 15465
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

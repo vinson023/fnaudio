@@ -155,6 +155,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         WindowInsetsHelper.applySafePadding(findViewById(R.id.mainRoot));
 
         profile = resolveProfile();
+        // An FN Connect route is HTTPS by definition.
+        //
+        // Whatever produced the stored profile — an older build, a resolved
+        // fallback, a relay handover — an http plan here puts the whole session
+        // on a port the NAS answers with 302 for every single request, and the
+        // panel ends up showing 「读取歌曲列表失败（响应体不完整）」.  Fix it at the
+        // one place every entry path goes through (2026-11-11).
+        if (profile != null && profile.isFnConnectRoute() && !profile.https) {
+            int port = profile.port == 5666 || profile.port <= 0 ? 5667 : profile.port;
+            profile = profile.withEndpoint(profile.host, port, true);
+        }
         bindViews();
         coverCache = new AuthenticatedCoverCache(this);
         installBackHandler();
@@ -599,6 +610,15 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 stream = new ResponseClosingInputStream(
                         body == null ? new ByteArrayInputStream(new byte[0]) : body.byteStream(), response);
             }
+            if (responseCode != 200 || (mime0(mediaType) != null && mime0(mediaType).contains("text/html"))) {
+                if (unexpectedResponseLogs < 8) {
+                    unexpectedResponseLogs += 1;
+                    android.util.Log.w("FnAudioResource",
+                            "unexpected response " + responseCode + " for " + uri
+                                    + " type=" + (mediaType == null ? "?" : mediaType)
+                                    + " length=" + (body == null ? -1 : body.contentLength()));
+                }
+            }
             String contentType = mediaType == null ? guessContentType(uri) : mediaType.toString();
             String mime = contentType;
             String charset = null;
@@ -623,6 +643,15 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             if (response != null && !responseOwnedByWebView) response.close();
         }
     }
+
+    private static String mime0(@Nullable okhttp3.MediaType mediaType) {
+        if (mediaType == null) return null;
+        String value = mediaType.toString();
+        int semicolon = value.indexOf(';');
+        return (semicolon >= 0 ? value.substring(0, semicolon) : value).trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private int unexpectedResponseLogs = 0;
 
     private boolean isCurrentWebResourceClient(OkHttpClient client) {
         synchronized (nativeHttpCalls) {
