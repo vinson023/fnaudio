@@ -2020,18 +2020,55 @@ function renderLibraryHealth() {
   // and raise the danger fill, which told the user their directory had vanished
   // when in fact nothing had been read yet.
   const hasPayload = Array.isArray(status.library_paths) || typeof status.library_path === "string";
-  const exists = status.exists === true;
-  const readable = status.readable === true;
+  const paths = Array.isArray(status.library_paths)
+    ? status.library_paths.filter(value => typeof value === "string" && value)
+    : [];
+  // Per-root health.  `exists`/`readable` only ever described roots[0], which is
+  // why the card spoke for a single directory: with two configured roots it named
+  // the first one and called the library healthy while the second was gone.  The
+  // server now sends `roots`; older payloads fall back to the singular flags.
+  const roots = Array.isArray(status.roots) && status.roots.length
+    ? status.roots.filter(entry => entry && typeof entry.path === "string" && entry.path)
+    : (status.library_path
+      ? [{
+        path: status.library_path,
+        allowed: status.allowed !== false,
+        exists: status.exists === true,
+        is_dir: status.is_dir !== false,
+        readable: status.readable === true,
+      }]
+      : []);
+  const usable = roots.filter(entry => entry.exists && entry.readable && entry.is_dir !== false);
+  const broken = roots.filter(entry => !entry.exists || !entry.readable || entry.is_dir === false);
+  const exists = roots.length ? roots.some(entry => entry.exists) : status.exists === true;
+  const readable = roots.length ? usable.length > 0 : status.readable === true;
   const scanning = status.scanning === true;
   // Treat a missing library_path the same as an empty one as long as the server
   // did send the list: older payloads omit the singular field.
-  const unconfigured = hasPayload && !status.library_path && Array.isArray(status.library_paths) && status.library_paths.length === 0;
-  const stateText = !hasPayload ? "音乐库状态未就绪" : (unconfigured ? "尚未配置音乐目录" : (scanning ? scanProgressText() || "正在扫描音乐库" : (!exists ? "目录不存在" : (!readable ? "目录不可读" : (status.last_error ? "最近一次扫描有错误" : "目录正常")))));
-  const pathText = displayText(status.library_path || (status.library_paths || []).join(", ") || "未配置");
+  const unconfigured = hasPayload && !status.library_path && paths.length === 0;
+  let stateText;
+  if (!hasPayload) stateText = "音乐库状态未就绪";
+  else if (unconfigured) stateText = "尚未配置音乐目录";
+  else if (scanning) stateText = scanProgressText() || "正在扫描音乐库";
+  else if (roots.length && !usable.length) stateText = exists ? "目录不可读" : "目录不存在";
+  else if (broken.length) stateText = `${broken.length} 个目录不可用`;
+  else if (status.last_error) stateText = "最近一次扫描有错误";
+  else stateText = "目录正常";
+  const rootCount = Math.max(paths.length, roots.length);
+  // The path cell is a single nowrap line with an ellipsis, so a list of roots
+  // would be clipped down to the first one anyway.  The count belongs there and
+  // the roots that actually failed are named in the detail line, which wraps.
+  const pathText = rootCount > 1
+    ? `${rootCount} 个目录`
+    : displayText(status.library_path || paths[0] || "未配置");
   const count = Math.max(0, Number(status.count || status.found || 0));
   const lastScan = Number(status.last_scan || 0);
   const lastScanText = Number.isFinite(lastScan) && lastScan > 0 ? new Date(lastScan * 1000).toLocaleString("zh-CN", { hour12: false }) : "尚未扫描";
-  const detail = !hasPayload ? "还没有读取到音乐库状态，稍候会自动重试。" : (status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : (unconfigured ? "还没有配置音乐目录，选择目录后即可扫描并收录歌曲。" : `${Number((status.library_paths || []).length || 0)} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`)));
+  const brokenText = broken.length
+    ? `不可用：${broken.map(entry => displayText(entry.path)).join("、")}`
+    : "";
+  const baseDetail = !hasPayload ? "还没有读取到音乐库状态，稍候会自动重试。" : (status.last_error || (scanning ? `已检查 ${Number(status.scanned || 0)} 个文件，已发现 ${Number(status.found || 0)} 首歌曲。` : (unconfigured ? "还没有配置音乐目录，选择目录后即可扫描并收录歌曲。" : `${rootCount} 个配置目录，支持 ${Array.isArray(status.supported_formats) ? status.supported_formats.length : 0} 种格式。`)));
+  const detail = hasPayload && !unconfigured && brokenText ? `${baseDetail} ${brokenText}` : baseDetail;
   setTextContentIfChanged($("libraryHealthStatus"), stateText);
   setTextContentIfChanged($("libraryHealthPath"), pathText);
   setTextContentIfChanged($("libraryHealthCount"), `${count} 首`);
@@ -2040,11 +2077,13 @@ function renderLibraryHealth() {
   // Two states stay out of the danger fill: "no directory configured yet" is a
   // first-run state, and "no payload yet" is a request that has not answered.
   // Painting either one red made a healthy install look broken.
-  health.classList.toggle("is-error", hasPayload && !unconfigured && (!exists || !readable || Boolean(status.last_error)));
+  health.classList.toggle("is-error", hasPayload && !unconfigured && (broken.length > 0 || Boolean(status.last_error)));
   health.classList.toggle("is-scanning", scanning);
   const button = $("libraryScanNowBtn");
   if (button) {
-    button.disabled = !hasPayload || scanning || unconfigured;
+    // One dead root must not disable scanning for the ones that still work.
+    const canScan = roots.length ? usable.length > 0 : (exists && readable);
+    button.disabled = !hasPayload || scanning || unconfigured || !canScan;
     button.textContent = scanning ? "扫描中..." : "立即扫描";
   }
 }

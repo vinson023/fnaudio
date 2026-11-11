@@ -410,6 +410,31 @@ class LibraryCacheTests(unittest.TestCase):
         self.assertFalse(status["exists"])
         self.assertIn("选择音乐目录", status["message"])
 
+    def test_library_status_reports_health_for_every_root_not_just_the_first(self):
+        # Reported 2026-11-11: with two configured directories the settings card
+        # named only the first and called the library healthy while the second was
+        # gone - `exists`/`readable` describe roots[0] alone.  The payload now
+        # carries one entry per root so the UI can speak for all of them.
+        with tempfile.TemporaryDirectory() as root:
+            present = os.path.join(root, "music")
+            os.makedirs(present)
+            missing = os.path.join(root, "gone")
+            config = {"cache_dir": os.path.join(root, "cache"),
+                      "library_path": present + "\n" + missing}
+            status = library.library_status(config)
+        self.assertEqual(status["library_paths"], [present, missing])
+        # The singular fields keep describing the first root: other readers depend
+        # on that, and this change must not alter their meaning.
+        self.assertEqual(status["library_path"], present)
+        self.assertTrue(status["exists"])
+        roots = status["roots"]
+        self.assertEqual([entry["path"] for entry in roots], [present, missing])
+        self.assertTrue(roots[0]["exists"])
+        self.assertTrue(roots[0]["is_dir"])
+        self.assertTrue(roots[0]["readable"])
+        self.assertFalse(roots[1]["exists"])
+        self.assertFalse(roots[1]["readable"])
+
     def test_unconfigured_library_never_walks_or_reads_working_directory(self):
         with tempfile.TemporaryDirectory() as root:
             config = {"cache_dir": root, "library_path": "", "library_paths": []}

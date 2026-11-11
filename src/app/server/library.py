@@ -1023,6 +1023,20 @@ def library_status(config):
     status = {
         "library_path": root,
         "library_paths": roots,
+        # Per-root health.  The singular fields above describe roots[0] only,
+        # which made the settings card list just the first directory and call a
+        # library healthy while a second root was gone or unreadable.  Kept the
+        # old fields so existing readers do not change behaviour.
+        "roots": [
+            {
+                "path": value,
+                "allowed": is_allowed_library_path(value),
+                "exists": os.path.exists(value),
+                "is_dir": os.path.isdir(value),
+                "readable": os.access(value, os.R_OK),
+            }
+            for value in roots
+        ],
         "server_port": bounded_int(config, "server_port", DEFAULT_PORT, 1024, 65535),
         "allowed": is_allowed_library_path(root),
         "exists": os.path.exists(root),

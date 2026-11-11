@@ -67,6 +67,57 @@ assert.equal(errorFlags().at(-1), false,
 assert.doesNotMatch(nodes.libraryHealthDetail.textContent, /0 个配置目录/,
   'the zero-path sentence belongs to a real payload with an empty list, not to a missing one');
 
+
+// Reported 2026-11-11: with more than one directory configured the card only ever
+// named the first one, and a second root that had gone missing still counted as a
+// healthy library - the singular exists/readable fields describe roots[0] alone.
+// The server now sends per-root health, so the card speaks for all of them.
+const bothRoots = {
+  library_path: '/vol1/music',
+  library_paths: ['/vol1/music', '/vol2/share'],
+  roots: [
+    {path: '/vol1/music', allowed: true, exists: true, is_dir: true, readable: true},
+    {path: '/vol2/share', allowed: true, exists: true, is_dir: true, readable: true},
+  ],
+  exists: true, is_dir: true, readable: true, count: 117,
+};
+context.state.libraryStatus = bothRoots;
+context.renderLibraryHealth();
+assert.equal(nodes.libraryHealthPath.textContent, '2 个目录',
+  'the cell must not name only the first root');
+assert.equal(nodes.libraryHealthStatus.textContent, '目录正常');
+assert.match(nodes.libraryHealthDetail.textContent, /2 个配置目录/);
+assert.equal(nodes.libraryScanNowBtn.disabled, false);
+assert.equal(errorFlags().at(-1), false);
+
+context.state.libraryStatus = {
+  ...bothRoots,
+  roots: [
+    bothRoots.roots[0],
+    {path: '/vol2/share', allowed: true, exists: false, is_dir: false, readable: false},
+  ],
+};
+context.renderLibraryHealth();
+assert.equal(nodes.libraryHealthStatus.textContent, '1 个目录不可用',
+  'a dead second root must surface in the headline');
+assert.match(nodes.libraryHealthDetail.textContent, /不可用：\/vol2\/share/,
+  'the detail must name the root that failed');
+assert.equal(errorFlags().at(-1), true, 'a broken root raises the danger fill');
+assert.equal(nodes.libraryScanNowBtn.disabled, false,
+  'a dead root must not disable scanning for the roots that still work');
+
+context.state.libraryStatus = {
+  ...bothRoots,
+  roots: [
+    {path: '/vol1/music', allowed: true, exists: false, is_dir: false, readable: false},
+    {path: '/vol2/share', allowed: true, exists: false, is_dir: false, readable: false},
+  ],
+};
+context.renderLibraryHealth();
+assert.equal(nodes.libraryHealthStatus.textContent, '目录不存在');
+assert.equal(nodes.libraryScanNowBtn.disabled, true, 'nothing left to scan when every root is gone');
+console.log('Multi-root health states passed');
+
 // The real payload with an empty list keeps the first-run wording and the
 // "configured but missing" case keeps the danger fill, both pinned above.
 console.log('Pending-status health state passed');
