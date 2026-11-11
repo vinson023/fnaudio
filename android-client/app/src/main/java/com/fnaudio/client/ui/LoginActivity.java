@@ -237,7 +237,17 @@ public final class LoginActivity extends AppCompatActivity {
         setBusy(true, "正在通过 FN Connect 查找设备...");
         final String fnIdValue = value;
         final String passwordValue = password.getText().toString();
-        final boolean httpsRequested = useHttps.isChecked();
+        // An FN ID always resolves to the NAS's HTTPS port.
+        //
+        // The form's checkbox can come back unticked from an older saved
+        // profile, and then the whole session runs over http://host:5666: the
+        // NAS answers every request with a 302 to https, the panel reloads
+        // through that redirect, and the library request never completes —
+        // 「读取歌曲列表失败（响应体不完整）」 while nginx shows nothing but
+        // 302/200 pairs (2026-11-11).  The resolver has a matching https port
+        // for FN Connect, so this is not a user choice to preserve.
+        if (!useHttps.isChecked()) useHttps.setChecked(true);
+        final boolean httpsRequested = true;
         final boolean trustSelfSignedRequested = trustSelfSigned.isChecked();
         FnConnectSettings settings = new FnConnectSettings(this);
         String effectiveMode = settings.effectiveMode();

@@ -117,6 +117,10 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R547: +10 lines. An FN ID forces HTTPS: the form checkbox could come back
+# unticked from an old profile and the whole session then ran over http:5666,
+# where every request was a 302 to https and the library request never completed.
+#
 # R546: +12 lines. The WebView SSL callback accepts the same endpoints the HTTP
 # clients accept. POSTs cannot be proxied through OkHttp (WebView hides the body
 # from shouldInterceptRequest), so they hit this callback, and the old rule
@@ -184,7 +188,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 62
-JAVA_TOTAL_LINES = 15426
+JAVA_TOTAL_LINES = 15436
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")
