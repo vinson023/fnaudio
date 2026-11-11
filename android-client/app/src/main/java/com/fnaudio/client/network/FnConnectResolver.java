@@ -337,16 +337,17 @@ public final class FnConnectResolver {
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
         long deadlineElapsedRealtime = SystemClock.elapsedRealtime() + DIRECT_PROBE_BUDGET_MS;
-        // HTTPS first tries the published name, because the addresses below are
-        // bare IPs and a NAS certificate is issued for a host name.  Reported
-        // 2026-11-11: signing in over the domain worked while signing in with the
-        // FN ID failed on the same account — the resolver handed back a public IP,
-        // the TLS handshake reached the right server, and hostname verification
-        // rejected it.  The IP probes stay as the fallback so plain HTTP, LAN-only
-        // devices and networks that block the zone behave exactly as before.
+        // HTTPS first tries the endpoint FN Connect actually publishes (`fn`,
+        // e.g. "vinson023.fnos.net:443"), because every address below is a bare
+        // IP and a NAS certificate is issued for a name.  Reported 2026-11-11:
+        // the same account signed in over that name and failed over the FN ID —
+        // the resolver was ignoring `fn`, handing back https://<public ip>:5667,
+        // and hostname verification rejected a certificate that was never
+        // meant for an address.  The address probes stay as the fallback so
+        // plain HTTP, LAN-only devices and blocked zones behave as before.
         if (useHttps) {
-            ConnectionProfile viaDomain = domainEndpoint(fnId, generation, deadlineElapsedRealtime);
-            if (viaDomain != null) return viaDomain;
+            ConnectionProfile published = publishedEndpoint(fnId, data, generation, deadlineElapsedRealtime);
+            if (published != null) return published;
         }
         ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps,
                 generation, deadlineElapsedRealtime);
@@ -359,6 +360,17 @@ public final class FnConnectResolver {
 
     @Nullable
     private ConnectionProfile fallback(String fnId, JSONObject data, boolean useHttps) {
+        if (useHttps) {
+            // No probe here on purpose: this is the path taken when the probes
+            // above ran out of budget, and the published endpoint is the one
+            // answer that does not depend on reachability to be correct.
+            List<HostPort> published = publishedCandidates(fnId, data);
+            if (!published.isEmpty()) {
+                HostPort first = published.get(0);
+                return ConnectionProfile.create("", "FN Connect - " + fnId, first.host,
+                        first.port, first.https, false, "", "");
+            }
+        }
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
@@ -376,26 +388,122 @@ public final class FnConnectResolver {
     }
 
     /**
-     * The FN Connect name for this device, probed on 443.
+     * The endpoint FN Connect publishes for this device, probed before use.
      *
-     * <p>Returns null when the name does not answer, which keeps every existing
-     * path working: a device that is only reachable inside the LAN, a network
-     * that blocks the zone, or an FN Connect deployment that has no public
-     * name all fall through to the address probes unchanged.
+     * <p>{@code fn} carries one entry per published route, normally
+     * {@code "<fnid>.fnos.net:443"}.  It is the only hint in the payload that is
+     * a name rather than an address, and therefore the only one a TLS client can
+     * verify.  Returns null when none of them answer, so a LAN-only device, a
+     * network that blocks the zone, or an older payload without {@code fn} keeps
+     * falling through to the address probes unchanged.
      */
     @Nullable
-    private ConnectionProfile domainEndpoint(String fnId, long generation, long deadlineElapsedRealtime) {
-        if (!isGenerationActive(generation)) return null;
-        long remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
-        if (remainingMs <= 0L) return null;
-        String host = fnId + FN_CONNECT_ZONE;
-        int timeoutMs = (int) Math.min(FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS, remainingMs);
-        if (!isReachable(host, FN_CONNECT_DOMAIN_PORT, generation, timeoutMs)) return null;
-        Log.i(TAG, "resolved reachable FN Connect domain endpoint");
-        // trustSelfSigned is false on purpose: the whole point of taking the
-        // named endpoint is that it presents a certificate matching that name.
-        return ConnectionProfile.create("", "FN Connect - " + fnId, host,
-                FN_CONNECT_DOMAIN_PORT, true, false, "", "");
+    private ConnectionProfile publishedEndpoint(String fnId, JSONObject data, long generation,
+                                                long deadlineElapsedRealtime) {
+        for (HostPort candidate : publishedCandidates(fnId, data)) {
+            if (!isGenerationActive(generation)) return null;
+            long remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
+            if (remainingMs <= 0L) return null;
+            int timeoutMs = (int) Math.min(FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS, remainingMs);
+            if (!isReachable(candidate.host, candidate.port, generation, timeoutMs)) continue;
+            Log.i(TAG, "resolved published FN Connect endpoint");
+            // trustSelfSigned is false on purpose: the whole reason to take a
+            // published name is that it presents a certificate matching it.
+            return ConnectionProfile.create("", "FN Connect - " + fnId, candidate.host,
+                    candidate.port, candidate.https, false, "", "");
+        }
+        return null;
+    }
+
+    /**
+     * Parses {@code fn} into host/port pairs, falling back to the stable zone.
+     *
+     * <p>The zone fallback only applies to ids that can live under it; anything
+     * else yields an empty list and the caller keeps its previous behaviour.
+     */
+    private static List<HostPort> publishedCandidates(String fnId, JSONObject data) {
+        List<HostPort> result = new ArrayList<>();
+        for (String raw : strings(data, "fn")) {
+            HostPort parsed = parseHostPort(raw);
+            if (parsed != null) result.add(parsed);
+        }
+        if (result.isEmpty() && fnId.matches("[a-z0-9-]{3,64}")) {
+            HostPort derived = parseHostPort(fnId + FN_CONNECT_ZONE + ":" + FN_CONNECT_DOMAIN_PORT);
+            if (derived != null) result.add(derived);
+        }
+        return result;
+    }
+
+    /** A parsed {@code host:port} route, with the scheme it was written with. */
+    static final class HostPort {
+        final String host;
+        final int port;
+        final boolean https;
+
+        HostPort(String host, int port, boolean https) {
+            this.host = host;
+            this.port = port;
+            this.https = https;
+        }
+    }
+
+    @Nullable
+    static HostPort parseHostPort(@Nullable String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.isEmpty()) return null;
+        boolean https = true;
+        if (value.regionMatches(true, 0, "https://", 0, 8)) value = value.substring(8);
+        else if (value.regionMatches(true, 0, "http://", 0, 7)) { value = value.substring(7); https = false; }
+        int slash = value.indexOf('/');
+        if (slash >= 0) value = value.substring(0, slash);
+        String host;
+        int port;
+        if (value.startsWith("[")) {
+            int close = value.indexOf(']');
+            if (close < 0) return null;
+            host = value.substring(1, close);
+            String rest = value.substring(close + 1);
+            port = rest.startsWith(":") ? digits(rest.substring(1)) : (https ? 443 : 80);
+        } else {
+            int colon = value.lastIndexOf(':');
+            if (colon < 0) {
+                host = value;
+                port = https ? 443 : 80;
+            } else {
+                host = value.substring(0, colon);
+                port = digits(value.substring(colon + 1));
+            }
+        }
+        host = normalizeHost(host);
+        if (host.isEmpty() || host.length() > MAX_HOST_CHARS) return null;
+        if (port < 1 || port > 65535) return null;
+        return new HostPort(host, port, https);
+    }
+
+    private static int digits(String value) {
+        if (value == null || value.isEmpty() || value.length() > 5) return -1;
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            if (ch < '0' || ch > '9') return -1;
+        }
+        try { return Integer.parseInt(value); } catch (NumberFormatException error) { return -1; }
+    }
+
+    /** Reads a field that may be a single string or an array of strings. */
+    private static List<String> strings(JSONObject data, String key) {
+        List<String> values = new ArrayList<>();
+        if (data == null) return values;
+        Object value = data.opt(key);
+        if (value instanceof String) {
+            values.add((String) value);
+        } else if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            for (int index = 0; index < array.length() && values.size() < MAX_HOSTS_PER_FAMILY; index++) {
+                Object item = array.opt(index);
+                if (item instanceof String) values.add((String) item);
+            }
+        }
+        return values;
     }
 
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,

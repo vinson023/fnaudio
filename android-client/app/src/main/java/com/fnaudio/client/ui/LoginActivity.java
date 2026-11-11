@@ -190,6 +190,12 @@ public final class LoginActivity extends AppCompatActivity {
         String value = fnId.getText().toString().trim();
         if (value.isEmpty()) { fnId.setError("请输入 FN ID"); fnId.requestFocus(); return; }
         value = value.replaceFirst("(?i)^https?://", "").replaceFirst("/.*$", "");
+        // An address copied out of the browser carries an explicit :443 (or the
+        // LAN port). Strip it before the suffix: "vinson023.fnos.net:443" does
+        // not end with ".fnos.net", so the old order left the port glued to the
+        // id and the resolver rejected it as badly formatted.  Reported
+        // 2026-11-11.
+        value = value.replaceFirst(":\\d+$", "");
         if (value.endsWith(".fnos.net")) value = value.substring(0, value.length() - ".fnos.net".length());
         setBusy(true, "正在通过 FN Connect 查找设备...");
         final String fnIdValue = value;
@@ -229,11 +235,29 @@ public final class LoginActivity extends AppCompatActivity {
         });
     }
 
+    /**
+     * Whether the typed address is an FN Connect name rather than a direct endpoint.
+     *
+     * <p>A published name ({@code <id>.fnos.net}, with or without an explicit
+     * port) belongs to the resolver: only it knows the routes FN Connect
+     * advertises, and typing the name and having it resolved are the same
+     * intent.  Reported 2026-11-11: the name was treated as a direct endpoint,
+     * so a device whose name did not resolve on mobile data failed with a bare
+     * DNS error even though the FN ID itself resolved fine.  IPs and any other
+     * host name keep the direct path unchanged.
+     */
+    private static boolean isFnConnectAddress(String address) {
+        if (address == null || address.isEmpty() || address.contains("/")) return false;
+        if (!address.contains(".") && !address.contains(":")) return true;
+        String withoutPort = address.replaceFirst(":\\d+$", "");
+        return withoutPort.equals("fnos.net") || withoutPort.endsWith(".fnos.net");
+    }
+
     private void loginWithPassword() {
         String address = fnId.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
         // A bare FN ID follows the official FN Connect resolver. Explicit IPs,
         // host names and URLs retain the direct fnOS login path.
-        if (!address.isEmpty() && !address.contains(".") && !address.contains(":") && !address.contains("/")) {
+        if (isFnConnectAddress(address)) {
             openFnConnect();
             return;
         }

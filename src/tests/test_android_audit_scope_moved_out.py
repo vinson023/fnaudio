@@ -117,10 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
-# R533: +39 lines in FnConnectResolver. An HTTPS login through an FN ID now
-# probes the published name (<fnId>.fnos.net:443) before the public-address
-# probes, because the addresses FN Connect publishes are bare IPs and a NAS
-# certificate is issued for a host name.
+# R533: +203 lines. FnConnectResolver now reads the `fn` field FN Connect
+# already returns ("<fnid>.fnos.net:443") instead of only the bare public
+# addresses, and LoginActivity routes an <id>.fnos.net name through that
+# resolver; FnOsAuthClient reports a DNS failure as a DNS failure instead of
+# calling it an access-code rejection.
 #
 # R532 second pass: +6 lines, all in MainActivity, which now starts the
 # authentication attempt on a worker thread (NetworkOnMainThreadException on
@@ -132,7 +133,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14767
+JAVA_TOTAL_LINES = 14931
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

@@ -114,7 +114,7 @@ public final class FnOsAuthClient {
             try {
                 client.newCall(request).enqueue(new okhttp3.Callback() {
                     @Override public void onFailure(@NonNull okhttp3.Call call, @NonNull java.io.IOException exception) {
-                        finishError("访问码验证失败：" + readableError(exception));
+                        finishError(describeConnectFailure(exception));
                     }
 
                     @Override public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) {
@@ -439,6 +439,33 @@ public final class FnOsAuthClient {
         return payload == null || payload.isEmpty() || expected.equals(payload);
     }
 
+    /**
+     * The prefix for a failed connection attempt.
+     *
+     * <p>"访问码验证失败" is right when the request reached the server and was
+     * refused, but it is actively misleading when the name never resolved: the
+     * user sees an English {@code Unable to resolve host} behind a prefix that
+     * blames the access code.  Reported 2026-11-11 with an fnos.net address on
+     * mobile data.
+     */
+    private static String describeConnectFailure(java.io.IOException exception) {
+        if (isHostResolutionFailure(exception)) return readableError(exception);
+        return "访问码验证失败：" + readableError(exception);
+    }
+
+    private static boolean isHostResolutionFailure(Throwable throwable) {
+        for (Throwable current = throwable; current != null; current = current.getCause()) {
+            if (current instanceof java.net.UnknownHostException) return true;
+            String message = current.getMessage();
+            if (message == null) continue;
+            String lower = message.toLowerCase(Locale.ROOT);
+            if (lower.contains("unable to resolve host") || lower.contains("no address associated")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String readableError(Throwable throwable) {
         String raw = throwable == null ? "" : String.valueOf(throwable.getMessage());
         String lower = raw.toLowerCase(Locale.ROOT);
@@ -447,6 +474,11 @@ public final class FnOsAuthClient {
                 return "服务器证书已变更，已拒绝连接。请确认 NAS 证书后删除该历史连接并重新建立。";
             }
             return "HTTPS 证书校验失败；如果 NAS 使用自签名证书，请开启自签名证书兼容。";
+        }
+        if (isHostResolutionFailure(throwable)) {
+            // The DNS answer is missing, so nothing about the NAS, its
+            // certificate or the access code has been tested yet.
+            return "无法解析服务器域名。请检查手机网络（若开启「私有 DNS」可先关闭），或改用 FN ID 登录。";
         }
         if (lower.contains("failed to connect") || lower.contains("connection refused")) {
             return "无法连接 NAS，请检查地址和端口。";
