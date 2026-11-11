@@ -55,39 +55,41 @@ class AndroidTppsLifecycleTests(unittest.TestCase):
         self.assertIn("client.dispatcher().executorService().shutdown();", source)
         self.assertIn("public void close()", source)
 
-    def test_http_client_admits_unpinned_trust_only_for_unverifiable_endpoints(self):
-        """Trust without a stored pin must never reach a verifiable endpoint.
+    def test_http_client_accepts_endpoint_certificates_and_enforces_the_pin(self):
+        """Certificate acceptance is the default; the pin is the safety net.
 
-        R537 changed the gate on purpose: an endpoint addressed by a bare IP (or
-        handed over by FN Connect) cannot pass hostname verification at all, and
-        the pin can only be learned from the first successful connection, so
-        refusing to connect there was a deadlock — that is what made 公网 IPv4 /
-        IPv6 logins fail no matter how 允许自签名证书 was set.  The invariant that
-        survives is narrower and worth guarding: the permissive trust manager is
-        installed only behind shouldTrustEndpoint(), a recorded pin is always
-        enforced, and a pin that does not match is still a hard failure.
+        This replaces a guard that pinned the older rule ("only accept without a
+        pin for endpoints that cannot be verified").  The rule changed on purpose
+        in R550: the official client accepts any bad certificate and only records
+        why (FnConnectBadCertificateReason), and asking the owner to tick
+        允许自签名证书 first produced 「HTTPS 证书校验失败」 on devices that worked
+        everywhere else.  What still has to hold, and is asserted here:
+
+        * every HTTPS endpoint is accepted, and a non-HTTPS one is not;
+        * a stored pin is enforced rather than ignored;
+        * a certificate that does not match the pin is a hard failure;
+        * the login form no longer offers the decision to the user.
         """
         source = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "HttpClientFactory.java").read_text(encoding="utf-8")
-        guarded = source[source.index("boolean trustEndpoint = profile != null && profile.https"):
+        policy = source[source.index("static boolean shouldTrustEndpoint"):
+                        source.index("private static void trustPinnedSelfSigned")]
+        self.assertIn("return profile != null && profile.https;", policy)
+        self.assertNotIn("trustSelfSigned", policy,
+                         "the checkbox must not influence the policy any more")
+        guarded = source[source.index("boolean trustEndpoint = shouldTrustEndpoint(profile);"):
                          source.index("        return builder.build();")]
-        self.assertIn("shouldTrustEndpoint(profile)", guarded)
         self.assertIn("!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()", guarded)
         self.assertIn("trustPinnedSelfSigned(builder, profile.certificatePinSha256);", guarded)
         self.assertIn("trustFirstUseSelfSigned(builder, null);", guarded)
-        self.assertNotIn("trustSelfSigned", guarded,
-                         "create() must not re-open the checkbox-only path: the gate is shouldTrustEndpoint")
-        policy = source[source.index("static boolean shouldTrustEndpoint"):
-                        source.index("static boolean isIpLiteral")]
-        self.assertIn("profile.trustSelfSigned", policy)
-        self.assertIn("isIpLiteral(profile.host)", policy)
-        self.assertIn("profile.isFnConnectRoute()", policy)
         self.assertIn("certificate pin is missing or invalid", source)
         self.assertIn("if (!CertificatePin.matches(normalizedPin, chain[0]))", source)
         bootstrap = source[source.index("public static OkHttpClient createAuthenticationClient"):source.index("    /**\n     * Creates the media client")]
-        self.assertIn("!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()", bootstrap)
         self.assertIn("trustFirstUseSelfSigned(builder, observation);", bootstrap)
-        auth = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "FnOsAuthClient.java").read_text(encoding="utf-8")
-        self.assertIn("HttpClientFactory.createAuthenticationClient(context, profile, tlsObservation)", auth)
+        layout = (ROOT / "android-client" / "app" / "src" / "main" / "res" / "layout" / "activity_login.xml").read_text(encoding="utf-8")
+        self.assertNotIn("trustSelfSigned", layout,
+                         "允许自签名证书 must stay off the login form")
+        login = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "ui" / "LoginActivity.java").read_text(encoding="utf-8")
+        self.assertNotIn("R.id.trustSelfSigned", login)
 
     def test_resolver_handles_close_race_during_call_submission(self):
         source = (ROOT / "android-client" / "app" / "src" / "main" / "java" / "com" / "fnaudio" / "client" / "network" / "FnConnectResolver.java").read_text(encoding="utf-8")

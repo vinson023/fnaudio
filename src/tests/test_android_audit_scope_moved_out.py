@@ -117,6 +117,12 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R550: -135 lines and -1 file. 允许自签名证书 is gone: an HTTPS endpoint's
+# certificate is accepted and then pinned, as the official client does, so the
+# checkbox had nothing left to decide.  ConnectAddressOverride went with it — it
+# was orphaned when R544 stopped substituting the published host name, and its
+# only remaining reference was the dns() hook nobody fed.
+#
 # R549: -327 lines and -1 file. The WebView sign-in page
 # (ui/WebLoginActivity.java, added in R541) is gone: the owner rejected that
 # approach outright ("我要的是你逆向解析飞牛APP使用它的登录界面和逻辑"), and the
@@ -198,8 +204,8 @@ DEBT_AFTER_MOVE_OUT = 8530
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
-JAVA_TOTAL_FILES = 61
-JAVA_TOTAL_LINES = 15138
+JAVA_TOTAL_FILES = 60
+JAVA_TOTAL_LINES = 15003
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

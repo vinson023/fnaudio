@@ -475,8 +475,12 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 // showed 「读取歌曲列表失败（响应体不完整）」 right after a
                 // successful sign-in while /api/library never even reached nginx
                 // (2026-11-11).  Accept the same endpoints the HTTP clients accept.
-                boolean acceptableEndpoint = profile != null && profile.https
-                        && (profile.trustSelfSigned || profile.isFnConnectRoute() || profile.webSession);
+                // Same policy as the HTTP clients: an HTTPS endpoint is
+                // accepted, and the stored pin is what notices a swapped
+                // certificate.  Keeping a second, stricter rule here is what
+                // made POST requests die while GETs went through OkHttp
+                // (2026-11-11).
+                boolean acceptableEndpoint = profile != null && profile.https;
                 boolean pinAgrees = profile != null
                         && (profile.certificatePinSha256.isEmpty()
                         || profile.certificatePinSha256.equals(observedPin));
@@ -490,10 +494,9 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                     // delivered this callback with no profile set, and the
                     // resulting NPE on the UI thread killed the process.
                     ConnectionProfile current = profile;
-                    String message = current != null && current.trustSelfSigned
-                            && !current.certificatePinSha256.isEmpty()
-                            ? "服务器证书已变更或无法验证指纹，已拒绝加载页面。请确认 NAS 证书后重新建立连接。"
-                            : "HTTPS 证书校验失败。请检查证书，或仅对可信 NAS 开启自签名证书兼容。";
+                    String message = current != null && !current.certificatePinSha256.isEmpty()
+                            ? "服务器证书已变更，已拒绝加载页面。请确认 NAS 证书后重新建立连接。"
+                            : "HTTPS 证书校验失败，已拒绝加载页面。请检查 NAS 的证书配置。";
                     showError(message);
                 }
             }

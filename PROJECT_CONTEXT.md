@@ -1,4 +1,5 @@
 # fnAudio 项目上下文
+- 2026-11-11：R550 **0.2.149**（versionCode 407）。去掉「允许自签名证书」勾选框：HTTPS 端点证书一律接受、首次成功后固定指纹、变更即拒绝（对齐官方 `badCertificateCallback`）；顺带删掉已无调用方的 `ConnectAddressOverride`。Java 60 文件 / 15,003 行。
 - 2026-11-11：R549 **0.2.148**（versionCode 406）。撤掉 R541 的网页登录入口（`WebLoginActivity` 及布局、登录页按钮、清单注册全部移除，-327 行），原生 FN Connect 登录在真机验证通过；版本坐标八处同步。
 - 2026-11-11：R548 **入口强制 HTTPS + 异常响应日志**。`MainActivity` 对 FN Connect 档案统一改写为 HTTPS，不再依赖上游；并对非 200 / text-html 的资源响应记 `FnAudioResource` 日志（前 8 条）。
 - 2026-11-11：R547 **FNID 强制 HTTPS**。登录页会恢复旧档案的 `https=false`，导致整段会话跑在 http:5666、每个请求都 302；`openFnConnect()` 现在强制 `httpsRequested=true`。

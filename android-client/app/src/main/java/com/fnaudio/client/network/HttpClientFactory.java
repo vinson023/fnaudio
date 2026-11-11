@@ -28,10 +28,6 @@ public final class HttpClientFactory {
 
     public static OkHttpClient create(@Nullable Context context, ConnectionProfile profile) {
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-                // A profile may keep a certificate-bearing host name while the
-                // address that name should reach was already discovered by FN
-                // Connect.  See ConnectAddressOverride.
-                .dns(ConnectAddressOverride.DNS)
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(15, TimeUnit.SECONDS)
@@ -45,7 +41,7 @@ public final class HttpClientFactory {
         // trust store and reject the same certificate the login just accepted.
         // Profiles that are neither self-signed nor addressed by IP keep the
         // platform default, and a recorded pin is always enforced.
-        boolean trustEndpoint = profile != null && profile.https && shouldTrustEndpoint(profile);
+        boolean trustEndpoint = shouldTrustEndpoint(profile);
         // An FN Connect plan can arrive as http and still be served over https:
         // the NAS answers http://host:5666 with a 302 to https://host:5667, and
         // OkHttp follows it.  That hop needs the same acceptance the profile
@@ -79,8 +75,9 @@ public final class HttpClientFactory {
                 || !CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
             return create(context, profile);
         }
-        Log.i(TAG, "TLS: accepting the endpoint certificate (trustSelfSigned="
-                + profile.trustSelfSigned + " address=" + profile.host + ")");
+        Log.i(TAG, "TLS: accepting the endpoint certificate (address=" + profile.host
+                + " pin=" + (CertificatePin.normalize(profile.certificatePinSha256).isEmpty()
+                        ? "none yet" : "stored") + ")");
         OkHttpClient.Builder builder = create(context, profile).newBuilder();
         trustFirstUseSelfSigned(builder, observation);
         return builder.build();
@@ -145,58 +142,26 @@ public final class HttpClientFactory {
     }
 
     /**
-     * Whether hostname verification can never succeed for this endpoint.
+     * Whether this endpoint's certificate is accepted even when the platform
+     * trust store rejects it.
      *
-     * <p>A public CA does not issue certificates for bare addresses, so a
-     * profile pointed at an IP address can only ever present something the
-     * platform will reject — the check carries no identity information, it just
-     * refuses to connect.  FN Connect hands out exactly those addresses, which
-     * is why a login over 公网 IPv4/IPv6 failed with "HTTPS 证书校验失败" no
-     * matter how the 允许自签名证书 box was set (reported 2026-11-11).
+     * <p>Every HTTPS endpoint is accepted, for the same reason the official
+     * client accepts them: it registers a bad-certificate callback and only
+     * records why it was needed ({@code FnConnectBadCertificateReason}).  A NAS
+     * on a home network rarely has a certificate the platform can verify — an
+     * address has no name for a CA to sign, a private name has no authority
+     * behind it — so refusing here only ever produced 「HTTPS 证书校验失败」 on
+     * devices that worked everywhere else, and the app used to ask the owner to
+     * tick 允许自签名证书 before it would try at all.  That checkbox is gone;
+     * acceptance is the default, as in the official app.
      *
-     * <p>The trust-on-first-use observation still runs, so the certificate that
-     * was accepted is recorded and later compared against the stored pin.
+     * <p>Acceptance is not blind for long: the certificate observed on the first
+     * successful connection is stored as a pin, and any later change is a hard
+     * failure in {@link #trustPinnedSelfSigned}.  That is what still notices a
+     * device whose identity quietly changed.
      */
     static boolean shouldTrustEndpoint(ConnectionProfile profile) {
-        if (profile == null) return false;
-        if (profile.trustSelfSigned) return true;
-        if (isIpLiteral(profile.host)) return true;
-        // A web session was established inside a WebView, where the user already
-        // answered the certificate question for this origin. Applying a stricter
-        // rule to the sub-resources of that very session would load a blank page
-        // right after a successful sign-in.
-        if (profile.webSession) return true;
-        // A route produced by FN Connect is not an address the user chose: it
-        // can be a bare address, a name the NAS holds no certificate for, or a
-        // relay port, and any of those would make hostname verification fail on
-        // a connection the server itself told us to make.  The official client
-        // accepts those certificates (it registers a bad-certificate callback
-        // and even reports a FnConnectBadCertificateReason), which is why the
-        // same account logs in there and was refused here.
-        return profile.isFnConnectRoute();
-    }
-
-    /** True for dotted-quad IPv4 and for anything shaped like IPv6. */
-    static boolean isIpLiteral(@Nullable String host) {
-        if (host == null) return false;
-        String value = host.trim();
-        if (value.isEmpty() || value.length() > 45) return false;
-        if (value.indexOf(':') >= 0) {
-            // IPv6, possibly with a zone id. The platform's own parser is the
-            // authority on validity; this only has to tell addresses from names.
-            return value.matches("[0-9a-fA-F:.%]+");
-        }
-        String[] parts = value.split("\\.", -1);
-        if (parts.length != 4) return false;
-        for (String part : parts) {
-            if (part.isEmpty() || part.length() > 3) return false;
-            for (int index = 0; index < part.length(); index++) {
-                char ch = part.charAt(index);
-                if (ch < '0' || ch > '9') return false;
-            }
-            if (Integer.parseInt(part) > 255) return false;
-        }
-        return true;
+        return profile != null && profile.https;
     }
 
     private static void trustPinnedSelfSigned(OkHttpClient.Builder builder, String expectedPin) {

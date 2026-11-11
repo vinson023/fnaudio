@@ -14,6 +14,14 @@ public final class ConnectionProfile {
     public final String host;
     public final int port;
     public final boolean https;
+    /**
+     * @deprecated No longer authorizes anything.  It used to be the
+     * 允许自签名证书 checkbox; the app now accepts an endpoint's certificate
+     * and pins it, the way the official client does, so the decision is not the
+     * user's to make in advance.  The field is kept so stored profiles and the
+     * JSON round-trip keep their shape.
+     */
+    @Deprecated
     public final boolean trustSelfSigned;
     public final String certificatePinSha256;
     public final String username;

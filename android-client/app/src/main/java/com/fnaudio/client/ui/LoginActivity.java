@@ -41,7 +41,6 @@ public final class LoginActivity extends AppCompatActivity {
     private EditText host;
     private EditText port;
     private CheckBox useHttps;
-    private CheckBox trustSelfSigned;
     private EditText username;
     private EditText password;
     private EditText accessCode;
@@ -134,7 +133,6 @@ public final class LoginActivity extends AppCompatActivity {
         host = findViewById(R.id.host);
         port = findViewById(R.id.port);
         useHttps = findViewById(R.id.useHttps);
-        trustSelfSigned = findViewById(R.id.trustSelfSigned);
         username = findViewById(R.id.username);
         password = findViewById(R.id.password);
         accessCode = findViewById(R.id.accessCode);
@@ -167,13 +165,11 @@ public final class LoginActivity extends AppCompatActivity {
         fnConnectSettingsButton.setOnClickListener(view -> startActivityForResult(
                 new Intent(this, FnConnectSettingsActivity.class), REQUEST_FN_CONNECT_SETTINGS));
         useHttps.setOnCheckedChangeListener((button, checked) -> {
-            trustSelfSigned.setEnabled(checked);
             String currentPort = port.getText().toString().trim();
             if (currentPort.isEmpty() || (!checked && "5667".equals(currentPort)) || (checked && "5666".equals(currentPort))) {
                 port.setText(checked ? "5667" : "5666");
             }
         });
-        trustSelfSigned.setEnabled(useHttps.isChecked());
         renderFnConnectSettingsSummary();
     }
 
@@ -211,7 +207,6 @@ public final class LoginActivity extends AppCompatActivity {
         // for FN Connect, so this is not a user choice to preserve.
         if (!useHttps.isChecked()) useHttps.setChecked(true);
         final boolean httpsRequested = true;
-        final boolean trustSelfSignedRequested = trustSelfSigned.isChecked();
         FnConnectSettings settings = new FnConnectSettings(this);
         String effectiveMode = settings.effectiveMode();
         FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(effectiveMode);
@@ -232,7 +227,7 @@ public final class LoginActivity extends AppCompatActivity {
                 ConnectionProfile profile = ConnectionProfile.create(
                         "fnconnect:" + fnIdValue + ":" + user.toLowerCase(java.util.Locale.ROOT),
                         "FN Connect - " + fnIdValue, resolved.host, resolved.port, resolved.https,
-                        trustSelfSignedRequested, user, savePassword.isChecked() ? passwordValue : "")
+                        resolved.https, user, savePassword.isChecked() ? passwordValue : "")
                         .withFnConnectMode(effectiveMode)
                         .withAccessCode(accessCode.getText().toString());
                 authenticate(profile, passwordValue, "正在登录 FN Connect 设备...", false);
@@ -421,12 +416,12 @@ public final class LoginActivity extends AppCompatActivity {
                 address.host,
                 portValue,
                 httpsValue,
-                trustSelfSigned.isChecked(),
+                httpsValue,
                 usernameValue,
                 passwordToSave
         ).withAccessCode(accessCode.getText().toString());
         ConnectionProfile existing = store.find(result.id);
-        if (result.trustSelfSigned && existing != null && existing.matchesConnection(
+        if (result.https && existing != null && existing.matchesConnection(
                 result.host, result.port, result.https, result.username)) {
             result = result.withCertificatePin(existing.certificatePinSha256);
         }
@@ -508,8 +503,6 @@ public final class LoginActivity extends AppCompatActivity {
         fnId.setText(displayAddress(profile));
         port.setText(String.valueOf(profile.port));
         useHttps.setChecked(profile.https);
-        trustSelfSigned.setChecked(profile.trustSelfSigned);
-        trustSelfSigned.setEnabled(profile.https);
         username.setText(profile.username);
         password.setText(profile.password);
         accessCode.setText(profile.accessCode);
@@ -524,8 +517,6 @@ public final class LoginActivity extends AppCompatActivity {
         host.setText("");
         fnId.setText("");
         useHttps.setChecked(false);
-        trustSelfSigned.setChecked(false);
-        trustSelfSigned.setEnabled(false);
         port.setText("5666");
         username.setText("");
         password.setText("");
@@ -601,7 +592,6 @@ public final class LoginActivity extends AppCompatActivity {
         host.setEnabled(!value);
         port.setEnabled(!value);
         useHttps.setEnabled(!value);
-        trustSelfSigned.setEnabled(!value && useHttps.isChecked());
         username.setEnabled(!value);
         password.setEnabled(!value);
         savePassword.setEnabled(!value);
