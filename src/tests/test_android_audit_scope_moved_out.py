@@ -117,6 +117,11 @@ DEBT_AFTER_MOVE_OUT = 8530
 # instrumentation test) without touching a single audited face.
 # R530 re-measured after the television feature round: no new file, +620 lines,
 # all inside the two television classes TvApi and TvMainActivity.
+# R537: HttpClientFactory.shouldTrustEndpoint treats a bare IP address as a
+# certificate it cannot verify (no CA issues certificates for addresses), and a
+# trusted endpoint without a pin now connects instead of silently falling back
+# to the platform trust store.
+#
 # R535/R536: ConnectionProfile.withEndpoint keeps trustSelfSigned (it used to
 # clear it, so every FN Connect reconnect after the resolver moved the profile
 # to a new address failed certificate validation for users who had ticked
@@ -139,7 +144,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
 JAVA_TOTAL_FILES = 60
-JAVA_TOTAL_LINES = 14837
+JAVA_TOTAL_LINES = 14893
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

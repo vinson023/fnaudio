@@ -169,7 +169,11 @@ public final class FnOsAuthClient {
 
         @Override
         public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
-            if (profile.https && profile.trustSelfSigned) {
+            // Same condition the client used to accept the certificate: an
+            // address endpoint is trusted without the checkbox, so its pin has
+            // to be observed and stored too, or every later request would be
+            // verified against the platform roots and fail.
+            if (profile.https && HttpClientFactory.shouldTrustEndpoint(profile)) {
                 String observedPin = "";
                 if (response.handshake() != null && !response.handshake().peerCertificates().isEmpty()) {
                     Certificate certificate = response.handshake().peerCertificates().get(0);

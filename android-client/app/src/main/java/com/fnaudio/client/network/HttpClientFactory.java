@@ -1,6 +1,7 @@
 package com.fnaudio.client.network;
 
 import android.content.Context;
+import android.util.Log;
 import android.webkit.CookieManager;
 
 import androidx.annotation.Nullable;
@@ -20,6 +21,8 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 
 public final class HttpClientFactory {
+    private static final String TAG = "HttpClientFactory";
+
     private HttpClientFactory() {
     }
 
@@ -32,13 +35,18 @@ public final class HttpClientFactory {
         // Let Android select the active default network. Binding an IPv6 FN Connect
         // endpoint to an arbitrary Network can fail with EPERM on VPN, dual-SIM,
         // or restricted networks and breaks every API request sharing this client.
-        // A self-signed profile is only safe after the first certificate has
-        // been pinned by FnOsAuthClient.  Enabling the permissive trust
-        // manager with an empty or malformed pin would accept any certificate
-        // and the hostname verifier below deliberately cannot compensate.
-        if (profile != null && profile.https && profile.trustSelfSigned
-                && !CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
-            trustPinnedSelfSigned(builder, profile.certificatePinSha256);
+        // A trusted endpoint that has no pin yet still has to connect: the
+        // authentication call observes the certificate and stores its pin, and
+        // until that happened every later client would fall back to the platform
+        // trust store and reject the same certificate the login just accepted.
+        // Profiles that are neither self-signed nor addressed by IP keep the
+        // platform default, and a recorded pin is always enforced.
+        if (profile != null && profile.https && shouldTrustEndpoint(profile)) {
+            if (!CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
+                trustPinnedSelfSigned(builder, profile.certificatePinSha256);
+            } else {
+                trustFirstUseSelfSigned(builder, null);
+            }
         }
         return builder.build();
     }
@@ -55,10 +63,12 @@ public final class HttpClientFactory {
 
     public static OkHttpClient createAuthenticationClient(@Nullable Context context, ConnectionProfile profile,
                                                            @Nullable CertificatePin.Observation observation) {
-        if (profile == null || !profile.https || !profile.trustSelfSigned
+        if (profile == null || !profile.https || !shouldTrustEndpoint(profile)
                 || !CertificatePin.normalize(profile.certificatePinSha256).isEmpty()) {
             return create(context, profile);
         }
+        Log.i(TAG, "TLS: accepting the endpoint certificate (trustSelfSigned="
+                + profile.trustSelfSigned + " address=" + profile.host + ")");
         OkHttpClient.Builder builder = create(context, profile).newBuilder();
         trustFirstUseSelfSigned(builder, observation);
         return builder.build();
@@ -120,6 +130,48 @@ public final class HttpClientFactory {
             }
         }
         return "";
+    }
+
+    /**
+     * Whether hostname verification can never succeed for this endpoint.
+     *
+     * <p>A public CA does not issue certificates for bare addresses, so a
+     * profile pointed at an IP address can only ever present something the
+     * platform will reject — the check carries no identity information, it just
+     * refuses to connect.  FN Connect hands out exactly those addresses, which
+     * is why a login over 公网 IPv4/IPv6 failed with "HTTPS 证书校验失败" no
+     * matter how the 允许自签名证书 box was set (reported 2026-11-11).
+     *
+     * <p>The trust-on-first-use observation still runs, so the certificate that
+     * was accepted is recorded and later compared against the stored pin.
+     */
+    static boolean shouldTrustEndpoint(ConnectionProfile profile) {
+        if (profile == null) return false;
+        if (profile.trustSelfSigned) return true;
+        return isIpLiteral(profile.host);
+    }
+
+    /** True for dotted-quad IPv4 and for anything shaped like IPv6. */
+    static boolean isIpLiteral(@Nullable String host) {
+        if (host == null) return false;
+        String value = host.trim();
+        if (value.isEmpty() || value.length() > 45) return false;
+        if (value.indexOf(':') >= 0) {
+            // IPv6, possibly with a zone id. The platform's own parser is the
+            // authority on validity; this only has to tell addresses from names.
+            return value.matches("[0-9a-fA-F:.%]+");
+        }
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3) return false;
+            for (int index = 0; index < part.length(); index++) {
+                char ch = part.charAt(index);
+                if (ch < '0' || ch > '9') return false;
+            }
+            if (Integer.parseInt(part) > 255) return false;
+        }
+        return true;
     }
 
     private static void trustPinnedSelfSigned(OkHttpClient.Builder builder, String expectedPin) {
