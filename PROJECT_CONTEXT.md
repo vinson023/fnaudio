@@ -1,5 +1,5 @@
 # fnAudio 项目上下文
-- 2026-11-11：R534 **FN Connect 官方端点字段**。`/api/v1/fn/con` 响应里的 `fn: ["<id>.fnos.net:443"]` 才是唯一能过 TLS 主机名校验的端点，解析器此前只读 `publicIpv4` 导致 HTTPS 下 FN ID 登录必然证书失败；现已优先读 `fn`，并让 `<id>.fnos.net` 名字统一走该解析器。
+- 2026-11-11：R534/R535 **FN Connect 公网/中继**。`fn: ["<id>.fnos.net:443"]` 是**浏览器门户**（会 302 到 `fnos.net/<id>/...`，拿不到 cookie），不能当 API 端点，相关改动已撤销；该 NAS 的公网 5667 端口本身不可达，所以「中继」是唯一可行的远程路径。现在 AUTO 模式在 HTTPS 下也会回落中继，PUBLIC 失败时明确提示改中继，并且优先探测局域网地址。
 - 2026-11-11：R533 **HTTPS 下 FN ID 登录**。`FnConnectResolver` 解析出的公网端点是裸 IP，证书按域名签发，用 IP 登录必然主机名校验失败；改为 HTTPS 时优先探测 `<FN ID>.fnos.net:443`，失败再回落地址探测。
 - 2026-11-11：R533 **播放设备改后台扫描**。`/api/playback/targets` 的被动新鲜度窗口从 15s 提到 60s，并新增常驻 keeper 线程（25s 一轮）持续刷新 DLNA 缓存，打开对话框不再触发扫描；前端状态区改为「后台更新中 / 上次更新」。
 - 2026-11-11：R532 **三条反馈修复**。①启动顺序：HTTP 监听提前到音频后端之前，启动脚本等待窗口 6s→30s（DAC 关机时 MPD 冷启动会超时，之前整包起不来）。②网页端目录选择器 `sidebarGroup` 补 `remote`/`external`，另加常驻「浏览服务器目录」按钮（安卓走服务端浏览所以一直能挂 SMB）。③安卓 HTTPS 闪退：修四处抛到 UI 线程的调用（SSL 回调空 profile、TLS 栈装配、Keystore 落盘、请求构造/enqueue）。

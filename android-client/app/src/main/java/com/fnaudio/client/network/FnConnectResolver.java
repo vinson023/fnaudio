@@ -44,11 +44,6 @@ public final class FnConnectResolver {
     private static final int MAX_HOST_CHARS = 255;
     private static final long DIRECT_PROBE_BUDGET_MS = 8000L;
     private static final int DIRECT_PROBE_TIMEOUT_MS = 1800;
-    // FN Connect publishes the device under this zone, and this is the only
-    // spelling that carries a certificate the NAS can actually present.
-    private static final String FN_CONNECT_ZONE = ".fnos.net";
-    private static final int FN_CONNECT_DOMAIN_PORT = 443;
-    private static final int FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS = 2500;
     public enum Mode { AUTO, PUBLIC, RELAY }
     public interface Callback {
         void onResolved(ConnectionProfile profile);
@@ -149,8 +144,24 @@ public final class FnConnectResolver {
                         finish(call, generation, () -> callback.onResolved(resolved));
                     } else {
                         ConnectionProfile fallback = fallback(fnId, data, useHttps);
-                        if (mode == Mode.AUTO && !useHttps && relayConfigClient != null && tunnel != null) {
+                        boolean relayAvailable = relayConfigClient != null && tunnel != null;
+                        if (mode == Mode.AUTO && relayAvailable) {
+                            // A failed direct probe is not a dead end: the relay is
+                            // the supported route when the NAS port is not reachable
+                            // from outside, and that includes HTTPS profiles. The
+                            // tunnel terminates on 127.0.0.1 over plain HTTP, so
+                            // there is no certificate for it to fail — the previous
+                            // `!useHttps` guard made every HTTPS user choose the
+                            // relay by hand (reported 2026-11-11: 公网连接 fails,
+                            // 中继 works).
                             beginRelay(call, generation, fnId, fallback, callback);
+                        } else if (mode == Mode.PUBLIC && relayAvailable) {
+                            // The user asked for the public route and nothing
+                            // answered. Saying so is more useful than returning an
+                            // address that was just proven unreachable and letting
+                            // the login fail with something unrelated.
+                            finish(call, generation, () -> callback.onError(
+                                    "公网直连不可达（端口未开放或被网络屏蔽），请改用「中继」或「速度优先」。"));
                         } else if (fallback != null) {
                             finish(call, generation, () -> callback.onResolved(fallback));
                         } else {
@@ -327,28 +338,32 @@ public final class FnConnectResolver {
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
+        Set<String> lanHosts = new LinkedHashSet<>();
         Set<String> ipv6Hosts = new LinkedHashSet<>();
         Set<String> ipv4Hosts = new LinkedHashSet<>();
+        // The NAS also reports its LAN address. On the same network that is the
+        // only route that does not hairpin through the router's public address,
+        // and NAT loopback is exactly what many home routers refuse.
+        collect(lanHosts, data, "ipv4", "lanIpv4", "lanIp", "localIpv4");
         collect(ipv6Hosts, data, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
         collect(ipv4Hosts, data, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         JSONObject network = data.optJSONObject("network");
         if (network != null) {
+            collect(lanHosts, network, "ipv4", "lanIpv4", "lanIp", "localIpv4");
             collect(ipv6Hosts, network, "publicIpv6", "publicIPv6", "ipv6", "public_ipv6");
             collect(ipv4Hosts, network, "publicIpv4", "publicIPv4", "publicIp", "publicIP", "ipv4", "public_ipv4");
         }
         long deadlineElapsedRealtime = SystemClock.elapsedRealtime() + DIRECT_PROBE_BUDGET_MS;
-        // HTTPS first tries the endpoint FN Connect actually publishes (`fn`,
-        // e.g. "vinson023.fnos.net:443"), because every address below is a bare
-        // IP and a NAS certificate is issued for a name.  Reported 2026-11-11:
-        // the same account signed in over that name and failed over the FN ID —
-        // the resolver was ignoring `fn`, handing back https://<public ip>:5667,
-        // and hostname verification rejected a certificate that was never
-        // meant for an address.  The address probes stay as the fallback so
-        // plain HTTP, LAN-only devices and blocked zones behave as before.
-        if (useHttps) {
-            ConnectionProfile published = publishedEndpoint(fnId, data, generation, deadlineElapsedRealtime);
-            if (published != null) return published;
-        }
+        // The `fn` field in the response ("<fnid>.fnos.net:443") is deliberately
+        // NOT used here.  It is the browser portal, not an API endpoint: it
+        // answers every path with a 302 to https://fnos.net/<fnid>/..., so a
+        // client that follows redirects ends up on a web page, gets a 200 and no
+        // session cookie.  Reported 2026-11-11 as "访问码验证成功但未取得会话
+        // Cookie" — an earlier attempt of mine did exactly that.  Public access
+        // has to go through an address on the NAS port, or through the relay.
+        ConnectionProfile lan = firstReachable(fnId, lanHosts, false, httpPort, httpsPort, useHttps,
+                generation, deadlineElapsedRealtime);
+        if (lan != null) return lan;
         ConnectionProfile ipv6 = firstReachable(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps,
                 generation, deadlineElapsedRealtime);
         if (ipv6 != null) return ipv6;
@@ -360,17 +375,6 @@ public final class FnConnectResolver {
 
     @Nullable
     private ConnectionProfile fallback(String fnId, JSONObject data, boolean useHttps) {
-        if (useHttps) {
-            // No probe here on purpose: this is the path taken when the probes
-            // above ran out of budget, and the published endpoint is the one
-            // answer that does not depend on reachability to be correct.
-            List<HostPort> published = publishedCandidates(fnId, data);
-            if (!published.isEmpty()) {
-                HostPort first = published.get(0);
-                return ConnectionProfile.create("", "FN Connect - " + fnId, first.host,
-                        first.port, first.https, false, "", "");
-            }
-        }
         JSONObject ports = data.optJSONObject("port");
         int httpPort = port(ports != null ? ports : data, "httpPort", "http_port", 5666);
         int httpsPort = port(ports != null ? ports : data, "httpsPort", "https_port", 5667);
@@ -385,125 +389,6 @@ public final class FnConnectResolver {
         }
         ConnectionProfile ipv6 = firstPublished(fnId, ipv6Hosts, true, httpPort, httpsPort, useHttps);
         return ipv6 != null ? ipv6 : firstPublished(fnId, ipv4Hosts, false, httpPort, httpsPort, useHttps);
-    }
-
-    /**
-     * The endpoint FN Connect publishes for this device, probed before use.
-     *
-     * <p>{@code fn} carries one entry per published route, normally
-     * {@code "<fnid>.fnos.net:443"}.  It is the only hint in the payload that is
-     * a name rather than an address, and therefore the only one a TLS client can
-     * verify.  Returns null when none of them answer, so a LAN-only device, a
-     * network that blocks the zone, or an older payload without {@code fn} keeps
-     * falling through to the address probes unchanged.
-     */
-    @Nullable
-    private ConnectionProfile publishedEndpoint(String fnId, JSONObject data, long generation,
-                                                long deadlineElapsedRealtime) {
-        for (HostPort candidate : publishedCandidates(fnId, data)) {
-            if (!isGenerationActive(generation)) return null;
-            long remainingMs = deadlineElapsedRealtime - SystemClock.elapsedRealtime();
-            if (remainingMs <= 0L) return null;
-            int timeoutMs = (int) Math.min(FN_CONNECT_DOMAIN_PROBE_TIMEOUT_MS, remainingMs);
-            if (!isReachable(candidate.host, candidate.port, generation, timeoutMs)) continue;
-            Log.i(TAG, "resolved published FN Connect endpoint");
-            // trustSelfSigned is false on purpose: the whole reason to take a
-            // published name is that it presents a certificate matching it.
-            return ConnectionProfile.create("", "FN Connect - " + fnId, candidate.host,
-                    candidate.port, candidate.https, false, "", "");
-        }
-        return null;
-    }
-
-    /**
-     * Parses {@code fn} into host/port pairs, falling back to the stable zone.
-     *
-     * <p>The zone fallback only applies to ids that can live under it; anything
-     * else yields an empty list and the caller keeps its previous behaviour.
-     */
-    private static List<HostPort> publishedCandidates(String fnId, JSONObject data) {
-        List<HostPort> result = new ArrayList<>();
-        for (String raw : strings(data, "fn")) {
-            HostPort parsed = parseHostPort(raw);
-            if (parsed != null) result.add(parsed);
-        }
-        if (result.isEmpty() && fnId.matches("[a-z0-9-]{3,64}")) {
-            HostPort derived = parseHostPort(fnId + FN_CONNECT_ZONE + ":" + FN_CONNECT_DOMAIN_PORT);
-            if (derived != null) result.add(derived);
-        }
-        return result;
-    }
-
-    /** A parsed {@code host:port} route, with the scheme it was written with. */
-    static final class HostPort {
-        final String host;
-        final int port;
-        final boolean https;
-
-        HostPort(String host, int port, boolean https) {
-            this.host = host;
-            this.port = port;
-            this.https = https;
-        }
-    }
-
-    @Nullable
-    static HostPort parseHostPort(@Nullable String raw) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.isEmpty()) return null;
-        boolean https = true;
-        if (value.regionMatches(true, 0, "https://", 0, 8)) value = value.substring(8);
-        else if (value.regionMatches(true, 0, "http://", 0, 7)) { value = value.substring(7); https = false; }
-        int slash = value.indexOf('/');
-        if (slash >= 0) value = value.substring(0, slash);
-        String host;
-        int port;
-        if (value.startsWith("[")) {
-            int close = value.indexOf(']');
-            if (close < 0) return null;
-            host = value.substring(1, close);
-            String rest = value.substring(close + 1);
-            port = rest.startsWith(":") ? digits(rest.substring(1)) : (https ? 443 : 80);
-        } else {
-            int colon = value.lastIndexOf(':');
-            if (colon < 0) {
-                host = value;
-                port = https ? 443 : 80;
-            } else {
-                host = value.substring(0, colon);
-                port = digits(value.substring(colon + 1));
-            }
-        }
-        host = normalizeHost(host);
-        if (host.isEmpty() || host.length() > MAX_HOST_CHARS) return null;
-        if (port < 1 || port > 65535) return null;
-        return new HostPort(host, port, https);
-    }
-
-    private static int digits(String value) {
-        if (value == null || value.isEmpty() || value.length() > 5) return -1;
-        for (int index = 0; index < value.length(); index++) {
-            char ch = value.charAt(index);
-            if (ch < '0' || ch > '9') return -1;
-        }
-        try { return Integer.parseInt(value); } catch (NumberFormatException error) { return -1; }
-    }
-
-    /** Reads a field that may be a single string or an array of strings. */
-    private static List<String> strings(JSONObject data, String key) {
-        List<String> values = new ArrayList<>();
-        if (data == null) return values;
-        Object value = data.opt(key);
-        if (value instanceof String) {
-            values.add((String) value);
-        } else if (value instanceof JSONArray) {
-            JSONArray array = (JSONArray) value;
-            for (int index = 0; index < array.length() && values.size() < MAX_HOSTS_PER_FAMILY; index++) {
-                Object item = array.opt(index);
-                if (item instanceof String) values.add((String) item);
-            }
-        }
-        return values;
     }
 
     private ConnectionProfile firstReachable(String fnId, Set<String> hosts, boolean ipv6,
