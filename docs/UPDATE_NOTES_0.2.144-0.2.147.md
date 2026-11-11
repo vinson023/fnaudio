@@ -75,7 +75,7 @@
 
 | 文件 | 大小 | SHA256 |
 |---|---|---|
-| `fnaudio-0.2.147-fnpack.fpk` | 5,399,1xx B | 见 `SHA256SUMS` |
-| `fnaudio-android-0.2.147-release.apk` | 12,938,075 B | 见 `ANDROID_SHA256SUMS` |
+| `fnaudio-0.2.147-fnpack.fpk` | 5,398,463 B | `2473182C…7029A181B` |
+| `fnaudio-android-0.2.147-release.apk` | 12,938,075 B | `F631090A…EEDA8440` |
 
 APK 使用正式证书签名（`CN=fnAudio`），`apksigner` 验签通过。
