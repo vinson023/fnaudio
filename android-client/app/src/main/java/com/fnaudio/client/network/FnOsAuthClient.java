@@ -356,7 +356,22 @@ public final class FnOsAuthClient {
             if (socket != null) socket.cancel();
             client.dispatcher().cancelAll();
             client.dispatcher().executorService().shutdownNow();
-            client.connectionPool().evictAll();
+            // Evicting the pool closes pooled sockets, including TLS ones, and
+            // this runs on whichever thread cancelled the attempt — the UI
+            // thread whenever a rejected token falls back to the saved password.
+            // Doing that inline killed the process on Android 13:
+            //   RealConnectionPool.evictAll -> Util.closeQuietly
+            //   at FnOsAuthClient$Session.cancel
+            //   at LoginActivity$3.onCredentialRejected   (2026-11-11)
+            // Hand it to a throwaway thread; the pool expires on its own anyway.
+            final okhttp3.OkHttpClient draining = client;
+            try {
+                new Thread(() -> {
+                    try { draining.connectionPool().evictAll(); } catch (RuntimeException ignored) { }
+                }, "fnaudio-auth-pool-drain").start();
+            } catch (RuntimeException ignored) {
+                // Refusing to spawn a thread must not take down the caller.
+            }
         }
     }
 
