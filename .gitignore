@@ -75,3 +75,9 @@ Thumbs.db
 .secrets/
 *.jks
 *.keystore
+
+# 工作区外置资料：第三方源码、逆向产物、历史归档。体积可达十几 GB，
+# 永不入库；以前没写这一行，`git add -A` 会把其中的 gradle 日志一起吞进去
+# 并撑爆进程（2026-11-11 踩过一次）。`_archive/` 同义。
+_external/
+_archive/

@@ -404,3 +404,13 @@
 - 决策：具体选择
 - 影响：代码、测试、发布和兼容性后果
 ```
+
+## 决策：开发文件不离开 D:\fnAudio
+
+- 编号：（未编号，随负责人 2026-11-12 口述确立）
+- 状态：已确认
+- 背景：历史上出现过 `D:\fnAudio-cleanup-archive`（15 GB）、`D:\fnAudio-release-export-0.2.125`（143 MB）等
+  同盘旁支目录，既有丢失风险，也让「哪个才是真源码」变得不明确。
+- 决策：**所有开发相关文件一律放在 `D:\fnAudio` 内**；归档、导出、临时副本放 `_external/`（已 gitignore）。
+- 影响：构建脚本、测试与文档引用一律使用仓库内相对路径；`_external/` 与 `_archive/` 不入库，
+  因此不影响 FPK/APK 体积与 `SOURCE_MANIFEST`（后者只覆盖 `src/` 与 `android-client/`）。
