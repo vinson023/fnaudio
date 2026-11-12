@@ -414,3 +414,13 @@
 - 决策：**所有开发相关文件一律放在 `D:\fnAudio` 内**；归档、导出、临时副本放 `_external/`（已 gitignore）。
 - 影响：构建脚本、测试与文档引用一律使用仓库内相对路径；`_external/` 与 `_archive/` 不入库，
   因此不影响 FPK/APK 体积与 `SOURCE_MANIFEST`（后者只覆盖 `src/` 与 `android-client/`）。
+
+### 补充：用户级目录用目录联接回填（2026-11-12）
+
+- 决策：`.android`、`.gradle`、`.workbuddy/projects/d-fnAudio` 三处真实数据迁到
+  `_external/tooling/`，原路径改建 **junction**（`New-Item -ItemType Junction`）。
+- 理由：直接改建环境变量会让 adb 找不到密钥（无线调试要重新配对）、让 Gradle 重新下载缓存；
+  联接对上层完全透明，路径不变、行为不变，而字节落在仓库内。
+- 影响：`_external/` 已被 gitignore，所以这些数据不入库；`_external/tooling/` 属**不可删**目录。
+- 教训：迁移完不要跑 `adb keygen <已有路径>`——它会**覆盖**现有密钥对。本次误执行导致 adbkey 被重写
+  （mtime 2026-11-12 15:55:42），主机侧的无线调试授权大概率失效，需要重新配对一次。
