@@ -111,7 +111,9 @@ assert.doesNotMatch(index, /class="top-actions"/, "the header must not carry the
 assert.doesNotMatch(finalMobileContract, /\.top-actions/, "the mobile contract must not re-declare the retired top-action row");
 assert.match(css, /#favoriteCurrentBtn:not\(\.active-control\):hover/);
 assert.match(css, /#shuffleBtn:not\(\.active-control\):hover/);
-assert.match(css, /@media \(hover:none\)/, "Touch devices must not retain a false active-looking hover state");
+// The touch layer covers both sheets, so it now lives once at the end of the
+// last stylesheet instead of three selectors here (R553).
+assert.match(css + themeCss, /@media \(hover:none\)/, "Touch devices must not retain a false active-looking hover state");
 
 const finalThemeMobileContract = themeCss.slice(themeCss.lastIndexOf("/* The compact mobile header"));
 assert.doesNotMatch(themeCss, /\.top-actions/, "the retired top-action row must not be re-declared at any breakpoint");

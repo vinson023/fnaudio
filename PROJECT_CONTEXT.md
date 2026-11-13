@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-13：R553 **触摸端悬停残留**。Android WebView / iOS Safari 会把 `:hover` 留在最后点过的控件上，而全站悬停都在画底色，点过「下一首」后按钮一直挂着浅灰圆角方块（实测 `rgba(0,0,0,.08)`、radius 6px、44×44）。在最后加载的 `fnos-theme.css` 末尾加一份统一 `(hover:none)` 还原层，按四组静止态回填并保留已点亮开关的状态色；`app.css` 里那份三选择器的旧补丁删除。`test_ui_touch_hover_residue.py` 把「每条会画框的悬停规则都必须有触摸对应项」变成契约，e2e `hover-residue.spec.js` 在触摸视口逐个点按取证。
+
 - 2026-11-12：R551 **合并写 0.2.144 → 0.2.149 更新说明**。新增 `docs/UPDATE_NOTES_0.2.144-0.2.149.md`，按主题合并（FN ID 公网登录、证书策略、播放设备后台扫描、音乐目录单入口、图标、数播启动、HTTPS 闪退、电视端下线），不逐版列举；中间版本号全文 0 处。
 - 2026-11-11：R550 **0.2.149**（versionCode 407）。去掉「允许自签名证书」勾选框：HTTPS 端点证书一律接受、首次成功后固定指纹、变更即拒绝（对齐官方 `badCertificateCallback`）；顺带删掉已无调用方的 `ConnectAddressOverride`。Java 60 文件 / 15,003 行。
 - 2026-11-11：R549 **0.2.148**（versionCode 406）。撤掉 R541 的网页登录入口（`WebLoginActivity` 及布局、登录页按钮、清单注册全部移除，-327 行），原生 FN Connect 登录在真机验证通过；版本坐标八处同步。

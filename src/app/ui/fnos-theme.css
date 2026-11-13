@@ -1548,3 +1548,127 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
   .settings-foot-actions { flex: 1 1 100%; }
   .settings-foot-actions .secondary-button { flex: 1 1 0; min-height: 44px; }
 }
+
+/* ---------------------------------------------------------------------------
+ * 触摸设备上的悬停残留（R553）
+ *
+ * 没有指针可悬停的设备上，Android WebView 与 iOS Safari 仍会把 :hover 留在
+ * 最后点过的那个元素上，直到用户点别处为止。这与"悬停"的语义正好相反：手指
+ * 已经离开，界面却按"正在悬停"来画。本文件里每个 :hover 分支都在画一个框
+ * （底色 / 边框 / 图标变色），于是点过的按钮会一直挂着那块底色——传输栏最明显，
+ * 点一下"下一首"，传输栏那个按钮就留下一块浅灰圆角方块，直到下一次点击。
+ *
+ * 这份层把每个"悬停才出现"的视觉变化还原成各自的静止态。它必须放在最后加载
+ * 的样式表末尾：两边的悬停规则都带 !important，同优先级下只有后出现的能赢。
+ *
+ * 没有列进来的悬停规则，都是悬停值与静止值本身就相同的（.danger-button、
+ * .action-button、.device-button、.native-delete-confirm、.track-action-choice.danger、
+ * .track.is-current、.track.is-selected、.nav-item），它们不产生可看见的残留。
+ * 新增或修改悬停规则时，如果它会画出一块底色、边框或图标颜色，请在这里补上
+ * 对应的静止值——test_ui_touch_hover_residue.py 会按这条约束核对。
+ * ------------------------------------------------------------------------- */
+@media (hover:none){
+  /* 传输栏：静止态是透明底色 + 次要色。蓝色圆钮与已点亮的开关保留自己的状态色。 */
+  .transport .player-button:hover,
+  .player-button:hover,
+  .player-actions #deviceBtn:hover,
+  .player-actions #lyricsBtn:hover,
+  .player-actions #queueBtn:hover,
+  .player-actions #volumeBtn:hover,
+  .player-actions #repeatBtn:not(.active-control):hover,
+  .player-actions #shuffleBtn:not(.active-control):hover,
+  .player-actions #favoriteCurrentBtn:not(.active-control):hover,
+  .transport #mobileShuffleBtn:not(.active-control):hover{
+    background: transparent !important;
+    color: var(--ui-secondary) !important;
+  }
+  .transport .player-button.play-button:hover{
+    background: var(--ui-accent) !important;
+    color: var(--ui-on-accent) !important;
+  }
+  .player-actions #repeatBtn.active-control:hover,
+  .player-actions #shuffleBtn.active-control:hover,
+  .transport #mobileShuffleBtn.active-control:hover{
+    background: var(--ui-selected) !important;
+    color: var(--ui-accent) !important;
+  }
+  .player-actions #favoriteCurrentBtn.active-control:hover{
+    background: var(--ui-selected) !important;
+    color: var(--ui-danger) !important;
+  }
+
+  /* 工具与图标按钮：静止态是透明底色 + 次要色。 */
+  .icon-button:hover,
+  .top-icon-button:hover,
+  .track-actions button:hover,
+  .track-head-button:hover,
+  .table-head-more:hover,
+  .album-detail-table-head .track-head-button:hover,
+  .album-detail-table-head .table-head-more:hover,
+  #deviceDialog .dialog-head .icon-button:hover,
+  .pager-refresh-button:hover,
+  .folder-crumb:hover,
+  .settings-nav button:hover,
+  .sidebar-close:hover,
+  .search-clear:hover,
+  .library-path-remove:hover,
+  .column-move-button:hover:not(:disabled){
+    background: transparent !important;
+    color: var(--ui-secondary) !important;
+  }
+  .library-path-remove:hover{
+    color: var(--ui-muted) !important;
+    border-color: var(--ui-border) !important;
+  }
+
+  /* 本身有底色的按钮：回到各自的静止底色，而不是透明。 */
+  .primary-button:hover:not(:disabled),
+  .settings-save:hover:not(:disabled),
+  .play-button:hover{
+    background: var(--ui-accent) !important;
+    color: var(--ui-on-accent) !important;
+  }
+  .secondary-button:hover,
+  .metadata-candidate-choice:hover{
+    background: var(--ui-surface) !important;
+    border-color: var(--ui-border) !important;
+    color: var(--ui-secondary) !important;
+  }
+  .track-action-choice:hover{
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+  }
+  .track-context-actions .track-action-choice:hover{
+    background: transparent !important;
+    color: var(--ui-secondary) !important;
+  }
+  .column-choice:hover,
+  .artist-all-songs-entry:hover{
+    background: var(--ui-sidebar) !important;
+    border-color: var(--ui-border) !important;
+  }
+
+  /* 行与列表项：静止态是透明（当前行与已选中行由自己的类着色，不受影响）。 */
+  .track:not(.is-current):not(.is-selected):hover,
+  .group-row:not(.is-selected):hover,
+  .album-group-row:hover,
+  .library-dir-row:hover,
+  .device-row:hover,
+  .metadata-log-issue[role="button"]:hover,
+  .native-delete-outline:hover:not(:disabled),
+  .native-delete-cancel:hover:not(:disabled),
+  .pager-nav-button:hover:not(:disabled),
+  .pager-page-button:hover:not(.is-current),
+  .metadata-provider-move-button:hover:not(:disabled){
+    background: transparent !important;
+    color: var(--ui-secondary) !important;
+  }
+  .folder-group-row:hover .folder-group-chevron{
+    color: var(--ui-muted) !important;
+  }
+  .track-list.group-mode .group-row:hover{
+    background: var(--ui-surface) !important;
+    border-color: var(--fn-line) !important;
+    box-shadow: none !important;
+  }
+}

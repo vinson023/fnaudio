@@ -1190,14 +1190,10 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   color:var(--ui-secondary)!important;
   border-color:var(--ui-border)!important;
 }
-@media (hover:none){
-  .player-actions #favoriteCurrentBtn:not(.active-control):hover,
-  .player-actions #shuffleBtn:not(.active-control):hover,
-  .transport #mobileShuffleBtn:not(.active-control):hover{
-    background:transparent!important;
-    color:var(--ui-secondary)!important;
-  }
-}
+/* Touch devices keep :hover on the last tapped control, so every hover arm that
+ * paints has to be undone there. That now lives in one place at the end of
+ * fnos-theme.css (the last stylesheet), which covers all of these selectors and
+ * the rest of the sheet's hover arms instead of only the shuffle button. */
 
 /* Metadata provider configuration.  The list belongs to the settings page now:
  * it used to carry its own max-height + overflow inside a pane that also scrolls,
