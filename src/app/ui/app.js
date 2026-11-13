@@ -2700,13 +2700,21 @@ function updateMediaSessionPlaybackState() {
     outputTarget: state.playTarget,
   });
 }
-function applyCoreSnapshot(core, shouldLoad = true) {
+function applyCoreSnapshot(core, shouldLoad = true, options = {}) {
   const currentId = core?.current || core?.state?.current;
   if (!currentId) return false;
   const index = state.queue.findIndex(item => String(item?.id || "") === String(currentId));
   if (index < 0) return false;
   const previousIndex = state.index;
-  state.index = index;
+  // A reply to a command that carried no track change says nothing about what
+  // this client is playing: play, pause, seek, repeat and shuffle all come back
+  // with the core's idea of the current row. Adopting it moved the library
+  // position and the transport title onto another queue entry while the element
+  // kept the track it already had, so the sound stayed right and the name became
+  // a different song. Only a track-changing command (shouldLoad), a device that
+  // plays on its own (no local element to describe) or an explicit opt-in may
+  // move the position.
+  if (shouldLoad || isRemoteTarget() || options.adoptPosition === true) state.index = index;
   state.repeat = core.repeat || state.repeat;
   state.shuffle = typeof core.shuffle === "boolean" ? core.shuffle : state.shuffle;
   updateRepeatShuffleButtons();
@@ -4593,10 +4601,16 @@ async function resolveSelectedGroupTracks(groupKey = "") {
     return true;
   });
 }
-function applyConfirmedQueue(queue, core) {
+function applyConfirmedQueue(queue, core, requestedId = "") {
   state.queue = Array.isArray(queue) ? queue : [];
-  const currentId = String(core?.current || "");
-  state.index = state.queue.findIndex(item => String(item.id) === currentId);
+  // The reply describes the server's queue, which a command that landed while
+  // this save was in flight may already have moved past the id this save asked
+  // for. Trusting the echo put the position back on the outgoing track, and the
+  // next repaint named that track while the element played the new one. The
+  // requested id is the row the caller is about to load, so it wins.
+  const wanted = String(requestedId || core?.current || "");
+  state.index = state.queue.findIndex(item => String(item.id) === wanted);
+  if (state.index < 0) state.index = state.queue.findIndex(item => String(item.id) === String(core?.current || ""));
   if (state.index < 0 && state.queue.length) state.index = 0;
   if (core?.repeat) state.repeat = core.repeat;
   if (typeof core?.shuffle === "boolean") state.shuffle = core.shuffle;
@@ -4626,7 +4640,7 @@ async function commitQueue(queue, currentId = "", options = {}) {
       ? `播放队列请求返回了错误页面（HTTP ${response.status}），请重新打开 fnAudio。`
       : `播放队列保存失败（HTTP ${response.status}）`));
   }
-  applyConfirmedQueue(queue, data.core);
+  applyConfirmedQueue(queue, data.core, currentId);
   if (nativePlaybackAvailable() && String(state.nativePlayback.mediaId || "") === String(currentItem()?.id || "")) {
     // Handing the queue back to the host player has to describe the host player.
     // ``isPlayingNow``/``currentSeconds`` answer about the audible stream, which

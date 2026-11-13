@@ -101,6 +101,7 @@ from dlna.upmpdcli_renderer import upmpdcli_probe
 from playback import AlsaOutput, DlnaPushOutput, MpdOutput, PlaybackCommand, PlaybackCore, TrackRef
 from playback.http_contract import (
     apply_legacy_player_state,
+    control_track_alignment,
     legacy_control_payload,
     legacy_load_payload,
     legacy_response_headers,
@@ -2970,6 +2971,23 @@ def playback_control(handler, payload):
     cancel_playback_restore_retry()
     PLAYBACK_CORE.set_target("local" if target_kind == "browser" else target_id, target_kind)
     if action in ("next", "previous"):
+        # A browser target is stepped on behalf of the client that owns the
+        # element, so the track it reports is the position the listener is
+        # actually standing on. The core's own cursor can drift from it (a
+        # client-side CUE tail walk advances without a round trip, a second
+        # window loads its own track), and stepping from the drifted cursor came
+        # back with a song that was not the neighbour of what was playing --
+        # the transport row then named a different queue entry than the audio.
+        position_snapshot = PLAYBACK_CORE.snapshot()
+        alignment = control_track_alignment(
+            target_kind,
+            action,
+            payload.get("track_id"),
+            position_snapshot.get("current"),
+            position_snapshot.get("queue"),
+        )
+        if alignment:
+            PLAYBACK_CORE.select_current(alignment)
         result = PLAYBACK_CORE.dispatch(
             PlaybackCommand(
                 action,

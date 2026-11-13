@@ -139,12 +139,20 @@ const coreSnapshotContext = {
   loadCurrent: () => {},
   previousQueueIndex: null,
   syncCurrentQueuePresentation: previousIndex => { coreSnapshotContext.previousQueueIndex = previousIndex; },
+  isRemoteTarget: () => false,
 };
 vm.runInNewContext(`${sourceBetween("function applyCoreSnapshot", "async function coreControl")}; this.core = { applyCoreSnapshot };`, coreSnapshotContext);
+// A reply that carried no track change (play/pause/seek/repeat/shuffle) still
+// feeds the mode flags and the favourite row, but it must not move the position:
+// doing so named another queue entry while the element kept its track.
 assert.equal(coreSnapshotContext.core.applyCoreSnapshot({ current: "two" }, false), true);
+assert.equal(coreSnapshotContext.state.index, 0, "A non-transport reply must not move the position");
+assert.equal(coreSnapshotContext.previousQueueIndex, 0, "The row guard only ever sees the unchanged position");
+assert.equal(coreSnapshotContext.favoriteRefreshes, 1);
+// A track-changing command is the one reply that may move it.
+assert.equal(coreSnapshotContext.core.applyCoreSnapshot({ current: "two" }, true), true);
 assert.equal(coreSnapshotContext.state.index, 1);
 assert.equal(coreSnapshotContext.previousQueueIndex, 0);
-assert.equal(coreSnapshotContext.favoriteRefreshes, 1);
 
 const favoriteContext = {
   state: { queue: [{ id: 42 }], index: 0, favorites: ["42"] },

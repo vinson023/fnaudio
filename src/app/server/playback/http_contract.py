@@ -57,6 +57,38 @@ def normalize_queue_tracks(source: Any) -> List[Dict[str, Any]]:
     return tracks
 
 
+def control_track_alignment(
+    kind: str,
+    action: Any,
+    requested_track_id: Any,
+    current_track_id: Any,
+    queue_ids: Any,
+) -> str:
+    """Return the track a relative transport command has to advance from.
+
+    A browser target is driven by whichever client is looking at it: that client
+    owns the audio element, so it is the only authority on what is audible. The
+    core's own position can drift away from it -- a client-side CUE tail walk
+    advances without a round trip, a second window loads its own track, an
+    earlier cast left the core somewhere else -- and a "previous" pressed after
+    that drift stepped from the drifted index and came back with a song the
+    listener was never next to. The client already sends its playing track, so
+    the core adopts it before stepping when it is a queue member.
+    """
+    if kind != "browser":
+        return ""
+    requested_action = action.strip().lower() if isinstance(action, str) else ""
+    if requested_action not in ("next", "previous"):
+        return ""
+    requested = normalize_track_id(requested_track_id)
+    if not requested or requested == normalize_track_id(current_track_id):
+        return ""
+    if not isinstance(queue_ids, (list, tuple)):
+        return ""
+    members = {normalize_track_id(item) for item in queue_ids}
+    return requested if requested in members else ""
+
+
 def legacy_load_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "target_id": payload.get("device_id"),
