@@ -41,7 +41,10 @@ param(
     [string]$SdkDir = '',
 
     # SDK 里缺 platform-tools 时，让脚本下载官方的 platform-tools（约 12 MB）。
-    [switch]$InstallAdb
+    [switch]$InstallAdb,
+
+    # 找不到 adb 时不要自动下载（脚本默认会下，双击入口才能一次跑通）。
+    [switch]$NoAutoInstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,8 +91,9 @@ function Resolve-AndroidTool {
 
 $adbProbe = Resolve-AndroidTool -CommandName 'adb' -RelativePath 'platform-tools/adb.exe'
 if (-not $adbProbe.Path) {
-    if ($InstallAdb) {
-        Write-Host '   下载 platform-tools…' -ForegroundColor DarkGray
+    if ($InstallAdb -or -not $NoAutoInstall) {
+        Write-Host '   没找到 adb，正在下载官方 platform-tools（约 12 MB）…' -ForegroundColor Yellow
+        Write-Host '   不想自动下载请加 -NoAutoInstall，或用 -SdkDir 指定已有的 SDK。' -ForegroundColor DarkGray
         $sdkTarget = Join-Path $RepoRoot 'tools/android-sdk'
         $zipPath = Join-Path $env:TEMP 'platform-tools-latest-windows.zip'
         try {
