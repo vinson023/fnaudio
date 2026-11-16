@@ -35,7 +35,13 @@ param(
     [switch]$InstallMitm,
 
     # 抓完保留模拟器代理设置（默认清空，避免之后所有流量都走一个已停的代理）。
-    [switch]$KeepProxy
+    [switch]$KeepProxy,
+
+    # 显式指定 SDK 目录（当 ANDROID_HOME 指向的位置没有 platform-tools 时用）。
+    [string]$SdkDir = '',
+
+    # SDK 里缺 platform-tools 时，让脚本下载官方的 platform-tools（约 12 MB）。
+    [switch]$InstallAdb
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,11 +55,73 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$Sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME.Replace('/', '\\') } else { Join-Path $RepoRoot 'tools/android-sdk' }
-$AdbPath = Join-Path $Sdk 'platform-tools/adb.exe'
+# 逐个候选目录找 adb：只看 ANDROID_HOME 会让「装了一半的 SDK」（有 emulator、
+# 没有 platform-tools）直接失败，而它其实只差一个 platform-tools 目录。
+function Resolve-AndroidTool {
+    param([string]$CommandName, [string]$RelativePath)
+    $candidates = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrWhiteSpace($SdkDir)) { [void]$candidates.Add($SdkDir) }
+    if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME)) { [void]$candidates.Add($env:ANDROID_HOME) }
+    if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_SDK_ROOT)) { [void]$candidates.Add($env:ANDROID_SDK_ROOT) }
+    [void]$candidates.Add((Join-Path $RepoRoot 'tools/android-sdk'))
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        [void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'Android/Sdk'))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        [void]$candidates.Add((Join-Path $env:USERPROFILE 'AppData/Local/Android/Sdk'))
+        [void]$candidates.Add((Join-Path $env:USERPROFILE 'Android/Sdk'))
+    }
+    $tried = New-Object System.Collections.ArrayList
+    foreach ($root in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $normalized = $root.Replace('/', '\').TrimEnd('\')
+        $path = Join-Path $normalized $RelativePath
+        [void]$tried.Add($path)
+        if (Test-Path $path) { return @{ Path = $path; Root = $normalized; Tried = $tried } }
+    }
+    $onPath = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if ($onPath -and $onPath.Source) {
+        return @{ Path = $onPath.Source; Root = (Split-Path -Parent (Split-Path -Parent $onPath.Source)); Tried = $tried }
+    }
+    return @{ Path = ''; Root = ''; Tried = $tried }
+}
+
+$adbProbe = Resolve-AndroidTool -CommandName 'adb' -RelativePath 'platform-tools/adb.exe'
+if (-not $adbProbe.Path) {
+    if ($InstallAdb) {
+        Write-Host '   下载 platform-tools…' -ForegroundColor DarkGray
+        $sdkTarget = Join-Path $RepoRoot 'tools/android-sdk'
+        $zipPath = Join-Path $env:TEMP 'platform-tools-latest-windows.zip'
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile $zipPath
+            New-Item -ItemType Directory -Force -Path $sdkTarget | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $sdkTarget -Force
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        } catch {
+            throw "下载 platform-tools 失败：$($_.Exception.Message)。也可以手动下载后解压到 $sdkTarget。"
+        }
+        $adbProbe = Resolve-AndroidTool -CommandName 'adb' -RelativePath 'platform-tools/adb.exe'
+    }
+}
+if (-not $adbProbe.Path) {
+    $triedList = ($adbProbe.Tried | ForEach-Object { '     - ' + $_ }) -join [Environment]::NewLine
+    $hint = @(
+        '找不到 adb.exe。已经找过这些位置：',
+        $triedList,
+        '',
+        '常见原因和对策：',
+        '   1) ANDROID_HOME 指向的 SDK 只装了 emulator / cmdline-tools，没有 platform-tools。',
+        '      补装（SDK 里有 cmdline-tools 时）：',
+        '        sdkmanager "platform-tools"',
+        '   2) 另一个磁盘上有完整 SDK：用 -SdkDir "D://path//to//android-sdk" 指定。',
+        '   3) 干脆没有 platform-tools：加 -InstallAdb，脚本会下载官方的 platform-tools。'
+    ) -join [Environment]::NewLine
+    throw $hint
+}
+$AdbPath = $adbProbe.Path
+$Sdk = $adbProbe.Root
 $Emulator = Join-Path $Sdk 'emulator/emulator.exe'
-if (-not (Test-Path $AdbPath)) { throw "找不到 adb：$AdbPath（设置 ANDROID_HOME 或把 SDK 放到 tools/android-sdk）" }
-if (-not (Test-Path $Emulator)) { throw "找不到 emulator：$Emulator" }
+Write-Host "   adb：$AdbPath" -ForegroundColor DarkGray
 
 # adb 第一次调用会往 stderr 打 "daemon not running"，而 $ErrorActionPreference='Stop'
 # 会把它当成终止错误。所有外部命令统一走这里：stderr 合并成文本返回，退出码自己判。
@@ -150,6 +218,9 @@ if (-not $CaHash) { throw '计算 CA subject_hash_old 失败' }
 Write-Note "CA 指纹名：$CaHash.0"
 
 Write-Step '启动模拟器（-writable-system）'
+if (-not (Test-Path $Emulator)) {
+    throw "找不到 emulator：$Emulator。抓官方 App 需要它；只想看 fnAudio 自己的日志请用 -Mode ourApp。"
+}
 if ($Avd -eq '') {
     $Avd = (Invoke-Tool -Exe $Emulator -list-avds | Select-Object -First 1)
     if (-not $Avd) { throw '没有可用 AVD（emulator -list-avds 为空）' }
