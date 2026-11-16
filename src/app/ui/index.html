@@ -281,7 +281,9 @@
               <div class="metadata-settings-actions">
                 <button class="secondary-button" id="pruneFavoritesBtn" type="button">清理失效收藏</button>
                 <button class="danger-button" id="resetUserStateBtn" type="button">清空收藏与播放列表</button>
+                <button class="danger-button" id="reindexIdentityBtn" type="button">重建曲目标识并迁移收藏</button>
               </div>
+              <p class="dialog-help">「重建曲目标识」把每首歌的 ID 从「文件路径的哈希」改成「文件内容的指纹」，之后改名、换目录、换硬盘都不会再让收藏失效。这是单向操作：执行前会自动备份两个数据库，完成后旧 ID 无法还原。曲库很大时需要几十秒。</p>
               <p class="settings-pane-status" id="dataMaintenanceStatus" aria-live="polite"></p>
             </div>
             <div class="settings-group" data-settings-block="advanced-about">

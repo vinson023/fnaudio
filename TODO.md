@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-16 — **R559 曲目标识改内容指纹 + 迁移**。`track_identity.py`（size+头/中/尾采样）、`library.rebuild_track_identity()`（原地改主键、两阶段防撞键、重复内容加后缀、缺文件保旧 id）、`state_store.remap_track_ids()`（收藏/列表/队列）、设置页「重建曲目标识并迁移收藏」+ 自动备份。**注意**：`METADATA_VERSION` 已升到 20，下次扫描会重新 probe 元数据（一次性）。**待真机**：在真实曲库上跑一次迁移，确认收藏/队列全部对上。
+
 - [x] 2026-11-16 — **R558 手机端一键诊断**。`AuthDiagnostics` + 登录失败弹窗「复制诊断」，报告含端点/路由/凭据是否存在/每一跳状态码/失败阶段，不含任何凭据值。**待真机**：外网复现时直接复制粘贴上报。**后续可选**：若这类问题反复出现，再做「诊断自动上报到服务端」通道，需要服务端接收端与隐私说明。
 
 - [x] 2026-11-16 — **R557 登录取证脚本**。`tools/capture_official_login.ps1`（官方 App：模拟器 + mitmproxy + 系统 CA + 自动导出报告；或 `-Mode ourApp` 只抓握手日志）+ `tools/capture_login_report.py`（把 mitm dump / logcat 整理成对比报告）。**用法**：`powershell -ExecutionPolicy Bypass -File tools/capture_official_login.ps1 -InstallMitm`，按提示在模拟器里登录一次即可。**待办**：需要一次真实外网登录才能产出与官方 App 的对照数据。

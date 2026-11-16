@@ -92,6 +92,7 @@ from library_count_policy import (
 from library_refresh_policy import cancel_refresh, enqueue_refresh, take_refresh
 from library_search_policy import track_search_condition
 from library_search_index_policy import cache_token, search_index_status, uses_fts
+from track_identity import content_track_id, cue_track_id, fallback_track_id
 from library_group_policy import group_match_condition as build_group_match_condition
 from library_memory_query import memory_field
 from library_memory_page import build_memory_library_page
@@ -134,7 +135,12 @@ SUPPORTED = {
 }
 # Re-probe cached metadata so WAV RIFF/INFO track numbers are loaded for
 # existing files instead of being hidden behind a reusable metadata row.
-METADATA_VERSION = 19
+#
+# R559 raised it to 20 together with the switch to content-derived ids. A cached
+# row still carries the id it was stored with, so without the bump a rescan would
+# keep serving path-based ids to some files and content ids to the rest - exactly
+# the mixed state the identity migration exists to avoid.
+METADATA_VERSION = 20
 MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"
@@ -732,7 +738,7 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
             stat = os.stat(audio_path)
         except OSError:
             continue
-        item_id = hashlib.sha1((cue_path + ":" + str(track.get("track_no"))).encode("utf-8", "ignore")).hexdigest()[:16]
+        item_id = cue_track_id(cue_path, track.get("track_no"))
         probe_tags, audio_info = read_probe_metadata(audio_path, config or {})
         metadata = read_metadata(audio_path, root, config or {}, probe_tags)
         metadata.update({"title": track.get("title") or metadata.get("title"), "artist": track.get("artist") or album_artist or metadata.get("artist"), "album": album or metadata.get("album")})
@@ -846,7 +852,8 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
                 items.append(cached)
                 SCAN_STATE["found"] = found_offset + len(items)
                 continue
-            item_id = hashlib.sha1(full.encode("utf-8", "ignore")).hexdigest()[:16]
+            # Content first: renaming or moving the file must not rename the track.
+            item_id = content_track_id(full, stat.st_size) or fallback_track_id(full)
             probe_tags, audio_info = read_probe_metadata(full, config or {})
             metadata = read_metadata(full, root, config, probe_tags)
             items.append(build_audio_item(
@@ -2160,6 +2167,87 @@ def query_library_root_folders(config, search=""):
                 rows = {}
     result = project_root_rows(roots, rows, matched_roots)
     return cache_epoch.put("roots", cache_values, result)
+
+
+def _rekeyed_item_json(raw, new_id):
+    """Rewrite the id inside a stored item without touching anything else."""
+    try:
+        item = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(item, dict):
+        return raw
+    item["id"] = new_id
+    try:
+        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return raw
+
+
+def rebuild_track_identity(config):
+    """Re-key every indexed track by content, returning the old -> new mapping.
+
+    This is the second half of the identity switch: scanning now derives a track
+    id from the file's bytes (``track_identity``), so every row that was indexed
+    under the old ``sha1(path)`` rule has to move to its content id, and every
+    reference to the old id has to move with it.
+
+    It re-keys in place instead of rescanning the filesystem: the index already
+    holds each path, metadata is unchanged, and a rescan would spend minutes
+    re-probing files that are about to be identical.
+
+    A byte-identical duplicate gets a deterministic ``<id>-<path hash>`` suffix
+    instead of being merged away, because dropping a row would silently change the
+    library the user sees; the suffix keeps the row addressable and stable for as
+    long as that copy stays where it is.
+
+    Files that cannot be read keep their current id (``unreadable`` in the report)
+    rather than vanishing from the library over a transient IO error.
+    """
+    invalidate_library_query_cache(config)
+    report = {"rekeyed": 0, "duplicates": 0, "unreadable": 0, "mapping": {}}
+    with library_db_writer(config) as conn:
+        rows = conn.execute("SELECT id, path, item_json FROM tracks").fetchall()
+        taken = set()
+        plan = []
+        duplicates = 0
+        unreadable = 0
+        # Sorted so two runs over the same library assign the same ids.
+        for row in sorted(rows, key=lambda value: str(value["path"] or "")):
+            old_id = str(row["id"])
+            path = str(row["path"] or "")
+            base = content_track_id(path)
+            if not base:
+                unreadable += 1
+                base = old_id
+            new_id = base
+            if new_id in taken:
+                duplicates += 1
+                new_id = base + "-" + hashlib.sha1(path.encode("utf-8", "ignore")).hexdigest()[:4]
+                while new_id in taken:
+                    new_id = base + "-" + hashlib.sha1((path + new_id).encode("utf-8")).hexdigest()[:4]
+            taken.add(new_id)
+            if new_id != old_id:
+                plan.append((old_id, new_id, str(row["item_json"] or "{}")))
+        # Detach every affected row first: a swap like A->B while B->C would
+        # otherwise hit the primary key halfway through.
+        for old_id, _new_id, _json in plan:
+            conn.execute("UPDATE tracks SET id = ? WHERE id = ?", ("#" + old_id, old_id))
+        for old_id, new_id, raw_json in plan:
+            conn.execute(
+                "UPDATE tracks SET id = ?, item_json = ? WHERE id = ?",
+                (new_id, _rekeyed_item_json(raw_json, new_id), "#" + old_id),
+            )
+            report["mapping"][old_id] = new_id
+        if plan:
+            # The search index is an external-content FTS table keyed by rowid, so
+            # it does not store the id; rebuilding it is still the cheap way to
+            # prove the same rows are behind the same tokens.
+            conn.execute("INSERT INTO tracks_search(tracks_search) VALUES ('rebuild')")
+    report["rekeyed"] = len(report["mapping"])
+    report["duplicates"] = duplicates
+    report["unreadable"] = unreadable
+    return report
 
 
 def library_track_ids(config):

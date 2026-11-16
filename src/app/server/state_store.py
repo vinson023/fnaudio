@@ -534,3 +534,84 @@ def reset_user_state(config: Dict[str, Any]) -> Dict[str, Any]:
             conn.execute("DELETE FROM " + table)
         _next_revision(conn)
     return load_user_state(config)
+
+def remap_track_ids(config: Dict[str, Any], mapping) -> Dict[str, int]:
+    """Point every stored reference at its new track id.
+
+    Favorites, playlist entries and the saved playback session all address tracks
+    by id. Re-keying the library without rewriting them would turn a working
+    collection into a list of ghosts, so the identity migration runs this in the
+    same round and reports what it moved.
+
+    A reference whose new id is already present (a duplicate that collapsed onto
+    the same content) is de-duplicated rather than duplicated: the row already
+    means "this track", and two rows for one track was the original complaint.
+    """
+    if not isinstance(mapping, dict) or not mapping:
+        return {"favorites": 0, "playlist_tracks": 0, "sessions": 0}
+    pairs = []
+    for old_value, new_value in mapping.items():
+        old = normalize_track_id(old_value)
+        new = normalize_track_id(new_value)
+        if old and new and old != new:
+            pairs.append((old, new))
+    if not pairs:
+        return {"favorites": 0, "playlist_tracks": 0, "sessions": 0}
+
+    moved = {"favorites": 0, "playlist_tracks": 0, "sessions": 0}
+    with _STATE_WRITE_LOCK, state_db_connect(config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for old, new in pairs:
+            row = conn.execute("SELECT created_at FROM favorites WHERE track_id = ?", (old,)).fetchone()
+            if row is None:
+                continue
+            conn.execute("DELETE FROM favorites WHERE track_id = ?", (old,))
+            conn.execute(
+                "INSERT OR IGNORE INTO favorites(track_id, created_at) VALUES (?, ?)",
+                (new, int(row["created_at"])),
+            )
+            moved["favorites"] += 1
+        for old, new in pairs:
+            entries = conn.execute(
+                "SELECT playlist_id, position FROM playlist_tracks WHERE track_id = ?", (old,)
+            ).fetchall()
+            for entry in entries:
+                conn.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?",
+                    (entry["playlist_id"], old),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)",
+                    (entry["playlist_id"], new, int(entry["position"])),
+                )
+                moved["playlist_tracks"] += 1
+        replacements = dict(pairs)
+        for session in conn.execute("SELECT id, payload FROM playback_sessions").fetchall():
+            raw = session["payload"]
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            changed = False
+            queue = payload.get("queue")
+            if isinstance(queue, list):
+                rewritten = [replacements.get(item, item) if isinstance(item, str) else item for item in queue]
+                if rewritten != queue:
+                    payload["queue"] = rewritten
+                    changed = True
+            for key in ("current_id", "currentId"):
+                value = payload.get(key)
+                if isinstance(value, str) and value in replacements:
+                    payload[key] = replacements[value]
+                    changed = True
+            if changed:
+                try:
+                    updated = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    continue
+                conn.execute("UPDATE playback_sessions SET payload = ? WHERE id = ?", (updated, session["id"]))
+                moved["sessions"] += 1
+        _next_revision(conn)
+    return moved

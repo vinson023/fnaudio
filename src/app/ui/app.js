@@ -11082,7 +11082,48 @@ async function runUserStateMaintenance(action, confirmText) {
     if (status) status.textContent = error?.message || "操作失败，请稍后重试";
   }
 }
+async function runIdentityMigration() {
+  // One-way: every track id moves from sha1(path) to a content fingerprint, and
+  // every favorite, playlist entry and queued track is rewritten with it. The
+  // server backs both databases up first - old ids are hashes, so there is no way
+  // to re-derive them if this goes wrong.
+  if (!confirm("把曲目标识改由文件内容生成，并同步迁移收藏、播放列表与播放队列吗？\n\n这是一次性操作，完成后旧标识无法还原（会自动备份两个数据库）。曲库很大时可能需要几十秒。")) return;
+  const status = $("dataMaintenanceStatus");
+  if (status) status.textContent = "正在重建曲目标识，请勿关闭页面…";
+  try {
+    const request = apiFetch("api/state/maintenance", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action: "reindex-identity", confirm: true}),
+    });
+    // Re-keying walks every row of the index, so this call needs a longer budget
+    // than the ordinary state save.
+    const result = await globalThis.fnAudioResponseJsonLoader.read({ request, timeoutMs: 300000, fallback: {} });
+    const response = result.response;
+    const data = result.data || {};
+    if (!response || !response.ok) {
+      throw new Error(data.error || `重建失败（HTTP ${response?.status}）`);
+    }
+    // A rebuilt index reported over an unreadable body would leave the page
+    // showing ids that the server may not have written.
+    if (globalThis.fnAudioResponseJsonLoader.parsedBody(result.bodyStatus) === false) {
+      throw new Error("重建请求返回了无法解析的响应");
+    }
+    await applyServerUserState(data.state || {});
+    renderAfterUserStateHydration({ visibleListChanged: true });
+    const counts = data.result || {};
+    if (status) {
+      status.textContent = `已重设 ${counts.rekeyed || 0} 首；合并重复 ${counts.duplicates || 0} 首；`
+        + `迁移收藏 ${counts.favorites || 0} 条、列表项 ${counts.playlist_tracks || 0} 条。`
+        + (counts.unreadable ? ` ${counts.unreadable} 个文件无法读取，保持原标识。` : "")
+        + (counts.backup ? ` 备份：${counts.backup}` : "");
+    }
+  } catch (error) {
+    if (status) status.textContent = error?.message || "重建失败，请稍后重试";
+  }
+}
 $("pruneFavoritesBtn").onclick = () => runUserStateMaintenance("prune-favorites");
+$("reindexIdentityBtn").onclick = () => runIdentityMigration();
 $("resetUserStateBtn").onclick = () => runUserStateMaintenance(
   "reset-user-state",
   "确定清空收藏、播放列表与播放队列吗？此操作不可撤销。",

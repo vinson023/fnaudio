@@ -60,6 +60,7 @@ from library import (
     start_library_watcher,
     stop_library_watcher,
     library_track_ids,
+    rebuild_track_identity,
     read_cover_for_item,
     save_library_cache,
     safe_float,
@@ -125,8 +126,8 @@ from playback.alsa_output import (
 from services.mpd_service import MpdService
 from services.audio_output_lease import AUDIO_OUTPUT_LEASE
 from services.airplay_service import AirplayService, airplay_probe
-from state_store import (StateConflict, load_user_state, prune_favorites, reset_user_state,
-                         save_playback_session, save_user_state)
+from state_store import (StateConflict, load_user_state, prune_favorites, remap_track_ids,
+                         reset_user_state, save_playback_session, save_user_state)
 from state_projection import playback_queue_ids
 from playback_session_projection import project_playback_session
 from metadata_service import MAX_ARTWORK_BYTES, MetadataProviders, MetadataService
@@ -777,6 +778,25 @@ def http_worker_status(http_server):
     workers["event_streams"] = events
     workers["event_stream_limit"] = getattr(http_server, "event_stream_limit", 0)
     return workers
+
+
+def backup_identity_databases(config):
+    """Copy the two SQLite files before a one-way identity migration.
+
+    The migration rewrites primary keys and every reference to them. The old ids
+    are hashes, so a failed run cannot be repaired by re-deriving them - the only
+    way back is these copies.
+    """
+    from library import library_db_path
+    from state_store import state_db_path
+
+    cache_dir = config.get("cache_dir") or "."
+    target = os.path.join(cache_dir, "identity-migration-" + time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(target, exist_ok=True)
+    for path in (state_db_path(config), library_db_path(config)):
+        if path and os.path.isfile(path):
+            shutil.copy2(path, os.path.join(target, os.path.basename(path)))
+    return target
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1520,6 +1540,35 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "曲库索引为空，请先重新扫描曲库，再清理收藏",
                     }, 409)
                 return self.send_json({"ok": True, "result": result, "state": load_user_state(self.server.config)})
+            if action == "reindex-identity":
+                # The one-way door: every stored reference moves to a content id.
+                # Back both databases up first, because a half-applied re-key cannot
+                # be reconstructed from the ids alone (they are one-way hashes).
+                if payload.get("confirm") is not True:
+                    return self.send_json({"ok": False, "error": "confirm must be true"}, 400)
+                backup = backup_identity_databases(self.server.config)
+                try:
+                    identity = rebuild_track_identity(self.server.config)
+                    remapped = remap_track_ids(self.server.config, identity.get("mapping") or {})
+                except Exception as error:  # noqa: BLE001 - reported to the caller
+                    return self.send_json({
+                        "ok": False,
+                        "error": "重建失败：%s。备份在 %s" % (error, backup),
+                        "backup": backup,
+                    }, 500)
+                return self.send_json({
+                    "ok": True,
+                    "result": {
+                        "rekeyed": identity.get("rekeyed", 0),
+                        "duplicates": identity.get("duplicates", 0),
+                        "unreadable": identity.get("unreadable", 0),
+                        "favorites": remapped.get("favorites", 0),
+                        "playlist_tracks": remapped.get("playlist_tracks", 0),
+                        "sessions": remapped.get("sessions", 0),
+                        "backup": backup,
+                    },
+                    "state": load_user_state(self.server.config),
+                })
             if action == "reset-user-state":
                 if payload.get("confirm") is not True:
                     return self.send_json({"ok": False, "error": "confirm must be true"}, 400)

@@ -1196,12 +1196,13 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
 
   // (5) wiring pins. The behaviour above is the proof; these only stop a fourth call site from
   // appearing without being classified, and stop the loose gate from being migrated by mistake.
-  // R554 added the user-state maintenance call: it is a state-changing site, so it
-  // requires a parsed document like the other four.
-  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 18,
+  // R554 added the user-state maintenance call and R559 the identity migration:
+  // both are state-changing sites, so they require a parsed document like the
+  // other four.
+  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 19,
     "every bounded read is enumerated by this round: a new caller has to classify its body too");
-  assert.equal(countOccurrences(app, "parsedBody(result.bodyStatus)"), 5,
-    "the list and four state-changing sites require a parsed document");
+  assert.equal(countOccurrences(app, "parsedBody(result.bodyStatus)"), 6,
+    "the list and five state-changing sites require a parsed document");
   assert.equal(countOccurrences(app, "usableBody?.(result.bodyStatus)"), 0,
     "the list must never accept no-content as an authoritative empty page");
   for (const slice of [validateTargetSource, loadDevicesSource, saveStateSource]) {
