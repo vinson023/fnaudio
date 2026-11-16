@@ -1190,6 +1190,13 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   color:var(--ui-secondary)!important;
   border-color:var(--ui-border)!important;
 }
+/* 局域网直连只读提示。
+ *
+ * 直连端口在 fnOS 网关之外，请求没有身份，服务端把写操作挡成 401。不说明的话，
+ * 用户会以为"点播放没反应"是坏掉了；这条横幅把原因和出路写在页面顶上。
+ */
+.lan-readonly-banner{position:sticky;top:0;z-index:30;margin:0 0 8px;padding:8px 12px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-selected);color:var(--ui-accent);font-size:12px;line-height:1.45;text-align:center}
+
 /* 数据维护的三个按钮必须一样大。
  *
  * 它们原来共用 .metadata-settings-actions：那是 flex+wrap，而且移动端的规则只让

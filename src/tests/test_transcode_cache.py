@@ -49,6 +49,9 @@ class TranscodeCacheTests(unittest.TestCase):
             # R561: the settings page prints 关于 → 版本 from this payload, so the
             # running server can never be described by a stale hard-coded string.
             "version": transcode.APP_VERSION,
+            # R563: the handler's peer is loopback here (the CGI relay), so it is
+            # not a read-only direct client.
+            "readonly": False,
         })
 
     def test_direct_clients_cannot_forge_forwarded_public_url_inputs(self):

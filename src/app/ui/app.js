@@ -182,6 +182,8 @@ state.transcodeStatusController = null;
 state.playSourceKind = "";
 state.playbackLoadToken = 0;
 state.random100 = [];
+/** Direct LAN access is read-only; set once by loadAccessMode(). */
+state.lanReadonly = false;
 state.playlists = loadStoredPlaylists();
 state.favorites = loadStoredFavorites();
 state.pendingPlaylistTrack = "";
@@ -810,7 +812,9 @@ async function fetchJsonChecked(input, init = {}, fallbackMessage = "请求失�
     if (!response.ok) {
       const authFailure = response.status === 401 || response.status === 403;
       const error = new Error(authFailure
-        ? `登录已失效或没有访问权限，请重新登录（HTTP ${response.status}）`
+        ? (state.lanReadonly
+          ? `当前为局域网只读访问，修改需要从飞牛应用中心打开本应用（HTTP ${response.status}）`
+          : `登录已失效或没有访问权限，请重新登录（HTTP ${response.status}）`)
         : (data.message || data.error || `${fallbackMessage}（HTTP ${response.status}）`));
       error.status = response.status;
       throw error;
@@ -7646,6 +7650,21 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   return true;
 }
 
+/**
+ * Ask the server how this page was reached.
+ *
+ * A direct request (http://host:<port>) arrives outside the fnOS gateway, so it
+ * carries no identity and the API answers writes with 401. Knowing that up front
+ * lets the page explain itself instead of letting a failed "add to playlist"
+ * look like a broken button.
+ */
+function loadAccessMode() {
+  fetchJsonChecked("api/access", {}, "读取访问模式失败").then(data => {
+    state.lanReadonly = data?.readonly === true;
+    const banner = $("lanReadonlyBanner");
+    if (banner) banner.hidden = !state.lanReadonly;
+  }).catch(() => {});
+}
 let aboutVersionRequested = false;
 function loadAboutVersion() {
   // 版本号必须来自正在运行的服务端，而不是写死在页面里：升级后页面说旧版本是
@@ -11651,6 +11670,7 @@ window.addEventListener("beforeunload", stopRemoteOnUnload);
 window.addEventListener("pageshow", () => { if (isRemoteTarget()) startRemoteEventStream(); });
 window.addEventListener("resize", updateNowMarquee);
 window.addEventListener("resize", updateMobilePagerVisibility, { passive: true });
+loadAccessMode();
 updateDeviceLabel();
 updateModeButton();
 syncPlayerProgress();

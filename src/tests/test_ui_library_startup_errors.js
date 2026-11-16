@@ -15,6 +15,9 @@ const fn = name => {
   vm.createContext(c);
   vm.runInContext(fs.readFileSync(path.join(root, 'response_json_loader.js'), 'utf8'), c);
   vm.runInContext(fn('fetchJsonChecked'), c);
+  // R563: the auth-failure message now depends on whether this page was opened
+  // directly (read-only) or through the fnOS gateway.
+  c.state = {lanReadonly: false};
   for (const [status, body] of [[200, ''], [204, '']]) {
     c.fetch = async () => ({ok: true, status, text: async () => body});
     await assert.rejects(c.fetchJsonChecked('api/library', {}, '读取歌曲列表失败', {strictBody: true}), e => e.name === 'ResponseError');
@@ -24,7 +27,7 @@ const fn = name => {
 
   vm.runInContext(fs.readFileSync(path.join(root, 'library_response_loader.js'), 'utf8'), c);
   vm.runInContext(fn('validateLibraryResponse') + '\n' + fn('fetchLibraryResponse'), c);
-  c.state = {libraryResponseCache: new Map(), libraryResponseInflight: new Map(), libraryResponseActive: {value: 0}, libraryResponseEpoch: 1};
+  c.state = Object.assign({lanReadonly: false}, {libraryResponseCache: new Map(), libraryResponseInflight: new Map(), libraryResponseActive: {value: 0}, libraryResponseEpoch: 1});
   for (const body of ['{}', '{"items":null}', '{"items":[],"count":-1}', '{"items":[],"count":"0"}']) {
     c.state.libraryResponseCache.clear();
     c.fetch = async () => ({ok: true, status: 200, text: async () => body});

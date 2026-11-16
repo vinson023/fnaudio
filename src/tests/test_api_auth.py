@@ -14,10 +14,29 @@ class ApiAuthTests(unittest.TestCase):
     def test_public_health_does_not_require_credentials(self):
         self.assertTrue(authorize_api("198.51.100.2", "GET", "/api/health", "", [])[0])
 
-    def test_private_lan_request_can_use_the_direct_web_ui(self):
+    def test_private_lan_request_can_browse_without_credentials(self):
+        # R563: a direct LAN client has no fnOS identity, so it may read the
+        # library and the user document but not change anything.
         for address in ("198.51.100.2", "10.0.0.4", "fd00::24", "fe80::24"):
             with self.subTest(address=address):
-                self.assertTrue(authorize_api(address, "POST", "/api/playback/control", "", [])[0])
+                self.assertTrue(authorize_api(address, "GET", "/api/library", "", [])[0])
+                self.assertTrue(authorize_api(address, "GET", "/api/state/user", "", [])[0])
+                self.assertTrue(authorize_api(address, "GET", "/api/playback/status", "", [])[0])
+
+    def test_private_lan_write_needs_an_fn_os_identity(self):
+        for address in ("198.51.100.2", "10.0.0.4"):
+            for path in ("/api/playback/control", "/api/state/user", "/api/playback/queue"):
+                with self.subTest(address=address, path=path):
+                    allowed, status, scope, message = authorize_api(address, "POST", path, "", [])
+                    self.assertFalse(allowed, "a direct LAN client must not write: " + path)
+                    self.assertEqual(status, 401, "401 asks for credentials instead of refusing outright")
+                    self.assertIn("只读", message)
+
+    def test_lan_write_can_be_enabled_explicitly(self):
+        # The switch exists so an installation that wants the old behaviour can
+        # ask for it; it is not on by default.
+        self.assertFalse(authorize_api("198.51.100.2", "POST", "/api/state/user", "", [])[0])
+        self.assertTrue(authorize_api("198.51.100.2", "POST", "/api/state/user", "", [], True)[0])
 
     def test_private_lan_cannot_anonymously_change_settings_or_files(self):
         for path in ("/api/config/library", "/api/metadata/refresh", "/api/fs/delete"):

@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R563 **局域网直连只读**。匿名直连只放行 `library.read`/`playback.read`/`state.read`，写作用域返回 401；`/api/access` 增 `readonly`（按真实 socket 对端判定），前端 `loadAccessMode()` 渲染顶部常驻只读横幅，401 文案不再误报「登录已失效」。从飞牛入口（loopback）与安卓门户（5666/5667）不受影响。版本 0.2.153。
+
 - 2026-11-16：R562 **HTTPS 勾选交还用户**。FN ID 登录不再 `httpsRequested = true` 预勾，也不在解析后静默同步；`MainActivity` 停止把 http 档案改写成 https，改由 `useProfile()` 记录 http 路由，加载失败时在错误面板点名「勾选 HTTPS 安全访问」。版本 0.2.152。
 
 - 2026-11-16：R561 **设置页收口**。数据维护三颗按钮改 grid 等宽（原来 flex 下 danger-button 不伸展，三个尺寸不一）；`/api/access` 返回 `version`，前端 `loadAboutVersion()` 在「关于」里显示运行中服务端的版本；安卓启动图标从「蓝底白音符」vector 改为 `gen_app_icon.py` 产出的「白底蓝音符」位图，与 fnOS 应用中心一致。版本 0.2.151。
