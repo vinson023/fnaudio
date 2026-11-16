@@ -1,5 +1,8 @@
 package com.fnaudio.client.ui;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -15,12 +18,14 @@ import android.text.method.HideReturnsTransformationMethod;
 import android.text.method.PasswordTransformationMethod;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.WindowCompat;
 
 import com.fnaudio.client.R;
 import com.fnaudio.client.data.ConnectionProfile;
 import com.fnaudio.client.data.SecureProfileStore;
+import com.fnaudio.client.network.AuthDiagnostics;
 import com.fnaudio.client.network.FnOsAuthClient;
 import com.fnaudio.client.network.FnConnectResolver;
 import com.fnaudio.client.network.FnConnectSettings;
@@ -235,7 +240,7 @@ public final class LoginActivity extends AppCompatActivity {
             @Override public void onError(String message) {
                 if (destroyed) return;
                 setBusy(false, "");
-                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                showAuthFailure(null, message);
             }
         });
     }
@@ -298,7 +303,7 @@ public final class LoginActivity extends AppCompatActivity {
                     if (FnConnectSettings.MODE_RELAY.equals(profile.fnConnectMode)) {
                         setBusy(false, "");
                         fillForm(profile, false);
-                        Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                        showAuthFailure(profile, message);
                         return;
                     }
                     // Endpoint discovery is advisory during resume. The last
@@ -317,6 +322,32 @@ public final class LoginActivity extends AppCompatActivity {
             return;
         }
         authenticate(profile, null, "正在恢复 “" + profile.name + "” 的登录…", true);
+    }
+
+    /**
+     * Report a failure that ended the attempt, with a one-tap copy of the facts.
+     *
+     * <p>The failures this app has to explain (no session cookie on the public
+     * route, a token that expired days later) are invisible from the message
+     * alone. Instead of asking for a PC and a TLS proxy, the dialog offers the
+     * last attempt's own record: endpoint, route, which credentials exist, and the
+     * phase where it stopped. {@link AuthDiagnostics} never stores the credential
+     * values, only whether they were present.
+     */
+    private void showAuthFailure(@Nullable ConnectionProfile failedProfile, String message) {
+        if (destroyed || isFinishing()) return;
+        final String detail = AuthDiagnostics.report(failedProfile);
+        new AlertDialog.Builder(this)
+                .setTitle("登录失败")
+                .setMessage(message + "\n\n如果反复出现，可以复制诊断信息发给开发者。")
+                .setPositiveButton("复制诊断", (dialog, which) -> {
+                    ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (clipboard == null) return;
+                    clipboard.setPrimaryClip(ClipData.newPlainText("fnAudio 登录诊断", detail));
+                    Toast.makeText(this, "已复制，可直接粘贴发送", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("关闭", null)
+                .show();
     }
 
     private void authenticate(ConnectionProfile profile, @Nullable String clearPassword, String status, boolean resume) {
@@ -346,7 +377,7 @@ public final class LoginActivity extends AppCompatActivity {
                 if (destroyed) return;
                 setBusy(false, "");
                 fillForm(profile, preserveExplicitEdit);
-                Toast.makeText(LoginActivity.this, message, Toast.LENGTH_LONG).show();
+                showAuthFailure(profile, message);
             }
 
             @Override
@@ -364,9 +395,7 @@ public final class LoginActivity extends AppCompatActivity {
                 }
                 fillForm(editableProfile, preserveExplicitEdit);
                 password.requestFocus();
-                Toast.makeText(LoginActivity.this,
-                        storedRecovery ? "登录令牌已失效，请重新输入密码。" : message,
-                        Toast.LENGTH_LONG).show();
+                showAuthFailure(profile, storedRecovery ? "登录令牌已失效，请重新输入密码。" : message);
                 showKeyboard(password);
             }
         });

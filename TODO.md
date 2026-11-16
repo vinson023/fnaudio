@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-16 — **R558 手机端一键诊断**。`AuthDiagnostics` + 登录失败弹窗「复制诊断」，报告含端点/路由/凭据是否存在/每一跳状态码/失败阶段，不含任何凭据值。**待真机**：外网复现时直接复制粘贴上报。**后续可选**：若这类问题反复出现，再做「诊断自动上报到服务端」通道，需要服务端接收端与隐私说明。
+
 - [x] 2026-11-16 — **R557 登录取证脚本**。`tools/capture_official_login.ps1`（官方 App：模拟器 + mitmproxy + 系统 CA + 自动导出报告；或 `-Mode ourApp` 只抓握手日志）+ `tools/capture_login_report.py`（把 mitm dump / logcat 整理成对比报告）。**用法**：`powershell -ExecutionPolicy Bypass -File tools/capture_official_login.ps1 -InstallMitm`，按提示在模拟器里登录一次即可。**待办**：需要一次真实外网登录才能产出与官方 App 的对照数据。
 
 - [x] 2026-11-16 — **R556 令牌过期后自动续登**。短/长令牌都过期时，`handleAttemptFailure` 直接拿已保存密码走 `user.login`（原来要绕到 MainActivity 再试一轮，没勾记住密码的会弹回连接选择器）；两条失败出口各加一行阶段日志（phase/attempt/sessionCookie/redirects/usedPassword），复发时用 `adb logcat -s FnOsAuth` 定位。**观察项**：若日志显示 `sessionCookie=absent` 且 `phase=handshake` 仍失败，说明该网关路由确实要求另一种会话凭据，需要再抓一次官方 App 的登录包对比。

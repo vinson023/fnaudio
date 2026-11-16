@@ -52,6 +52,9 @@ public final class FnOsAuthClient {
 
     public synchronized void authenticate(Context context, ConnectionProfile profile, @Nullable String password, Callback callback) {
         if (currentSession != null) currentSession.cancel();
+        AuthDiagnostics.reset();
+        AuthDiagnostics.record("start host=" + profile.host + " port=" + profile.port
+                + " https=" + profile.https + " mode=" + profile.fnConnectMode);
         Session session = new Session(context.getApplicationContext(), profile, password == null ? "" : password, callback);
         currentSession = session;
         session.connect();
@@ -150,6 +153,8 @@ public final class FnOsAuthClient {
                     @Override public void onResponse(@NonNull okhttp3.Call call, @NonNull Response response) {
                         try (Response ignored = response) {
                             collectSessionCookies(response);
+                            AuthDiagnostics.record("verify hop=" + hop + " status=" + response.code()
+                                    + " cookie=" + (sessionCookie.isEmpty() ? "absent" : "present"));
                             String location = response.header("Location");
                             if (response.isRedirect() && location != null && hop < MAX_ACCESS_CODE_REDIRECTS) {
                                 accessCodeHops = hop + 1;
@@ -229,6 +234,7 @@ public final class FnOsAuthClient {
 
         @Override
         public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
+            AuthDiagnostics.record("ws open");
             // Same condition the client used to accept the certificate: an
             // address endpoint is trusted without the checkbox, so its pin has
             // to be observed and stored too, or every later request would be
@@ -315,6 +321,7 @@ public final class FnOsAuthClient {
             // finishSuccess closes the socket immediately after receiving the
             // credential response. OkHttp may report that close as EOF/cancel.
             if (completed.get()) return;
+            AuthDiagnostics.record("ws failure " + throwable.getClass().getSimpleName());
             Log.w(TAG, "WebSocket authentication connection failed: host=" + profile.host
                     + ", port=" + profile.port + ", https=" + profile.https
                     + ", error=" + throwable.getClass().getSimpleName()
@@ -330,6 +337,7 @@ public final class FnOsAuthClient {
         private void send(Attempt nextAttempt) {
             if (completed.get() || socket == null) return;
             attempt = nextAttempt;
+            AuthDiagnostics.record("login attempt=" + nextAttempt);
             requestId = requestId();
             JSONObject request = new JSONObject();
             put(request, "reqid", requestId);
@@ -391,6 +399,12 @@ public final class FnOsAuthClient {
          * enough, with no rebuild.
          */
         private void logFailure(String kind, String message) {
+            AuthDiagnostics.record("failure kind=" + kind
+                    + " phase=" + (socket == null ? "pre-handshake" : "handshake")
+                    + " attempt=" + attempt
+                    + " cookie=" + (sessionCookie.isEmpty() ? "absent" : "present")
+                    + " hops=" + accessCodeHops
+                    + " msg=" + message);
             Log.w(TAG, "authentication " + kind
                     + ": phase=" + (socket == null ? "pre-handshake" : "handshake")
                     + ", attempt=" + attempt
