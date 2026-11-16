@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R555 **外网登录取不到会话 Cookie**。官方 Flutter AOT 无法复用源码，但协议一致（`x-access-code`/`x-access-source`/`/access_code_verify`/`os-access-code`）；根因是 OkHttp 跟随重定向只保留最终响应，302 上的 Set-Cookie 被丢弃（局域网首跳即终态，所以只在局域网外复现）。改为手动逐跳跟随（≤4 跳）并先收集再判断、多 cookie 名兼容、无 cookie 先由握手判定。
+
 - 2026-11-16：R554 **403／随机100首／收藏累加**。`TRUSTED_LAN_NETWORKS` 补 192.168/16 与 100.64/10 并对 `::ffff:` 归一化（直连 `:3131` 从全 403 恢复，公网仍拒）；随机100首固定取 100 首（原来被页大小截成 60/96，队列随之断），`count` 报样本量、`paged:false`；新增 `/api/state/maintenance` 与设置页「高级 → 数据维护」（清理失效收藏、清空收藏与播放列表），因为曲目 id 是绝对路径哈希，重装后旧收藏会变成越积越多的孤儿。
 
 - 2026-11-13：R553 **触摸端悬停残留**。Android WebView / iOS Safari 会把 `:hover` 留在最后点过的控件上，而全站悬停都在画底色，点过「下一首」后按钮一直挂着浅灰圆角方块（实测 `rgba(0,0,0,.08)`、radius 6px、44×44）。在最后加载的 `fnos-theme.css` 末尾加一份统一 `(hover:none)` 还原层，按四组静止态回填并保留已点亮开关的状态色；`app.css` 里那份三选择器的旧补丁删除。`test_ui_touch_hover_residue.py` 把「每条会画框的悬停规则都必须有触摸对应项」变成契约，e2e `hover-residue.spec.js` 在触摸视口逐个点按取证。

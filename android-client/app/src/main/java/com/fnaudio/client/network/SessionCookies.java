@@ -56,4 +56,34 @@ public final class SessionCookies {
         return pair.startsWith("os-access-code=") && pair.length() > "os-access-code=".length()
                 ? pair : "";
     }
+
+    /**
+     * Any cookie that can carry the gateway session, not only the access code one.
+     *
+     * The gateway conditionally issues {@code os-access-code} while verifying an
+     * access code; on a route that already holds a session (an FN Connect relay
+     * hop, or a gateway that answered through a redirect) the session arrives
+     * under one of the other names. Requiring the access-code spelling made the
+     * app report "验证成功但未取得会话 Cookie" while the handshake it needed was
+     * sitting in the very same response headers.
+     */
+    public static String sessionCookie(String setCookie) {
+        if (setCookie == null) return "";
+        String value = setCookie.trim();
+        int separator = value.indexOf(';');
+        String pair = separator >= 0 ? value.substring(0, separator).trim() : value;
+        if (pair.isEmpty()) return "";
+        String accessCode = accessCodeCookie(pair);
+        if (!accessCode.isEmpty()) return accessCode;
+        for (String name : SESSION_COOKIE_NAMES) {
+            String prefix = name + "=";
+            if (pair.startsWith(prefix) && pair.length() > prefix.length()) return pair;
+        }
+        return "";
+    }
+
+    private static final String[] SESSION_COOKIE_NAMES = {
+            "trim_token", "trim-token", "fnos-token", "token", "trim_access_token"
+    };
+
 }
