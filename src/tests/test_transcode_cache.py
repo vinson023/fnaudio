@@ -40,11 +40,15 @@ class TranscodeCacheTests(unittest.TestCase):
             },
         )
         self.assertEqual(transcode.playback_profile(handler), "wan")
-        self.assertEqual(transcode.public_access(handler), {
+        access = transcode.public_access(handler)
+        self.assertEqual(access, {
             "profile": "wan",
             "client_ip": "8.8.8.8",
             "host": "public.example",
             "proto": "https",
+            # R561: the settings page prints 关于 → 版本 from this payload, so the
+            # running server can never be described by a stale hard-coded string.
+            "version": transcode.APP_VERSION,
         })
 
     def test_direct_clients_cannot_forge_forwarded_public_url_inputs(self):

@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R561 **设置页收口**。数据维护三颗按钮改 grid 等宽（原来 flex 下 danger-button 不伸展，三个尺寸不一）；`/api/access` 返回 `version`，前端 `loadAboutVersion()` 在「关于」里显示运行中服务端的版本；安卓启动图标从「蓝底白音符」vector 改为 `gen_app_icon.py` 产出的「白底蓝音符」位图，与 fnOS 应用中心一致。版本 0.2.151。
+
 - 2026-11-16：R559 **曲目标识改内容指纹**。id 从 `sha1(路径)` 改为 `sha1(size+头/中/尾各16KiB)`，改名换盘不再失效；新增 `rebuild_track_identity`（原地改主键，两阶段防撞，重复内容加后缀，缺文件保留）、`remap_track_ids`（收藏/列表/队列）、设置页迁移按钮与自动备份；`METADATA_VERSION` 19→20。
 
 - 2026-11-16：R558 **登录失败手机端自助取证**。新增 `network/AuthDiagnostics.java`（登录尝试的环形记录：端点、路由、凭据是否存在、每跳验证状态码与 cookie 结果、握手阶段、失败原文），`FnOsAuthClient` 6 处写入；`LoginActivity` 失败弹窗提供「复制诊断」一键进剪贴板。报告不含任何凭据值。Java 61 文件 / 15,261 行。

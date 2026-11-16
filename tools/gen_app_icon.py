@@ -29,6 +29,10 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_IMAGES = ROOT / "src" / "app" / "ui" / "images"
+ANDROID_RES = ROOT / "android-client" / "app" / "src" / "main" / "res"
+# Android launcher densities (mdpi..xxxhdpi) and the adaptive foreground canvas.
+ANDROID_DENSITIES = (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192))
+ANDROID_FOREGROUND_SIZE = 432
 
 CANVAS = 256
 SUPERSAMPLE = 8
@@ -218,6 +222,21 @@ def render(size: int) -> Image.Image:
     return Image.alpha_composite(icon, colored).resize((size, size), Image.LANCZOS)
 
 
+def render_foreground(size: int) -> Image.Image:
+    """The glyph on a transparent canvas, sized for an adaptive-icon foreground.
+
+    Android crops an adaptive icon's 108dp canvas with a circle of about 66dp, and
+    this app's glyph fills 68% of the canvas height. Pasting the icon as-is would
+    shave the beam and the lower note head, so the whole mark is drawn 10% smaller
+    and centred: same proportions, nothing touching the mask.
+    """
+    enlarged = render(max(size, round(size / 0.9)))
+    scaled = enlarged.resize((size, size), Image.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.alpha_composite(scaled)
+    return canvas
+
+
 def write(path: Path, image: Image.Image) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, "PNG", optimize=True)
@@ -232,6 +251,11 @@ def main() -> int:
     global GLYPH_SCALE
     parser = argparse.ArgumentParser()
     parser.add_argument("--preview", help="只输出预览到这个目录，不改源码")
+    parser.add_argument(
+        "--skip-android",
+        action="store_true",
+        help="只更新 fnOS 与网页图标，跳过 Android 启动图标",
+    )
     parser.add_argument(
         "--scale",
         type=float,
@@ -256,6 +280,16 @@ def main() -> int:
     # 包根层两枚：64 是列表里的小图，256 是详情页的大图。
     write(ROOT / "src" / "ICON.PNG", render(64))
     write(ROOT / "src" / "ICON_256.PNG", render(256))
+    if not args.skip_android:
+        # The launcher icon is the same mark the fnOS app center shows. Until R561
+        # it was a separate vector (blue rounded square + white note), i.e. the
+        # same design inverted, so the phone and the NAS listed two different apps.
+        for density, px in ANDROID_DENSITIES:
+            write(ANDROID_RES / f"mipmap-{density}" / "ic_launcher.png", render(px))
+        write(
+            ANDROID_RES / "mipmap-xxxhdpi" / "ic_launcher_foreground.png",
+            render_foreground(ANDROID_FOREGROUND_SIZE),
+        )
     return 0
 
 

@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import heapq
+
+from version import APP_VERSION
 import hashlib
 import math
 import ipaddress
@@ -195,6 +197,10 @@ def public_access(handler):
         "client_ip": client_ip.split(",", 1)[0].strip(),
         "host": host,
         "proto": proto,
+        # The settings page prints this under 关于. It comes from the manifest the
+        # running server was installed from, so an upgrade never leaves the page
+        # claiming the previous version the way a hard-coded build string would.
+        "version": APP_VERSION,
     }
 
 

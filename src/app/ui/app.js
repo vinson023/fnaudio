@@ -7646,9 +7646,28 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   return true;
 }
 
+let aboutVersionRequested = false;
+function loadAboutVersion() {
+  // 版本号必须来自正在运行的服务端，而不是写死在页面里：升级后页面说旧版本是
+  // 最容易被当成"没更新成功"的假象。/api/access 是启动时就有的轻接口，顺带带上
+  // 清单里的 version（见 public_access）。
+  if (aboutVersionRequested) return;
+  aboutVersionRequested = true;
+  fetchJsonChecked("api/access", {}, "读取版本失败").then(data => {
+    const target = $("aboutVersion");
+    if (!target) return;
+    target.textContent = typeof data?.version === "string" && data.version.trim()
+      ? data.version.trim()
+      : "未知";
+  }).catch(() => {
+    const target = $("aboutVersion");
+    if (target) target.textContent = "未知";
+  });
+}
 async function openFolderBrowser(path = "") {
   ensurePlaybackSettingsControls();
   resetSettingsDirty();
+  loadAboutVersion();
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
