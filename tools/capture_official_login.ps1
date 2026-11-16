@@ -120,8 +120,12 @@ if (-not $adbProbe.Path) {
 }
 $AdbPath = $adbProbe.Path
 $Sdk = $adbProbe.Root
-$Emulator = Join-Path $Sdk 'emulator/emulator.exe'
+# 与 adb 分开找：一台机器完全可能「platform-tools 在仓库里、emulator 在
+# ANDROID_HOME 里」，用 adb 的根目录去拼 emulator 会漏掉后者。
+$emulatorProbe = Resolve-AndroidTool -CommandName 'emulator' -RelativePath 'emulator/emulator.exe'
+$Emulator = $emulatorProbe.Path
 Write-Host "   adb：$AdbPath" -ForegroundColor DarkGray
+if ($Emulator) { Write-Host "   emulator：$Emulator" -ForegroundColor DarkGray }
 
 # adb 第一次调用会往 stderr 打 "daemon not running"，而 $ErrorActionPreference='Stop'
 # 会把它当成终止错误。所有外部命令统一走这里：stderr 合并成文本返回，退出码自己判。
