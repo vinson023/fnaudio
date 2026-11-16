@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 
 from api_route_policy import (
-    PRIVILEGED_WRITE_SCOPES,
     PUBLIC_API_PATHS,
     PRIVATE_MEDIA_PREFIXES,
     normalize_path,
@@ -22,14 +21,20 @@ ALL_API_SCOPES = frozenset({
     "files.read",
     "files.manage",
 })
-# Scopes a direct LAN client may use without an fnOS identity.
+# The only thing a LAN peer may reach without an fnOS identity is UPnP/DLNA.
 #
 # The packaged port answers outside the fnOS gateway, so a request that arrives
-# there has no user behind it. Browsing and listening are harmless; anything that
-# changes state is not: tuning a playlist or moving playback is the same authority
-# as sitting in front of the device. Reading stays open so the page is still
-# usable from a phone that opened the address directly.
-LAN_READ_SCOPES = frozenset({"library.read", "playback.read", "state.read"})
+# there never passed an authentication step. R563 tried to make that mode useful
+# by allowing reads; that still handed the whole library, the player and the
+# favourites to every device on the network. It is now shut. The exception is the
+# casting surface: a television or speaker fetches /upnp/media/... and the device
+# description under /dlna/ directly, over plain HTTP with no credentials to offer,
+# so blocking those would not secure anything - it would just stop playback.
+ANONYMOUS_LAN_PREFIXES = ("/dlna/", "/upnp/media/", "/upnp/cover/")
+
+# Said to the browser and to the API alike; the settings UI repeats it nowhere,
+# because a direct client never gets far enough to render a page.
+DIRECT_ACCESS_DENIED = "禁止直连访问：请从飞牛应用中心打开 fnAudio（DLNA 投播不受影响）"
 
 TRUSTED_LAN_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
     "10.0.0.0/8",
@@ -64,36 +69,60 @@ def _granted_scopes(scopes):
     return frozenset(granted)
 
 
-def authorize_api(client_host: str, method: str, path: str, token: str, scopes,
-                  allow_lan_write: bool = False) -> tuple[bool, int, str, str]:
+def _normalized_peer(client_host):
+    """The peer address with IPv4-mapped IPv6 folded down, or None."""
+    try:
+        peer = ipaddress.ip_address(client_host.strip() if isinstance(client_host, str) else "")
+    except ValueError:
+        return None
+    # A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d, and that
+    # address is not a member of any IPv4 network, so a LAN client behind an IPv6
+    # socket would have been judged untrusted. Normalise before any check.
+    if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+        return peer.ipv4_mapped
+    return peer
+
+
+def anonymous_lan_route(method: str, path: str) -> bool:
+    """True for the UPnP surface a renderer fetches without credentials."""
+    if (method.upper() if isinstance(method, str) else "") not in ("GET", "HEAD"):
+        return False
+    return normalize_path(path).startswith(ANONYMOUS_LAN_PREFIXES)
+
+
+def peer_may_reach(client_host, method: str, path: str) -> bool:
+    """Whether this peer is allowed to touch the route at all.
+
+    Loopback is the fnOS gateway (and the CGI relay), which is the only channel
+    that carries a verified identity. A LAN peer gets the UPnP surface and nothing
+    else - not the page, not the API, not the static assets.
+    """
+    peer = _normalized_peer(client_host)
+    if peer is None:
+        return False
+    if peer.is_loopback:
+        return True
+    if not any(peer in network for network in TRUSTED_LAN_NETWORKS):
+        return False
+    return anonymous_lan_route(method, path)
+
+
+def authorize_api(client_host: str, method: str, path: str, token: str, scopes) -> tuple[bool, int, str, str]:
     scope = required_scope(method, path)
     if not scope:
         return True, 200, scope, ""
-    try:
-        peer = ipaddress.ip_address(client_host.strip() if isinstance(client_host, str) else "")
-        # A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d, and that
-        # address is not a member of any IPv4 network, so a LAN client behind an
-        # IPv6 socket would have been refused as an untrusted peer. Normalise
-        # before the loopback and network checks.
-        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
-            peer = peer.ipv4_mapped
-        # The package exposes its own port for trusted LAN controllers. Keep
-        # Public addresses stay behind fnOS/Android authentication. LAN media
-        # browsing and playback remain available to direct controllers, while
-        # destructive configuration/file writes must use the fnOS CGI entry.
-        if not peer.is_loopback and any(peer in network for network in TRUSTED_LAN_NETWORKS):
-            if scope in PRIVILEGED_WRITE_SCOPES:
-                return False, 403, scope, "fnOS authenticated application entry is required"
-            if allow_lan_write or scope in LAN_READ_SCOPES:
-                return True, 200, scope, ""
-            # Writes need a real identity. 401 (not 403) is deliberate: the client
-            # is allowed to ask again with credentials, and the web UI turns this
-            # into "open the app from fnOS to change anything".
-            return False, 401, scope, "局域网直连为只读访问，修改需要从 fnOS 应用入口登录"
-        if not peer.is_loopback:
-            return False, 403, scope, "direct LAN API access is not allowed"
-    except ValueError:
+    peer = _normalized_peer(client_host)
+    if peer is None:
         return False, 403, scope, "untrusted API peer"
+    if not peer.is_loopback:
+        # 403, not 401: there is no credential this client can present. The only
+        # way in is the fnOS entry, which is a different URL, not a different
+        # header.
+        if not any(peer in network for network in TRUSTED_LAN_NETWORKS):
+            return False, 403, scope, "public access is not allowed"
+        if anonymous_lan_route(method, path):
+            return True, 200, scope, ""
+        return False, 403, scope, DIRECT_ACCESS_DENIED
     if not isinstance(token, str) or not token.strip():
         return False, 401, scope, "fnOS authentication is required"
     granted = _granted_scopes(scopes)

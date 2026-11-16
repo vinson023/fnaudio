@@ -192,20 +192,11 @@ def public_access(handler):
     client_ip = (forwarded.get("remote") if forwarded else "") or _peer_address(handler)
     host = (forwarded.get("host") if forwarded else "") or handler.headers.get("Host", "")
     proto = (forwarded.get("proto") if forwarded else "") or "http"
-    # A direct client reaches the packaged port without passing the fnOS gateway,
-    # so it has no identity at all: the API treats it as read-only. Loopback is the
-    # relayed entry point and keeps full access. Saying so up front lets the page
-    # show the reason instead of failing a write the user cannot explain.
-    # Judged on the real socket peer, not on a forwarded header: the API's own
-    # decision uses client_address, and a documented proxy header must not be able
-    # to talk the page out of the read-only notice.
-    loopback = (_peer_address(handler) or "").strip() in ("127.0.0.1", "::1")
     return {
         "profile": playback_profile(handler),
         "client_ip": client_ip.split(",", 1)[0].strip(),
         "host": host,
         "proto": proto,
-        "readonly": not loopback,
         # The settings page prints this under 关于. It comes from the manifest the
         # running server was installed from, so an upgrade never leaves the page
         # claiming the previous version the way a hard-coded build string would.

@@ -3,7 +3,8 @@ import sys
 import unittest
 
 sys.path.insert(0, "app/server")
-from api_auth import ALL_API_SCOPES, TRUSTED_LAN_NETWORKS, authorize_api, required_scope, requires_resource_auth
+from api_auth import (ALL_API_SCOPES, DIRECT_ACCESS_DENIED, TRUSTED_LAN_NETWORKS,
+                      authorize_api, peer_may_reach, required_scope, requires_resource_auth)
 
 
 class ApiAuthTests(unittest.TestCase):
@@ -14,31 +15,45 @@ class ApiAuthTests(unittest.TestCase):
     def test_public_health_does_not_require_credentials(self):
         self.assertTrue(authorize_api("198.51.100.2", "GET", "/api/health", "", [])[0])
 
-    def test_private_lan_request_can_browse_without_credentials(self):
-        # R563: a direct LAN client has no fnOS identity, so it may read the
-        # library and the user document but not change anything.
+    def test_private_lan_cannot_reach_the_api_at_all(self):
+        # R565: a direct LAN client never passed an authentication step, so it gets
+        # nothing - not reads, not writes. R563 made it read-only, which still
+        # served the whole library to every device on the network.
         for address in ("198.51.100.2", "10.0.0.4", "fd00::24", "fe80::24"):
-            with self.subTest(address=address):
-                self.assertTrue(authorize_api(address, "GET", "/api/library", "", [])[0])
-                self.assertTrue(authorize_api(address, "GET", "/api/state/user", "", [])[0])
-                self.assertTrue(authorize_api(address, "GET", "/api/playback/status", "", [])[0])
-
-    def test_private_lan_write_needs_an_fn_os_identity(self):
-        for address in ("198.51.100.2", "10.0.0.4"):
-            for path in ("/api/playback/control", "/api/state/user", "/api/playback/queue"):
+            for method, path in (("GET", "/api/library"), ("GET", "/api/state/user"),
+                                 ("GET", "/api/playback/status"), ("POST", "/api/state/user"),
+                                 ("POST", "/api/playback/control"), ("POST", "/api/fs/delete")):
                 with self.subTest(address=address, path=path):
-                    allowed, status, scope, message = authorize_api(address, "POST", path, "", [])
-                    self.assertFalse(allowed, "a direct LAN client must not write: " + path)
-                    self.assertEqual(status, 401, "401 asks for credentials instead of refusing outright")
-                    self.assertIn("只读", message)
+                    allowed, status, _scope, message = authorize_api(address, method, path, "", [])
+                    self.assertFalse(allowed, "a direct LAN client must be refused: " + path)
+                    self.assertEqual(status, 403, "403, because no credential can fix this")
+                    self.assertEqual(message, DIRECT_ACCESS_DENIED)
 
-    def test_lan_write_can_be_enabled_explicitly(self):
-        # The switch exists so an installation that wants the old behaviour can
-        # ask for it; it is not on by default.
-        self.assertFalse(authorize_api("198.51.100.2", "POST", "/api/state/user", "", [])[0])
-        self.assertTrue(authorize_api("198.51.100.2", "POST", "/api/state/user", "", [], True)[0])
+    def test_upnp_surface_stays_open_to_renderers(self):
+        # A television fetches the stream and the device description straight from
+        # this port and has no credentials to offer; UPnP has no authentication.
+        for path in ("/upnp/media/abc123/x.flac", "/dlna/media/description.xml",
+                     "/dlna/media/xml/SCPD.xml", "/upnp/cover/abc123/cover.jpg"):
+            with self.subTest(path=path):
+                self.assertTrue(peer_may_reach("192.168.5.30", "GET", path))
+                self.assertTrue(authorize_api("192.168.5.30", "GET", path, "", [])[0])
+
+    def test_lan_peer_cannot_reach_the_page_static_or_writes_to_dlna(self):
+        for method, path in (("GET", "/"), ("GET", "/app.js"), ("POST", "/upnp/media/abc/x.flac"),
+                             ("GET", "/media/abc/x.flac"), ("GET", "/api/access")):
+            with self.subTest(path=path):
+                self.assertFalse(peer_may_reach("192.168.5.30", method, path))
+
+    def test_loopback_page_and_static_stay_reachable(self):
+        for path in ("/", "/app.js", "/upnp/media/abc/x.flac", "/api/library"):
+            with self.subTest(path=path):
+                self.assertTrue(peer_may_reach("127.0.0.1", "GET", path))
+                self.assertTrue(peer_may_reach("::1", "GET", path))
 
     def test_private_lan_cannot_anonymously_change_settings_or_files(self):
+        # Settings and file management are the routes that used to answer with a
+        # dedicated "fnOS entry required" message; they now fall under the same
+        # blanket refusal as every other API route.
         for path in ("/api/config/library", "/api/metadata/refresh", "/api/fs/delete"):
             with self.subTest(path=path):
                 allowed, status, _scope, message = authorize_api(
@@ -46,7 +61,7 @@ class ApiAuthTests(unittest.TestCase):
                 )
                 self.assertFalse(allowed)
                 self.assertEqual(status, 403)
-                self.assertIn("fnOS", message)
+                self.assertEqual(message, DIRECT_ACCESS_DENIED)
 
     def test_public_direct_request_still_requires_the_authenticated_proxy(self):
         result = authorize_api("2001:4860:4860::8888", "POST", "/api/playback/control", "token", ALL_API_SCOPES)

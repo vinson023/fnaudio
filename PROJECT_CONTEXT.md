@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R565 **直连端口关闭**。`peer_may_reach` 只放行环回（fnOS 网关）与 UPnP（`/dlna/`、`/upnp/media/`、`/upnp/cover/`）；其余非环回请求一律 403，页面改发 `DIRECT_ACCESS_PAGE` 说明页，API 发 JSON；`/api/health` 对局域网保留。删除 R563 的只读模式（`LAN_READ_SCOPES`/`allow_lan_write`/`readonly`/前端横幅）。DLNA 依赖这条匿名通道，不能封。
+
 - 2026-11-16：R564 **维护面板与安卓图标**。图标根因是自适应前景层塞进了整枚图标（白底叠白底、音符缩放两次 = 78% > 66/108 安全区）→ 前景只画符号、`FOREGROUND_FIT=0.74`（58.6%）。数据维护改为「两步（清理 → 迁移）＋ 虚线危险区」，按钮短文字 + `aria-label` 保完整动作名，≤760px 通栏；`test_ui_maintenance_panel.py` 钉住步骤顺序与 a11y。
 
 - 2026-11-16：R563 **局域网直连只读**。匿名直连只放行 `library.read`/`playback.read`/`state.read`，写作用域返回 401；`/api/access` 增 `readonly`（按真实 socket 对端判定），前端 `loadAccessMode()` 渲染顶部常驻只读横幅，401 文案不再误报「登录已失效」。从飞牛入口（loopback）与安卓门户（5666/5667）不受影响。版本 0.2.153。

@@ -150,7 +150,8 @@ from metadata_artwork_file import open_bounded_artwork
 from metadata_lane_policy import lane_workers_alive, service_was_started
 from metadata_response_policy import has_cached_lyrics, has_cached_track_projection, is_pending_result
 from metadata_unavailable_policy import local_cached_projection, local_lyrics_projection, local_pending_projection, lyrics_pending_projection, merge_pending_projection
-from api_auth import authorize_api, requires_resource_auth
+from api_auth import DIRECT_ACCESS_DENIED, authorize_api, peer_may_reach, requires_resource_auth
+from api_route_policy import normalize_path
 from api_token_policy import trim_api_token
 from dlna.request_context import request_context
 from observability import OBSERVABILITY, request_id
@@ -799,6 +800,41 @@ def backup_identity_databases(config):
     return target
 
 
+DIRECT_ACCESS_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>fnAudio · 禁止直连访问</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:#f3f3f3;color:#0b0b0c;font:14px/1.7 Inter,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.card{max-width:420px;margin:24px;padding:24px 26px;background:#fff;border-radius:10px;
+  box-shadow:0 1px 2px rgba(16,24,40,.06)}
+h1{font-size:16px;margin:0 0 10px}
+p{margin:0 0 10px;color:rgba(0,0,0,.7)}
+ul{margin:0;padding-left:18px;color:rgba(0,0,0,.6);font-size:13px}
+code{background:rgba(0,0,0,.05);padding:1px 5px;border-radius:4px;font-size:12px}
+@media (prefers-color-scheme:dark){
+  body{background:#1e1e21;color:#fff}
+  .card{background:#232326}
+  p{color:rgba(255,255,255,.75)} ul{color:rgba(255,255,255,.6)}
+  code{background:rgba(255,255,255,.1)}
+}
+</style></head><body>
+<div class="card">
+  <h1>此端口不对外提供界面</h1>
+  <p>fnAudio 只在飞牛 OS 的应用入口（<code>http://&lt;你的NAS&gt;:5666</code> 或应用中心）下使用。
+     直接访问 <code>IP:端口</code> 不会通过任何身份校验，所以这一入口已关闭。</p>
+  <ul>
+    <li>请从飞牛应用中心打开 fnAudio；</li>
+    <li>DLNA / 投音到音箱电视不受影响；</li>
+    <li>安卓客户端请连接 NAS 的 fnOS 地址，而不是本端口。</li>
+  </ul>
+</div>
+</body></html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = APP_USER_AGENT
 
@@ -899,6 +935,38 @@ class Handler(BaseHTTPRequestHandler):
     def trim_api_token(self):
         return trim_api_token(self.headers)
 
+    def enforce_direct_access(self, path):
+        """Close the port to the network; keep only the casting surface.
+
+        fnOS authenticates in front of this process and relays over loopback, so
+        an arrival from a LAN address carries no identity at all. R563 answered
+        that with read-only access, which still served the library, the player and
+        the favourites to every device on the network. It is shut now: loopback,
+        the public health probe, and the UPnP paths a renderer fetches directly.
+        """
+        if peer_may_reach(self.client_address[0], self.command, path):
+            return True
+        if normalize_path(path) == "/api/health":
+            return True
+        self.send_direct_access_denied(path)
+        return False
+
+    def send_direct_access_denied(self, path):
+        """A page for browsers, JSON for the API, so neither shows a raw 403."""
+        if normalize_path(path).startswith("/api/"):
+            return self.send_json({"ok": False, "error": DIRECT_ACCESS_DENIED}, 403)
+        body = DIRECT_ACCESS_PAGE.encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(body)
+            except (OSError, ValueError):
+                self.close_connection = True
+
     def authorize_api_request(self, method, path):
         # Requests relayed by our own CGI entry point never receive an fnOS
         # token on some fnOS releases. They are still confined to loopback;
@@ -954,6 +1022,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.send_json({"ok": False, "error": "too many query parameters"}, 400)
         path = parsed.path
+        if not self.enforce_direct_access(path):
+            return
         if path.startswith("/dlna/"):
             return self.handle_dlna_get(path, head_only)
         if path.startswith("/upnp/cover/"):
@@ -1475,6 +1545,8 @@ class Handler(BaseHTTPRequestHandler):
             urllib.parse.parse_qs(parsed.query, max_num_fields=128)
         except ValueError:
             return self.send_json({"ok": False, "error": "too many query parameters"}, 400)
+        if not self.enforce_direct_access(parsed.path):
+            return
         # BaseHTTPRequestHandler does not decode chunked request bodies.
         # Refuse Transfer-Encoding explicitly, including requests that also
         # provide Content-Length, so unread chunks cannot poison a reused
