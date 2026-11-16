@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R557 **登录取证脚本**。`tools/capture_official_login.ps1` 一条命令完成「启动 AVD → 装 mitmproxy 系统 CA （`subject_hash_old` 命名）→ 设代理 → 装官方 APK → 抓 flows → 出报告」，另带 `-Mode ourApp` 只抓 `FnOsAuth` 日志；`tools/capture_login_report.py` 把 dump/logcat 整理成路径、状态码、`Set-Cookie` 位置、`/p/` 前缀、失败阶段的对照表。两个脚本级坑已处理：native stderr 在 Stop 下会终止脚本（统一 `Invoke-Tool` 包装）、`adb wait-for-device` 无设备会永久阻塞（改轮询+超时）。
+
 - 2026-11-16：R556 **令牌过期自动续登**。fnOS 短令牌分钟级、长令牌周级过期，「过几天不行」就是两者都过期后回退链断在 `finishCredentialRejected`：改为 `LONG_TOKEN` 失败且有已存密码时直接 `user.login`；两条失败出口各加一行阶段日志（phase/attempt/sessionCookie/redirects/usedPassword），复发用 `adb logcat -s FnOsAuth` 定位。Java 行账 60 文件 / 15,119 行。
 
 - 2026-11-16：R555 **外网登录取不到会话 Cookie**。官方 Flutter AOT 无法复用源码，但协议一致（`x-access-code`/`x-access-source`/`/access_code_verify`/`os-access-code`）；根因是 OkHttp 跟随重定向只保留最终响应，302 上的 Set-Cookie 被丢弃（局域网首跳即终态，所以只在局域网外复现）。改为手动逐跳跟随（≤4 跳）并先收集再判断、多 cookie 名兼容、无 cookie 先由握手判定。

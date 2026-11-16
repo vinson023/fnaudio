@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-16 — **R557 登录取证脚本**。`tools/capture_official_login.ps1`（官方 App：模拟器 + mitmproxy + 系统 CA + 自动导出报告；或 `-Mode ourApp` 只抓握手日志）+ `tools/capture_login_report.py`（把 mitm dump / logcat 整理成对比报告）。**用法**：`powershell -ExecutionPolicy Bypass -File tools/capture_official_login.ps1 -InstallMitm`，按提示在模拟器里登录一次即可。**待办**：需要一次真实外网登录才能产出与官方 App 的对照数据。
+
 - [x] 2026-11-16 — **R556 令牌过期后自动续登**。短/长令牌都过期时，`handleAttemptFailure` 直接拿已保存密码走 `user.login`（原来要绕到 MainActivity 再试一轮，没勾记住密码的会弹回连接选择器）；两条失败出口各加一行阶段日志（phase/attempt/sessionCookie/redirects/usedPassword），复发时用 `adb logcat -s FnOsAuth` 定位。**观察项**：若日志显示 `sessionCookie=absent` 且 `phase=handshake` 仍失败，说明该网关路由确实要求另一种会话凭据，需要再抓一次官方 App 的登录包对比。
 
 - [x] 2026-11-16 — **R555 外网 FNID 登录取不到会话 Cookie**。官方是 Flutter AOT（源码不可复用，协议可复用，已确认同样用 `x-access-code`/`x-access-source`/`/access_code_verify`/`os-access-code`）；差异在 OkHttp 只保留重定向最后一跳的响应，网关 302 上的 `Set-Cookie` 被丢掉 → 手动逐跳跟随、先收后判、无 cookie 也先试握手、认多种会话 cookie 名。**待真机验证**：需要在外网（FN Connect）环境下用 `adb logcat -s FnOsAuth` 看是否还出现该报错。
