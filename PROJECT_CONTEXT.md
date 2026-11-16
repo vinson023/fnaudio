@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R562 **HTTPS 勾选交还用户**。FN ID 登录不再 `httpsRequested = true` 预勾，也不在解析后静默同步；`MainActivity` 停止把 http 档案改写成 https，改由 `useProfile()` 记录 http 路由，加载失败时在错误面板点名「勾选 HTTPS 安全访问」。版本 0.2.152。
+
 - 2026-11-16：R561 **设置页收口**。数据维护三颗按钮改 grid 等宽（原来 flex 下 danger-button 不伸展，三个尺寸不一）；`/api/access` 返回 `version`，前端 `loadAboutVersion()` 在「关于」里显示运行中服务端的版本；安卓启动图标从「蓝底白音符」vector 改为 `gen_app_icon.py` 产出的「白底蓝音符」位图，与 fnOS 应用中心一致。版本 0.2.151。
 
 - 2026-11-16：R559 **曲目标识改内容指纹**。id 从 `sha1(路径)` 改为 `sha1(size+头/中/尾各16KiB)`，改名换盘不再失效；新增 `rebuild_track_identity`（原地改主键，两阶段防撞，重复内容加后缀，缺文件保留）、`remap_track_ids`（收藏/列表/队列）、设置页迁移按钮与自动备份；`METADATA_VERSION` 19→20。

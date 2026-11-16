@@ -120,6 +120,8 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private View errorPanel;
     private TextView errorMessage;
     private ConnectionProfile profile;
+    /** Set when the loaded profile is an FN Connect route kept on http by the user's choice. */
+    private boolean httpFnConnectProfile;
     private OkHttpClient webResourceClient;
     private final ConcurrentHashMap<String, Call> nativeHttpCalls = new ConcurrentHashMap<>();
     private AuthenticatedCoverCache coverCache;
@@ -154,18 +156,17 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         setContentView(R.layout.activity_main);
         WindowInsetsHelper.applySafePadding(findViewById(R.id.mainRoot));
 
-        profile = resolveProfile();
-        // An FN Connect route is HTTPS by definition.
+        useProfile(resolveProfile());
+        // Do not rewrite the scheme here (R562).
         //
-        // Whatever produced the stored profile — an older build, a resolved
-        // fallback, a relay handover — an http plan here puts the whole session
-        // on a port the NAS answers with 302 for every single request, and the
-        // panel ends up showing 「读取歌曲列表失败（响应体不完整）」.  Fix it at the
-        // one place every entry path goes through (2026-11-11).
-        if (profile != null && profile.isFnConnectRoute() && !profile.https) {
-            int port = profile.port == 5666 || profile.port <= 0 ? 5667 : profile.port;
-            profile = profile.withEndpoint(profile.host, port, true);
-        }
+        // This used to force an FN Connect profile onto HTTPS because an http
+        // plan against a NAS with 「强制 HTTPS」 answers every request with a 302
+        // and the panel showed 「读取歌曲列表失败（响应体不完整）」 (2026-11-11).
+        // But it also overrode the checkbox the user had just set on the login
+        // screen, so the choice existed only on that screen.  The scheme now
+        // stays as resolved and stored; when an http plan really cannot load,
+        // showError names the cause and points at the switch.
+
         bindViews();
         coverCache = new AuthenticatedCoverCache(this);
         installBackHandler();
@@ -233,7 +234,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 if (isFinishing() || isDestroyed()) return;
                 SecureProfileStore store = new SecureProfileStore(MainActivity.this);
                 persistProfile(store, authenticatedProfile);
-                profile = authenticatedProfile;
+                useProfile(authenticatedProfile);
                 boolean switchingServer = PlaybackRuntimeConfig.activate(profile);
                 if (switchingServer) stopService(new Intent(MainActivity.this, PlaybackService.class));
                 configureWebView();
@@ -302,7 +303,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             @Override public void onResolved(ConnectionProfile route) {
                 if (isFinishing() || isDestroyed()) return;
                 ConnectionProfile refreshed = candidate.withEndpoint(route.host, route.port, route.https);
-                profile = refreshed;
+                useProfile(refreshed);
                 new SecureProfileStore(MainActivity.this).upsert(refreshed, true);
                 authenticateBeforeLoading(refreshed, false);
             }
@@ -1398,11 +1399,25 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
         if (destroyed || isFinishing() || errorPanel == null) return;
         runOnUiThread(() -> {
             if (destroyed || isFinishing() || errorPanel == null || errorMessage == null || webView == null || pageProgress == null) return;
-            errorMessage.setText(message);
+            errorMessage.setText(httpFnConnectProfile
+                    ? message + "\n\n若反复出现，请在连接设置里勾选「HTTPS 安全访问」后重试（部分设备强制 HTTPS 访问）。"
+                    : message);
             errorPanel.setVisibility(View.VISIBLE);
             webView.setVisibility(View.GONE);
             pageProgress.setVisibility(View.GONE);
         });
+    }
+
+    /**
+     * Install a profile and remember whether it is an http FN Connect route.
+     *
+     * The error panel uses that flag to name the one cause the user can fix
+     * themselves: a device that insists on HTTPS answers http with a 302 for
+     * every request, which surfaces as a load failure rather than a network one.
+     */
+    private void useProfile(ConnectionProfile next) {
+        profile = next;
+        httpFnConnectProfile = next != null && next.isFnConnectRoute() && !next.https;
     }
 
     private ConnectionProfile resolveProfile() {

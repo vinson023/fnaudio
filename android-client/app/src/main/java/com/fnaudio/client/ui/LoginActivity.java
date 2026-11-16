@@ -201,17 +201,16 @@ public final class LoginActivity extends AppCompatActivity {
         setBusy(true, "正在通过 FN Connect 查找设备...");
         final String fnIdValue = value;
         final String passwordValue = password.getText().toString();
-        // An FN ID always resolves to the NAS's HTTPS port.
+        // The checkbox is the user's choice, not ours (R562).
         //
-        // The form's checkbox can come back unticked from an older saved
-        // profile, and then the whole session runs over http://host:5666: the
-        // NAS answers every request with a 302 to https, the panel reloads
-        // through that redirect, and the library request never completes —
-        // 「读取歌曲列表失败（响应体不完整）」 while nginx shows nothing but
-        // 302/200 pairs (2026-11-11).  The resolver has a matching https port
-        // for FN Connect, so this is not a user choice to preserve.
-        if (!useHttps.isChecked()) useHttps.setChecked(true);
-        final boolean httpsRequested = true;
+        // Until then this path forced it on, because an unticked box sends the
+        // whole session to http://host:5666 and a NAS with 「强制 HTTPS」 answers
+        // every request with a 302, which showed up as
+        // 「读取歌曲列表失败（响应体不完整）」 while nginx logged nothing but
+        // 302/200 pairs (2026-11-11).  Forcing it also made the box lie about
+        // what was happening.  Now the tick is respected; if the device disagrees
+        // the resolver's own answer is written back below and said out loud once.
+        final boolean httpsRequested = useHttps.isChecked();
         FnConnectSettings settings = new FnConnectSettings(this);
         String effectiveMode = settings.effectiveMode();
         FnConnectResolver.Mode connectMode = FnConnectSettings.resolverMode(effectiveMode);
@@ -222,7 +221,14 @@ public final class LoginActivity extends AppCompatActivity {
                 fnId.setText(fnIdValue);
                 host.setText(resolved.host);
                 port.setText(String.valueOf(resolved.port));
-                useHttps.setChecked(resolved.https);
+                if (resolved.https != httpsRequested) {
+                    // The device only answers on one scheme; say so instead of
+                    // silently changing the tick under the user's finger.
+                    useHttps.setChecked(resolved.https);
+                    Toast.makeText(LoginActivity.this,
+                            resolved.https ? "该设备只提供 HTTPS 访问，已自动勾选" : "该设备只提供 HTTP 访问，已取消勾选",
+                            Toast.LENGTH_SHORT).show();
+                }
                 String user = username.getText().toString().trim();
                 if (user.isEmpty() || passwordValue.isEmpty()) {
                     (user.isEmpty() ? username : password).requestFocus();

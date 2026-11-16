@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-16 — **R562 HTTPS 勾选交还用户**。登录页按勾选框走、不预勾；解析结果不一致才回写并提示；`MainActivity` 不再改写 http 档案，改用 `useProfile()` 记录并在加载失败时提示勾选 HTTPS。版本 0.2.152 / 410。**待真机**：在不勾 HTTPS 的状态下用 FN ID 登录一次，确认局域网 http 可用；若目标 NAS 开了强制 HTTPS，确认错误面板给出的是那条可操作的提示而不是空白页。
+
 - [x] 2026-11-16 — **R561 按钮等宽 + 关于显示版本号 + 两端图标统一**。`.data-maintenance-actions` 改 grid 等宽；`/api/access` 带 `version`（运行时读 manifest），`loadAboutVersion()` 写进「关于」；安卓启动图标改由 `gen_app_icon.py` 统一产出（白底蓝音符），删除三枚反色 vector。版本 0.2.151 / 409。
 
 - [x] 2026-11-16 — **R559 曲目标识改内容指纹 + 迁移**。`track_identity.py`（size+头/中/尾采样）、`library.rebuild_track_identity()`（原地改主键、两阶段防撞键、重复内容加后缀、缺文件保旧 id）、`state_store.remap_track_ids()`（收藏/列表/队列）、设置页「重建曲目标识并迁移收藏」+ 自动备份。**注意**：`METADATA_VERSION` 已升到 20，下次扫描会重新 probe 元数据（一次性）。**待真机**：在真实曲库上跑一次迁移，确认收藏/队列全部对上。
