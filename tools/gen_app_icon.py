@@ -33,9 +33,18 @@ ANDROID_RES = ROOT / "android-client" / "app" / "src" / "main" / "res"
 # Android launcher densities (mdpi..xxxhdpi) and the adaptive foreground canvas.
 ANDROID_DENSITIES = (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192))
 ANDROID_FOREGROUND_SIZE = 432
+# 安卓的启动图标瓦片里，符号要比 fnOS 那枚小一圈。
+#
+# fnOS 应用中心是一排方图并排，符号占满才显得齐；手机端不一样：瓦片 4 个圆角
+# 是这枚图标的形状本身，符号长到 78% 时上下几乎顶到圆角弧线，四个角就"憋"住了
+# （2026-11-16 负责人反馈）。0.80 把符号收到约 62% 高，与自适应图标在遮罩里
+# 露出的比例基本一致——顺带修掉"老设备（用 PNG 回退）比新设备（用自适应遮罩）
+# 显得符号更大"这个不一致。
+ANDROID_TILE_SCALE = 0.80
 # 108dp 画布在极端遮罩下只露中间 66dp（61%），而主体占图标 78%，
-# 0.74 把它收到 58%——四边都留在安全区里，圆形遮罩切不到梁和符头。
-FOREGROUND_FIT = 0.74
+# 这个系数把它收到约 52%：符号最远墨点到画布中心 130px（安全圆半径 132px），
+# 任何遮罩都切不到梁和符头。
+FOREGROUND_FIT = 0.52
 
 CANVAS = 256
 SUPERSAMPLE = 8
@@ -230,9 +239,9 @@ def _glyph_mask(size: int, scale: float = 1.0) -> Image.Image:
     return symbol
 
 
-def render(size: int) -> Image.Image:
+def render(size: int, scale: float = 1.0) -> Image.Image:
     work = _s(CANVAS)
-    symbol = _glyph_mask(size)
+    symbol = _glyph_mask(size, scale)
     icon = _background(work)
     colored = Image.new("RGBA", (work, work), SYMBOL + (255,))
     colored.putalpha(symbol)
@@ -307,7 +316,8 @@ def main() -> int:
         # it was a separate vector (blue rounded square + white note), i.e. the
         # same design inverted, so the phone and the NAS listed two different apps.
         for density, px in ANDROID_DENSITIES:
-            write(ANDROID_RES / f"mipmap-{density}" / "ic_launcher.png", render(px))
+            write(ANDROID_RES / f"mipmap-{density}" / "ic_launcher.png",
+                  render(px, ANDROID_TILE_SCALE))
         write(
             ANDROID_RES / "mipmap-xxxhdpi" / "ic_launcher_foreground.png",
             render_foreground(ANDROID_FOREGROUND_SIZE),

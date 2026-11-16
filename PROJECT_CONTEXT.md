@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R566 **安卓图标缩小符号**。`mipmap-*` 里的符号从 60%×77% 收到 47%×61%（`ANDROID_TILE_SCALE=0.80`，只作用于安卓瓦片），`FOREGROUND_FIT` 0.74→0.52 让最远墨点 130px 落进 66dp 安全圆；fnOS 应用中心图标未动。`test_android_icon_geometry.py` 按像素钉住占比、居中与安全区。
+
 - 2026-11-16：R565 **直连端口关闭**。`peer_may_reach` 只放行环回（fnOS 网关）与 UPnP（`/dlna/`、`/upnp/media/`、`/upnp/cover/`）；其余非环回请求一律 403，页面改发 `DIRECT_ACCESS_PAGE` 说明页，API 发 JSON；`/api/health` 对局域网保留。删除 R563 的只读模式（`LAN_READ_SCOPES`/`allow_lan_write`/`readonly`/前端横幅）。DLNA 依赖这条匿名通道，不能封。
 
 - 2026-11-16：R564 **维护面板与安卓图标**。图标根因是自适应前景层塞进了整枚图标（白底叠白底、音符缩放两次 = 78% > 66/108 安全区）→ 前景只画符号、`FOREGROUND_FIT=0.74`（58.6%）。数据维护改为「两步（清理 → 迁移）＋ 虚线危险区」，按钮短文字 + `aria-label` 保完整动作名，≤760px 通栏；`test_ui_maintenance_panel.py` 钉住步骤顺序与 a11y。
