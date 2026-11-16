@@ -278,13 +278,32 @@
             </div>
             <div class="settings-group" data-settings-block="advanced-maintenance">
               <div class="settings-group-head"><h3>数据维护</h3><span class="settings-badge is-danger">不可撤销</span></div>
-              <p class="dialog-help">收藏与播放列表按曲目 ID 保存，而 ID 由文件绝对路径生成。重装系统、更换硬盘或改动音乐目录后，曲目 ID 会全部改变，旧收藏会变成无法解析的记录并继续计数。清理只删除曲库里已经不存在的条目，不会动仍能播放的收藏。</p>
-              <div class="metadata-settings-actions data-maintenance-actions">
-                <button class="secondary-button" id="pruneFavoritesBtn" type="button">清理失效收藏</button>
-                <button class="danger-button" id="resetUserStateBtn" type="button">清空收藏与播放列表</button>
-                <button class="danger-button" id="reindexIdentityBtn" type="button">重建曲目标识并迁移收藏</button>
+              <p class="dialog-help">收藏与播放列表按曲目 ID 保存，而 ID 由文件绝对路径生成。重装系统、更换硬盘或改动音乐目录后，曲目 ID 会全部改变，旧收藏会变成无法解析的记录并继续计数。重装过或换过盘的，按下面两步整理一次即可。</p>
+              <ol class="maintenance-steps">
+                <li class="maintenance-step">
+                  <span class="maintenance-step-no" aria-hidden="true">1</span>
+                  <div class="maintenance-step-body">
+                    <strong>清理失效收藏</strong>
+                    <p>只删除曲库里已不存在的条目，还能播放的收藏不受影响。</p>
+                  </div>
+                  <button class="secondary-button maintenance-step-action" id="pruneFavoritesBtn" type="button" aria-label="清理失效收藏">清理</button>
+                </li>
+                <li class="maintenance-step">
+                  <span class="maintenance-step-no" aria-hidden="true">2</span>
+                  <div class="maintenance-step-body">
+                    <strong>重建曲目标识</strong>
+                    <p>把每首歌的 ID 从「文件路径的哈希」改成「文件内容的指纹」，之后改名、换目录、换硬盘都不会再让收藏失效。单向操作：执行前自动备份两个数据库，完成后旧 ID 无法还原；曲库很大时需要几十秒。</p>
+                  </div>
+                  <button class="primary-button maintenance-step-action" id="reindexIdentityBtn" type="button" aria-label="重建曲目标识并迁移收藏">重建并迁移</button>
+                </li>
+              </ol>
+              <div class="maintenance-danger-zone">
+                <div class="maintenance-step-body">
+                  <strong>清空收藏与播放列表</strong>
+                  <p>删除全部收藏、播放列表与播放队列，音乐目录等主机设置不受影响。仅在要彻底重来时使用。</p>
+                </div>
+                <button class="danger-button maintenance-step-action" id="resetUserStateBtn" type="button" aria-label="清空收藏与播放列表">清空…</button>
               </div>
-              <p class="dialog-help">「重建曲目标识」把每首歌的 ID 从「文件路径的哈希」改成「文件内容的指纹」，之后改名、换目录、换硬盘都不会再让收藏失效。这是单向操作：执行前会自动备份两个数据库，完成后旧 ID 无法还原。曲库很大时需要几十秒。</p>
               <p class="settings-pane-status" id="dataMaintenanceStatus" aria-live="polite"></p>
             </div>
             <div class="settings-group" data-settings-block="advanced-about">

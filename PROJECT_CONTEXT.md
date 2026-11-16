@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R564 **维护面板与安卓图标**。图标根因是自适应前景层塞进了整枚图标（白底叠白底、音符缩放两次 = 78% > 66/108 安全区）→ 前景只画符号、`FOREGROUND_FIT=0.74`（58.6%）。数据维护改为「两步（清理 → 迁移）＋ 虚线危险区」，按钮短文字 + `aria-label` 保完整动作名，≤760px 通栏；`test_ui_maintenance_panel.py` 钉住步骤顺序与 a11y。
+
 - 2026-11-16：R563 **局域网直连只读**。匿名直连只放行 `library.read`/`playback.read`/`state.read`，写作用域返回 401；`/api/access` 增 `readonly`（按真实 socket 对端判定），前端 `loadAccessMode()` 渲染顶部常驻只读横幅，401 文案不再误报「登录已失效」。从飞牛入口（loopback）与安卓门户（5666/5667）不受影响。版本 0.2.153。
 
 - 2026-11-16：R562 **HTTPS 勾选交还用户**。FN ID 登录不再 `httpsRequested = true` 预勾，也不在解析后静默同步；`MainActivity` 停止把 http 档案改写成 https，改由 `useProfile()` 记录 http 路由，加载失败时在错误面板点名「勾选 HTTPS 安全访问」。版本 0.2.152。

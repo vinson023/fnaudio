@@ -33,6 +33,9 @@ ANDROID_RES = ROOT / "android-client" / "app" / "src" / "main" / "res"
 # Android launcher densities (mdpi..xxxhdpi) and the adaptive foreground canvas.
 ANDROID_DENSITIES = (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192))
 ANDROID_FOREGROUND_SIZE = 432
+# 108dp 画布在极端遮罩下只露中间 66dp（61%），而主体占图标 78%，
+# 0.74 把它收到 58%——四边都留在安全区里，圆形遮罩切不到梁和符头。
+FOREGROUND_FIT = 0.74
 
 CANVAS = 256
 SUPERSAMPLE = 8
@@ -176,7 +179,15 @@ def _rounded_polygon(points: list[tuple[float, float]], radii: list[float]) -> l
     return out
 
 
-def render(size: int) -> Image.Image:
+def _glyph_mask(size: int, scale: float = 1.0) -> Image.Image:
+    """The blue mark as an alpha mask at work resolution, no background.
+
+    Split out of ``render`` so the Android adaptive foreground can draw the mark
+    alone. Until R564 it reused ``render``, i.e. the finished icon *including* the
+    white rounded square, so the launcher composited white-on-white and the mark
+    was scaled twice - the note ended up at 78% of the canvas, well outside the
+    66/108 safe zone, and Android's circular mask cut its beam and note heads.
+    """
     work = _s(CANVAS)
     weight = _weight_for(size)
     symbol = Image.new("L", (work, work), 0)
@@ -207,15 +218,21 @@ def render(size: int) -> Image.Image:
             fill=255,
         )
 
-    if GLYPH_SCALE != 1.0:
+    total = GLYPH_SCALE * scale
+    if abs(total - 1.0) > 1e-6:
         # 以画布中心等比放大：几何比例一律不动，只是整体变大变小。
         # 在 8 倍画布上重采样，落到目标尺寸仍然干净。
-        scaled = round(work * GLYPH_SCALE)
+        scaled = max(1, round(work * total))
         grown = symbol.resize((scaled, scaled), Image.LANCZOS)
         symbol = Image.new("L", (work, work), 0)
         offset = round((work - scaled) / 2)
         symbol.paste(grown, (offset, offset))
+    return symbol
 
+
+def render(size: int) -> Image.Image:
+    work = _s(CANVAS)
+    symbol = _glyph_mask(size)
     icon = _background(work)
     colored = Image.new("RGBA", (work, work), SYMBOL + (255,))
     colored.putalpha(symbol)
@@ -223,18 +240,23 @@ def render(size: int) -> Image.Image:
 
 
 def render_foreground(size: int) -> Image.Image:
-    """The glyph on a transparent canvas, sized for an adaptive-icon foreground.
+    """The mark alone on a transparent canvas, fitted to the adaptive safe zone.
 
-    Android crops an adaptive icon's 108dp canvas with a circle of about 66dp, and
-    this app's glyph fills 68% of the canvas height. Pasting the icon as-is would
-    shave the beam and the lower note head, so the whole mark is drawn 10% smaller
-    and centred: same proportions, nothing touching the mask.
+    An adaptive icon's 108dp canvas is shown through a mask that may cut down to a
+    66dp circle, so everything has to fit inside 66/108 = 61% of the canvas. The
+    mark is 78% of the icon by design, so it is drawn at FOREGROUND_FIT to land at
+    ~58%: full size on the launcher, nothing shaved by the mask.
+
+    The background layer is drawn by the launcher (``ic_launcher.xml`` points at the
+    white colour); putting the rounded square in here too would double-scale the
+    mark and leave a white square inside the circle.
     """
-    enlarged = render(max(size, round(size / 0.9)))
-    scaled = enlarged.resize((size, size), Image.LANCZOS)
-    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    canvas.alpha_composite(scaled)
-    return canvas
+    work = _s(CANVAS)
+    # Judged at the size the mark is actually seen at, not at 432.
+    symbol = _glyph_mask(round(size * FOREGROUND_FIT), FOREGROUND_FIT)
+    colored = Image.new("RGBA", (work, work), SYMBOL + (255,))
+    colored.putalpha(symbol)
+    return colored.resize((size, size), Image.LANCZOS)
 
 
 def write(path: Path, image: Image.Image) -> None:

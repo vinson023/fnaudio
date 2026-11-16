@@ -653,7 +653,10 @@ test("settings can clean favourites that no longer resolve", async ({ page }) =>
   const maintenance = page.locator('[data-settings-block="advanced-maintenance"]');
   await maintenance.scrollIntoViewIfNeeded();
   await expect(maintenance).toBeVisible();
-  await expect(page.locator("#pruneFavoritesBtn")).toHaveText("清理失效收藏");
+  // R564 moved the full action name into aria-label and left the visible text short,
+  // so assert the accessible name rather than the label on the face of the button.
+  await expect(page.locator("#pruneFavoritesBtn")).toHaveAccessibleName("清理失效收藏");
+  await expect(page.locator("#pruneFavoritesBtn")).toHaveText("清理");
 
   await page.locator("#pruneFavoritesBtn").click();
   await expect(page.locator("#dataMaintenanceStatus")).toContainText("已清理 2 条失效收藏");

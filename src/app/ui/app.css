@@ -1197,15 +1197,29 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
  */
 .lan-readonly-banner{position:sticky;top:0;z-index:30;margin:0 0 8px;padding:8px 12px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-selected);color:var(--ui-accent);font-size:12px;line-height:1.45;text-align:center}
 
-/* 数据维护的三个按钮必须一样大。
+/* 数据维护：清理 → 迁移是有顺序的两步，“清空”不可逆。
  *
- * 它们原来共用 .metadata-settings-actions：那是 flex+wrap，而且移动端的规则只让
- * .secondary-button 伸展，.danger-button 保持内容宽度。于是前两个挤在一行、宽窄
- * 不同，第三个被换到下一行后只剩文字那么宽，看起来像三种规格的控件。改成等宽
- * 网格：窄屏一列，够宽时自动多列，每个按钮都占满自己的格子。
+ * 三件事原来并排在一行、都是同一档视觉重量，用户看不出该按什么顺序做，也看不出
+ * 哪一步会把数据删掉。现在拆成两种结构：带序号的两步（“这一步做什么、做完会怎样”
+ * 写在标题下面，按钮在右），以及单独用虚线框隔开的危险区。按钮文字因此可以短到
+ * 两个词——完整的动作名留在 aria-label 里，读屏仍然听到“清理失效收藏”。
  */
-.data-maintenance-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;align-items:stretch}
-.data-maintenance-actions>button{width:100%;min-width:0;min-height:42px;padding:0 12px;white-space:normal;line-height:1.3}
+.maintenance-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.maintenance-step{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:start;gap:12px;padding:12px 14px;border:1px solid var(--ui-line);border-radius:9px;background:var(--ui-surface)}
+.maintenance-step-no{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--ui-selected);color:var(--ui-accent);font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}
+.maintenance-step-body{min-width:0}
+.maintenance-step-body strong{display:block;font-size:13px;font-weight:600;color:var(--ui-text)}
+.maintenance-step-body p{margin:2px 0 0;font-size:12px;line-height:1.55;color:var(--ui-muted)}
+.maintenance-step-action{justify-self:end;align-self:center;white-space:nowrap;font-size:13px}
+.maintenance-danger-zone{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:12px;padding:12px 14px;border:1px dashed rgba(219,56,44,.4);border-radius:9px;background:rgba(219,56,44,.045)}
+@media(max-width:760px){
+  /* 窄屏上按钮通栏：右边挤一列会把说明压成竖排。 */
+  .maintenance-step{grid-template-columns:20px minmax(0,1fr);align-items:start;gap:10px 12px}
+  .maintenance-step-no{width:20px;height:20px;margin-top:1px}
+  .maintenance-step-action{grid-column:1/-1;width:100%;justify-self:stretch}
+  .maintenance-danger-zone{grid-template-columns:1fr;gap:10px}
+  .maintenance-danger-zone .maintenance-step-action{width:100%}
+}
 
 /* Touch devices keep :hover on the last tapped control, so every hover arm that
  * paints has to be undone there. That now lives in one place at the end of
