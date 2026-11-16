@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-16：R556 **令牌过期自动续登**。fnOS 短令牌分钟级、长令牌周级过期，「过几天不行」就是两者都过期后回退链断在 `finishCredentialRejected`：改为 `LONG_TOKEN` 失败且有已存密码时直接 `user.login`；两条失败出口各加一行阶段日志（phase/attempt/sessionCookie/redirects/usedPassword），复发用 `adb logcat -s FnOsAuth` 定位。Java 行账 60 文件 / 15,119 行。
+
 - 2026-11-16：R555 **外网登录取不到会话 Cookie**。官方 Flutter AOT 无法复用源码，但协议一致（`x-access-code`/`x-access-source`/`/access_code_verify`/`os-access-code`）；根因是 OkHttp 跟随重定向只保留最终响应，302 上的 Set-Cookie 被丢弃（局域网首跳即终态，所以只在局域网外复现）。改为手动逐跳跟随（≤4 跳）并先收集再判断、多 cookie 名兼容、无 cookie 先由握手判定。
 
 - 2026-11-16：R554 **403／随机100首／收藏累加**。`TRUSTED_LAN_NETWORKS` 补 192.168/16 与 100.64/10 并对 `::ffff:` 归一化（直连 `:3131` 从全 403 恢复，公网仍拒）；随机100首固定取 100 首（原来被页大小截成 60/96，队列随之断），`count` 报样本量、`paged:false`；新增 `/api/state/maintenance` 与设置页「高级 → 数据维护」（清理失效收藏、清空收藏与播放列表），因为曲目 id 是绝对路径哈希，重装后旧收藏会变成越积越多的孤儿。

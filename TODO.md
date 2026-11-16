@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-16 — **R556 令牌过期后自动续登**。短/长令牌都过期时，`handleAttemptFailure` 直接拿已保存密码走 `user.login`（原来要绕到 MainActivity 再试一轮，没勾记住密码的会弹回连接选择器）；两条失败出口各加一行阶段日志（phase/attempt/sessionCookie/redirects/usedPassword），复发时用 `adb logcat -s FnOsAuth` 定位。**观察项**：若日志显示 `sessionCookie=absent` 且 `phase=handshake` 仍失败，说明该网关路由确实要求另一种会话凭据，需要再抓一次官方 App 的登录包对比。
+
 - [x] 2026-11-16 — **R555 外网 FNID 登录取不到会话 Cookie**。官方是 Flutter AOT（源码不可复用，协议可复用，已确认同样用 `x-access-code`/`x-access-source`/`/access_code_verify`/`os-access-code`）；差异在 OkHttp 只保留重定向最后一跳的响应，网关 302 上的 `Set-Cookie` 被丢掉 → 手动逐跳跟随、先收后判、无 cookie 也先试握手、认多种会话 cookie 名。**待真机验证**：需要在外网（FN Connect）环境下用 `adb logcat -s FnOsAuth` 看是否还出现该报错。
 
 - [x] 2026-11-16 — **R554 403／随机100首／收藏累加**（负责人三条现场反馈）。① `TRUSTED_LAN_NETWORKS` 漏了 192.168/16（和 100.64/10），直连 `:3131` 每个 API 都 403，只有 CGI 入口正常；补网段并对 `::ffff:` 做 IPv4 归一化。② 随机100首的样本量取了 `min(100, 页大小)`，手机只出 60 首且队列随之截断（下一首到底无反应），改为固定 100、`count` 报样本量、`paged:false`。③ 曲目 id 是绝对路径哈希，重装/换盘后全变，旧收藏成孤儿且继续计数；设置页新增「高级 → 数据维护」：清理失效收藏（索引为空时拒绝）、清空收藏与播放列表。**待办：id 依赖绝对路径这个根因仍在，若要根治需做 id 迁移（按相对路径+根标识或内容指纹重映射），影响所有收藏/列表/队列，单独评估。**

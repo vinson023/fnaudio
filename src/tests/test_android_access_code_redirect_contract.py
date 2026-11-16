@@ -53,3 +53,19 @@ assert "os-access-code" in COOKIES, "the original access-code cookie stays first
 # never be replayed onto another URL.
 assert "client.newBuilder()" in AUTH, "the redirect-off client is a per-exchange copy"
 assert ".followRedirects(false)\n                    .followSslRedirects(false)" in AUTH
+
+# Both stored tokens expire eventually, which is the "worked for a few days, then
+# stopped" report. The saved password must be spent in the same chain instead of
+# bouncing the user to the connection chooser.
+_handle = AUTH[AUTH.index("private void handleAttemptFailure("):AUTH.index("private void logFailure(")]
+assert "attempt == Attempt.LONG_TOKEN && !password.isEmpty()" in _handle, \
+    "an expired long token must fall back to the saved password"
+assert _handle.index("send(Attempt.LOGIN_USER);") < _handle.index("finishCredentialRejected(message);"), \
+    "the password attempt comes before giving up"
+
+# Failures name their phase, so a recurrence is diagnosable from logcat alone.
+assert "private void logFailure(String kind, String message)" in AUTH
+for field in ("phase=", "attempt=", "sessionCookie=", "redirects=", "usedPassword="):
+    assert field in AUTH, "the failure line must report " + field
+assert 'logFailure("error", message);' in AUTH and 'logFailure("rejected", message);' in AUTH, \
+    "both failure exits log the phase"

@@ -80,6 +80,7 @@ public final class FnOsAuthClient {
         private Attempt attempt;
         private String requestId = "";
         private String sessionCookie = "";
+        private int accessCodeHops = 0;
 
         private Session(Context context, ConnectionProfile profile, String password, Callback callback) {
             this.profile = profile;
@@ -151,6 +152,7 @@ public final class FnOsAuthClient {
                             collectSessionCookies(response);
                             String location = response.header("Location");
                             if (response.isRedirect() && location != null && hop < MAX_ACCESS_CODE_REDIRECTS) {
+                                accessCodeHops = hop + 1;
                                 verifyAccessCode(resolveLocation(url, location), accessCode, hop + 1);
                                 return;
                             }
@@ -362,11 +364,40 @@ public final class FnOsAuthClient {
                 send(Attempt.LONG_TOKEN);
                 return;
             }
+            // fnOS expires both stored tokens eventually (the short one in
+            // minutes, the long one in weeks), so a record that worked for a
+            // while stops working days later. The saved password is still the
+            // credential the user already gave this app; spend it here instead of
+            // surfacing a failure the caller then has to recover from with a
+            // second round trip and a chooser screen.
+            if (attempt == Attempt.LONG_TOKEN && !password.isEmpty()) {
+                send(Attempt.LOGIN_USER);
+                return;
+            }
             if (attempt == Attempt.LOGIN_USER) {
                 send(Attempt.LOGIN_USERNAME);
                 return;
             }
             finishCredentialRejected(message);
+        }
+
+        /**
+         * One line that says where the attempt died.
+         *
+         * "登录过几天就不行" is impossible to diagnose from a toast: the phase
+         * (access-code verification, redirect hop, handshake, credential round)
+         * and whether a session cookie was ever obtained are what separate a
+         * gateway change from an expired token. `adb logcat -s FnOsAuth` is then
+         * enough, with no rebuild.
+         */
+        private void logFailure(String kind, String message) {
+            Log.w(TAG, "authentication " + kind
+                    + ": phase=" + (socket == null ? "pre-handshake" : "handshake")
+                    + ", attempt=" + attempt
+                    + ", sessionCookie=" + (sessionCookie.isEmpty() ? "absent" : "present")
+                    + ", redirects=" + accessCodeHops
+                    + ", usedPassword=" + !password.isEmpty()
+                    + ", message=" + message);
         }
 
         private void finishSuccess(ConnectionProfile authenticatedProfile) {
@@ -382,6 +413,7 @@ public final class FnOsAuthClient {
 
         private void finishError(String message) {
             if (!completed.compareAndSet(false, true)) return;
+            logFailure("error", message);
             mainHandler.removeCallbacks(timeoutRunnable);
             if (socket != null) socket.cancel();
             client.dispatcher().executorService().shutdown();
@@ -393,6 +425,7 @@ public final class FnOsAuthClient {
 
         private void finishCredentialRejected(String message) {
             if (!completed.compareAndSet(false, true)) return;
+            logFailure("rejected", message);
             mainHandler.removeCallbacks(timeoutRunnable);
             if (socket != null) socket.cancel();
             client.dispatcher().executorService().shutdown();
