@@ -384,6 +384,20 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "invalid json"}, status=400)
         if not isinstance(payload, dict):
             return self.send_json({"ok": False, "error": "invalid payload"}, status=400)
+        if self.path.startswith("/api/state/maintenance"):
+            action = str(payload.get("action") or "")
+            if action == "prune-favorites":
+                return self.send_json({
+                    "ok": True,
+                    "result": {"removed": 2, "remaining": 1},
+                    "state": {"initialized": True, "revision": 2, "favorites": ["t2"], "playlists": [], "playback": {}, "ui": {}},
+                })
+            if action == "reset-user-state":
+                return self.send_json({
+                    "ok": True,
+                    "state": {"initialized": False, "revision": 3, "favorites": [], "playlists": [], "playback": {}, "ui": {}},
+                })
+            return self.send_json({"ok": False, "error": "unsupported maintenance action"}, status=400)
         core = playback_core()
         if self.path.startswith("/api/playback/queue"):
             queue = payload.get("queue")

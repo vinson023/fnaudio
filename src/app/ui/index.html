@@ -275,6 +275,15 @@
               <p class="dialog-help">本地歌词正文的内存缓存上限，超预算时自动淘汰最旧的歌词，不改变磁盘上的歌词文件。调小缓存后保存会立刻淘汰已缓存的歌词。</p>
               <div class="metadata-settings-grid"><label><span>歌词缓存上限</span><select id="lyricsCacheBudgetInput"><option value="65536">64 KiB</option><option value="262144">256 KiB</option><option value="1048576">1 MiB</option><option value="8388608" selected>8 MiB（默认）</option><option value="33554432">32 MiB</option><option value="67108864">64 MiB</option></select></label></div>
             </div>
+            <div class="settings-group" data-settings-block="advanced-maintenance">
+              <div class="settings-group-head"><h3>数据维护</h3><span class="settings-badge is-danger">不可撤销</span></div>
+              <p class="dialog-help">收藏与播放列表按曲目 ID 保存，而 ID 由文件绝对路径生成。重装系统、更换硬盘或改动音乐目录后，曲目 ID 会全部改变，旧收藏会变成无法解析的记录并继续计数。清理只删除曲库里已经不存在的条目，不会动仍能播放的收藏。</p>
+              <div class="metadata-settings-actions">
+                <button class="secondary-button" id="pruneFavoritesBtn" type="button">清理失效收藏</button>
+                <button class="danger-button" id="resetUserStateBtn" type="button">清空收藏与播放列表</button>
+              </div>
+              <p class="settings-pane-status" id="dataMaintenanceStatus" aria-live="polite"></p>
+            </div>
             <div class="settings-group" data-settings-block="advanced-about">
               <div class="settings-group-head"><h3>关于</h3><span class="settings-badge is-live">只读</span></div>
               <p class="dialog-help">fnAudio 是飞牛 OS 上的音乐播放器：本地曲库、DLNA 推送与浏览器播放共用一套播放队列。</p>

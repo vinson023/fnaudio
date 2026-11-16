@@ -37,7 +37,11 @@ def required_scope(method: str, path: str) -> str:
         return ""
     if requires_resource_auth(path):
         return "library.read"
-    if path == "/api/state/user":
+    if path.startswith("/api/state/"):
+        # User state (favorites, playlists, playback session, UI preferences) is
+        # the user's own data, not host configuration: a LAN client that may add
+        # a favorite may also prune or clear them. Maintenance routes live under
+        # the same prefix so they inherit exactly that permission.
         return "state.read" if method in ("GET", "HEAD") else "state.write"
     if path.startswith("/api/metadata/"):
         # Candidate/lyrics status is part of normal library presentation. Only

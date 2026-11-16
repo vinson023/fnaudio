@@ -635,3 +635,30 @@ test("the issue detail still fits a phone screen", async ({ page }) => {
   await page.locator("#closeMetadataLogBtn").click();
   await expect(page.locator("#metadataLogDialog")).toBeHidden();
 });
+
+test("settings can clean favourites that no longer resolve", async ({ page }) => {
+  // A reinstall renames every track (the id is a hash of the absolute path), so
+  // the stored favourites keep counting rows that the library can never serve.
+  // The repair lives in 设置 → 高级 → 数据维护.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".track")).toHaveCount(4);
+
+  // Phones reach settings through the navigation drawer.
+  await page.locator("#mobileNavBtn").click();
+  await page.locator("#mobileSettingsNavBtn").click();
+  await expect(page.locator("#folderDialog")).toHaveAttribute("open", "");
+  await page.locator('[data-settings-tab="advanced"]').click();
+
+  const maintenance = page.locator('[data-settings-block="advanced-maintenance"]');
+  await maintenance.scrollIntoViewIfNeeded();
+  await expect(maintenance).toBeVisible();
+  await expect(page.locator("#pruneFavoritesBtn")).toHaveText("清理失效收藏");
+
+  await page.locator("#pruneFavoritesBtn").click();
+  await expect(page.locator("#dataMaintenanceStatus")).toContainText("已清理 2 条失效收藏");
+
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#resetUserStateBtn").click();
+  await expect(page.locator("#dataMaintenanceStatus")).toContainText("已清空收藏");
+});

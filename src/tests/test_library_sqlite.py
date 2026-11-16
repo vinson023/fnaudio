@@ -1,5 +1,6 @@
 import os
 import io
+import itertools
 import json
 import shutil
 import sys
@@ -1719,7 +1720,10 @@ class LibrarySqliteTests(unittest.TestCase):
                 random = query_library_page(config, {"view": "random100", "limit": "1"})
                 dsd = query_library_page(config, {"view": "dsd", "limit": "10"})
             self.assertEqual(recent["count"], 2)
-            self.assertEqual(random["count"], 1)
+            # R554: the random view is a fixed draw, so its count is the sample
+            # size the client can play, not the page limit it asked with.
+            self.assertEqual(random["count"], 2)
+            self.assertEqual(len(random["items"]), 2)
             self.assertEqual(dsd["count"], 1)
             self.assertEqual([item["id"] for item in dsd["items"]], ["one"])
             self.assertFalse(any("COUNT(*) FROM tracks" in statement for statement in traces))
@@ -1729,10 +1733,11 @@ class LibrarySqliteTests(unittest.TestCase):
             music_root = os.path.join(root, "music")
             os.makedirs(music_root)
             config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            count = library.RANDOM_VIEW_SAMPLE_SIZE + 20
             save_items_to_sqlite(
                 config,
-                [self._item("one", os.path.join(music_root, "one.flac"), "One", 1),
-                 self._item("two", os.path.join(music_root, "two.flac"), "Two", 2)],
+                [self._item("t%03d" % index, os.path.join(music_root, "t%03d.flac" % index), "T%03d" % index, index)
+                 for index in range(count)],
                 "test",
             )
             traces = []
@@ -1744,12 +1749,11 @@ class LibrarySqliteTests(unittest.TestCase):
                     connection.set_trace_callback(traces.append)
                     yield connection
 
-            random_values = iter([1, 2])
             with mock.patch.object(library, "library_db_connect", side_effect=traced_connect), \
-                 mock.patch.object(library.random, "randrange", side_effect=lambda _start, _stop: next(random_values)):
+                 mock.patch.object(library, "random_rowid_candidates", return_value=list(range(1, count + 1))):
                 page = query_library_page(config, {"view": "random100", "limit": "2"})
 
-            self.assertEqual([item["id"] for item in page["items"]], ["one", "two"])
+            self.assertEqual(len(page["items"]), library.RANDOM_VIEW_SAMPLE_SIZE)
             self.assertFalse(any("ORDER BY RANDOM()" in statement for statement in traces))
 
     def test_unfiltered_random_page_does_not_bias_the_rowid_probe_set_to_older_tracks(self):
@@ -1757,20 +1761,21 @@ class LibrarySqliteTests(unittest.TestCase):
             music_root = os.path.join(root, "music")
             os.makedirs(music_root)
             config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            count = library.RANDOM_VIEW_SAMPLE_SIZE + 20
             save_items_to_sqlite(
                 config,
-                [self._item("one", os.path.join(music_root, "one.flac"), "One", 1),
-                 self._item("two", os.path.join(music_root, "two.flac"), "Two", 2),
-                 self._item("three", os.path.join(music_root, "three.flac"), "Three", 3),
-                 self._item("four", os.path.join(music_root, "four.flac"), "Four", 4)],
+                [self._item("t%03d" % index, os.path.join(music_root, "t%03d.flac" % index), "T%03d" % index, index)
+                 for index in range(count)],
                 "test",
             )
-            with mock.patch.object(library, "random_rowid_candidates", return_value=[1, 2, 3, 4]), \
+            with mock.patch.object(library, "random_rowid_candidates", return_value=list(range(1, count + 1))), \
                  mock.patch.object(library.random, "sample", return_value=[4, 2]) as sample:
                 page = query_library_page(config, {"view": "random100", "limit": "2"})
 
             sample.assert_called_once()
-            self.assertEqual([item["id"] for item in page["items"]], ["four", "two"])
+            # The draw is the sample, not the page: the mocked pick is what the
+            # view serves, which is exactly the anti-bias rule under test.
+            self.assertEqual([item["id"] for item in page["items"]], ["t001", "t003"])
 
     def test_unfiltered_random_page_falls_back_when_rowid_sampling_is_incomplete(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1805,18 +1810,23 @@ class LibrarySqliteTests(unittest.TestCase):
             music_root = os.path.join(root, "music")
             os.makedirs(music_root)
             config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            count = library.RANDOM_VIEW_SAMPLE_SIZE + 20
             save_items_to_sqlite(
                 config,
-                [self._item("one", os.path.join(music_root, "one.flac"), "One", 1),
-                 self._item("two", os.path.join(music_root, "two.flac"), "Two", 2)],
+                [self._item("t%03d" % index, os.path.join(music_root, "t%03d.flac" % index), "T%03d" % index, index)
+                 for index in range(count)],
                 "test",
             )
-            with mock.patch.object(library, "random_rowid_candidates", side_effect=([1], [2])):
-                initial = query_library_page(config, {"view": "random100", "limit": "1"})
-                refreshed = query_library_page(config, {"view": "random100", "limit": "1", "refresh": "1"})
+            # The draw itself is random, so the cache is proven by counting draws:
+            # a repeat request must reuse the page, `refresh=1` must draw again.
+            with mock.patch.object(library, "random_rowid_candidates", return_value=list(range(1, count + 1))), \
+                 mock.patch.object(library.random, "sample", wraps=library.random.sample) as sample:
+                query_library_page(config, {"view": "random100"})
+                query_library_page(config, {"view": "random100"})
+                self.assertEqual(sample.call_count, 1, "an identical request reuses the cached page")
+                query_library_page(config, {"view": "random100", "refresh": "1"})
 
-            self.assertEqual([item["id"] for item in initial["items"]], ["one"])
-            self.assertEqual([item["id"] for item in refreshed["items"]], ["two"])
+            self.assertEqual(sample.call_count, 2, "refresh=1 must redraw instead of reusing the page")
 
     def test_library_summary_uses_saved_counts_without_table_scan(self):
         with tempfile.TemporaryDirectory() as root:

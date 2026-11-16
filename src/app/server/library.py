@@ -141,6 +141,12 @@ GROUP_LABEL_VERSION = "3"
 MAX_LIBRARY_SIGNATURE_PARTS = 200_000
 MAX_LIBRARY_SIGNATURE_BYTES = 8 * 1024 * 1024
 SEARCH_INDEX_VERSION = "1"
+# "随机 100 首" is a fixed sample of the library, not a page of it. The view used
+# to take ``min(100, limit)``, so the caller's page size (96 on desktop, 60 on a
+# phone) became the sample size: the phone showed ~60 tracks under a heading that
+# promised 100, and the queue built from that page ended after those 60, which is
+# why "next" stopped responding at the end of the sample.
+RANDOM_VIEW_SAMPLE_SIZE = 100
 MUSIC_CACHE = {"stamp": 0, "items": []}
 FS_CACHE = {"signature": ""}
 # SQLite is deliberately kept as the source of truth.  This small process
@@ -1675,7 +1681,11 @@ def query_library_page(config, params):
             _track_page_result(items, count, limit, offset, page_query, anchor, has_more),
         )
     elif view == "random100":
-        sample_limit = min(100, limit)
+        # A fixed sample, independent of the caller's page size (see
+        # RANDOM_VIEW_SAMPLE_SIZE). The response is not paged: paging a fresh
+        # random draw per page would hand page 2 a different sample of the same
+        # library and duplicate tracks that page 1 had already shown.
+        sample_limit = RANDOM_VIEW_SAMPLE_SIZE
         if search:
             condition, condition_args = _track_search_condition(search, use_fts=use_fts)
             where.append(condition)
@@ -1738,7 +1748,17 @@ def query_library_page(config, params):
                     args + [sample_limit],
                 )
             items = decode_item_rows(rows)
-        return cache_epoch.put("tracks", cache_values, {"items": items, "count": min(count, sample_limit), "limit": sample_limit, "offset": 0, "paged": True})
+        # ``count`` is the size of the sample the caller can actually play, not
+        # the size of the library: a page total larger than the sample made the
+        # pager believe rows were missing and drew a second page that simply
+        # re-drew the same random draw.
+        return cache_epoch.put("tracks", cache_values, {
+            "items": items,
+            "count": len(items),
+            "limit": sample_limit,
+            "offset": 0,
+            "paged": False,
+        })
     where, args = build_track_filters(
         page_query,
         search_condition=_track_search_condition,
@@ -2140,6 +2160,19 @@ def query_library_root_folders(config, search=""):
                 rows = {}
     result = project_root_rows(roots, rows, matched_roots)
     return cache_epoch.put("roots", cache_values, result)
+
+
+def library_track_ids(config):
+    """Every track id the index currently serves.
+
+    Used by user-state maintenance: a favorite whose id is absent here cannot be
+    resolved to a file any more (the id is derived from the absolute path, so a
+    reinstall or a disk swap renames everything).
+    """
+    with library_db_connect(config) as conn:
+        if _library_index_is_empty(conn):
+            return set()
+        return {str(row["id"]) for row in conn.execute("SELECT id FROM tracks") if row["id"]}
 
 
 def query_library_items_by_ids(config, ids):

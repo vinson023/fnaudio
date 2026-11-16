@@ -59,6 +59,7 @@ from library import (
     shutdown_library_refresh,
     start_library_watcher,
     stop_library_watcher,
+    library_track_ids,
     read_cover_for_item,
     save_library_cache,
     safe_float,
@@ -124,7 +125,8 @@ from playback.alsa_output import (
 from services.mpd_service import MpdService
 from services.audio_output_lease import AUDIO_OUTPUT_LEASE
 from services.airplay_service import AirplayService, airplay_probe
-from state_store import StateConflict, load_user_state, save_playback_session, save_user_state
+from state_store import (StateConflict, load_user_state, prune_favorites, reset_user_state,
+                         save_playback_session, save_user_state)
 from state_projection import playback_queue_ids
 from playback_session_projection import project_playback_session
 from metadata_service import MAX_ARTWORK_BYTES, MetadataProviders, MetadataService
@@ -1502,6 +1504,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "state": save_user_state(self.server.config, payload, expected_revision)})
             except StateConflict:
                 return self.send_json({"ok": False, "error": "state conflict", "state": load_user_state(self.server.config)}, 409)
+        if parsed.path == "/api/state/maintenance":
+            action = payload.get("action")
+            if action == "prune-favorites":
+                # The library is the authority on which ids still exist. An empty
+                # index is refused rather than treated as "nothing is a favorite":
+                # a reinstall that has not scanned yet would otherwise delete the
+                # whole list the user is trying to keep.
+                try:
+                    valid_ids = library_track_ids(self.server.config)
+                    result = prune_favorites(self.server.config, valid_ids)
+                except ValueError:
+                    return self.send_json({
+                        "ok": False,
+                        "error": "曲库索引为空，请先重新扫描曲库，再清理收藏",
+                    }, 409)
+                return self.send_json({"ok": True, "result": result, "state": load_user_state(self.server.config)})
+            if action == "reset-user-state":
+                if payload.get("confirm") is not True:
+                    return self.send_json({"ok": False, "error": "confirm must be true"}, 400)
+                return self.send_json({"ok": True, "state": reset_user_state(self.server.config)})
+            return self.send_json({"ok": False, "error": "unsupported maintenance action"}, 400)
         if parsed.path == "/api/library/scan/cancel":
             cancelled = cancel_library_refresh()
             return self.send_json({"ok": True, "cancelled": cancelled, "status": library_status(self.server.config)})

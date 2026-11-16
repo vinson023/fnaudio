@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterable
 
 from file_permissions import secure_directory, secure_sqlite_files
+from metadata_track_id_policy import normalize_track_id
 from state_count_policy import (CHILD_INTEGRITY_VERIFIED,
                                 child_integrity_is_recorded,
                                 children_are_within_budget)
@@ -479,3 +480,57 @@ def save_playback_session(config: Dict[str, Any], playback: Dict[str, Any]) -> i
 
 
 __all__ = ["MAX_STATE_PAYLOAD_BYTES", "MAX_STATE_TEXT_BYTES", "StateConflict", "load_user_state", "save_user_state", "save_playback_session", "state_db_path"]
+
+def prune_favorites(config: Dict[str, Any], valid_ids) -> Dict[str, int]:
+    """Drop favorite rows whose track id no longer exists in the library.
+
+    A track id is derived from the file's absolute path, so reinstalling the OS,
+    swapping a disk, or mounting the collection somewhere else renames every
+    track. The old favorites then point at ids the library can never resolve
+    again: they stay in the stored list, inflate the count, and the next favorite
+    of the same song is added beside them instead of replacing them. This is the
+    repair for that state - it never touches an id the library still serves.
+    """
+    keep = set()
+    for value in valid_ids if isinstance(valid_ids, (set, frozenset, list, tuple)) else ():
+        track_id = normalize_track_id(value)
+        if track_id:
+            keep.add(track_id)
+    if not keep:
+        # An empty library is not evidence that nothing is a favorite; it is
+        # evidence that the index has not been built yet.
+        raise ValueError("library index is empty")
+    removed = 0
+    with _STATE_WRITE_LOCK, state_db_connect(config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        stale = [
+            row["track_id"] for row in conn.execute("SELECT track_id FROM favorites")
+            if normalize_track_id(row["track_id"]) not in keep
+        ]
+        if stale:
+            conn.executemany("DELETE FROM favorites WHERE track_id = ?", [(track_id,) for track_id in stale])
+            _next_revision(conn)
+        removed = len(stale)
+    return {"removed": removed, "remaining": _favorite_count(config)}
+
+
+def _favorite_count(config: Dict[str, Any]) -> int:
+    with _STATE_WRITE_LOCK, state_db_connect(config) as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM favorites").fetchone()[0])
+
+
+def reset_user_state(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Clear everything this app keeps on behalf of the user.
+
+    Favorites, playlists, the playback session and the UI preferences are all
+    stored per installation; after a reinstall they can describe a library that
+    no longer exists. Settings that belong to the host (music roots, transcoding,
+    device publishing) are deliberately not touched: those describe the machine,
+    not the user.
+    """
+    with _STATE_WRITE_LOCK, state_db_connect(config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for table in ("favorites", "playlist_tracks", "playlists", "playback_sessions", "ui_preferences"):
+            conn.execute("DELETE FROM " + table)
+        _next_revision(conn)
+    return load_user_state(config)

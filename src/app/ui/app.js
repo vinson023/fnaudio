@@ -11041,6 +11041,52 @@ if (mobileLogoutButton && nativeBridgeAvailable()) {
 } else {
   mobileLogoutButton?.remove();
 }
+async function runUserStateMaintenance(action, confirmText) {
+  // Favorites and playlists are only meaningful while their track ids resolve.
+  // A track id is derived from the absolute file path, so a reinstall or a disk
+  // swap renames every track and leaves the stored list full of entries that can
+  // never resolve again - which then keeps counting and lets the same song be
+  // added a second time. This is the repair the settings page offers.
+  if (confirmText && !confirm(confirmText)) return;
+  const status = $("dataMaintenanceStatus");
+  if (status) status.textContent = "处理中…";
+  try {
+    // `apiFetch` hands back the raw Response here (it is the native bridge that
+    // resolves JSON), so the shared loader reads the body exactly like the state
+    // save above does.
+    const request = apiFetch("api/state/maintenance", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action, confirm: action === "reset-user-state"}),
+    });
+    const result = await globalThis.fnAudioResponseJsonLoader.read({ request, timeoutMs: 15000, fallback: {} });
+    const response = result.response;
+    const data = result.data || {};
+    if (!response || !response.ok) {
+      throw new Error(data.message || data.error || `操作失败（HTTP ${response?.status}）`);
+    }
+    // A maintenance reply that could not be parsed is not an acknowledgement:
+    // reporting "已清理" over an unreadable body would hide a failed prune.
+    if (globalThis.fnAudioResponseJsonLoader.parsedBody(result.bodyStatus) === false) {
+      throw new Error("数据维护请求返回了无法解析的响应");
+    }
+    await applyServerUserState(data?.state || {});
+    renderAfterUserStateHydration({ visibleListChanged: true });
+    const removed = Number(data?.result?.removed);
+    if (status) {
+      status.textContent = action === "prune-favorites"
+        ? (Number.isFinite(removed) ? `已清理 ${removed} 条失效收藏。` : "已清理失效收藏。")
+        : "已清空收藏、播放列表与播放队列。";
+    }
+  } catch (error) {
+    if (status) status.textContent = error?.message || "操作失败，请稍后重试";
+  }
+}
+$("pruneFavoritesBtn").onclick = () => runUserStateMaintenance("prune-favorites");
+$("resetUserStateBtn").onclick = () => runUserStateMaintenance(
+  "reset-user-state",
+  "确定清空收藏、播放列表与播放队列吗？此操作不可撤销。",
+);
 $("mobileSettingsNavBtn").onclick = () => {
   setMobileNavigation(false);
   openFolderBrowser();

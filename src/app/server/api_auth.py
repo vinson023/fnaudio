@@ -25,6 +25,14 @@ ALL_API_SCOPES = frozenset({
 TRUSTED_LAN_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
     "10.0.0.0/8",
     "172.16.0.0/12",
+    # 192.168/16 is the most common home LAN range in the world and the one the
+    # packaged port is normally opened from ("http://192.168.x.y:3131"). Leaving
+    # it out meant every API call from that client got 403 "direct LAN API access
+    # is not allowed" while loopback (the CGI entry) kept working, so the same
+    # install looked healthy in fnOS and empty when opened directly.
+    "192.168.0.0/16",
+    # Carrier-grade NAT, which several home routers hand out as their LAN range.
+    "100.64.0.0/10",
     "198.51.0.0/16",
     "169.254.0.0/16",
     "fc00::/7",
@@ -53,6 +61,12 @@ def authorize_api(client_host: str, method: str, path: str, token: str, scopes) 
         return True, 200, scope, ""
     try:
         peer = ipaddress.ip_address(client_host.strip() if isinstance(client_host, str) else "")
+        # A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d, and that
+        # address is not a member of any IPv4 network, so a LAN client behind an
+        # IPv6 socket would have been refused as an untrusted peer. Normalise
+        # before the loopback and network checks.
+        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
         # The package exposes its own port for trusted LAN controllers. Keep
         # Public addresses stay behind fnOS/Android authentication. LAN media
         # browsing and playback remain available to direct controllers, while
