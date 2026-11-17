@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R581 P2-2 取证**：`qaRelease` 可调试包证明缓存落盘（30 秒 5.3MB）；纠正"UI 托管在 NAS"的错判（实为内置 assets）；**离线卡在登录门禁**。**待办（需产品决定）**：离线模式 + 本地队列快照读取端。
+
 - [x] 2026-11-17 — **R580 P2-2 真机验证**：iptables 切断手机→NAS 流量，播放 16 秒不中断（仍在内存缓冲内，磁盘命中未证）。**结论**：完全离线受"UI 托管在 NAS"限制，需内置 UI 才能真离线。**待办**：磁盘命中的证明（需 debuggable 包）。
 
 - [x] 2026-11-17 — **R579 P2-2 安卓缓存接线**。`MediaCachePolicy` + `MediaCacheHolder` + `SelectiveCacheDataSinkFactory`，`PlaybackService` 走 `CacheDataSource`，配额默认 1GB。**待办**：设置页配额、`svc wifi disable` 断网实测、命中字节数。

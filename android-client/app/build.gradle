@@ -83,6 +83,13 @@ android {
             }
             minifyEnabled false
         }
+        // QA：与 release 同签名、同包名，但 debuggable —— 为了能 run-as 查缓存目录、
+        // 也为了 WebView CDP 能连上。只用于验证本地缓存/离线播放，不发布。
+        qaRelease {
+            initWith release
+            debuggable true
+            minifyEnabled false
+        }
         // LAN/API/WebView QA on x86_64; ARM64 FN Connect relay is excluded.
         emulator {
             initWith debug

@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R581 缓存落盘已证（30s/5.3MB）；UI 内置非托管；**离线瓶颈是登录门禁**，需离线模式 + `fnaudio.queue.v1` 读取端。`qaRelease` 变体用于真机取证。
+
 - 2026-11-17：R580 P2-2 真机实测（切断 NAS 流量 16 秒不中断）；**硬约束**：UI 托管在 NAS，完全断网无界面，"离线可放"目前只能做到"掉网不中断"。
 
 - 2026-11-17：R579 P2-2 接线完成（`MediaCachePolicy`/`MediaCacheHolder`/`SelectiveCacheDataSinkFactory`，`PlaybackService` 走 `CacheDataSource`）；待设置项与断网验证。
