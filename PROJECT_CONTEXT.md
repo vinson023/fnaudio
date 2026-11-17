@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R573 队尾导航抽为 `NavigationDecision`（纯 Java，`next/previous → STEP|WRAP|REPLAY|NONE`），JVM 单测 6 例；`NativePlaybackBridge` 只做映射。模拟器验证走 `assembleEmulator`（x86_64，包名 `.emulator`），设备上跑完整播放仍需 fnOS 测试账号。
+
 - 2026-11-17：R572 **队尾语义统一**。客户端 `nextIndex()/previousIndex()` 与服务端 `next_track()` 逐字对齐（含 `repeat=one`）；`coreControl` 原生分支在 `-1` 时显式 pause；`nativeLoadQueue` 短路也重发 repeat/shuffle；`NativePlaybackBridge` 队尾按 ALL/ONE 处理。e2e 桩新增 `/api/playback/control` 与进程内 core。
 
 - 2026-11-17：R571 **队列按需追加**（对齐 DS audio：`PlayingQueueManager` 的 appendQueue 语义）。`beginQueueStream(queuedCount)` 起游标、`appendNextQueuePage()` 取下一页追加、`maybeExtendQueue()` 在离队尾 `QUEUE_LOOKAHEAD` 首时触发；取代 R568 的 `extendQueueToCurrentView` 全量替换。乱序范围 = 已加载窗口。

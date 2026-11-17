@@ -28,6 +28,7 @@ DC56DACBEA6D363F43D8E67138F252EF92CC5162736EA6DC864DDDE66583721C  android-client
 689C638F76B7B381F8952319CF1D1521B087F17D029A344AB865E1C8BFEE4689  android-client/app/src/main/java/com/fnaudio/client/network/TppsTunnel.java
 B09EB5824ACE4C0B111B63EA82A48A79B7DED6F213BC93507EA7ED835EC2AC1E  android-client/app/src/main/java/com/fnaudio/client/playback/ArtworkBitmapDecoder.java
 3C14BCD2858897993EEEB2A645CCC183C6B212AB0A8287BDDC020ED8F5F7B625  android-client/app/src/main/java/com/fnaudio/client/playback/AuthenticatedBitmapLoader.java
+13D534229D08FFF83BBBB52B1C5F0002B3799D567F6347718B4B20B152714B7C  android-client/app/src/main/java/com/fnaudio/client/playback/NavigationDecision.java
 51B27872BA4D7D08530186DB4908EE0000842682450B19F027F58CCD02ABFD54  android-client/app/src/main/java/com/fnaudio/client/playback/PlaybackRuntimeConfig.java
 459B23415C8F2291D5D2A1310BBAAA22F03A10C65779E96911E978D2404CA0BF  android-client/app/src/main/java/com/fnaudio/client/playback/PlaybackService.java
 1D619179BC2F02705077AE7CE9EED69FD995B4C7E39F0E9DB44834CBE30D552B  android-client/app/src/main/java/com/fnaudio/client/playback/RemotePlaybackPlayer.java
@@ -50,7 +51,7 @@ BEBED9699E76DC76D54D7CF63701F330E82C812988F5647DE3DE5F325658E11D  android-client
 7BFD51CA31805F747F21ECD1BE576E18E4470A0B4902C363AF628D31323542FE  android-client/app/src/main/java/com/fnaudio/client/ui/LoginActivity.java
 084002C69F3672411B00F54472DEC4078929DC47F3B96C1C8FFFC4BECC09986A  android-client/app/src/main/java/com/fnaudio/client/ui/MainActivity.java
 1C0F5D6B0BF6C579210E8EC847DE724552A87BC580301617239C417B3B4CD6B9  android-client/app/src/main/java/com/fnaudio/client/ui/WindowInsetsHelper.java
-D7BCF37465109B97E698EDFC9965FE233531D6F78AB06C1469B1408E0AE5CA6B  android-client/app/src/main/java/com/fnaudio/client/web/NativePlaybackBridge.java
+B69F0F5AB8468678F0DEAE9C2EB0A38568A35BF00E60B66C023480670E1736D0  android-client/app/src/main/java/com/fnaudio/client/web/NativePlaybackBridge.java
 4688836C809FA32FEC919E9CBB364A7C1CF2E5EB9215BB5A9947452CA36A9AB3  android-client/app/src/main/java/go/Seq.java
 2532BD8F4D4D1803177185DB80585706AB53DCAD7B58CF3EB013F28FDDBBD0CD  android-client/app/src/main/java/go/Universe.java
 F9D8C35F3DDCE4B297EE2A38D009099D370CE2623B4F4128FCC81CE47728AD68  android-client/app/src/main/java/go/error.java
@@ -92,6 +93,7 @@ AFC979E6A01A3748A3CE4A686613B4405B0BE1CBDDB8B9BE89504251FBDE55F7  android-client
 70815500083696742C86FAAAFC068FCB1CE653714F81E97A39D32534F7B52447  android-client/app/src/test/java/com/fnaudio/client/network/FnConnectResolverTest.java
 E1B37CDE4FFC57A9550B9918268374F061043FA36031C6A6F72B32B3F4FBF6B6  android-client/app/src/test/java/com/fnaudio/client/network/FnConnectSettingsTest.java
 29552BED05620E9EF4DA24FCEC43B523CCCBDF03C41C2FBF8109209F76054E94  android-client/app/src/test/java/com/fnaudio/client/network/SessionCookiesTest.java
+E26EE0E8F6AC7262DFCD8FB0D70750EF29C261C82A07FF6B67CE0866D9E2393E  android-client/app/src/test/java/com/fnaudio/client/playback/NavigationDecisionTest.java
 AB7147F0D6C70EF04307EC6B54BA7A7B0BB475D4A548113E4A1DCDA59CFEF8CB  android-client/app/src/test/java/com/fnaudio/client/playback/PlaybackRuntimeConfigTest.java
 48F79A92099657D62B42223D2B03CC0F6BEF8E5BF414B4CC9B52EAF48B708377  android-client/app/src/test/java/com/fnaudio/client/web/NativePlaybackBridgeTest.java
 852CB77F8E0CB6E4C6618A5B6CAE457F419EE6107EE370517850DE614EAABC7D  android-client/app/src/tvArm32/AndroidManifest.xml

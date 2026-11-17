@@ -15,6 +15,7 @@ import androidx.annotation.Nullable;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.Player;
+import com.fnaudio.client.playback.NavigationDecision;
 import androidx.media3.session.MediaController;
 import androidx.core.content.ContextCompat;
 
@@ -227,41 +228,49 @@ public final class NativePlaybackBridge {
 
     @JavascriptInterface
     public void next() {
-        provider.dispatchWhenReady(controller -> {
-            if (controller.hasNextMediaItem()) {
-                controller.seekToNextMediaItem();
-                return;
-            }
-            // At the end of the queue ExoPlayer simply stays on the last item, so a
-            // press of "next" looked like "replay the last song" and the transport
-            // row kept claiming playback. Mirror the server's rule: repeat-all wraps,
-            // repeat-one restarts the current track, otherwise the page decides to
-            // stop (it called pause() already or will on the next state push).
-            if (controller.getRepeatMode() == Player.REPEAT_MODE_ALL) {
-                controller.seekToDefaultPosition(0);
-                controller.play();
-            } else if (controller.getRepeatMode() == Player.REPEAT_MODE_ONE) {
-                controller.seekToDefaultPosition(controller.getCurrentMediaItemIndex());
-                controller.play();
-            }
-        });
+        provider.dispatchWhenReady(controller -> step(controller, true));
     }
 
     @JavascriptInterface
     public void previous() {
-        provider.dispatchWhenReady(controller -> {
-            if (controller.hasPreviousMediaItem()) {
-                controller.seekToPreviousMediaItem();
-                return;
-            }
-            if (controller.getRepeatMode() == Player.REPEAT_MODE_ALL) {
-                controller.seekToDefaultPosition(Math.max(0, controller.getMediaItemCount() - 1));
+        provider.dispatchWhenReady(controller -> step(controller, false));
+    }
+
+    /**
+     * Walks the queue with the same rule the server uses.
+     *
+     * <p>ExoPlayer's own {@code seekToNextMediaItem()} is a no-op at the end, which
+     * left the last track looking like it was playing after the queue finished.
+     * {@link NavigationDecision} decides, so the behaviour is unit-tested off-device.
+     */
+    private static void step(Player controller, boolean forward) {
+        int mode = controller.getRepeatMode();
+        boolean repeatAll = mode == Player.REPEAT_MODE_ALL;
+        boolean repeatOne = mode == Player.REPEAT_MODE_ONE;
+        int size = controller.getMediaItemCount();
+        int index = controller.getCurrentMediaItemIndex();
+        NavigationDecision.Move move = forward
+                ? NavigationDecision.next(size, index, repeatAll, repeatOne)
+                : NavigationDecision.previous(size, index, repeatAll, repeatOne);
+        switch (move) {
+            case STEP:
+                if (forward) controller.seekToNextMediaItem();
+                else controller.seekToPreviousMediaItem();
+                break;
+            case WRAP:
+                controller.seekToDefaultPosition(forward ? 0 : Math.max(0, size - 1));
                 controller.play();
-            } else if (controller.getRepeatMode() == Player.REPEAT_MODE_ONE) {
-                controller.seekToDefaultPosition(controller.getCurrentMediaItemIndex());
+                break;
+            case REPLAY:
+                controller.seekToDefaultPosition(index);
                 controller.play();
-            }
-        });
+                break;
+            case NONE:
+            default:
+                // Repeat-off at the edge: leave the transport alone. The page pauses
+                // (coreControl) and the row stops claiming playback.
+                break;
+        }
     }
 
     @JavascriptInterface
