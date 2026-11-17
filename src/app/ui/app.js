@@ -5225,49 +5225,15 @@ async function warmCurrentTrackCache(item) {
 // track ahead is enough: the encode of a normal song finishes long before the
 // current one ends, and only one extra job is ever queued.
 let upcomingWarmTrackId = "";
-// P1-2：下一首的流地址预热。
-//
-// 只把"该走哪条转码通道"这件事提前打开——真正的解码由元素在换曲时做。用一个隐藏的
-// audio 元素以 preload=metadata 打开它，DNS/TLS/第一段响应就都热了；换曲时省掉
-// 握手，`ended → playing` 的空档会小一截。原生播放器与远端投放自己会预取，跳过。
-let preheatAudio = null;
-function preheatUrl(item) {
-  const params = new URLSearchParams();
-  if (shouldTranscodeToMp3(item)) params.set("transcode", "mp3");
-  else if (shouldTranscodeDsdToWav(item)) params.set("transcode", "dsd_wav");
-  else if (item.cue_track === true) params.set("transcode", "cue_flac");
-  else if (isApeTrack(item)) params.set("transcode", "ape_flac");
-  else params.set("transcode", "original");
-  return `${item.url}?${params.toString()}`;
-}
-function preheatUpcomingStream(index) {
-  if (nativePlaybackAvailable() || isRemoteTarget()) return false;
-  const item = state.queue[index];
-  if (!item || !item.url || trackIsUnplayable(item.id)) return false;
-  try {
-    if (preheatAudio) {
-      preheatAudio.removeAttribute("src");
-      preheatAudio.load();
-      preheatAudio = null;
-    }
-    const probe = new Audio();
-    probe.preload = "metadata";
-    probe.dataset.preheat = "1";
-    probe.src = preheatUrl(item);
-    preheatAudio = probe;
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
 function warmUpcomingTrackCache() {
   if (isRemoteTarget()) return;
   const next = nextIndex();
   if (next < 0) return;
   const item = state.queue[next];
   const trackId = String(item?.id || "");
-  // 连接预热与转码预热是两件事，各走各的：前者省握手，后者省第一帧。
-  preheatUpcomingStream(next);
+  // 曾在这里预热"下一首的流地址"（隐藏 audio + preload=metadata）。R578 在测试机上
+  // 量过：冷启 603/726ms、预热后 638/617ms，没有收益；而且它会开一条转码流，
+  // 和真正要播的请求抢 ffmpeg 槽（默认并发只有 2）。已撤。
   if (!trackId || !shouldTranscodeToMp3(item) || trackId === upcomingWarmTrackId) return;
   upcomingWarmTrackId = trackId;
   apiFetch("api/transcode/warm", {

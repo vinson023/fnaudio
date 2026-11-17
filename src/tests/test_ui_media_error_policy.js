@@ -107,8 +107,8 @@ assert.equal(policy.MAX_CONSECUTIVE, 3, "上限是 3 首，改它要同时改文
   assert.match(app, /policy\.nextPlayableIndex\(/, "自动续播要用策略挑下一首");
   assert.match(app, /rememberUnplayable\(/, "失败要记名单");
   assert.match(app, /forgetUnplayable\(/, "成功要除名");
-  assert.match(app, /preheatUpcomingStream\(/, "下一首要预热连接");
-  assert.match(app, /dataset\.preheat = "1"/, "预热元素要能辨认");
+  // 预热在 R578 被量体推翻并撤掉：现在只要求它不再回来
+  assert.doesNotMatch(app, /preheatUpcomingStream\(/, "预热无收益已撤，别悄悄加回来");
 }
 
 console.log("Media error policy regression checks passed.");

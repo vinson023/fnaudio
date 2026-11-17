@@ -18,7 +18,7 @@
 | P0-1 | 播放错误分流（非 DSD 自动下一首，连续 3 次停） | 行为：错误后是否前进 / 是否停 | `src/tests/test_ui_media_error_policy.js` | **已实现**（R574） |
 | P0-2 | 放不了的曲目不要反复重试 | 同一首被重试的次数 | `test_ui_media_error_policy.js`（名单 + 跳过） | **已实现（客户端自愈）** |
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
-| P1-2 | 浏览器预热下一首 URL | `ended → playing` 间隔（中位数） | `test_ui_playback_gap_stats.js` | **已实现，度量已埋点**（读数待采） |
+| P1-2 | 浏览器预热下一首 URL | 同一 URL 的装载耗时（中位数） | `test_ui_media_error_policy.js`（禁止回归） | **已测无收益并撤回**（冷 603/726ms vs 预热 638/617ms） |
 | P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
 | P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | 待定（实现时补） | **设计完成**（`docs/DESIGN_ORIGINAL_AUDIO_CACHE.md`，安卓先做） |
 
@@ -62,9 +62,18 @@
 - 播放失败即记名单，**放出来就除名**（文件被替换能自愈）；
 - 自动续播时用 `nextPlayableIndex()` 跳过名单里的曲目，`循环=全部` 才回绕，全坏则停下。
 
-## P1-2 预热下一首（已实现，缺度量）
+## P1-2 预热下一首：量过，没收益（结论要留着）
 
-`preheatUpcomingStream()` 在每次换曲后用一个隐藏的 `audio[data-preheat]`（`preload=metadata`）打开下一首的流地址，把 DNS/TLS/首段响应热起来；原生播放器与远端投放走自己的预取，跳过。**尚未量 `ended → playing` 的空档**，这项指标留待下一轮补。
+实现过一版：换曲后用隐藏的 `audio[data-preheat]`（`preload=metadata`）打开下一首的流地址。R578 在测试机上量同一 URL 的装载耗时：
+
+| 方式 | 装载耗时（各 2 首，ms） |
+|---|---|
+| 冷启动 | 603、726 |
+| 先预热再装载 | 638、617 |
+
+差值在噪声内。原因不难理解：局域网里握手本来就便宜，真正的等待在**服务端 ffmpeg 出第一帧**，客户端预热碰不到那一层。更糟的是预热会开一条转码流，和真正要播的请求**抢 ffmpeg 槽**（默认并发只有 2），极端情况下会让首播更慢。
+
+因此撤掉实现，只留注释说明原因，并在 `test_ui_media_error_policy.js` 里加一条"不许再加回来"的断言。**曲间空档的度量保留**（R577 的 `fnAudioGapReport()`），它是 P2-1 的验收口径。
 
 ## P2-1 安卓衔接（已确认，未测）
 
