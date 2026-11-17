@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R580 P2-2 真机验证**：iptables 切断手机→NAS 流量，播放 16 秒不中断（仍在内存缓冲内，磁盘命中未证）。**结论**：完全离线受"UI 托管在 NAS"限制，需内置 UI 才能真离线。**待办**：磁盘命中的证明（需 debuggable 包）。
+
 - [x] 2026-11-17 — **R579 P2-2 安卓缓存接线**。`MediaCachePolicy` + `MediaCacheHolder` + `SelectiveCacheDataSinkFactory`，`PlaybackService` 走 `CacheDataSource`，配额默认 1GB。**待办**：设置页配额、`svc wifi disable` 断网实测、命中字节数。
 
 - [x] 2026-11-17 — **R578 预热实测无收益已撤**（冷 603/726ms vs 预热 638/617ms，且抢 ffmpeg 槽）。空档度量保留给 P2-1。**待办**：P2-1 的空档数字需要真实出声的设备。

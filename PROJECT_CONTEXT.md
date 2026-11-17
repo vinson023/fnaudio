@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R580 P2-2 真机实测（切断 NAS 流量 16 秒不中断）；**硬约束**：UI 托管在 NAS，完全断网无界面，"离线可放"目前只能做到"掉网不中断"。
+
 - 2026-11-17：R579 P2-2 接线完成（`MediaCachePolicy`/`MediaCacheHolder`/`SelectiveCacheDataSinkFactory`，`PlaybackService` 走 `CacheDataSource`）；待设置项与断网验证。
 
 - 2026-11-17：R578 撤回 P1-2 预热（实测无收益 + 抢转码槽），测试改为"禁止回归"；保留 `fnAudioGapReport()` 度量。

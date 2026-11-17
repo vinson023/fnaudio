@@ -20,7 +20,7 @@
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
 | P1-2 | 浏览器预热下一首 URL | 同一 URL 的装载耗时（中位数） | `test_ui_media_error_policy.js`（禁止回归） | **已测无收益并撤回**（冷 603/726ms vs 预热 638/617ms） |
 | P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
-| P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | `test_ui_android_bridge.js`（接线）+ `MediaCachePolicyTest`（规则） | **已接线**（media3 CacheDataSource，待设置项与断网验证） |
+| P2-2 | 原文件本地缓存（断网可放） | 播放中切断网络能撑多久 / 断网后能连播几首 | `test_ui_android_bridge.js`（接线）+ `MediaCachePolicyTest`（规则） | **已接线，实测掉网 16 秒不中断**（磁盘命中未验证） |
 
 ## P0-1 播放错误分流（已固化）
 
@@ -97,6 +97,21 @@
 - `PlaybackService` 用 `CacheDataSource.Factory` 包住原来的 OkHttp 数据源，配额读 `fnaudio_settings` 的 `media_cache_max_bytes`（默认 1GB）。
 
 **还没做的**：设置页的配额选项、断网实测（`adb shell svc wifi disable`）、缓存命中的字节数指标。
+
+## P2-2 实测：掉网不中断，但"完全离线"另有门槛
+
+在真机（Galaxy S9+，0.2.163 + 缓存接线）上做的：
+
+1. 播放《I Hate U》，8 秒时位置 0:07；
+2. 在 NAS 上用 `iptables -I INPUT -s 192.168.5.111 -j DROP` 切断手机到 NAS 的**全部**流量；
+3. 6 秒后 0:14、16 秒后 0:25，**仍在播放，无错误提示**；
+4. 解除规则，播放未中断。
+
+**这证明了什么**：短暂掉网（WiFi 抖动、切换到 4G 的间隙）不会打断播放。
+
+**这没证明什么**：16 秒仍在 ExoPlayer 的默认内存缓冲区间内，所以**不能据此说磁盘缓存命中**。要证明磁盘命中得让进程死掉再放——但见下一条。
+
+**顺手发现的一个硬约束**：这个 App 的 UI 由 NAS 托管，完全断网时 WebView 打不开，也就没有播放界面。所以"断网可放"目前的天花板是"**播放中掉网不中断**"；要做到"离线还能选歌播放"，需要内置 UI + 本地队列 + 本地鉴权，那是另一个量级的工程，不是缓存能解决的。
 
 ## 做下一件事的判据
 
