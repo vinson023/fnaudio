@@ -13,7 +13,8 @@ function extracted(pattern, label) {
 const commitQueueSource = extracted(/^async function commitQueue\([\s\S]*?^\}/m, "commitQueue");
 const applyConfirmedSource = extracted(/^function applyConfirmedQueue\([\s\S]*?^\}/m, "applyConfirmedQueue");
 const playByIdSource = extracted(/^async function playById\([\s\S]*?^\}/m, "playById");
-const extendSource = extracted(/^function extendQueueToCurrentView\([\s\S]*?^\}/m, "extendQueueToCurrentView");
+const streamSource = extracted(/^function beginQueueStream\([\s\S]*?^\}/m, "beginQueueStream");
+const appendSource = extracted(/^async function appendNextQueuePage\([\s\S]*?^\}/m, "appendNextQueuePage");
 const presentationSource = extracted(/^function syncCurrentQueuePresentation\([\s\S]*?^\}/m, "syncCurrentQueuePresentation");
 
 function build(overrides) {
@@ -41,7 +42,10 @@ function build(overrides) {
     queueExtensionToken: 0,
     isPagedTrackListing: () => (overrides && overrides.paged) !== false,
     currentQueryText: () => "",
-    allTracksForCurrentContext: async () => ((overrides && overrides.full) || state.queue),
+    // R571: the queue grows page by page instead of being replaced wholesale.
+    libraryCount: value => Number(value) || 0,
+    currentQueryParams: () => new URLSearchParams("view=all"),
+    fetchLibraryResponse: async () => ({ items: (overrides && overrides.nextPage) || [] }),
     itemById: id => {
       const pool = state.queue.concat((overrides && overrides.visible) || []);
       return pool.find(item => String(item.id) === String(id)) || null;
@@ -82,8 +86,9 @@ function build(overrides) {
   vm.createContext(context);
   vm.runInContext(
     [presentationSource, applyConfirmedSource, commitQueueSource, playByIdSource,
-      extendSource,
-      "globalThis.h = { playById: id => playById(id), extend: (ids, id) => extendQueueToCurrentView(ids, id) };"].join("\n\n"),
+      streamSource,
+      appendSource,
+      "globalThis.h = { playById: id => playById(id), append: () => appendNextQueuePage() };"].join("\n\n"),
     context,
   );
   return context;
@@ -132,27 +137,33 @@ function build(overrides) {
     assert.ok(q.trace.renderCount > 0, "the queue markers on the rows have to be repainted");
   }
 
-  // R568: the page is what starts playing, the whole view is what the queue has
-  // to become - otherwise 「全部音乐」 stops after 96 songs.
+  // R571 (Audio Station semantics): one tap queues the loaded page and stops there.
+  // The rest arrives only when playback gets close to the end - a 50k library must
+  // not turn one tap into a thousand requests.
   {
     const visible = [{ id: "a" }, { id: "b" }];
-    const full = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
-    const q = build({ view: "all", queue: [], index: -1, visible, full });
+    const q = build({ view: "all", queue: [], index: -1, visible, pageTotal: 4,
+      nextPage: [{ id: "c" }, { id: "d" }] });
     await q.h.playById("b");
-    assert.deepEqual(q.trace.sentLog[0].queue, ["a", "b"],
-      "playback starts from the page that is on screen, without waiting for the whole list");
     await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(q.trace.sentLog.length, 1, "one tap must commit exactly once, not chase the whole view");
+    assert.deepEqual(q.trace.sent.queue, ["a", "b"], "the page on screen is the queue");
+    assert.equal(q.trace.sent.current_id, "b");
+
+    await q.h.append();
     assert.deepEqual(q.trace.sentLog[q.trace.sentLog.length - 1].queue, ["a", "b", "c", "d"],
-      "the queue then grows to the whole view, behind the playing track");
-    assert.equal(q.trace.sent.current_id, "b", "the extension must not move playback");
+      "the next page is appended when playback needs it");
+    assert.equal(q.trace.sent.current_id, "b", "appending must not move playback");
   }
 
-  // A queue the user changed while the view was being fetched must not be
-  // overwritten by that late reply.
+  // A different view ends the stream: appending would splice another list in.
   {
-    const q = build({ view: "all", queue: [{ id: "x" }], index: 0, visible: [{ id: "a" }], full: [{ id: "a" }, { id: "b" }] });
-    await q.h.extend(["a"], "a");
-    assert.equal(q.trace.sentLog.length, 0, "a changed queue wins over the late extension");
+    const q = build({ view: "all", queue: [{ id: "a" }], index: 0,
+      visible: [{ id: "a" }], pageTotal: 9, nextPage: [{ id: "z" }] });
+    await q.h.playById("a");
+    q.state.view = "favorites";
+    await q.h.append();
+    assert.deepEqual(q.trace.sent.queue, ["a"], "a view change stops the top-up");
   }
 
   // Placement is part of the contract. playById has to capture the index it is

@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R571 **队列按需追加**（对齐 DS audio：`PlayingQueueManager` 的 appendQueue 语义）。`beginQueueStream(queuedCount)` 起游标、`appendNextQueuePage()` 取下一页追加、`maybeExtendQueue()` 在离队尾 `QUEUE_LOOKAHEAD` 首时触发；取代 R568 的 `extendQueueToCurrentView` 全量替换。乱序范围 = 已加载窗口。
+
 - 2026-11-17：R570 **图标两端统一**。`GLYPH_SCALE=0.90` 决定一切（桌面与安卓瓦片同为 46%×60%），`ANDROID_TILE_SCALE` 回 1.0；`FOREGROUND_FIT=0.66` 与之相乘。**出包规矩：除非负责人明确要求，否则不构建 FPK/APK、不推 NAS、不动版本号。**
 
 - 2026-11-17：R569 **列表分页可设置**（默认 50，档位 50/100/150/200/500，存 `ui.page_size` 跨端同步）。`resolvePageSize` 保持 1..500 直通，只有设置页下拉用 `nearestOption` 吸附。

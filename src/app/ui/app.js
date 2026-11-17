@@ -4929,30 +4929,86 @@ function audibleListTracks() {
   }
   return tracks;
 }
-// One page is what is on screen, not what the view holds.
+// The queue grows the way Audio Station's does.
 //
-// R567 made a click queue the visible rows so playback starts instantly - and the
-// visible rows are one page (96 on desktop, 60 on mobile), so 「全部音乐」 queued
-// 96 songs and stopped there (reported 2026-11-17). The page still starts
-// playback; this then swaps in the whole current view while the first track is
-// already playing.
-let queueExtensionToken = 0;
-function extendQueueToCurrentView(baseIds, requestedId) {
-  if (!isPagedTrackListing()) return Promise.resolve();
-  const token = ++queueExtensionToken;
-  const view = state.view;
-  const query = currentQueryText();
-  return allTracksForCurrentContext().then(full => {
-    if (token !== queueExtensionToken) return;
-    if (state.view !== view || currentQueryText() !== query) return;
-    const currentIds = (state.queue || []).map(item => String(item.id));
-    // Any other queue action in the meantime wins: extending would silently
-    // reorder what the user just built.
-    if (currentIds.join(",") !== baseIds.join(",")) return;
-    if (!Array.isArray(full) || full.length <= currentIds.length) return;
-    if (!full.some(item => String(item.id) === String(requestedId))) return;
-    return commitQueue(full, requestedId).then(() => render());
-  }).catch(() => {});
+// Reading the decompiled DS audio (PlayingQueueManager) settles the design: tapping
+// a row queues *what is already loaded* (`enqueueAction(..., mItems)`), and the
+// queue only grows by `appendQueue` when more is needed. Their "play all" on a
+// container is the only path that enumerates everything, and it puts a modal
+// progress dialog in front of it.
+//
+// R568 did the opposite - one tap replaced the queue with the entire view in the
+// background. On a 50k-song library that is 1000 requests (one per page) and ~30MB
+// of JSON before the queue is coherent. This keeps a cursor instead: the page on
+// screen starts playback, and the next page is fetched only when playback gets
+// close to the end of what is queued.
+let queueStream = null;
+
+function beginQueueStream(queuedCount) {
+  if (!isPagedTrackListing()) {
+    queueStream = null;
+    return;
+  }
+  const pageSize = Math.max(1, Number(state.pageSize) || 50);
+  const pageStart = Math.max(0, (Math.max(1, Number(state.page) || 1) - 1) * pageSize);
+  const total = libraryCount(state.pageTotal ?? state.libraryTotal ?? 0);
+  queueStream = {
+    view: state.view,
+    query: currentQueryText(),
+    nextOffset: pageStart + queuedCount,
+    total,
+    loading: false,
+  };
+}
+
+// Append the next page of the *current view* to the end of the queue.
+async function appendNextQueuePage() {
+  const stream = queueStream;
+  if (!stream || stream.loading) return false;
+  if (stream.total > 0 && stream.nextOffset >= stream.total) {
+    queueStream = null;
+    return false;
+  }
+  // A queue the user edited, or a different view, ends the stream: appending would
+  // silently reorder what they just built.
+  if (state.view !== stream.view || currentQueryText() !== stream.query) {
+    queueStream = null;
+    return false;
+  }
+  stream.loading = true;
+  try {
+    const params = currentQueryParams();
+    params.set("limit", String(Math.max(1, Number(state.pageSize) || 50)));
+    params.set("offset", String(stream.nextOffset));
+    const data = await fetchLibraryResponse(`api/library?${params.toString()}`, "读取后续歌曲失败");
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) {
+      stream.total = stream.nextOffset;
+      return false;
+    }
+    stream.nextOffset += items.length;
+    const existing = new Set(state.queue.map(item => String(item.id)));
+    const additions = items.filter(item => item && !existing.has(String(item.id)));
+    if (!additions.length) return false;
+    // Keep the playing track where it is: only the tail grows.
+    await commitQueue([...state.queue, ...additions], state.queue[state.index]?.id || "");
+    render();
+    return true;
+  } catch (_) {
+    queueStream = null;
+    return false;
+  } finally {
+    if (queueStream === stream) stream.loading = false;
+  }
+}
+
+// Called as playback advances: fetch ahead while there is still room to spare.
+const QUEUE_LOOKAHEAD = 5;
+function maybeExtendQueue() {
+  if (!queueStream) return;
+  if (state.index < 0) return;
+  if (state.index < state.queue.length - QUEUE_LOOKAHEAD) return;
+  void appendNextQueuePage();
 }
 
 async function playById(id) {
@@ -4981,11 +5037,9 @@ async function playById(id) {
   // be repainted; `syncCurrentQueuePresentation` alone only moves the current row.
   if (queue.length > 1 && state.queue.length !== previousQueueLength) render();
   else syncCurrentQueuePresentation(previousIndex);
-  // The queue currently holds the rows on screen. Grow it to the whole view in
-  // the background so "next" does not stop at the page boundary.
-  if (state.view !== "queue") {
-    extendQueueToCurrentView(queue.map(item => String(item.id)), String(id));
-  }
+  // The queue is what is on screen; the cursor fetches more when playback needs it.
+  if (state.view === "queue") queueStream = null;
+  else beginQueueStream(queue.length);
 }
 async function playGroup(name) {
   const key = groupViews[state.view];
@@ -5069,6 +5123,8 @@ async function loadCurrent() {
   if (!item) return;
   const loadToken = ++state.playbackLoadToken;
   syncState();
+  // Every track change passes through here: top the queue up before it runs out.
+  maybeExtendQueue();
   if (isRemoteTarget()) {
     stopLocalAudio();
     // A device load takes the output from the caster just as a local play does,
