@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R583 撤除离线能力（负责人裁定）。保留 media3 缓存（掉网不中断），不做离线进入/快照/降级。
+
 - 2026-11-17：R582 Web 离线启动（`offline_queue_policy.js` + `restoreOfflineQueue` + 离线横幅）；坑：503 走 fallback 不抛异常，须在 else 分支判断。安卓端仍卡登录门禁。
 
 - 2026-11-17：R581 缓存落盘已证（30s/5.3MB）；UI 内置非托管；**离线瓶颈是登录门禁**，需离线模式 + `fnaudio.queue.v1` 读取端。`qaRelease` 变体用于真机取证。

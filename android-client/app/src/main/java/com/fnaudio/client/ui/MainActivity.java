@@ -1172,7 +1172,7 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             // by index.html that must not be fetched from a possibly older NAS.
             String[] additionalScripts = {
                     // R577：指标与策略模块，index.html 里排在其它模块之前。
-                    "offline_queue_policy.js", "playback_gap_stats.js", "media_error_policy.js",
+                    "playback_gap_stats.js", "media_error_policy.js",
                     "track_table_presentation.js", "queue_presentation.js", "lru_cache.js",
                     "album_metadata_cache.js", "item_cache.js", "item_negative_cache.js", "item_lookup.js",
                     "item_hydration_policy.js", "item_hydration_request.js",

@@ -249,10 +249,6 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if path == "/api/access":
             return self.send_json({"profile": "lan", "ok": True}, head_only=head_only)
         if path == "/api/state/user":
-            # R582：/api/debug/offline 打开后这个接口装死，用来测"断网启动"
-            # 那条支路（队列只能从本地快照恢复）。
-            if getattr(self.server, "force_user_state_failure", False):
-                return self.send_json({"ok": False, "error": "offline"}, status=503, head_only=head_only)
             return self.send_json({"ok": True, "state": {"initialized": False, "revision": 0}}, head_only=head_only)
         if path == "/api/library":
             search = str((query.get("search") or [""])[0]).casefold()
@@ -397,10 +393,6 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "invalid json"}, status=400)
         if not isinstance(payload, dict):
             return self.send_json({"ok": False, "error": "invalid payload"}, status=400)
-        if self.path.startswith("/api/debug/offline"):
-            on = payload.get("on")
-            self.server.force_user_state_failure = bool(on)
-            return self.send_json({"ok": True, "offline": self.server.force_user_state_failure})
         if self.path.startswith("/api/state/maintenance"):
             action = str(payload.get("action") or "")
             if action == "prune-favorites":

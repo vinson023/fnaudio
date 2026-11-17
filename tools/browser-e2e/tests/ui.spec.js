@@ -709,27 +709,3 @@ test("the queue stops at the last track instead of looping it", async ({ page })
   await expect(page.locator("#nowTitle")).toContainText(lastTitle.trim());
 });
 
-test("offline start restores the queue from the local snapshot", async ({ page, request }) => {
-  // R582: 断网时界面是内置的，缺的只有队列。快照要带元数据，否则恢复出来是空行。
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await expect(page.locator(".track")).toHaveCount(4);
-
-  // 先正常播一次，写出快照
-  await page.locator(".track").first().dblclick();
-  // 桩里没有真实音频，元素会报错（播放错误策略会自己跳），这里只等快照落盘。
-  await page.waitForFunction(() => (localStorage.getItem("fnaudio.queue.v1") || "").includes('"items"'), null, { timeout: 8000 });
-
-  // 让服务端状态接口装死，再重载页面（等价于断网后冷启动）
-  await request.post(`${baseUrl}api/debug/offline`, { data: { on: true } });
-  await page.reload({ waitUntil: "domcontentloaded" });
-
-  await expect(page.locator("#offlineBanner")).toBeVisible();
-  await expect(page.locator("#offlineBanner")).toContainText("离线模式");
-  // 队列已恢复（不是空的），且离线时"下一首"走本地导航、不等服务端
-  await expect(page.locator("#nowTitle")).not.toBeEmpty();
-  const offlineTitle = (await page.locator("#nowTitle").textContent()).trim();
-  await page.locator("#nextBtn").click();
-  await expect(page.locator("#nowTitle")).not.toHaveText(offlineTitle);
-
-  await request.post(`${baseUrl}api/debug/offline`, { data: { on: false } });
-});
