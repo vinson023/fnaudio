@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R568 点歌后队列只取一页**。R567 用 DOM 行建队列，屏幕只有一页（桌面 96 / 手机 60），所以「全部音乐」第 97 首就断。改为先播页面、再用 `extendQueueToCurrentView()` 后台补全整个视图（`allTracksForCurrentContext` + `commitQueue(full, currentId)`，播放不中断），并用令牌 + 视图/搜索词 + 队列 id 串三重护栏防止覆盖用户中途的改动。版本 0.2.158 / 416。
+
 - [x] 2026-11-17 — **R567 WMA/转码延迟/开关同步/单曲队列**。① `BROWSER_NATIVE_EXTENSIONS` + `media_mode` 自动转码，WMA 不再依赖手动开关；② `warmUpcomingTrackCache()` 在播放开始时预热下一首，消除开转码后点下一首的等待；③ 转码开关改为服务端 `ui.mp3_transcode`，跨端同步（原来只在 localStorage）；④ `playById` 用 `audibleListTracks()` 把屏幕上的列表设为队列，点一首就能顺序播下去。**遗留**：WMA 本身无法原文件播放（浏览器与 ExoPlayer 都没有解码器），只能转码——这是平台限制，不是实现取巧。版本 0.2.157 / 415。
 
 - [x] 2026-11-16 — **R566 安卓图标符号缩小**。启动图标瓦片里符号原为 60%×77%，顶到圆角显得挤，且与自适应形态（56%）不一致；新增 `ANDROID_TILE_SCALE=0.80` 只作用于 `mipmap-*`，收到 47%×61%；`FOREGROUND_FIT` 0.74→0.52 以落进 66dp 安全圆。fnOS 应用中心图标未改。新增 `test_android_icon_geometry.py` 钉住占比与居中。版本 0.2.156 / 414。

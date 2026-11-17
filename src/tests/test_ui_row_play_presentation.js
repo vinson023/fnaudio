@@ -13,6 +13,7 @@ function extracted(pattern, label) {
 const commitQueueSource = extracted(/^async function commitQueue\([\s\S]*?^\}/m, "commitQueue");
 const applyConfirmedSource = extracted(/^function applyConfirmedQueue\([\s\S]*?^\}/m, "applyConfirmedQueue");
 const playByIdSource = extracted(/^async function playById\([\s\S]*?^\}/m, "playById");
+const extendSource = extracted(/^function extendQueueToCurrentView\([\s\S]*?^\}/m, "extendQueueToCurrentView");
 const presentationSource = extracted(/^function syncCurrentQueuePresentation\([\s\S]*?^\}/m, "syncCurrentQueuePresentation");
 
 function build(overrides) {
@@ -32,10 +33,15 @@ function build(overrides) {
     nativePlayback: { supported: false, active: false, mediaId: "" },
   };
   Object.assign(state, overrides || {});
-  const trace = { calls: [], rows: [], renderCount: 0, sent: null, scrollCount: 0 };
+  const trace = { calls: [], rows: [], renderCount: 0, sent: null, sentLog: [], scrollCount: 0 };
   const context = {
     state,
     trace,
+    // Module-scope `let` from app.js; the extracted functions only increment it.
+    queueExtensionToken: 0,
+    isPagedTrackListing: () => (overrides && overrides.paged) !== false,
+    currentQueryText: () => "",
+    allTracksForCurrentContext: async () => ((overrides && overrides.full) || state.queue),
     itemById: id => {
       const pool = state.queue.concat((overrides && overrides.visible) || []);
       return pool.find(item => String(item.id) === String(id)) || null;
@@ -64,6 +70,7 @@ function build(overrides) {
     apiFetch: async (_path, options) => {
       const sent = JSON.parse(options.body);
       trace.sent = sent;
+      trace.sentLog.push(sent);
       return {
         ok: true,
         status: 200,
@@ -75,7 +82,8 @@ function build(overrides) {
   vm.createContext(context);
   vm.runInContext(
     [presentationSource, applyConfirmedSource, commitQueueSource, playByIdSource,
-      "globalThis.h = { playById: id => playById(id) };"].join("\n\n"),
+      extendSource,
+      "globalThis.h = { playById: id => playById(id), extend: (ids, id) => extendQueueToCurrentView(ids, id) };"].join("\n\n"),
     context,
   );
   return context;
@@ -122,6 +130,29 @@ function build(overrides) {
       "the rows on screen become the queue, in the order they are drawn");
     assert.equal(q.trace.sent.current_id, "b", "playback starts on the clicked row");
     assert.ok(q.trace.renderCount > 0, "the queue markers on the rows have to be repainted");
+  }
+
+  // R568: the page is what starts playing, the whole view is what the queue has
+  // to become - otherwise 「全部音乐」 stops after 96 songs.
+  {
+    const visible = [{ id: "a" }, { id: "b" }];
+    const full = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+    const q = build({ view: "all", queue: [], index: -1, visible, full });
+    await q.h.playById("b");
+    assert.deepEqual(q.trace.sentLog[0].queue, ["a", "b"],
+      "playback starts from the page that is on screen, without waiting for the whole list");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(q.trace.sentLog[q.trace.sentLog.length - 1].queue, ["a", "b", "c", "d"],
+      "the queue then grows to the whole view, behind the playing track");
+    assert.equal(q.trace.sent.current_id, "b", "the extension must not move playback");
+  }
+
+  // A queue the user changed while the view was being fetched must not be
+  // overwritten by that late reply.
+  {
+    const q = build({ view: "all", queue: [{ id: "x" }], index: 0, visible: [{ id: "a" }], full: [{ id: "a" }, { id: "b" }] });
+    await q.h.extend(["a"], "a");
+    assert.equal(q.trace.sentLog.length, 0, "a changed queue wins over the late extension");
   }
 
   // Placement is part of the contract. playById has to capture the index it is

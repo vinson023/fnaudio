@@ -4879,6 +4879,32 @@ function audibleListTracks() {
   }
   return tracks;
 }
+// One page is what is on screen, not what the view holds.
+//
+// R567 made a click queue the visible rows so playback starts instantly - and the
+// visible rows are one page (96 on desktop, 60 on mobile), so 「全部音乐」 queued
+// 96 songs and stopped there (reported 2026-11-17). The page still starts
+// playback; this then swaps in the whole current view while the first track is
+// already playing.
+let queueExtensionToken = 0;
+function extendQueueToCurrentView(baseIds, requestedId) {
+  if (!isPagedTrackListing()) return Promise.resolve();
+  const token = ++queueExtensionToken;
+  const view = state.view;
+  const query = currentQueryText();
+  return allTracksForCurrentContext().then(full => {
+    if (token !== queueExtensionToken) return;
+    if (state.view !== view || currentQueryText() !== query) return;
+    const currentIds = (state.queue || []).map(item => String(item.id));
+    // Any other queue action in the meantime wins: extending would silently
+    // reorder what the user just built.
+    if (currentIds.join(",") !== baseIds.join(",")) return;
+    if (!Array.isArray(full) || full.length <= currentIds.length) return;
+    if (!full.some(item => String(item.id) === String(requestedId))) return;
+    return commitQueue(full, requestedId).then(() => render());
+  }).catch(() => {});
+}
+
 async function playById(id) {
   const item = itemById(id);
   if (!item) return;
@@ -4905,6 +4931,11 @@ async function playById(id) {
   // be repainted; `syncCurrentQueuePresentation` alone only moves the current row.
   if (queue.length > 1 && state.queue.length !== previousQueueLength) render();
   else syncCurrentQueuePresentation(previousIndex);
+  // The queue currently holds the rows on screen. Grow it to the whole view in
+  // the background so "next" does not stop at the page boundary.
+  if (state.view !== "queue") {
+    extendQueueToCurrentView(queue.map(item => String(item.id)), String(id));
+  }
 }
 async function playGroup(name) {
   const key = groupViews[state.view];
