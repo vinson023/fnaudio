@@ -963,6 +963,11 @@ function nativeLoadQueue(autoPlay = true, startSeconds = 0, force = false) {
   const sameIds = remoteIds.length === localIds.length && remoteIds.every((id, index) => id === localIds[index]);
   const sameCurrent = String(state.nativePlayback.mediaId || "") === String(item.id || "");
   if (!force && sameIds && sameCurrent) {
+    // Re-assert the modes even when the queue is unchanged: the host player keeps
+    // whatever repeat mode it was given last time, and a stale REPEAT_MODE_ONE is
+    // exactly how the last track ends up looping for ever.
+    nativePlaybackCall("setRepeat", state.repeat);
+    nativePlaybackCall("setShuffle", Boolean(state.shuffle));
     if (autoPlay) nativePlaybackCall("play");
     return true;
   }
@@ -2804,6 +2809,18 @@ function applyCoreSnapshot(core, shouldLoad = true, options = {}) {
 async function coreControl(action, position = null, payload = {}) {
   if (state.deviceSwitchInFlight) return false;
   if (nativePlaybackAvailable() && (action === "next" || action === "previous")) {
+    // The host player cannot answer "what comes after the last item with repeat
+    // off" - ExoPlayer just holds position, so pressing next at the end looked
+    // like "play the last song again" and the UI kept claiming it was playing.
+    // Decide here, with the same rule the server uses.
+    const target = action === "next" ? nextIndex() : previousIndex();
+    if (target < 0) {
+      nativePlaybackCall("pause");
+      setPlayButton(false);
+      updateMediaSessionPlaybackState();
+      syncState();
+      return false;
+    }
     nativePlaybackCall(action === "next" ? "next" : "previous");
     return { ok: true, native: true };
   }
@@ -5069,8 +5086,14 @@ function playableTracks() {
   if (isPlaylistView()) return playlistTracks();
   return filteredTracks();
 }
+// Mirrors the server's `next_track()` exactly, including repeat "one".
+//
+// The client used to treat "one" as "no next", so anything that navigated on the
+// client side (the native bridge, the cue tail guard) disagreed with the server
+// about what "next" means at the end of the queue.
 function nextIndex() {
   if (!state.queue.length) return -1;
+  if (state.repeat === "one" && state.index >= 0) return state.index;
   if (state.shuffle && state.queue.length > 1) {
     let next = state.index;
     while (next === state.index) next = Math.floor(Math.random() * state.queue.length);
@@ -5078,6 +5101,12 @@ function nextIndex() {
   }
   if (state.index < state.queue.length - 1) return state.index + 1;
   return state.repeat === "all" ? 0 : -1;
+}
+function previousIndex() {
+  if (!state.queue.length) return -1;
+  if (state.repeat === "one" && state.index >= 0) return state.index;
+  if (state.index > 0) return state.index - 1;
+  return state.repeat === "all" ? state.queue.length - 1 : -1;
 }
 async function warmCurrentTrackCache(item) {
   if (!item || !shouldTranscodeToMp3(item) || state.transcodeCacheReady || isRemoteTarget()) return false;

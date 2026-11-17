@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R572 队尾重复/下一首无效**。客户端 `nextIndex()` 补 `repeat === "one"`、新增 `previousIndex()`；原生分支先判索引，`-1` 显式 pause；`nativeLoadQueue` 短路时补发 `setRepeat/setShuffle`；Java 桥在队尾按 ALL 回绕 / ONE 重播。e2e 桩补 `/api/playback/control` 并共享 core，新增队尾用例。**未打包**；安卓真机未验。
+
 - [x] 2026-11-17 — **R571 队列改为按需追加**（照 Audio Station：点单曲只用已加载行 + `appendQueue`）。`beginQueueStream`/`appendNextQueuePage`/`maybeExtendQueue` 取代 R568 的全量替换；5 万首点一次 = 1 次提交 0 次列表请求。代价：乱序只在已加载窗口内；「从该处播放全部」仍全量。**未打包**。
 
 - [x] 2026-11-17 — **R570 桌面图标缩到与安卓一致**。`GLYPH_SCALE` 1.15→0.90、`ANDROID_TILE_SCALE` 0.80→1.0、`FOREGROUND_FIT` 0.52→0.66（两者相乘，必须同步算），两端实测均 46%×60%。新增桌面/安卓高度一致性断言。**未打包**（负责人新规矩：不叫不打）。

@@ -686,3 +686,25 @@ test("advanced settings expose the song page size", async ({ page }) => {
   await expect(select).toHaveValue("200");
   expect(await page.evaluate(() => localStorage.getItem("fnaudio.pageSize"))).toBe("200");
 });
+
+test("the queue stops at the last track instead of looping it", async ({ page }) => {
+  // R572: pressing next at the end of the queue used to leave the transport on the
+  // last track with the play button still showing "playing" (and, when the host
+  // player held a stale repeat mode, the track simply looped for ever).
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".track")).toHaveCount(4);
+
+  await page.locator(".track").first().dblclick();
+  await expect(page.locator("#playBtn")).toHaveAttribute("data-playing", "playing");
+
+  // Four rows are queued, so three moves reach the last one.
+  for (let step = 0; step < 3; step += 1) {
+    await page.locator("#nextBtn").click();
+  }
+  const lastTitle = await page.locator(".track").last().locator(".track-title").textContent();
+
+  // One more: nothing follows, so playback stops on the same row.
+  await page.locator("#nextBtn").click();
+  await expect(page.locator("#playBtn")).toHaveAttribute("data-playing", "paused");
+  await expect(page.locator("#nowTitle")).toContainText(lastTitle.trim());
+});

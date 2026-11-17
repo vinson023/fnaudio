@@ -228,14 +228,39 @@ public final class NativePlaybackBridge {
     @JavascriptInterface
     public void next() {
         provider.dispatchWhenReady(controller -> {
-            if (controller.hasNextMediaItem()) controller.seekToNextMediaItem();
+            if (controller.hasNextMediaItem()) {
+                controller.seekToNextMediaItem();
+                return;
+            }
+            // At the end of the queue ExoPlayer simply stays on the last item, so a
+            // press of "next" looked like "replay the last song" and the transport
+            // row kept claiming playback. Mirror the server's rule: repeat-all wraps,
+            // repeat-one restarts the current track, otherwise the page decides to
+            // stop (it called pause() already or will on the next state push).
+            if (controller.getRepeatMode() == Player.REPEAT_MODE_ALL) {
+                controller.seekToDefaultPosition(0);
+                controller.play();
+            } else if (controller.getRepeatMode() == Player.REPEAT_MODE_ONE) {
+                controller.seekToDefaultPosition(controller.getCurrentMediaItemIndex());
+                controller.play();
+            }
         });
     }
 
     @JavascriptInterface
     public void previous() {
         provider.dispatchWhenReady(controller -> {
-            if (controller.hasPreviousMediaItem()) controller.seekToPreviousMediaItem();
+            if (controller.hasPreviousMediaItem()) {
+                controller.seekToPreviousMediaItem();
+                return;
+            }
+            if (controller.getRepeatMode() == Player.REPEAT_MODE_ALL) {
+                controller.seekToDefaultPosition(Math.max(0, controller.getMediaItemCount() - 1));
+                controller.play();
+            } else if (controller.getRepeatMode() == Player.REPEAT_MODE_ONE) {
+                controller.seekToDefaultPosition(controller.getCurrentMediaItemIndex());
+                controller.play();
+            }
         });
     }
 

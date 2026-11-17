@@ -186,6 +186,15 @@ def request_body_length(value, maximum=MAX_REQUEST_BODY_BYTES):
     return length if length <= maximum else None
 
 
+def server_playback_core(server):
+    """One core per fixture process: `next` has to see the queue the POST wrote."""
+    core = getattr(server, "playback_core_state", None)
+    if not isinstance(core, dict):
+        core = playback_core()
+        server.playback_core_state = core
+    return core
+
+
 def playback_core():
     return {
         "queue": [],
@@ -314,7 +323,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if path == "/api/playback/targets":
             return self.send_json({"targets": [{"id": "local", "name": "当前设备", "kind": "browser", "online": True, "selected": True}], "current_target": "local", "current_target_name": "当前设备"}, head_only=head_only)
         if path in ("/api/playback/core", "/api/playback/status"):
-            core = playback_core()
+            core = server_playback_core(self.server)
             return self.send_json({"state": core, "status": core, "core": core, "kind": "browser"}, head_only=head_only)
         if path == "/api/dlna/renderer/status":
             return self.send_json({"available": False, "state": {}}, head_only=head_only)
@@ -398,13 +407,60 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     "state": {"initialized": False, "revision": 3, "favorites": [], "playlists": [], "playback": {}, "ui": {}},
                 })
             return self.send_json({"ok": False, "error": "unsupported maintenance action"}, status=400)
-        core = playback_core()
+        core = server_playback_core(self.server)
+        # R572: the fixture answers `next`/`previous` with the same rule the real
+        # server uses (playback/core.py next_track), so the browser can be tested at
+        # the end of a queue instead of the request simply 404ing.
+        if self.path.startswith("/api/playback/control"):
+            return self.serve_control(payload, core)
         if self.path.startswith("/api/playback/queue"):
             queue = payload.get("queue")
             if not isinstance(queue, list):
                 queue = []
             core["queue"] = [str(item.get("id") if isinstance(item, dict) else item) for item in queue[:MAX_QUEUE_ITEMS]]
             core["current"] = str(payload.get("current_id") or payload.get("current") or "")
+        return self.send_json({"ok": True, "core": core, "state": {"initialized": True, "revision": 1}})
+
+    def serve_control(self, payload, core):
+        action = str(payload.get("action") or "")
+        queue = [str(item) for item in (core.get("queue") or [])]
+        current = str(core.get("current") or "")
+        try:
+            index = queue.index(current)
+        except ValueError:
+            index = 0 if queue else -1
+        repeat = str(payload.get("repeat") or core.get("repeat") or "off")
+        if action == "repeat":
+            core["repeat"] = repeat if repeat in ("off", "all", "one") else "off"
+        elif action == "shuffle":
+            core["shuffle"] = bool(payload.get("shuffle"))
+        elif action in ("next", "previous"):
+            if not queue:
+                return self.send_json({"ok": False, "error": "no track", "core": core}, status=409)
+            if repeat == "one" and index >= 0:
+                pass
+            elif action == "next":
+                if index < len(queue) - 1:
+                    index += 1
+                elif repeat == "all":
+                    index = 0
+                else:
+                    return self.send_json({"ok": False, "error": "no track", "core": core}, status=409)
+            else:
+                if index > 0:
+                    index -= 1
+                elif repeat == "all":
+                    index = len(queue) - 1
+                else:
+                    return self.send_json({"ok": False, "error": "no track", "core": core}, status=409)
+            core["current"] = queue[index]
+            core["position"] = 0
+        elif action in ("play", "resume"):
+            core["playing"] = True
+            core["transport"] = "PLAYING"
+        elif action in ("pause", "stop"):
+            core["playing"] = False
+            core["transport"] = "STOPPED" if action == "stop" else "PAUSED"
         return self.send_json({"ok": True, "core": core, "state": {"initialized": True, "revision": 1}})
 
     def serve_static(self, path, head_only=False):
