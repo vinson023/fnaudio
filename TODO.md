@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R569 分页可设置**。桌面/手机默认统一 50，高级里可选 50/100/150/200/500，存服务端 `ui.page_size` 跨端同步。**注意**：`resolvePageSize` 必须保留 1..500 任意值（e2e 用过 2），吸附只用于下拉显示。版本 0.2.159 / 417。
+
 - [x] 2026-11-17 — **R568 点歌后队列只取一页**。R567 用 DOM 行建队列，屏幕只有一页（桌面 96 / 手机 60），所以「全部音乐」第 97 首就断。改为先播页面、再用 `extendQueueToCurrentView()` 后台补全整个视图（`allTracksForCurrentContext` + `commitQueue(full, currentId)`，播放不中断），并用令牌 + 视图/搜索词 + 队列 id 串三重护栏防止覆盖用户中途的改动。版本 0.2.158 / 416。
 
 - [x] 2026-11-17 — **R567 WMA/转码延迟/开关同步/单曲队列**。① `BROWSER_NATIVE_EXTENSIONS` + `media_mode` 自动转码，WMA 不再依赖手动开关；② `warmUpcomingTrackCache()` 在播放开始时预热下一首，消除开转码后点下一首的等待；③ 转码开关改为服务端 `ui.mp3_transcode`，跨端同步（原来只在 localStorage）；④ `playById` 用 `audibleListTracks()` 把屏幕上的列表设为队列，点一首就能顺序播下去。**遗留**：WMA 本身无法原文件播放（浏览器与 ExoPlayer 都没有解码器），只能转码——这是平台限制，不是实现取巧。版本 0.2.157 / 415。

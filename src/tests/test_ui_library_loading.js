@@ -55,8 +55,10 @@ assert.notDeepEqual(
 );
 
 assert.match(app, /fnAudioLibraryPageSizePolicy\?\.resolvePageSize\(localStorage, window\)/, "Page size must use the isolated viewport/storage policy");
-assert.match(pageSizePolicy, /MOBILE_DEFAULT = 60/);
-assert.match(pageSizePolicy, /DESKTOP_DEFAULT = 96/);
+// R569: both viewports default to 50; the size is a user setting from then on.
+assert.match(pageSizePolicy, /MOBILE_DEFAULT = 50/);
+assert.match(pageSizePolicy, /DESKTOP_DEFAULT = 50/);
+assert.match(pageSizePolicy, /PAGE_SIZE_OPTIONS = \[50, 100, 150, 200, 500\]/);
 assert.match(pageSizePolicy, /MAX_PAGE_SIZE = 500/);
 assert.ok(index.indexOf('src="library_page_size_policy.js?v=__FNAUDIO_ASSET_BUILD__"') < index.indexOf('src="app.js?v=__FNAUDIO_ASSET_BUILD__"'), "Page size policy must load before app.js");
 assert.match(app, /state\.libraryAbortController = null;/);

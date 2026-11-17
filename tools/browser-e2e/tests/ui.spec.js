@@ -81,7 +81,7 @@ test("warm library snapshot hands off to an equivalent authoritative page withou
       { id: "fixture-4", title: "Already Covered", artist: "Lab Artist", album: "Native DSD", track_no: 4, duration: 201, format: "flac", mime: "audio/flac", is_dsd: false, modified: 4, cover_url: "fixture-cover.svg", url: "media/fixture-4" },
     ];
     localStorage.setItem("fnaudio.libraryPageSnapshot.v1", JSON.stringify({
-      key: JSON.stringify({ view: "all", page: 1, pageSize: 96, folderRoot: "", folderPath: "", folderPage: 1, folderPageSize: 100, groupName: "", creator: "", creatorAllTracks: false, sortKey: "title", sortDir: "asc", search: "" }),
+      key: JSON.stringify({ view: "all", page: 1, pageSize: 50, folderRoot: "", folderPath: "", folderPage: 1, folderPageSize: 100, groupName: "", creator: "", creatorAllTracks: false, sortKey: "title", sortDir: "asc", search: "" }),
       savedAt: Date.now(),
       total: items.length,
       items,
@@ -664,4 +664,25 @@ test("settings can clean favourites that no longer resolve", async ({ page }) =>
   page.once("dialog", dialog => dialog.accept());
   await page.locator("#resetUserStateBtn").click();
   await expect(page.locator("#dataMaintenanceStatus")).toContainText("已清空收藏");
+});
+
+test("advanced settings expose the song page size", async ({ page }) => {
+  // R569: the song list used to be hard-wired to 96 rows on desktop and 60 on a
+  // phone, which disagreed with folder browsing for no reason a user could see.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".track")).toHaveCount(4);
+
+  await page.locator("#mobileNavBtn").click();
+  await page.locator("#mobileSettingsNavBtn").click();
+  await page.locator('[data-settings-tab="advanced"]').click();
+
+  const select = page.locator("#pageSizeSelect");
+  await select.scrollIntoViewIfNeeded();
+  await expect(select).toHaveValue("50");
+  await expect(select.locator("option")).toHaveCount(5);
+
+  await select.selectOption("200");
+  await expect(select).toHaveValue("200");
+  expect(await page.evaluate(() => localStorage.getItem("fnaudio.pageSize"))).toBe("200");
 });

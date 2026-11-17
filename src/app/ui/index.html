@@ -270,6 +270,12 @@
             </div>
           </section>
           <section id="settings-pane-advanced" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-advanced" data-settings-pane="advanced" hidden>
+            <div class="settings-group" data-settings-block="advanced-paging">
+              <div class="settings-group-head"><h3>列表分页</h3><span class="settings-badge is-live">立即生效</span></div>
+              <p class="dialog-help">歌曲列表每页显示多少首。数值越大，一次渲染的行越多、首屏越慢、弱机上滚动越容易卡；手机建议 50～100。</p>
+              <div class="metadata-settings-grid"><label><span>每页歌曲数</span><select id="pageSizeSelect" aria-label="每页歌曲数"><option value="50">50 首（默认）</option><option value="100">100 首</option><option value="150">150 首</option><option value="200">200 首</option><option value="500">500 首</option></select></label></div>
+              <p class="settings-pane-status" id="pageSizeStatus" aria-live="polite"></p>
+            </div>
             <div class="settings-group" data-settings-block="advanced-cache">
               <div class="settings-group-head"><h3>歌词缓存</h3><span class="settings-badge is-save">需保存</span></div>
               <p class="dialog-help">本地歌词正文的内存缓存上限，超预算时自动淘汰最旧的歌词，不改变磁盘上的歌词文件。调小缓存后保存会立刻淘汰已缓存的歌词。</p>

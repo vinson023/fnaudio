@@ -53,6 +53,15 @@ class StateProjectionTests(unittest.TestCase):
         self.assertEqual(mapping_or_empty([]), {})
         self.assertEqual(mapping_or_empty("text"), {})
 
+    def test_ui_preferences_keep_a_bounded_page_size(self):
+        # R569: 设置 → 高级 → 列表分页. The client only offers 50..500; a state
+        # document written by hand must not be able to ask for a million rows.
+        self.assertEqual(ui_preferences({"page_size": 150})["page_size"], 150)
+        self.assertEqual(ui_preferences({"page_size": 500})["page_size"], 500)
+        for junk in (0, -5, 501, "150", 150.0, True, None, [], {"value": 150}):
+            with self.subTest(junk=junk):
+                self.assertNotIn("page_size", ui_preferences({"page_size": junk}))
+
     def test_ui_preferences_keep_the_transcode_switch_only_as_a_bool(self):
         # R567: the MP3 switch moved from localStorage to the server so every
         # client sees the same value.

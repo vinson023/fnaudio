@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R569 **列表分页可设置**（默认 50，档位 50/100/150/200/500，存 `ui.page_size` 跨端同步）。`resolvePageSize` 保持 1..500 直通，只有设置页下拉用 `nearestOption` 吸附。
+
 - 2026-11-17：R568 **点歌队列补全**。点歌先以当前页（96/60）建队列立即播放，随后 `extendQueueToCurrentView()` 后台换成整个视图，`current_id` 保持不变；三重护栏防过期回复覆盖用户改动。
 
 - 2026-11-17：R567 **WMA/转码/队列**。格式自动转码（`BROWSER_NATIVE_EXTENSIONS`，WMA 等无解码器的格式直接转 mp3）；播放开始时预热下一首转码缓存；MP3 开关从 localStorage 迁到服务端 `ui.mp3_transcode` 实现跨端同步；`playById` 改为把屏幕上的列表设为队列（`audibleListTracks()`），点一首即可顺序播放。

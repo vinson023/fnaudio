@@ -1360,6 +1360,7 @@ function userStatePayload() {
     },
     ui: {
       mp3_transcode: Boolean(state.mp3Transcode),
+      page_size: state.pageSize,
       track_columns: state.trackColumnPreferences,
       track_column_widths: state.trackColumnWidthPreferences,
     },
@@ -1479,6 +1480,20 @@ async function applyServerUserState(serverState) {
     writeStoredPreference("fnaudio.mp3Transcode", remoteTranscode ? "1" : "0");
     updateModeButton();
     if (currentItem() && !isRemoteTarget() && state.userStateHydrated) loadCurrent();
+  }
+  // Adopt the server's page size before the widths, so a changed size reloads the
+  // list once instead of twice.
+  const remotePageSize = serverState?.ui?.page_size;
+  if (Number.isFinite(remotePageSize) && Number(remotePageSize) > 0) {
+    const policy = globalThis.fnAudioLibraryPageSizePolicy;
+    const normalized = policy ? policy.normalizePageSize(remotePageSize) : Number(remotePageSize);
+    if (normalized !== state.pageSize) {
+      state.pageSize = normalized;
+      writeStoredPreference("fnaudio.pageSize", String(normalized));
+      syncPageSizeControl();
+      state.page = 1;
+      requestLibraryLoad(1, false);
+    }
   }
   const remoteWidths = serverState?.ui?.track_column_widths;
   if (remoteWidths && typeof remoteWidths === "object" && !Array.isArray(remoteWidths) && Object.keys(remoteWidths).length) {
@@ -1994,6 +2009,41 @@ function shouldTranscodeDsdToWav(item) {
 function effectiveProfile() {
   if (isPrivateHost(window.location.hostname)) return "lan";
   return state.accessProfile || "lan";
+}
+// Page size is an installation-wide choice (设置 → 高级 → 列表分页), not a
+// per-browser one: a phone that sets 50 should not leave the desktop rendering
+// 500 rows after a sync. The select only offers the steps the policy knows, and
+// anything else snaps onto the nearest one.
+function syncPageSizeControl() {
+  const select = $("pageSizeSelect");
+  if (!select) return;
+  const value = String(state.pageSize);
+  // A value that is not one of the offered steps (an old stored 96, a test
+  // fixture asking for 2) still has to be visible: add it as its own option
+  // instead of showing a blank select.
+  if (![...select.options].some(option => option.value === value)) {
+    const extra = document.createElement("option");
+    extra.value = value;
+    extra.textContent = `${value} 首`;
+    select.appendChild(extra);
+  }
+  select.value = value;
+}
+function applyPageSize(value, options = {}) {
+  const policy = globalThis.fnAudioLibraryPageSizePolicy;
+  const next = policy ? policy.normalizePageSize(value) : state.pageSize;
+  const changed = next !== state.pageSize;
+  state.pageSize = next;
+  syncPageSizeControl();
+  if (options.persist) {
+    writeStoredPreference("fnaudio.pageSize", String(next));
+    scheduleUserStateSave();
+  }
+  if (!changed && !options.forceReload) return next;
+  state.page = 1;
+  render();
+  requestLibraryLoad(1, false);
+  return next;
 }
 function updateModeButton() {
   const title = state.mp3Transcode ? "关闭 MP3 转码" : "开启 MP3 转码";
@@ -11739,6 +11789,20 @@ document.addEventListener("dblclick", event => {
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !$("lyricsView").hidden && !document.querySelector("dialog[open]")) closeLyrics();
 });
+if ($("pageSizeSelect")) {
+  const policy = globalThis.fnAudioLibraryPageSizePolicy;
+  const options = policy?.PAGE_SIZE_OPTIONS || [];
+  // The control is static markup; keep only the steps the policy accepts so a
+  // hand-edited index.html cannot introduce an off-grid value.
+  if (options.length) {
+    const allowed = new Set(options.map(value => String(value)));
+    for (const option of [...$("pageSizeSelect").options]) {
+      if (!allowed.has(option.value)) option.remove();
+    }
+  }
+  $("pageSizeSelect").onchange = event => applyPageSize(event.target.value, { persist: true });
+  syncPageSizeControl();
+}
 setupMediaSession();
 // fnOS stops waiting for the child handshake after a minute. Start the bridge
 // at boot, so opening settings later can still use the existing connection.

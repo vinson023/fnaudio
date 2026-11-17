@@ -195,9 +195,9 @@ for (const [name, after, host] of [
 assert.match(guardSource(),
   /function writeStoredPreference\(key, value\) \{[\s\S]{0,600}?try \{[\s\S]{0,80}?localStorage\.setItem\(key, value\);[\s\S]{0,40}?\} catch \(_\) \{/,
   "the guarded writer must wrap exactly the storage call, and only that call");
-assert.equal(writesOf(app, "writeStoredPreference("), 6,
-  "the writer plus five preference call sites: the four this round converted, and the "
-  + "server switch adopted on hydration (R567)");
+assert.equal(writesOf(app, "writeStoredPreference("), 8,
+  "the writer plus seven call sites: the four R172 converted, the transcode switch "
+  + "adopted on hydration (R567), and the page size written on change and on adoption (R569)");
 assert.match(app, /function writeStoredUserMedia\(key, value\) \{/,
   "the user-media writer stays separate: its payload is JSON, the preference payload is not");
 

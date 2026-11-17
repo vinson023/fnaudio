@@ -239,6 +239,15 @@ def ui_preferences(payload: Any) -> Dict[str, Any]:
     }
     if isinstance(transcode, bool):
         projected["mp3_transcode"] = transcode
+    # How many rows one song-list page renders (设置 → 高级 → 列表分页). Bounded
+    # here as well: the client only offers 50..500, and a hand-written state
+    # document must not be able to ask the browser to paint a million rows.
+    try:
+        page_size = source.get("page_size")
+    except Exception:
+        page_size = None
+    if isinstance(page_size, int) and not isinstance(page_size, bool) and 1 <= page_size <= 500:
+        projected["page_size"] = page_size
     return projected
 
 
