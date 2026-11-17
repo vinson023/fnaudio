@@ -185,6 +185,12 @@ const historyActivity = fs.readFileSync(path.join(
 const connectionProfile = fs.readFileSync(path.join(
   __dirname, "..", "..", "android-client", "app", "src", "main", "java", "com", "fnaudio", "client", "data", "ConnectionProfile.java"
 ), "utf8");
+if (/setPauseAtEndOfMediaItems\(\s*true\s*\)/.test(playbackService)) {
+  throw new Error("setPauseAtEndOfMediaItems(true) would stop ExoPlayer from chaining queue items seamlessly");
+}
+if (!playbackService.includes("setWakeMode(C.WAKE_MODE_LOCAL)")) {
+  throw new Error("local playback must keep the CPU awake (C.WAKE_MODE_LOCAL)");
+}
 const declaredPolicyScripts = [...index.matchAll(/<script src="([^?]+)\?v=__FNAUDIO_ASSET_BUILD__"/g)]
   .map(match => match[1]).filter(name => name !== "app.js");
 for (const script of declaredPolicyScripts) {

@@ -19,7 +19,7 @@
 | P0-2 | 放不了的曲目不要反复重试 | 同一首被重试的次数 | `test_ui_media_error_policy.js`（名单 + 跳过） | **已实现（客户端自愈）** |
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
 | P1-2 | 浏览器预热下一首 URL | `ended → playing` 间隔（中位数） | `test_ui_media_error_policy.js`（接线）+ 待补测量 | **已实现，缺度量** |
-| P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | 待定 | **待确认**（当前用 `setMediaItems` 整队列） |
+| P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
 | P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | 待定 | **未做**（工程量大） |
 
 ## P0-1 播放错误分流（已固化）
@@ -65,6 +65,12 @@
 ## P1-2 预热下一首（已实现，缺度量）
 
 `preheatUpcomingStream()` 在每次换曲后用一个隐藏的 `audio[data-preheat]`（`preload=metadata`）打开下一首的流地址，把 DNS/TLS/首段响应热起来；原生播放器与远端投放走自己的预取，跳过。**尚未量 `ended → playing` 的空档**，这项指标留待下一轮补。
+
+## P2-1 安卓衔接（已确认，未测）
+
+整条队列由 `NativePlaybackBridge.setQueue` 一次性交给 `controller.setMediaItems(...)`，`PlaybackService` 没有调用 `setPauseAtEndOfMediaItems(true)`——media3 默认允许队列项之间直接衔接，同编码连续播放时不会有额外空档。守卫固定在 `test_ui_android_bridge.js`：谁把它设成 `true` 就会红。
+
+**仍未量的**：不同容器（flac→mp3 转码流）之间的空档，需要设备侧 `ended → playing` 计时，与 P1-2 共用一个指标。
 
 ## 做下一件事的判据
 
