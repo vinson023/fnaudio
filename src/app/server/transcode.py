@@ -541,6 +541,10 @@ def transcode_command(item, config, mode, start=0):
     if not ffmpeg:
         raise RuntimeError("系统中未找到可用的 ffmpeg")
     command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
+    # 不要再加 -probesize / -analyzeduration：R574 在测试机上量过，带与不带
+    # 首字节分别是 23ms / 22ms（各 5 次中位数），没有收益；而缩短探测窗口对
+    # APE/DSD 这种头部复杂的格式有误判风险。度量脚本与基线见
+    # tools/measure_first_byte.py、docs/perf/baseline_first_byte.json。
     if start and start > 0:
         command += ["-ss", str(max(0, float(start)))]
     if mode == "dsd_wav":

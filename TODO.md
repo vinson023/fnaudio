@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R575 队尾复读根因**：原生结束不回报服务端 + 同曲无限重载；本地优先建队（`applyQueueLocally`/`persistLocalQueueSnapshot`/`scheduleServerQueueSync`/`syncServerQueueBestEffort`）解决"点播放没响应"。P0 错误分流落地（`media_error_policy.js`）。P1 探测参数实测无收益撤回。**待办**：装包后在真机复验队尾与首播延迟。
+
 - [x] 2026-11-17 — **R573 队尾逻辑可测化**。`NavigationDecision` 纯函数 + `NavigationDecisionTest` 6 例（JVM 跑，不依赖设备）；`NativePlaybackBridge` 改用之。模拟器（x86_64 `emulator` 变体）可装可启。**待办**：设备上的人工验证需要 fnOS 测试账号——「播到队尾→下一首」这一串还没在设备跑过。
 
 - [x] 2026-11-17 — **R572 队尾重复/下一首无效**。客户端 `nextIndex()` 补 `repeat === "one"`、新增 `previousIndex()`；原生分支先判索引，`-1` 显式 pause；`nativeLoadQueue` 短路时补发 `setRepeat/setShuffle`；Java 桥在队尾按 ALL 回绕 / ONE 重播。e2e 桩补 `/api/playback/control` 并共享 core，新增队尾用例。**未打包**；安卓真机未验。

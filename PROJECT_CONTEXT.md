@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R575 **队列模型改为本地优先**（对齐 DS audio）：`playById` 在 `target=local` 时不再阻塞上传整条队列，`applyQueueLocally` 落队出声，`scheduleServerQueueSync` 2.5s 后台补同步；队尾复读由"原生结束回报 pause + 同曲不重载"修掉。P0 错误分流走 `media_error_policy.js`。
+
 - 2026-11-17：R573 队尾导航抽为 `NavigationDecision`（纯 Java，`next/previous → STEP|WRAP|REPLAY|NONE`），JVM 单测 6 例；`NativePlaybackBridge` 只做映射。模拟器验证走 `assembleEmulator`（x86_64，包名 `.emulator`），设备上跑完整播放仍需 fnOS 测试账号。
 
 - 2026-11-17：R572 **队尾语义统一**。客户端 `nextIndex()/previousIndex()` 与服务端 `next_track()` 逐字对齐（含 `repeat=one`）；`coreControl` 原生分支在 `-1` 时显式 pause；`nativeLoadQueue` 短路也重发 repeat/shuffle；`NativePlaybackBridge` 队尾按 ALL/ONE 处理。e2e 桩新增 `/api/playback/control` 与进程内 core。

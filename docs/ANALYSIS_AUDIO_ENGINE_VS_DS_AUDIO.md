@@ -132,8 +132,8 @@ audio.onerror = () => {
 
 其余错误（转码失败、404、连接断）**没有任何处理**：播放器停住、进度条不动、用户以为"卡了"。Audio Station 在这个位置是"格式错提示、其它自动下一首"。
 
-**② 首播要等 ffmpeg 起灶（P1）**
-`transcode_command` 没带 `-probesize/-analyzeduration`，ffmpeg 默认要探测约 5 秒的输入才确定编码参数。文件在 NAS 本地时这是纯浪费。加 `-probesize 32768 -analyzeduration 0` 通常能把首帧提前几百毫秒到一秒。
+**② 首播要等 ffmpeg 起灶（P1）——已测，实测无收益**
+曾判断 `transcode_command` 缺 `-probesize/-analyzeduration` 会让 ffmpeg 白等 5 秒。**R574 在测试机上量过了**：带参数 23ms、不带 22ms（各 5 次中位数），没有收益——本地文件解析完头部即可开工，"探测 5 秒"只对真正的流式输入成立。参数已撤回，度量脚本与基线保留在 `tools/measure_first_byte.py`、`docs/perf/baseline_first_byte.json`，结论记在 `docs/PERF_STABILITY_PLAN.md`。
 
 **③ 曲间有空档（P1）**
 浏览器换 `src` 是硬切；ExoPlayer 虽然 `setMediaItems` 有队列能力，但我们把**每一首都转成 mp3**（开了转码时），转码流之间没有 gapless 元数据，仍然会断。Audio Station 靠 `setNextMediaPlayer` 绕开这个问题。
@@ -150,9 +150,9 @@ R567 预热的是**转码缓存**，但浏览器侧的 `<audio>` 没有预加载
 
 | 优先级 | 动作 | 落点 | 代价 |
 |---|---|---|---|
-| **P0** | 错误分流：非 DSD 错误 → 提示 + 自动跳下一首（连续失败 3 次才停） | `app.js` `audio.onerror` | 小 |
+| **P0** | 错误分流：非 DSD 错误 → 提示 + 自动跳下一首（连续失败 3 次才停） | 已实现：`media_error_policy.js` + `app.js` | 完成（守卫 `test_ui_media_error_policy.js`） |
 | **P0** | 转码失败要能区分"格式不支持"与"临时失败"，前者不再重试 | `transcode.py` 错误码 | 小 |
-| **P1** | ffmpeg 加 `-probesize 32768 -analyzeduration 0`（仅本地文件；网络源保留探测） | `transcode_command` | 小，需实测首帧 |
+| ~~P1~~ | ~~ffmpeg 加探测参数~~ **实测无收益，已撤回**（23ms vs 22ms） | `transcode_command` | 已关闭 |
 | **P1** | 浏览器预热下一首 URL（与转码预热同步） | `warmUpcomingTrackCache` 旁加 `new Audio(url)` | 小 |
 | **P2** | 安卓侧确认 `setPauseAtEndOfMediaItems(false)`，让 ExoPlayer 用队列原生衔接 | `PlaybackService` | 小 |
 | **P2** | 原文件本地缓存（IndexedDB/OPFS 或安卓磁盘），断网可用 | 新模块 | 大 |

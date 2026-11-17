@@ -43,6 +43,7 @@ function build(overrides) {
     isPagedTrackListing: () => (overrides && overrides.paged) !== false,
     currentQueryText: () => "",
     // R571: the queue grows page by page instead of being replaced wholesale.
+    isRemoteTarget: () => true,   // 本地优先建队那条路由 e2e 覆盖
     libraryCount: value => Number(value) || 0,
     currentQueryParams: () => new URLSearchParams("view=all"),
     fetchLibraryResponse: async () => ({ items: (overrides && overrides.nextPage) || [] }),

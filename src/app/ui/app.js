@@ -329,6 +329,8 @@ state.folderRoot = "";
 state.folderPage = 1;
 state.folderPageSize = 100;
 state.folderTotal = 0;
+state.localErrorStreak = 0;
+state.nativeEndReported = false;
 state.itemCache = fnAudioItemCache(12000);
 state.itemCacheLimit = 12000;
 state.libraryResponseCache = fnAudioLruCache(48, { maxWeight: 6000, weightOf: libraryResponseWeight });
@@ -1012,7 +1014,15 @@ window.fnAudioNativeOnState = payload => {
     }
   }
   if (mediaId && mediaId !== previousMediaId) updateNowMarquee();
+  // 原生播放器在队尾自己停下（STATE_ENDED）时不会通知服务端，服务端就一直认为
+  // "还在播放"，每次状态同步又把当前这首 play() 一遍——这是"最后一首不停重播"
+  // 的真正来源，而不是 next 的判断。
+  const wasPlaying = state.nativePlayback.playing === true;
   setPlayButton(snapshot.playing === true);
+  if (wasPlaying && snapshot.playing !== true && !state.nativeEndReported) {
+    state.nativeEndReported = true;
+    void coreControl("pause").finally(() => { state.nativeEndReported = false; });
+  }
   const duration = playbackSeconds(snapshot.duration, playbackSeconds(currentItem()?.duration));
   const seconds = playbackSeconds(snapshot.position);
   setTextContentIfChanged($("elapsed"), clock(seconds));
@@ -2798,7 +2808,9 @@ function applyCoreSnapshot(core, shouldLoad = true, options = {}) {
   state.repeat = core.repeat || state.repeat;
   state.shuffle = typeof core.shuffle === "boolean" ? core.shuffle : state.shuffle;
   updateRepeatShuffleButtons();
-  if (shouldLoad) {
+  // 服务端可能一直把同一首当作 current（例如它没收到播放结束）；这时候再
+  // loadCurrent() 会把已经放完的曲目从头再播一遍。位置没变就不重新装载。
+  if (shouldLoad && (index !== previousIndex || !audio.src)) {
     resetPlaybackProgress();
     loadCurrent();
   }
@@ -2808,6 +2820,13 @@ function applyCoreSnapshot(core, shouldLoad = true, options = {}) {
 }
 async function coreControl(action, position = null, payload = {}) {
   if (state.deviceSwitchInFlight) return false;
+  // 本地优先建队会把手里的队列延后同步给服务端。要服务端替我们"下一首"之前，
+  // 必须先把这次同步落下去，否则它面对的是空队列。
+  if ((action === "next" || action === "previous") && serverQueueSyncTimer) {
+    clearTimeout(serverQueueSyncTimer);
+    serverQueueSyncTimer = 0;
+    await syncServerQueueBestEffort();
+  }
   if (nativePlaybackAvailable() && (action === "next" || action === "previous")) {
     // The host player cannot answer "what comes after the last item with repeat
     // off" - ExoPlayer just holds position, so pressing next at the end looked
@@ -4709,6 +4728,40 @@ function applyConfirmedQueue(queue, core, requestedId = "") {
   updateRepeatShuffleButtons();
   updateFavoriteControls();
 }
+// 本地播放的队列权威在客户端（Audio Station 的做法）。服务端只做"这首歌怎么出流"，
+// 不参与排队。这里把队列落到本地快照，并安排一次后台同步，失败不影响播放。
+function applyQueueLocally(queue, currentId = "") {
+  applyConfirmedQueue(queue, { current: currentId }, currentId);
+  persistLocalQueueSnapshot();
+  scheduleServerQueueSync();
+  return state.queue;
+}
+function persistLocalQueueSnapshot() {
+  try {
+    writeStoredPreference("fnaudio.queue.v1", JSON.stringify({
+      ids: state.queue.slice(0, 2000).map(item => String(item.id || "")),
+      current: String(currentItem()?.id || ""),
+      repeat: state.repeat,
+      shuffle: Boolean(state.shuffle),
+    }));
+  } catch (_) { /* 本地快照只是加速用，写不进去不影响播放 */ }
+}
+let serverQueueSyncTimer = 0;
+function scheduleServerQueueSync(delay = 2500) {
+  if (serverQueueSyncTimer) clearTimeout(serverQueueSyncTimer);
+  serverQueueSyncTimer = setTimeout(() => {
+    serverQueueSyncTimer = 0;
+    void syncServerQueueBestEffort();
+  }, delay);
+}
+async function syncServerQueueBestEffort() {
+  if (isRemoteTarget() || !state.queue.length) return;
+  try {
+    await commitQueue(state.queue, String(currentItem()?.id || ""), { silent: true });
+  } catch (_) {
+    // 同步失败只影响"别的设备看到什么"，本机播放照旧。
+  }
+}
 async function commitQueue(queue, currentId = "", options = {}) {
   const response = await apiFetch("api/playback/queue", {
     method: "POST",
@@ -5043,11 +5096,18 @@ async function playById(id) {
     : (state.queue.some(entry => String(entry.id) === String(id)) ? [...state.queue] : [...state.queue, item]);
   const previousIndex = state.index;
   const previousQueueLength = state.queue.length;
-  try {
-    await commitQueue(queue, id);
-  } catch (error) {
-    alert(error.message || "播放队列保存失败");
-    return;
+  if (isRemoteTarget()) {
+    try {
+      await commitQueue(queue, id);
+    } catch (error) {
+      alert(error.message || "播放队列保存失败");
+      return;
+    }
+  } else {
+    // 照 Audio Station：本地播放的队列由客户端持有，服务端不参与每次点击。
+    // 原来这里 await 一次"整条队列上传 + MPD 队列重建"，五万首就是几百 KB
+    // 加几十秒——表现就是"点了播放没反应"。现在先出声，同步放后台。
+    applyQueueLocally(queue, id);
   }
   loadCurrent();
   // The queue now usually comes from the visible list, so the row markers have to
@@ -11774,11 +11834,49 @@ audio.onplay = () => {
   warmUpcomingTrackCache();
 };
 audio.onpause = () => { setPlayButton(false); updateMediaSessionPlaybackState(); syncState(); };
+// 播放失败的处理，对齐 Audio Station：格式类错误明说并停，其它自动跳下一首；
+// 连续失败到上限就停，避免一首坏文件把整个队列刷一遍。
 audio.onerror = () => {
-  if (currentItem()?.is_dsd === true) {
+  const item = currentItem();
+  if (!item) return;
+  const policy = globalThis.fnAudioMediaErrorPolicy;
+  if (!policy) return;
+  const streak = Math.max(0, Number(state.localErrorStreak) || 0);
+  const next = nextIndex();
+  const action = policy.decide({
+    // 保持'严格布尔'的判定口径：非 true 的脏值一律当作不是 DSD。
+    isDsd: currentItem()?.is_dsd === true,
+    hasNext: next >= 0,
+    streak,
+    code: audio.error ? audio.error.code : 0,
+  });
+  if (action === "dsd-unsupported") {
     alert("DSD 兼容流不可用，已停止本机播放。");
+    state.localErrorStreak = 0;
     stopLocalAudio();
+    return;
   }
+  if (action === "next") {
+    state.localErrorStreak = streak + 1;
+    const previousIndex = state.index;
+    state.index = next;
+    state.streamOffset = 0;
+    state.pendingSeekTime = null;
+    state.transcodeCacheReady = false;
+    state.playSourceKind = "";
+    syncCurrentQueuePresentation(previousIndex);
+    loadCurrent();
+    return;
+  }
+  // 连续失败上限，或队尾没有下一首：停下并给一句人话。
+  if (streak + 1 > policy.MAX_CONSECUTIVE) {
+    alert(`连续 ${policy.MAX_CONSECUTIVE} 首无法播放，已停止。`);
+  }
+  state.localErrorStreak = 0;
+  stopLocalAudio();
+};
+audio.onplaying = () => {
+  state.localErrorStreak = 0;
 };
 audio.onended = async () => {
   state.streamOffset = 0;
