@@ -20,7 +20,7 @@
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
 | P1-2 | 浏览器预热下一首 URL | 同一 URL 的装载耗时（中位数） | `test_ui_media_error_policy.js`（禁止回归） | **已测无收益并撤回**（冷 603/726ms vs 预热 638/617ms） |
 | P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
-| P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | 待定（实现时补） | **设计完成**（`docs/DESIGN_ORIGINAL_AUDIO_CACHE.md`，安卓先做） |
+| P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | `test_ui_android_bridge.js`（接线）+ `MediaCachePolicyTest`（规则） | **已接线**（media3 CacheDataSource，待设置项与断网验证） |
 
 ## P0-1 播放错误分流（已固化）
 
@@ -88,6 +88,15 @@
 - 浏览器控制台或 WebView 调试：`fnAudioGapReport()` → `{count, median, p95, max}`；
 - 单位毫秒，`median` 是 P1-2 / P2-1 的对外口径；
 - 采样满 5 条再看，单条会被首帧抖动带偏。
+
+## P2-2 进度：接线已完成
+
+- `MediaCachePolicy`：只缓存整段（带 `start=` 的续播不写）、配额夹到 [0, 8GB]，JVM 单测覆盖；
+- `MediaCacheHolder`：进程内唯一的 `SimpleCache`，目录 `cacheDir/media-cache`，随服务销毁释放；
+- `SelectiveCacheDataSinkFactory`：按 URL 决定这次分片写不写缓存；
+- `PlaybackService` 用 `CacheDataSource.Factory` 包住原来的 OkHttp 数据源，配额读 `fnaudio_settings` 的 `media_cache_max_bytes`（默认 1GB）。
+
+**还没做的**：设置页的配额选项、断网实测（`adb shell svc wifi disable`）、缓存命中的字节数指标。
 
 ## 做下一件事的判据
 

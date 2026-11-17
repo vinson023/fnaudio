@@ -25,6 +25,10 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.cache.CacheDataSink;
+import androidx.media3.datasource.cache.CacheDataSource;
+import androidx.media3.datasource.cache.SimpleCache;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -165,8 +169,24 @@ public final class PlaybackService extends MediaSessionService {
         OkHttpDataSource.Factory dataSourceFactory = new OkHttpDataSource.Factory(httpClient)
                 .setUserAgent("fnAudio-Android");
 
+        // P2-2：本地缓存。断网可放只能靠客户端——NAS 不可达时服务端缓存形同虚设。
+        // 命中缓存时完全不走网络；写缓存只针对整段请求（见 SelectiveCacheDataSinkFactory）。
+        DataSource.Factory mediaDataSource = dataSourceFactory;
+        long cacheBudget = MediaCachePolicy.clampMaxBytes(
+                getSharedPreferences("fnaudio_settings", MODE_PRIVATE)
+                        .getLong("media_cache_max_bytes", MediaCachePolicy.DEFAULT_MAX_BYTES));
+        SimpleCache mediaCache = MediaCacheHolder.open(this, cacheBudget);
+        if (mediaCache != null) {
+            CacheDataSink.Factory cacheSink = new CacheDataSink.Factory().setCache(mediaCache);
+            mediaDataSource = new CacheDataSource.Factory()
+                    .setCache(mediaCache)
+                    .setUpstreamDataSourceFactory(dataSourceFactory)
+                    .setCacheWriteDataSinkFactory(new SelectiveCacheDataSinkFactory(cacheSink))
+                    .setFlags(0);
+        }
+
         player = new ExoPlayer.Builder(this)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(mediaDataSource))
                 .build();
         player.setAudioAttributes(AudioAttributes.DEFAULT, true);
         player.setHandleAudioBecomingNoisy(true);
@@ -266,6 +286,7 @@ public final class PlaybackService extends MediaSessionService {
     @Override
     public void onDestroy() {
         destroyed = true;
+        MediaCacheHolder.release();
         if (remotePlayer != null && remotePlayer.isRemoteActive()) {
             // Persist before releasing the metadata-only player so a process
             // reclaim can restore the last confirmed remote position.

@@ -204,8 +204,8 @@ DEBT_AFTER_MOVE_OUT = 8530
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
-JAVA_TOTAL_FILES = 63
-JAVA_TOTAL_LINES = 15416
+JAVA_TOTAL_FILES = 67
+JAVA_TOTAL_LINES = 15648
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

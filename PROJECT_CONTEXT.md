@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R579 P2-2 接线完成（`MediaCachePolicy`/`MediaCacheHolder`/`SelectiveCacheDataSinkFactory`，`PlaybackService` 走 `CacheDataSource`）；待设置项与断网验证。
+
 - 2026-11-17：R578 撤回 P1-2 预热（实测无收益 + 抢转码槽），测试改为"禁止回归"；保留 `fnAudioGapReport()` 度量。
 
 - 2026-11-17：R577 曲间空档埋点（`playback_gap_stats.js`、`fnAudioGapReport()`）；P2-2 设计见 `docs/DESIGN_ORIGINAL_AUDIO_CACHE.md`（客户端缓存，安卓先做）。

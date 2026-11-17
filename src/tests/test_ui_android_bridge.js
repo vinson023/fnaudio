@@ -191,6 +191,16 @@ if (/setPauseAtEndOfMediaItems\(\s*true\s*\)/.test(playbackService)) {
 if (!playbackService.includes("setWakeMode(C.WAKE_MODE_LOCAL)")) {
   throw new Error("local playback must keep the CPU awake (C.WAKE_MODE_LOCAL)");
 }
+// P2-2：断网可放靠客户端缓存，接线不能被悄悄拆掉。
+if (!playbackService.includes("new CacheDataSource.Factory()")) {
+  throw new Error("local playback must read through CacheDataSource so cached tracks survive offline");
+}
+if (!playbackService.includes("MediaCacheHolder.release()")) {
+  throw new Error("the media cache must be released with the service, or the next start cannot reopen it");
+}
+if (/setFlags\(\s*CacheDataSource\.FLAG_IGNORE_CACHE_ON_ERROR\s*\)/.test(playbackService)) {
+  throw new Error("FLAG_IGNORE_CACHE_ON_ERROR defeats offline playback; do not set it");
+}
 const declaredPolicyScripts = [...index.matchAll(/<script src="([^?]+)\?v=__FNAUDIO_ASSET_BUILD__"/g)]
   .map(match => match[1]).filter(name => name !== "app.js");
 for (const script of declaredPolicyScripts) {
