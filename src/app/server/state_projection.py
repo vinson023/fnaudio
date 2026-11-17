@@ -225,7 +225,21 @@ def ui_preferences(payload: Any) -> Dict[str, Any]:
                 selected[column_key] = value
         if selected:
             width_result[key] = selected
-    return {"track_columns": result, "track_column_widths": width_result}
+    # The MP3 switch used to live in each browser's localStorage, so turning it on
+    # from the phone left every other client showing "off" (reported 2026-11-16).
+    # It is a property of the installation, not of one screen: keep it with the
+    # rest of the user state.
+    try:
+        transcode = source.get("mp3_transcode")
+    except Exception:
+        transcode = None
+    projected: Dict[str, Any] = {
+        "track_columns": result,
+        "track_column_widths": width_result,
+    }
+    if isinstance(transcode, bool):
+        projected["mp3_transcode"] = transcode
+    return projected
 
 
 __all__ = ["MAX_PLAYBACK_QUEUE_TRACKS", "MAX_PLAYLISTS", "MAX_PLAYLIST_TRACK_IDS", "MAX_PLAYLIST_TRACK_IDS_TOTAL", "MAX_STATE_PAYLOAD_BYTES", "MAX_STATE_TEXT_BYTES", "dump_json_bounded", "dump_json_bounded_strict", "load_json_bounded", "mapping_or_empty", "playback_queue_ids", "playlists", "strings", "ui_preferences"]

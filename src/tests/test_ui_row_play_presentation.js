@@ -36,7 +36,13 @@ function build(overrides) {
   const context = {
     state,
     trace,
-    itemById: id => state.queue.find(item => String(item.id) === String(id)) || null,
+    itemById: id => {
+      const pool = state.queue.concat((overrides && overrides.visible) || []);
+      return pool.find(item => String(item.id) === String(id)) || null;
+    },
+    // R567: a click outside the queue view builds the queue from the rows on
+    // screen; the harness supplies that list instead of a DOM.
+    audibleListTracks: () => (overrides && overrides.visible ? overrides.visible : state.queue),
     currentItem: () => state.queue[state.index] || null,
     loadCurrent: () => trace.calls.push("loadCurrent"),
     render: () => { trace.renderCount += 1; trace.calls.push("render"); },
@@ -104,6 +110,18 @@ function build(overrides) {
     assert.equal(q.state.index, 1, "the queue position is tracked even while another view is showing");
     assert.deepEqual(q.trace.rows, [], "no queue row may be restyled while another view is active");
     assert.equal(q.trace.renderCount, 0, "the queue presentation sync must stay behind the view guard");
+  }
+
+  // R567: clicking one row used to leave the queue holding only that song, so
+  // "next" had nowhere to go. The visible list is now what gets queued.
+  {
+    const visible = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const q = build({ view: "all", queue: [], index: -1, visible });
+    await q.h.playById("b");
+    assert.deepEqual(q.trace.sent.queue, ["a", "b", "c"],
+      "the rows on screen become the queue, in the order they are drawn");
+    assert.equal(q.trace.sent.current_id, "b", "playback starts on the clicked row");
+    assert.ok(q.trace.renderCount > 0, "the queue markers on the rows have to be repainted");
   }
 
   // Placement is part of the contract. playById has to capture the index it is

@@ -258,6 +258,18 @@ def _transcode_source_mtime(item):
     return source_mtime
 
 
+# Formats a browser media element (and Android's ExoPlayer) decodes by itself.
+#
+# Anything outside this set - WMA, WavPack, AIFF, MPC, the odd .ape left over -
+# cannot be played from the original file at all: the element fires `error` and
+# the user sees "点了没反应". They used to require turning the global MP3 switch
+# on, which then re-encoded *everything* including FLAC. Deciding per format is
+# both correct and cheaper: only the files that truly need it are converted.
+BROWSER_NATIVE_EXTENSIONS = frozenset({
+    ".mp3", ".m4a", ".aac", ".mp4", ".flac", ".ogg", ".oga", ".opus", ".wav",
+})
+
+
 def media_mode(item, query, handler):
     requested = (query.get("transcode") or query.get("delivery") or ["auto"])[0]
     profile = (query.get("profile") or ["auto"])[0]
@@ -284,6 +296,10 @@ def media_mode(item, query, handler):
         return "ape_flac"
     if item["is_dsd"]:
         return "dsd_wav"
+    if ext and ext not in BROWSER_NATIVE_EXTENSIONS:
+        # No decoder on the other side: convert instead of handing over a file
+        # that can only fail.
+        return "mp3"
     return "original"
 
 

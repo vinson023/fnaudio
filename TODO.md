@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R567 WMA/转码延迟/开关同步/单曲队列**。① `BROWSER_NATIVE_EXTENSIONS` + `media_mode` 自动转码，WMA 不再依赖手动开关；② `warmUpcomingTrackCache()` 在播放开始时预热下一首，消除开转码后点下一首的等待；③ 转码开关改为服务端 `ui.mp3_transcode`，跨端同步（原来只在 localStorage）；④ `playById` 用 `audibleListTracks()` 把屏幕上的列表设为队列，点一首就能顺序播下去。**遗留**：WMA 本身无法原文件播放（浏览器与 ExoPlayer 都没有解码器），只能转码——这是平台限制，不是实现取巧。版本 0.2.157 / 415。
+
 - [x] 2026-11-16 — **R566 安卓图标符号缩小**。启动图标瓦片里符号原为 60%×77%，顶到圆角显得挤，且与自适应形态（56%）不一致；新增 `ANDROID_TILE_SCALE=0.80` 只作用于 `mipmap-*`，收到 47%×61%；`FOREGROUND_FIT` 0.74→0.52 以落进 66dp 安全圆。fnOS 应用中心图标未改。新增 `test_android_icon_geometry.py` 钉住占比与居中。版本 0.2.156 / 414。
 
 - [x] 2026-11-16 — **R565 关闭直连端口**。直连 `IP:端口` 在 fnOS 网关之外、没有任何身份，R563 的"只读"仍把整库和播放控制暴露给同网段。现在只放行环回与 UPnP 协议面（`/dlna/`、`/upnp/media/`、`/upnp/cover/`，GET/HEAD），其余 403，连 `index.html`/`app.js` 都不下发，改为一张 403 说明页；`/api/health` 对局域网保留用于探活。删除只读横幅、`LAN_READ_SCOPES`、`allow_lan_write`、`public_access.readonly`。**注意**：DLNA 投播必须继续走这条匿名通道，别再"一刀切"。版本 0.2.155 / 413。**真机已验证（负责人 2026-11-16）**：投音到音箱/电视正常，手机浏览器访问 `192.168.5.141:53199` 被 403 说明页拦下——即上面那条 UPnP 例外确实保住了投播，而直连入口已对外不可用。

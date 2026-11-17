@@ -53,6 +53,16 @@ class StateProjectionTests(unittest.TestCase):
         self.assertEqual(mapping_or_empty([]), {})
         self.assertEqual(mapping_or_empty("text"), {})
 
+    def test_ui_preferences_keep_the_transcode_switch_only_as_a_bool(self):
+        # R567: the MP3 switch moved from localStorage to the server so every
+        # client sees the same value.
+        self.assertEqual(ui_preferences({"mp3_transcode": True})["mp3_transcode"], True)
+        self.assertEqual(ui_preferences({"mp3_transcode": False})["mp3_transcode"], False)
+        for junk in ("1", 1, None, [], {"on": True}):
+            with self.subTest(junk=junk):
+                self.assertNotIn("mp3_transcode", ui_preferences({"mp3_transcode": junk}),
+                                 "only a real boolean is a decision")
+
     def test_playlists_and_ui_preferences_share_safe_projection(self):
         value = playlists([{"id": "p", "name": "P", "trackIds": ["a", "a", "b"]}])
         self.assertEqual(value[0]["trackIds"], ["a", "b"])

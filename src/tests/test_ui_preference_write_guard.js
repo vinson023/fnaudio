@@ -59,6 +59,9 @@ function harness(options) {
     currentItem: () => ({ id: "one" }),
     isRemoteTarget: () => options.remote === true,
     loadCurrent: () => calls.push("loadCurrent"),
+    // R567: the switch is now stored on the server too, so the toggle schedules a
+    // user-state save between the repaint and the reload.
+    scheduleUserStateSave: () => calls.push("scheduleUserStateSave"),
   });
   context.globalThis = context;
   context.globalThis.fnAudioLibrarySortOptionsPolicy = {
@@ -139,8 +142,8 @@ const transcodeHost = topLevelFunction("toggleMp3Transcode", "function openDevic
   vm.runInContext("toggleMp3Transcode()", ok.context);
   assert.equal(state.mp3Transcode, true);
   assert.deepEqual(ok.writes, [[TRANSCODE, "1"]], "the persisted token is unchanged");
-  assert.deepEqual(ok.calls, ["updateModeButton", "loadCurrent"],
-    "the healthy path repaints the button and reloads the track");
+  assert.deepEqual(ok.calls, ["updateModeButton", "scheduleUserStateSave", "loadCurrent"],
+    "the healthy path repaints the button, shares the choice, then reloads the track");
 }
 
 {
@@ -148,7 +151,7 @@ const transcodeHost = topLevelFunction("toggleMp3Transcode", "function openDevic
   const broken = harness({ host: transcodeHost, state, failing: true });
   assert.doesNotThrow(() => vm.runInContext("toggleMp3Transcode()", broken.context));
   assert.equal(state.mp3Transcode, true, "the toggle is kept");
-  assert.deepEqual(broken.calls, ["updateModeButton", "loadCurrent"],
+  assert.deepEqual(broken.calls, ["updateModeButton", "scheduleUserStateSave", "loadCurrent"],
     "the button cannot end up showing the opposite of the flag it just flipped");
 }
 
@@ -158,8 +161,8 @@ const transcodeHost = topLevelFunction("toggleMp3Transcode", "function openDevic
   assert.doesNotThrow(() => vm.runInContext("toggleMp3Transcode()", remote.context));
   assert.equal(state.mp3Transcode, false);
   assert.deepEqual(remote.writes, [[TRANSCODE, "0"]]);
-  assert.deepEqual(remote.calls, ["updateModeButton"],
-    "a remote target still repaints and still skips the local reload");
+  assert.deepEqual(remote.calls, ["updateModeButton", "scheduleUserStateSave"],
+    "a remote target still repaints and shares the choice, and still skips the local reload");
 }
 
 // ---- D2. The guard must not over-wrap: a real failure downstream still surfaces.
@@ -192,8 +195,9 @@ for (const [name, after, host] of [
 assert.match(guardSource(),
   /function writeStoredPreference\(key, value\) \{[\s\S]{0,600}?try \{[\s\S]{0,80}?localStorage\.setItem\(key, value\);[\s\S]{0,40}?\} catch \(_\) \{/,
   "the guarded writer must wrap exactly the storage call, and only that call");
-assert.equal(writesOf(app, "writeStoredPreference("), 5,
-  "the writer plus exactly the four preference call sites this round converted, no more");
+assert.equal(writesOf(app, "writeStoredPreference("), 6,
+  "the writer plus five preference call sites: the four this round converted, and the "
+  + "server switch adopted on hydration (R567)");
 assert.match(app, /function writeStoredUserMedia\(key, value\) \{/,
   "the user-media writer stays separate: its payload is JSON, the preference payload is not");
 

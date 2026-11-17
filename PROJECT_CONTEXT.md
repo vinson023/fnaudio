@@ -1,4 +1,6 @@
 # fnAudio 项目上下文
+- 2026-11-17：R567 **WMA/转码/队列**。格式自动转码（`BROWSER_NATIVE_EXTENSIONS`，WMA 等无解码器的格式直接转 mp3）；播放开始时预热下一首转码缓存；MP3 开关从 localStorage 迁到服务端 `ui.mp3_transcode` 实现跨端同步；`playById` 改为把屏幕上的列表设为队列（`audibleListTracks()`），点一首即可顺序播放。
+
 - 2026-11-16：R566 **安卓图标缩小符号**。`mipmap-*` 里的符号从 60%×77% 收到 47%×61%（`ANDROID_TILE_SCALE=0.80`，只作用于安卓瓦片），`FOREGROUND_FIT` 0.74→0.52 让最远墨点 130px 落进 66dp 安全圆；fnOS 应用中心图标未动。`test_android_icon_geometry.py` 按像素钉住占比、居中与安全区。
 
 - 2026-11-16：R565 **直连端口关闭**。`peer_may_reach` 只放行环回（fnOS 网关）与 UPnP（`/dlna/`、`/upnp/media/`、`/upnp/cover/`）；其余非环回请求一律 403，页面改发 `DIRECT_ACCESS_PAGE` 说明页，API 发 JSON；`/api/health` 对局域网保留。删除 R563 的只读模式（`LAN_READ_SCOPES`/`allow_lan_write`/`readonly`/前端横幅）。DLNA 依赖这条匿名通道，不能封。

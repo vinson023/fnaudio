@@ -1359,6 +1359,7 @@ function userStatePayload() {
       target_id: state.playTarget || "local",
     },
     ui: {
+      mp3_transcode: Boolean(state.mp3Transcode),
       track_columns: state.trackColumnPreferences,
       track_column_widths: state.trackColumnWidthPreferences,
     },
@@ -1468,6 +1469,16 @@ async function applyServerUserState(serverState) {
   if (remoteColumns && typeof remoteColumns === "object" && !Array.isArray(remoteColumns) && Object.keys(remoteColumns).length) {
     state.trackColumnPreferences = Object.fromEntries(Object.entries(remoteColumns).map(([scope, columns]) => [scope, normalizeTrackColumns(columns)]));
     persistTrackColumnPreferences();
+  }
+  // Adopt the server's switch, but only when the server actually has one: an
+  // older state document without the key must not reset a choice the user just
+  // made on this screen.
+  const remoteTranscode = serverState?.ui?.mp3_transcode;
+  if (typeof remoteTranscode === "boolean" && remoteTranscode !== state.mp3Transcode) {
+    state.mp3Transcode = remoteTranscode;
+    writeStoredPreference("fnaudio.mp3Transcode", remoteTranscode ? "1" : "0");
+    updateModeButton();
+    if (currentItem() && !isRemoteTarget() && state.userStateHydrated) loadCurrent();
   }
   const remoteWidths = serverState?.ui?.track_column_widths;
   if (remoteWidths && typeof remoteWidths === "object" && !Array.isArray(remoteWidths) && Object.keys(remoteWidths).length) {
@@ -1951,8 +1962,22 @@ function isFavorite(id) {
 function isPrivateHost(host) {
   return globalThis.fnAudioHostPrivacyPolicy.isPrivateHost(host);
 }
+// Formats the browser element and ExoPlayer both decode on their own.
+const NATIVE_PLAYABLE_FORMATS = new Set(["MP3", "AAC", "M4A", "FLAC", "OGG", "OPUS", "WAV"]);
 function shouldTranscodeToMp3(item) {
-  return Boolean(state.mp3Transcode && item && String(item.format || "").toUpperCase() !== "MP3");
+  if (!item) return false;
+  const format = String(item.format || "").toUpperCase();
+  if (format === "MP3") return false;
+  // DSD, APE and CUE segments have their own lossless lanes below; only the
+  // manual switch should push those to MP3.
+  if (item.is_dsd === true || item.cue_track === true || format === "APE") {
+    return Boolean(state.mp3Transcode);
+  }
+  // WMA and the like have no decoder on either side: without conversion the
+  // element just errors out ("点了没反应"), which is why the switch used to be
+  // the only way to play them. Decide by format instead.
+  if (!NATIVE_PLAYABLE_FORMATS.has(format)) return true;
+  return Boolean(state.mp3Transcode);
 }
 function playbackBadge(item) {
   if (isDacTarget()) return state.dacStrategy?.label || state.remoteStatus?.strategy?.label || "USB DAC 输出";
@@ -4834,6 +4859,26 @@ async function clearQueue() {
     alert(error.message || "清空播放队列失败");
   }
 }
+// The rows on screen, in the order they are drawn.
+//
+// Clicking one song has to mean "start here and keep going", the way fnOS Music
+// behaves. Until R567 `playById` only appended the clicked row to the queue, so
+// the queue held one track and "next" had nowhere to go - the user had to use
+// "从该处播放全部" first (reported 2026-11-16). Reading the DOM is deliberate: it
+// is exactly the list the user sees, already sorted, already paged.
+function audibleListTracks() {
+  const tracks = [];
+  const seen = new Set();
+  for (const row of document.querySelectorAll("#trackList [data-track-id]")) {
+    const trackId = String(row.getAttribute("data-track-id") || "");
+    if (!trackId || seen.has(trackId)) continue;
+    const item = itemById(trackId);
+    if (!item) continue;
+    seen.add(trackId);
+    tracks.push(item);
+  }
+  return tracks;
+}
 async function playById(id) {
   const item = itemById(id);
   if (!item) return;
@@ -4841,8 +4886,14 @@ async function playById(id) {
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
-  const queue = state.queue.some(x => String(x.id) === String(id)) ? [...state.queue] : [...state.queue, item];
+  // In the queue view the queue *is* the list; anywhere else the visible rows
+  // become the queue, positioned on the clicked row.
+  const visible = state.view === "queue" ? state.queue : audibleListTracks();
+  const queue = visible.some(entry => String(entry.id) === String(id))
+    ? [...visible]
+    : (state.queue.some(entry => String(entry.id) === String(id)) ? [...state.queue] : [...state.queue, item]);
   const previousIndex = state.index;
+  const previousQueueLength = state.queue.length;
   try {
     await commitQueue(queue, id);
   } catch (error) {
@@ -4850,11 +4901,10 @@ async function playById(id) {
     return;
   }
   loadCurrent();
-  // ``playById`` is the one queue writer that never rebuilds the list, so it has
-  // to move the current-row marker itself.  The other writers render afterwards,
-  // which is why this stays on this path instead of in ``applyConfirmedQueue``:
-  // a cross-page jump would then render twice.
-  syncCurrentQueuePresentation(previousIndex);
+  // The queue now usually comes from the visible list, so the row markers have to
+  // be repainted; `syncCurrentQueuePresentation` alone only moves the current row.
+  if (queue.length > 1 && state.queue.length !== previousQueueLength) render();
+  else syncCurrentQueuePresentation(previousIndex);
 }
 async function playGroup(name) {
   const key = groupViews[state.view];
@@ -4908,6 +4958,31 @@ async function warmCurrentTrackCache(item) {
     return false;
   }
 }
+// Warm the *next* track while the current one plays.
+//
+// With MP3 transcoding on, a cache miss means ffmpeg has to start when the user
+// presses next, and that first byte is what they experience as "响应很久". One
+// track ahead is enough: the encode of a normal song finishes long before the
+// current one ends, and only one extra job is ever queued.
+let upcomingWarmTrackId = "";
+function warmUpcomingTrackCache() {
+  if (isRemoteTarget()) return;
+  const next = nextIndex();
+  if (next < 0) return;
+  const item = state.queue[next];
+  const trackId = String(item?.id || "");
+  if (!trackId || !shouldTranscodeToMp3(item) || trackId === upcomingWarmTrackId) return;
+  upcomingWarmTrackId = trackId;
+  apiFetch("api/transcode/warm", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ track_id: trackId, mode: "mp3" }),
+  }).catch(() => {
+    // A warm-up is an optimisation; the next load falls back to streaming.
+    upcomingWarmTrackId = "";
+  });
+}
+
 async function loadCurrent() {
   const item = currentItem();
   if (!item) return;
@@ -4986,6 +5061,7 @@ async function loadCurrent() {
     const shouldResume = String(state.nativePlayback.mediaId || "") === String(item.id || "")
       && state.nativePlayback.playing === true;
     nativeLoadQueue(true, shouldResume ? playbackSeconds(state.nativePlayback.position) : 0);
+    warmUpcomingTrackCache();
     setTextContentIfChanged($("nowTitle"), displayTrackTitle(item));
     setTextContentIfChanged($("nowArtist"), `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`);
     const nativeCover = coverUrl(item, 512);
@@ -11265,6 +11341,10 @@ function toggleMp3Transcode() {
   state.mp3Transcode = !state.mp3Transcode;
   writeStoredPreference("fnaudio.mp3Transcode", state.mp3Transcode ? "1" : "0");
   updateModeButton();
+  // Share it with the other clients: the preference belongs to the installation,
+  // not to this browser's localStorage (turning it on from the phone left the
+  // desktop showing "关" for ever).
+  scheduleUserStateSave();
   if (currentItem() && !isRemoteTarget()) loadCurrent();
 }
 function openDeviceDialog() {
@@ -11519,7 +11599,14 @@ if ($("volume")) $("volume").value = "1";
 // into CSS once.  Without this the popover opens with a grey rail and a handle
 // parked at the top (R488).
 updateVolumeRail();
-audio.onplay = () => { setPlayButton(true); updateMediaSessionPlaybackState(); syncState(); };
+audio.onplay = () => {
+  setPlayButton(true);
+  updateMediaSessionPlaybackState();
+  syncState();
+  // Playback actually started, so the ffmpeg slot the current track may still
+  // hold is free to be used for the next one.
+  warmUpcomingTrackCache();
+};
 audio.onpause = () => { setPlayButton(false); updateMediaSessionPlaybackState(); syncState(); };
 audio.onerror = () => {
   if (currentItem()?.is_dsd === true) {
