@@ -18,9 +18,9 @@
 | P0-1 | 播放错误分流（非 DSD 自动下一首，连续 3 次停） | 行为：错误后是否前进 / 是否停 | `src/tests/test_ui_media_error_policy.js` | **已实现**（R574） |
 | P0-2 | 放不了的曲目不要反复重试 | 同一首被重试的次数 | `test_ui_media_error_policy.js`（名单 + 跳过） | **已实现（客户端自愈）** |
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
-| P1-2 | 浏览器预热下一首 URL | `ended → playing` 间隔（中位数） | `test_ui_media_error_policy.js`（接线）+ 待补测量 | **已实现，缺度量** |
+| P1-2 | 浏览器预热下一首 URL | `ended → playing` 间隔（中位数） | `test_ui_playback_gap_stats.js` | **已实现，度量已埋点**（读数待采） |
 | P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
-| P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | 待定 | **未做**（工程量大） |
+| P2-2 | 原文件本地缓存（断网可放） | 断网后能连续播放的曲数 | 待定（实现时补） | **设计完成**（`docs/DESIGN_ORIGINAL_AUDIO_CACHE.md`，安卓先做） |
 
 ## P0-1 播放错误分流（已固化）
 
@@ -71,6 +71,14 @@
 整条队列由 `NativePlaybackBridge.setQueue` 一次性交给 `controller.setMediaItems(...)`，`PlaybackService` 没有调用 `setPauseAtEndOfMediaItems(true)`——media3 默认允许队列项之间直接衔接，同编码连续播放时不会有额外空档。守卫固定在 `test_ui_android_bridge.js`：谁把它设成 `true` 就会红。
 
 **仍未量的**：不同容器（flac→mp3 转码流）之间的空档，需要设备侧 `ended → playing` 计时，与 P1-2 共用一个指标。
+
+## 曲间空档怎么读（R577）
+
+客户端已经埋好点：`audio.onended` 记时刻、`audio.onplaying` 算差，样本进 `state.gapSamples`（上限 50）。
+
+- 浏览器控制台或 WebView 调试：`fnAudioGapReport()` → `{count, median, p95, max}`；
+- 单位毫秒，`median` 是 P1-2 / P2-1 的对外口径；
+- 采样满 5 条再看，单条会被首帧抖动带偏。
 
 ## 做下一件事的判据
 

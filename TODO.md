@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R577 空档度量 + P2-2 设计**。`playback_gap_stats.js` + `fnAudioGapReport()` 让"曲间空档"可读；`DESIGN_ORIGINAL_AUDIO_CACHE.md` 定下"缓存在客户端、安卓用 media3 SimpleCache、浏览器先不做"。**待办**：实现 CacheDataSource 接线 + 断网验证。
+
 - [x] 2026-11-17 — **R576 P0-2 + P1-2**。坏文件名单（`markUnplayable`/`isUnplayable`/`forgetUnplayable`/`nextPlayableIndex`）让自动续播跳过放不了的曲目，成功即除名；`preheatUpcomingStream` 预热下一首连接。**待办**：量 `ended → playing` 空档；服务端 415 需要改响应头（先读后发），动 7 条流式用例。
 
 - [x] 2026-11-17 — **R575 队尾复读根因**：原生结束不回报服务端 + 同曲无限重载；本地优先建队（`applyQueueLocally`/`persistLocalQueueSnapshot`/`scheduleServerQueueSync`/`syncServerQueueBestEffort`）解决"点播放没响应"。P0 错误分流落地（`media_error_policy.js`）。P1 探测参数实测无收益撤回。**待办**：装包后在真机复验队尾与首播延迟。

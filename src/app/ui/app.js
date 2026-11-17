@@ -332,6 +332,8 @@ state.folderTotal = 0;
 state.localErrorStreak = 0;
 state.nativeEndReported = false;
 state.autoAdvancing = false;
+state.gapStartedAt = 0;
+state.gapSamples = [];
 state.itemCache = fnAudioItemCache(12000);
 state.itemCacheLimit = 12000;
 state.libraryResponseCache = fnAudioLruCache(48, { maxWeight: 6000, weightOf: libraryResponseWeight });
@@ -989,6 +991,10 @@ function nativeQueueNeedsRestore() {
     || nativeIds.some((id, index) => id !== expectedIds[index])
     || String(state.nativePlayback.mediaId || "") !== String(item.id || "");
 }
+window.fnAudioGapReport = () => {
+  const stats = globalThis.fnAudioGapStats;
+  return stats ? stats.summarize(state.gapSamples) : { count: 0, median: null, p95: null, max: null };
+};
 window.fnAudioNativeOnState = payload => {
   let snapshot = payload;
   try { if (typeof payload === "string") snapshot = JSON.parse(payload); }
@@ -11964,11 +11970,19 @@ audio.onerror = () => {
 };
 audio.onplaying = () => {
   state.localErrorStreak = 0;
+  if (state.gapStartedAt) {
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    const stats = globalThis.fnAudioGapStats;
+    if (stats) state.gapSamples = stats.push(state.gapSamples, now - state.gapStartedAt, stats.MAX_SAMPLES);
+    state.gapStartedAt = 0;
+  }
   // 放出来了就说明这首没问题：把之前记下的"放不了"除名，文件被替换后能自愈。
   forgetUnplayable(currentItem()?.id);
 };
 audio.onended = async () => {
   state.autoAdvancing = true;
+  // 记下"这一首放完"的时刻，下一首真正出声时算差；两个指标（P1-2/P2-1）都靠它。
+  state.gapStartedAt = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
   state.streamOffset = 0;
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
