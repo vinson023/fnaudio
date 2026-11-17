@@ -57,6 +57,27 @@ class LauncherTileTests(unittest.TestCase):
                 self.assertLessEqual(abs((left + right) - expected), 3, "mark is off-centre horizontally")
                 self.assertLessEqual(abs((top + bottom) - expected), 3, "mark is off-centre vertically")
 
+    def test_desktop_icon_matches_the_launcher_tile(self):
+        """One mark, one optical size, both surfaces.
+
+        The fnOS app-centre icon and the Android tile are the same drawing; when
+        the phone one was shrunk first they disagreed (78% vs 61% tall). R570
+        unified them, and this keeps them unified.
+        """
+        ui = Path(__file__).resolve().parents[1] / "app" / "ui" / "images"
+        for name in ("icon_256.png", "icon_96.png"):
+            with self.subTest(icon=name):
+                image = Image.open(ui / name)
+                _left, _right, top, bottom = ink_box(image, is_blue)
+                height = (bottom - top) * 100 / image.height
+                self.assertGreaterEqual(height, 55, "desktop mark shrank too far: %.1f%%" % height)
+                self.assertLessEqual(height, 66, "desktop mark is crowded again: %.1f%%" % height)
+                tile = Image.open(RES / "mipmap-xxxhdpi" / "ic_launcher.png")
+                _tl, _tr, tile_top, tile_bottom = ink_box(tile, is_blue)
+                tile_height = (tile_bottom - tile_top) * 100 / tile.height
+                self.assertLessEqual(abs(height - tile_height), 4,
+                                     "desktop %.1f%% vs launcher %.1f%%" % (height, tile_height))
+
     def test_tile_corners_are_transparent_so_the_tile_shape_is_the_icon(self):
         for density in DENSITIES:
             with self.subTest(density=density):

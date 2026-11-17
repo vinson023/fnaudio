@@ -33,18 +33,13 @@ ANDROID_RES = ROOT / "android-client" / "app" / "src" / "main" / "res"
 # Android launcher densities (mdpi..xxxhdpi) and the adaptive foreground canvas.
 ANDROID_DENSITIES = (("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192))
 ANDROID_FOREGROUND_SIZE = 432
-# 安卓的启动图标瓦片里，符号要比 fnOS 那枚小一圈。
-#
-# fnOS 应用中心是一排方图并排，符号占满才显得齐；手机端不一样：瓦片 4 个圆角
-# 是这枚图标的形状本身，符号长到 78% 时上下几乎顶到圆角弧线，四个角就"憋"住了
-# （2026-11-16 负责人反馈）。0.80 把符号收到约 62% 高，与自适应图标在遮罩里
-# 露出的比例基本一致——顺带修掉"老设备（用 PNG 回退）比新设备（用自适应遮罩）
-# 显得符号更大"这个不一致。
-ANDROID_TILE_SCALE = 0.80
-# 108dp 画布在极端遮罩下只露中间 66dp（61%），而主体占图标 78%，
-# 这个系数把它收到约 52%：符号最远墨点到画布中心 130px（安全圆半径 132px），
-# 任何遮罩都切不到梁和符头。
-FOREGROUND_FIT = 0.52
+# 安卓瓦片相对 fnOS 图标的额外缩放。两端在 2026-11-17 统一到同一个观感（约 61%
+# 高）之后，这里不再需要补差：保留这个开关只是为了让"手机想再小一点"仍然只改一处。
+ANDROID_TILE_SCALE = 1.0
+# 108dp 画布在极端遮罩下只露中间 66dp（61%）。这个系数跟 GLYPH_SCALE 相乘，
+# 0.66 x 0.90 ≈ 0.59 的绝对比例，既保持自适应图标原来的大小，又让最远墨点留在
+# 安全圆内（半径 132px）。改 GLYPH_SCALE 时要一起乘算，别只看单个数字。
+FOREGROUND_FIT = 0.66
 
 CANVAS = 256
 SUPERSAMPLE = 8
@@ -92,12 +87,15 @@ GLYPH_BOTTOM = HEAD_RIGHT[1] + HEAD_RIGHT_R
 CENTER_DX = (CANVAS - (GLYPH_RIGHT - GLYPH_LEFT)) / 2 - GLYPH_LEFT
 CENTER_DY = (CANVAS - (GLYPH_BOTTOM - GLYPH_TOP)) / 2 - GLYPH_TOP
 
-# 图形占画布的比：原版量出来是 52% 宽、68% 高，而 fnOS 自家图标多在 60~77%
-# （设置图标那只齿轮约 76%，机器上 16 个应用的中位数约 66%）。
-# 1.15 把主体放大到 60% x 78%，与系统那排图标并排时不再显得缩；再多就顶到边了。
-# 想让它显得更饱满就调这个值——以画布中心等比缩放，比例不变，只改大小。
-# 1.0 表示与 0.2.144 那版逐像素对齐。
-GLYPH_SCALE = 1.15
+# 图形占画布的比（以画布中心等比缩放，比例不变，只改大小）。
+#
+# 历史：原版主体 52% 宽 / 68% 高；R561 放大到 1.15（≈78% 高）想跟 fnOS 那排图标
+# 齐平；但 78% 把四个圆角顶得很挤，手机端尤其明显（2026-11-16 反馈），于是安卓
+# 瓦片先单独收到 0.80。
+#
+# 2026-11-17 负责人要求桌面端"和安卓一样缩小"，于是两端统一到同一个系数：0.90，
+# 主体 47% 宽 / 61% 高。安卓不再需要自己的例外系数，改由 ANDROID_TILE_SCALE 保持 1.0。
+GLYPH_SCALE = 0.90
 
 
 def _s(v: float) -> float:
