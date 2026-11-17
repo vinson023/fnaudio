@@ -334,6 +334,7 @@ state.nativeEndReported = false;
 state.autoAdvancing = false;
 state.gapStartedAt = 0;
 state.gapSamples = [];
+state.offline = false;
 state.itemCache = fnAudioItemCache(12000);
 state.itemCacheLimit = 12000;
 state.libraryResponseCache = fnAudioLruCache(48, { maxWeight: 6000, weightOf: libraryResponseWeight });
@@ -1464,6 +1465,9 @@ async function loadServerUserState() {
     } else {
       state.userStateRevision = userStateRevision(serverState.revision);
       state.userStateBase = normalizeUserMediaState(serverState);
+      // 接口回 503 时 response_json_loader 会走 fallback（不抛异常），所以"服务端
+      // 没给我们状态"这件事要在这里判断，不能只放在 catch 里。
+      restoreOfflineQueue();
     }
     state.userStateHydrated = true;
     if (!serverState.initialized) scheduleUserStateSave();
@@ -1475,6 +1479,9 @@ async function loadServerUserState() {
     // let the normal retry path reconcile once the service returns.
     state.userStateHydrated = true;
     state.userStateDirty = true;
+    // 断网/服务重启：服务端状态拿不到，但队列快照还在本地。先把它恢复出来，
+    // 让播放器至少能播已缓存的曲目；服务回来后正常同步会覆盖它。
+    restoreOfflineQueue();
     scheduleUserStateSave(2000);
     renderAfterUserStateHydration();
   } finally {}
@@ -2829,6 +2836,19 @@ async function coreControl(action, position = null, payload = {}) {
   if (state.deviceSwitchInFlight) return false;
   // 本地优先建队会把手里的队列延后同步给服务端。要服务端替我们"下一首"之前，
   // 必须先把这次同步落下去，否则它面对的是空队列。
+  if (state.offline && (action === "next" || action === "previous")) {
+    const target = action === "next" ? nextIndex() : previousIndex();
+    if (target < 0) {
+      setPlayButton(false);
+      updateMediaSessionPlaybackState();
+      return false;
+    }
+    const previousIndex = state.index;
+    state.index = target;
+    syncCurrentQueuePresentation(previousIndex);
+    loadCurrent();
+    return { ok: true, offline: true };
+  }
   if ((action === "next" || action === "previous") && serverQueueSyncTimer) {
     clearTimeout(serverQueueSyncTimer);
     serverQueueSyncTimer = 0;
@@ -4772,14 +4792,51 @@ function forgetUnplayable(id) {
   writeUnplayableTrackIds(policy.forgetUnplayable(unplayableTrackIds(), id));
 }
 function persistLocalQueueSnapshot() {
+  const policy = globalThis.fnAudioOfflineQueue;
+  if (!policy) return;
   try {
-    writeStoredPreference("fnaudio.queue.v1", JSON.stringify({
-      ids: state.queue.slice(0, 2000).map(item => String(item.id || "")),
+    // 存的是带元数据的队列，不只是 id：断网时只有 id 渲染不出任何一行。
+    writeStoredPreference("fnaudio.queue.v1", policy.encode({
+      queue: state.queue,
       current: String(currentItem()?.id || ""),
       repeat: state.repeat,
-      shuffle: Boolean(state.shuffle),
+      shuffle: state.shuffle,
     }));
-  } catch (_) { /* 本地快照只是加速用，写不进去不影响播放 */ }
+  } catch (_) { /* 本地快照只是离线兜底，写不进去不影响播放 */ }
+}
+// 服务端状态取不到时（断网、服务重启），用快照把队列恢复出来。
+// 界面本来就是内置的，缺的只有队列与它的元数据。
+function restoreOfflineQueue() {
+  const policy = globalThis.fnAudioOfflineQueue;
+  if (!policy || state.queue.length) return false;
+  let snapshot = null;
+  try {
+    snapshot = policy.decode(localStorage.getItem("fnaudio.queue.v1") || "");
+  } catch (_) {
+    return false;
+  }
+  if (!policy.isUsable(snapshot)) return false;
+  state.queue = snapshot.items;
+  state.index = policy.indexOfCurrent(snapshot);
+  state.repeat = snapshot.repeat;
+  state.shuffle = snapshot.shuffle;
+  updateRepeatShuffleButtons();
+  render();
+  syncCurrentQueuePresentation(-1);
+  showOfflineBanner("离线模式：服务端不可达，用本地快照恢复队列，只能播放已缓存的曲目。");
+  return true;
+}
+function showOfflineBanner(text) {
+  state.offline = true;
+  let banner = document.getElementById("offlineBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "offlineBanner";
+    banner.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:8px 12px;"
+      + "background:#7a5c1e;color:#fff;font-size:13px;line-height:1.4;text-align:center;";
+    document.body.appendChild(banner);
+  }
+  banner.textContent = text;
 }
 let serverQueueSyncTimer = 0;
 function scheduleServerQueueSync(delay = 2500) {

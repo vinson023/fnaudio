@@ -20,7 +20,7 @@
 | P1-1 | ffmpeg 探测窗口收紧 | 转码到首字节毫秒数（中位数） | `tools/measure_first_byte.py` + `docs/perf/baseline_first_byte.json` | **已测无收益并撤回** |
 | P1-2 | 浏览器预热下一首 URL | 同一 URL 的装载耗时（中位数） | `test_ui_media_error_policy.js`（禁止回归） | **已测无收益并撤回**（冷 603/726ms vs 预热 638/617ms） |
 | P2-1 | 安卓 ExoPlayer 队列原生衔接 | 曲间空档毫秒数 | `test_ui_android_bridge.js`（禁止关掉衔接） | **已确认**（`setMediaItems` 整队列，未设 `setPauseAtEndOfMediaItems(true)`） |
-| P2-2 | 原文件本地缓存（断网可放） | 播放中切断网络能撑多久 / 断网后能连播几首 | `test_ui_android_bridge.js`（接线）+ `MediaCachePolicyTest`（规则） | **已接线，实测掉网 16 秒不中断**（磁盘命中未验证） |
+| P2-2 | 原文件本地缓存（断网可放） | 掉网能撑多久 / 离线能否进播放器 | `MediaCachePolicyTest`（规则）+ `test_ui_offline_queue.js`（快照）+ e2e（离线启动） | **缓存已证落盘；Web 端离线启动已通；安卓端仍卡登录门禁** |
 
 ## P0-1 播放错误分流（已固化）
 
@@ -118,6 +118,20 @@
 - **但进不去**：断网冷启动停在登录页，显示「正在恢复“FN Connect - vinson023”的登录…」，永远到不了播放器。
 
 结论：**离线播放缺的不是缓存，是"离线进入"这条路**——需要一个跳过登录的离线模式，加上本地队列快照的**读取端**（R575 只写了写入端，`fnaudio.queue.v1` 至今没有读者）。这是产品决定（离线界面长什么样、要不要允许），不是缓存能补的。
+
+## P2-2 第二层：Web 端离线启动（已完成）
+
+服务端状态接口装死时（断网、服务重启），`loadServerUserState` 不再只是"标记未水合"：
+
+- 快照格式升到 v2，存 **id + 标题/歌手/专辑/URL/时长**（只存 id 渲染不出任何行）；
+- `restoreOfflineQueue()` 用它恢复队列、定位当前曲、置 `state.offline`；
+- 顶部出现离线横幅，说明"只能播放已缓存的曲目"；
+- 离线时 `next/previous` 走本地 `nextIndex()/previousIndex()`，不再等服务端回答；
+- 当前曲在快照里找不到时**判定不可用**（否则恢复出一排点了会静默失败的行）。
+
+一个坑值得记：`fnAudioResponseJsonLoader` 在 HTTP 503 时走 `fallback` 而**不抛异常**，所以"服务端没给状态"必须在 `if (serverState.initialized) ... else` 的 else 分支判断，只放在 `catch` 里永远不触发。
+
+**还差一步**：安卓端在登录失败时直接停在登录页，到不了这套离线逻辑。要真离线，需要在 `MainActivity` 里加"离线进入"（用缓存的档案 + 快照加载内置页），属产品决定。
 
 ## 做下一件事的判据
 
