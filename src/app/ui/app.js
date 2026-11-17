@@ -331,6 +331,7 @@ state.folderPageSize = 100;
 state.folderTotal = 0;
 state.localErrorStreak = 0;
 state.nativeEndReported = false;
+state.autoAdvancing = false;
 state.itemCache = fnAudioItemCache(12000);
 state.itemCacheLimit = 12000;
 state.libraryResponseCache = fnAudioLruCache(48, { maxWeight: 6000, weightOf: libraryResponseWeight });
@@ -4736,6 +4737,34 @@ function applyQueueLocally(queue, currentId = "") {
   scheduleServerQueueSync();
   return state.queue;
 }
+function unplayableTrackIds() {
+  try {
+    const raw = localStorage.getItem("fnaudio.unplayable.v1") || "";
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+function writeUnplayableTrackIds(ids) {
+  try {
+    writeStoredPreference("fnaudio.unplayable.v1", JSON.stringify(ids || []));
+  } catch (_) { /* 只是加速跳过，写不进去不影响播放 */ }
+}
+function trackIsUnplayable(id) {
+  const policy = globalThis.fnAudioMediaErrorPolicy;
+  return policy ? policy.isUnplayable(unplayableTrackIds(), id) : false;
+}
+function rememberUnplayable(id) {
+  const policy = globalThis.fnAudioMediaErrorPolicy;
+  if (!policy || !id) return;
+  writeUnplayableTrackIds(policy.markUnplayable(unplayableTrackIds(), id));
+}
+function forgetUnplayable(id) {
+  const policy = globalThis.fnAudioMediaErrorPolicy;
+  if (!policy || !id) return;
+  writeUnplayableTrackIds(policy.forgetUnplayable(unplayableTrackIds(), id));
+}
 function persistLocalQueueSnapshot() {
   try {
     writeStoredPreference("fnaudio.queue.v1", JSON.stringify({
@@ -5084,6 +5113,7 @@ function maybeExtendQueue() {
 async function playById(id) {
   const item = itemById(id);
   if (!item) return;
+  state.autoAdvancing = false;
   state.streamOffset = 0;
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
@@ -5189,12 +5219,49 @@ async function warmCurrentTrackCache(item) {
 // track ahead is enough: the encode of a normal song finishes long before the
 // current one ends, and only one extra job is ever queued.
 let upcomingWarmTrackId = "";
+// P1-2：下一首的流地址预热。
+//
+// 只把"该走哪条转码通道"这件事提前打开——真正的解码由元素在换曲时做。用一个隐藏的
+// audio 元素以 preload=metadata 打开它，DNS/TLS/第一段响应就都热了；换曲时省掉
+// 握手，`ended → playing` 的空档会小一截。原生播放器与远端投放自己会预取，跳过。
+let preheatAudio = null;
+function preheatUrl(item) {
+  const params = new URLSearchParams();
+  if (shouldTranscodeToMp3(item)) params.set("transcode", "mp3");
+  else if (shouldTranscodeDsdToWav(item)) params.set("transcode", "dsd_wav");
+  else if (item.cue_track === true) params.set("transcode", "cue_flac");
+  else if (isApeTrack(item)) params.set("transcode", "ape_flac");
+  else params.set("transcode", "original");
+  return `${item.url}?${params.toString()}`;
+}
+function preheatUpcomingStream(index) {
+  if (nativePlaybackAvailable() || isRemoteTarget()) return false;
+  const item = state.queue[index];
+  if (!item || !item.url || trackIsUnplayable(item.id)) return false;
+  try {
+    if (preheatAudio) {
+      preheatAudio.removeAttribute("src");
+      preheatAudio.load();
+      preheatAudio = null;
+    }
+    const probe = new Audio();
+    probe.preload = "metadata";
+    probe.dataset.preheat = "1";
+    probe.src = preheatUrl(item);
+    preheatAudio = probe;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function warmUpcomingTrackCache() {
   if (isRemoteTarget()) return;
   const next = nextIndex();
   if (next < 0) return;
   const item = state.queue[next];
   const trackId = String(item?.id || "");
+  // 连接预热与转码预热是两件事，各走各的：前者省握手，后者省第一帧。
+  preheatUpcomingStream(next);
   if (!trackId || !shouldTranscodeToMp3(item) || trackId === upcomingWarmTrackId) return;
   upcomingWarmTrackId = trackId;
   apiFetch("api/transcode/warm", {
@@ -5210,6 +5277,24 @@ function warmUpcomingTrackCache() {
 async function loadCurrent() {
   const item = currentItem();
   if (!item) return;
+  if (state.autoAdvancing === true) {
+    const policy = globalThis.fnAudioMediaErrorPolicy;
+    const item0 = currentItem();
+    if (policy && item0 && trackIsUnplayable(item0.id)) {
+      const target = policy.nextPlayableIndex(
+        state.queue.map(entry => String(entry?.id || "")),
+        unplayableTrackIds(),
+        state.index,
+        state.repeat === "all",
+      );
+      if (target < 0 || target === state.index) {
+        state.autoAdvancing = false;
+        stopLocalAudio();
+        return;
+      }
+      state.index = target;
+    }
+  }
   const loadToken = ++state.playbackLoadToken;
   syncState();
   // Every track change passes through here: top the queue up before it runs out.
@@ -11857,6 +11942,8 @@ audio.onerror = () => {
     return;
   }
   if (action === "next") {
+    // 记下这首，下次点它直接跳过，不再先失败三遍。
+    rememberUnplayable(item.id);
     state.localErrorStreak = streak + 1;
     const previousIndex = state.index;
     state.index = next;
@@ -11877,13 +11964,17 @@ audio.onerror = () => {
 };
 audio.onplaying = () => {
   state.localErrorStreak = 0;
+  // 放出来了就说明这首没问题：把之前记下的"放不了"除名，文件被替换后能自愈。
+  forgetUnplayable(currentItem()?.id);
 };
 audio.onended = async () => {
+  state.autoAdvancing = true;
   state.streamOffset = 0;
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
   const moved = await coreControl("next");
+  state.autoAdvancing = false;
   if (!moved) updateMediaSessionPlaybackState();
 };
 // Buffer growth is the one rail change that does not come with a position tick:

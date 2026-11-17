@@ -1,4 +1,6 @@
 # fnAudio 待办
+- [x] 2026-11-17 — **R576 P0-2 + P1-2**。坏文件名单（`markUnplayable`/`isUnplayable`/`forgetUnplayable`/`nextPlayableIndex`）让自动续播跳过放不了的曲目，成功即除名；`preheatUpcomingStream` 预热下一首连接。**待办**：量 `ended → playing` 空档；服务端 415 需要改响应头（先读后发），动 7 条流式用例。
+
 - [x] 2026-11-17 — **R575 队尾复读根因**：原生结束不回报服务端 + 同曲无限重载；本地优先建队（`applyQueueLocally`/`persistLocalQueueSnapshot`/`scheduleServerQueueSync`/`syncServerQueueBestEffort`）解决"点播放没响应"。P0 错误分流落地（`media_error_policy.js`）。P1 探测参数实测无收益撤回。**待办**：装包后在真机复验队尾与首播延迟。
 
 - [x] 2026-11-17 — **R573 队尾逻辑可测化**。`NavigationDecision` 纯函数 + `NavigationDecisionTest` 6 例（JVM 跑，不依赖设备）；`NativePlaybackBridge` 改用之。模拟器（x86_64 `emulator` 变体）可装可启。**待办**：设备上的人工验证需要 fnOS 测试账号——「播到队尾→下一首」这一串还没在设备跑过。

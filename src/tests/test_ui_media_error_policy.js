@@ -71,4 +71,44 @@ assert.equal(policy.MAX_CONSECUTIVE, 3, "上限是 3 首，改它要同时改文
     "the policy has to be parsed before app.js uses it");
 }
 
+// P0-2：坏文件名单。记住一次，下次直接跳过；重新放出来就除名（自愈）。
+{
+  let list = [];
+  list = policy.markUnplayable(list, "x");
+  list = policy.markUnplayable(list, "y");
+  assert.deepEqual([...list], ["y", "x"], "最近失败的排在最前");
+  list = policy.markUnplayable(list, "x");
+  assert.equal(list.length, 2, "重复标记不产生重复项");
+  assert.equal(list[0], "x", "再次失败会挪到最前");
+  assert.equal(policy.isUnplayable(list, "x"), true);
+  assert.equal(policy.isUnplayable(list, "z"), false);
+  assert.deepEqual([...policy.forgetUnplayable(list, "x")], ["y"], "放出来就除名");
+  assert.equal(policy.markUnplayable([], "").length, 0, "空 id 不记");
+  const many = Array.from({ length: policy.MAX_UNPLAYABLE + 20 }, (_, i) => "t" + i);
+  const capped = many.reduce((acc, id) => policy.markUnplayable(acc, id), []);
+  assert.equal(capped.length, policy.MAX_UNPLAYABLE, "名单有上限，不会无限增长");
+}
+
+// 自动续播时跳过这些曲目；循环=全部才回绕。
+{
+  const ids = ["a", "b", "c", "d"];
+  const bad = ["b", "c"];
+  assert.equal(policy.nextPlayableIndex(ids, bad, 0, false), 0);
+  assert.equal(policy.nextPlayableIndex(ids, bad, 1, false), 3, "从 b 开始要跳到 d");
+  assert.equal(policy.nextPlayableIndex(ids, ["a", "b", "c", "d"], 0, true), -1, "全坏就返回 -1");
+  assert.equal(policy.nextPlayableIndex([], [], 0, true), -1, "空队列返回 -1");
+  assert.equal(policy.nextPlayableIndex(ids, [], 9, false), 3, "越界起点要夹回末尾，而不是越界访问");
+}
+
+// 接线检查：自动续播与预热都必须真的接上，否则策略只是摆设。
+{
+  const app = fs.readFileSync("app/ui/app.js", "utf8");
+  assert.match(app, /state\.autoAdvancing = true/, "onended 要标记自动续播");
+  assert.match(app, /policy\.nextPlayableIndex\(/, "自动续播要用策略挑下一首");
+  assert.match(app, /rememberUnplayable\(/, "失败要记名单");
+  assert.match(app, /forgetUnplayable\(/, "成功要除名");
+  assert.match(app, /preheatUpcomingStream\(/, "下一首要预热连接");
+  assert.match(app, /dataset\.preheat = "1"/, "预热元素要能辨认");
+}
+
 console.log("Media error policy regression checks passed.");
