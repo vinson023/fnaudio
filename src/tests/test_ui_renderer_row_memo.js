@@ -23,6 +23,8 @@ const paintNames = [
   "isIncomingRendererSession", "updateTransportStateUnknown",
   "transportStateIsUnknown", "transportExtrapolation",
   "updateMediaSessionPosition", "updateIncomingRendererUi", "resetTransportRow",
+  // R594: the seek settle predicate is part of the projection the poll runs.
+  "seekPositionIsSettled",
 ];
 
 function createNode(initial) {

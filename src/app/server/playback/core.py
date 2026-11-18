@@ -3,12 +3,12 @@ from __future__ import annotations
 from threading import Condition, RLock
 from typing import Any, Dict, Iterable, Mapping, Optional
 import math
-import random
 import uuid
 
 from .models import PlaybackCommand, PlaybackState, TrackRef
 from .plugins import BrowserOutput, OutputRegistry
 from metadata_track_id_policy import normalize_track_id
+from queue_order_policy import next_index, previous_index
 
 MAX_QUEUE_TRACKS = 50000
 MAX_SESSION_COUNTER = 2**31 - 1
@@ -288,6 +288,14 @@ class PlaybackCore:
                     result = self._plugin().command(command, self.state, command.context)
                 else:
                     result = {"shuffle": self.state.shuffle}
+            elif command.action == "progress":
+                # The client that owns the transport is the only source of truth
+                # for "where am I", so it reports here and a reload can resume.
+                # This must not reach an output plugin: a seek to the position
+                # that is already playing is at best a no-op and at worst an
+                # audible stutter on a renderer that restarts its stream.
+                self.state.position = _safe_position(command.position)
+                result = {"ok": True, "position": self.state.position}
             else:
                 result = self._plugin().command(command, self.state, command.context)
             succeeded = _plugin_result_accepted(result)
@@ -472,31 +480,26 @@ class PlaybackCore:
     def next_track(self) -> Optional[TrackRef]:
         if not self.state.queue:
             return None
-        if self.state.repeat == "one" and self.state.current_index >= 0:
-            return self.state.queue[self.state.current_index]
-        if self.state.shuffle and len(self.state.queue) > 1:
-            choices = [idx for idx in range(len(self.state.queue)) if idx != self.state.current_index]
-            self.state.current_index = random.choice(choices)
-        elif self.state.current_index < len(self.state.queue) - 1:
-            self.state.current_index += 1
-        elif self.state.repeat == "all":
-            self.state.current_index = 0
-        else:
+        # R587: the queue is already in play order (shuffle reorders it once),
+        # so the rule is index arithmetic shared with the browser.  The old
+        # random.choice here is why the same "shuffle" button behaved
+        # differently on the web, on Android and on a DLNA renderer.
+        target = next_index(self.state.current_index, len(self.state.queue), self.state.repeat)
+        if target < 0:
             return None
-        self.state.current_track_id = self.state.queue[self.state.current_index].track_id
-        return self.state.queue[self.state.current_index]
+        self.state.current_index = target
+        self.state.current_track_id = self.state.queue[target].track_id
+        return self.state.queue[target]
 
     def previous_track(self) -> Optional[TrackRef]:
         if not self.state.queue:
             return None
-        if self.state.current_index > 0:
-            self.state.current_index -= 1
-        elif self.state.repeat == "all":
-            self.state.current_index = len(self.state.queue) - 1
-        else:
+        target = previous_index(self.state.current_index, len(self.state.queue), self.state.repeat)
+        if target < 0:
             return None
-        self.state.current_track_id = self.state.queue[self.state.current_index].track_id
-        return self.state.queue[self.state.current_index]
+        self.state.current_index = target
+        self.state.current_track_id = self.state.queue[target].track_id
+        return self.state.queue[target]
 
 
 def _safe_position(value: Any) -> float:

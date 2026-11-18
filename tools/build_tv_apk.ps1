@@ -127,8 +127,19 @@ if (-not $apksigner -or -not $aapt) {
 Push-Location -LiteralPath $androidRoot
 try {
     $gradleArguments = @("--console=plain") + @($variants | ForEach-Object { $_.Task })
-    & .\gradlew.bat @gradleArguments
-    if ($LASTEXITCODE -ne 0) { throw "TV build failed with exit code $LASTEXITCODE." }
+    # Same stderr trap as build_android_release.ps1: javac's deprecation notes are
+    # written to stderr and become a terminating NativeCommandError under
+    # $ErrorActionPreference = "Stop", aborting a build that actually succeeded.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & .\gradlew.bat @gradleArguments
+        $gradleExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($gradleExit -ne 0) { throw "TV build failed with exit code $gradleExit." }
 }
 finally {
     Pop-Location

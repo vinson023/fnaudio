@@ -709,3 +709,38 @@ test("the queue stops at the last track instead of looping it", async ({ page })
   await expect(page.locator("#nowTitle")).toContainText(lastTitle.trim());
 });
 
+test("a saved view restores its filter after a reload and can be removed", async ({ page }) => {
+  // R585: the library could only ever show "what I am looking at right now".
+  // The record lives on the server, so the round trip that matters is
+  // save -> reload -> apply -> delete, not a client-side shortcut.
+  await loadLibrary(page, { width: 1440, height: 900 });
+
+  await page.locator('#tableHead [data-track-sort="artist"]').click();
+  expect(await page.evaluate(() => localStorage.getItem("fnaudio.sortKey.v1"))).toBe("artist");
+
+  await page.locator("#saveViewBtn").click();
+  await expect(page.locator("#savedViewDialog")).toBeVisible();
+  await page.locator("#savedViewNameInput").fill("按歌手");
+  await page.locator("#confirmSaveViewBtn").click();
+  await expect(page.locator("#savedViewDialog")).toBeHidden();
+  await expect(page.locator("#savedViewNav [data-saved-view]")).toHaveCount(1);
+  await expect(page.locator("#savedViewNav [data-saved-view]")).toContainText("按歌手");
+
+  // Reload: the list comes back on the default order, so the only way the view
+  // can restore "artist" is by reading its criteria from the server.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator(".track")).toHaveCount(4);
+  await expect(page.locator("#savedViewNav [data-saved-view]")).toHaveCount(1);
+  await page.locator('#tableHead [data-track-sort="title"]').click();
+  expect(await page.evaluate(() => localStorage.getItem("fnaudio.sortKey.v1"))).toBe("title");
+
+  await page.locator("#savedViewNav [data-saved-view]").click();
+  expect(await page.evaluate(() => localStorage.getItem("fnaudio.sortKey.v1"))).toBe("artist");
+  await expect(page.locator("#viewTitle")).toHaveText("全部音乐");
+
+  // Deleting is the only way to retire one: a saved view that cannot be removed
+  // would sit in the sidebar for ever.
+  await page.locator("#savedViewNav [data-remove-saved-view]").click();
+  await expect(page.locator("#savedViewNav [data-saved-view]")).toHaveCount(0);
+  await expect(page.locator("#savedViewNav")).toBeHidden();
+});

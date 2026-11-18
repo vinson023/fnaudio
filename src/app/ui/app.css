@@ -103,6 +103,12 @@ button,input,select{font:inherit}button{cursor:pointer}
 }
 /* Playlist and refined control icons */
 #playlistNav{display:contents}.new-playlist{border:1px dashed var(--line);margin-top:6px}.playlist-nav-item b{min-width:24px;text-align:right}
+#savedViewNav{display:flex;flex-direction:column;gap:2px}
+.saved-view-row{display:flex;align-items:center;gap:2px}
+.saved-view-row .saved-view-item{flex:1;min-width:0}
+.saved-view-row .saved-view-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.saved-view-remove{width:24px;height:24px;min-width:24px;font-size:16px;line-height:1;color:var(--muted);opacity:0;transition:opacity .15s}
+.saved-view-row:hover .saved-view-remove,.saved-view-row:focus-within .saved-view-remove{opacity:1}
 .track-actions button{border:0;background:transparent;display:grid;place-items:center;line-height:1}.action-button,.device-button{width:38px!important;height:38px!important;min-width:38px;display:grid!important;place-items:center;padding:0!important;}
 .playlist-choices{display:grid;gap:8px;margin:12px 0}.playlist-choice{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;text-align:left;width:100%}.playlist-choice small{color:var(--muted)}.playlist-choice:disabled{opacity:.55;cursor:default}
 @media(max-width:760px){.player-actions #repeatBtn,.player-actions #shuffleBtn,.device-button{width:38px!important;height:38px!important;flex-basis:38px!important}
@@ -220,13 +226,24 @@ body{background:var(--fn-bg)!important;color:var(--fn-text)!important;overflow:h
  * blue play button, black prev/next on a dark bar.  The base sheet has to be
  * able to paint them on its own. */
 .player-button svg{display:block;width:20px;height:20px;fill:currentColor;stroke:none}
-.progress{display:flex;align-items:center;gap:9px;font-size:11px;min-width:0;color:var(--ui-muted)!important}.progress input{width:100%;min-width:0;accent-color:var(--ui-accent)!important}
+.progress{display:flex;align-items:center;gap:9px;font-size:11px;min-width:0;color:var(--ui-muted)!important}
+/* R596: an output that declares a fixed volume disables the slider rather than
+ * accepting a drag that changes nothing.  Disabled, not hidden: the control keeps
+ * its place so the player row does not change width when the target changes. */
+.volume-slider:disabled{opacity:.45;cursor:not-allowed}
+.volume-button.is-fixed-volume{color:var(--ui-muted)!important;opacity:.65}.progress input{width:100%;min-width:0;accent-color:var(--ui-accent)!important}
 /* Phone seek rail, same reason as the transport glyphs above: without the theme
  * layer the input fell back to the native control, which paints a full-width
  * #efefef track with a fat solid thumb on a dark bar.  Mirroring the rail here
  * keeps the phone player readable even when only the base sheet applies. */
 @media(max-width:760px){
-  .progress input{-webkit-appearance:none!important;appearance:none!important;height:8px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important}
+  /* R594: the input is the hit area, the track is what you see.  It used to be
+   * 8px tall around a 4px rail -- a 2:1 ratio, i.e. a fingertip target on a
+   * phone.  Audio Station gives the same control a 52dp container around a
+   * 4dp track (13:1); 38px is the whole progress row here, so it costs no
+   * layout change at all (44+38+50 plus the two 2px gaps is exactly the
+   * 136px the phone player already reserves). */
+  .progress input{-webkit-appearance:none!important;appearance:none!important;height:38px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important}
   .progress input::-webkit-slider-runnable-track{height:4px!important;border:0!important;border-radius:0!important;background:linear-gradient(to right,var(--ui-accent) var(--seek-fill,0%),var(--ui-line) var(--seek-fill,0%))!important}
   .progress input::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:6px!important;height:6px!important;margin-top:-1px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important;box-shadow:none!important}
   .progress input::-moz-range-track{height:4px!important;border:0!important;background:var(--ui-line)!important}
@@ -271,7 +288,7 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 
 /* Final mobile centering fix */
 @media(max-width:760px){
-  .player{grid-template-columns:1fr!important;grid-template-rows:44px 24px 50px!important;height:136px!important;padding:8px 12px 10px!important;position:fixed!important}
+  .player{grid-template-columns:1fr!important;grid-template-rows:44px 38px 50px!important;height:136px!important;padding:8px 12px 10px!important;position:fixed!important}
   .now-playing{display:flex;min-width:0;gap:9px!important;grid-column:1!important;grid-row:1!important}
   .progress{grid-column:1!important;grid-row:2!important;}
   .transport{grid-column:1!important;grid-row:3!important;}
@@ -1488,3 +1505,28 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .shell,.content{height:100%!important}
   .mobile-settings-nav-item{display:flex!important}
 }
+
+/* R594: the album wall.  Rows are good at carrying metadata (artist, release
+ * date, track count); a grid is what you want when you are looking for a cover.
+ * Audio Station offers both from one list (`FileSongListAdapter` picks a view
+ * type per row), so the toggle lives in the album list's own header and the
+ * choice is remembered per device. */
+.album-layout-bar{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--ui-line);color:var(--ui-muted);font-size:12px}
+.album-layout-bar>span{margin-right:auto}
+.album-layout-toggle{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid transparent;border-radius:6px;color:var(--ui-muted);background:transparent;cursor:pointer}
+.album-layout-toggle svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* Hover arms are scoped to hover-capable pointers on purpose: Android WebView keeps
+ * :hover on the last tapped element, so an unscoped arm leaves a tinted square
+ * behind for the rest of the session (the rule the touch-residue guard enforces). */
+@media(hover:hover){
+  .album-layout-toggle:hover{color:var(--ui-accent);background:var(--ui-hover)}
+}
+.album-layout-toggle.is-active{color:var(--ui-accent);border-color:var(--ui-border);background:var(--ui-selected)}
+.album-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:16px;padding:14px}
+.album-tile{display:flex;flex-direction:column;gap:6px;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;border-radius:8px}
+.album-tile .group-icon{width:100%;height:auto;aspect-ratio:1;border-radius:8px;font-size:34px}
+.album-tile.is-selected .group-icon{outline:2px solid var(--ui-accent);outline-offset:-2px}
+@media(hover:hover){.album-tile:hover .group-icon{outline:2px solid var(--ui-accent);outline-offset:-2px}}
+.album-tile-name{min-width:0;overflow:hidden;color:var(--ui-text);font-size:13px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.album-tile-artist{min-width:0;overflow:hidden;color:var(--ui-muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:760px){.album-grid{grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:12px;padding:10px}.album-tile .group-icon{font-size:28px}}

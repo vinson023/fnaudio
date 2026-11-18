@@ -121,6 +121,7 @@ function setup(overrides) {
     functionSource("localPlaybackDuration"),
     functionSource("currentSeconds"),
     functionSource("seekDuration"),
+    functionSource("seekPositionIsSettled"),
     functionSource("isPlayingNow"),
     functionSource("localIsPlayingNow"),
     commitQueueSource,

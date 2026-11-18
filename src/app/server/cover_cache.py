@@ -81,6 +81,16 @@ _MEMORY_CACHE_LIMIT = 96 * 1024 * 1024
 _MEMORY_CACHE_ENTRY_LIMIT = 4096
 _ASSET_ALIAS_CACHE = OrderedDict()
 _ASSET_ALIAS_CACHE_LIMIT = 4096
+# Every track of one album usually carries the same artwork bytes, and the
+# rendered JPEG is already stored once under its own content hash.  What was
+# still paid per track was the *render*: the alias of a not-yet-warmed track
+# misses, so the same image goes through the thumbnailer again.  This maps
+# (cache dir, artwork digest, size) to the asset that digest already rendered,
+# which lets the second and later tracks of an album adopt that render instead
+# of repeating it.  It is keyed by content, never by album name, so it can only
+# ever point at bytes that are pixel-identical to the input.
+_ARTWORK_ASSET_CACHE = OrderedDict()
+_ARTWORK_ASSET_CACHE_LIMIT = 4096
 _MISSING_MARKER_CACHE = OrderedDict()
 _MISSING_MARKER_CACHE_LIMIT = 4096
 # A media file's identity does not change when a user later drops a sidecar
@@ -448,7 +458,72 @@ def _forget_advertising_asset(asset_key):
         stale = [key for key, value in _ASSET_ALIAS_CACHE.items() if value == asset_key]
         for key in stale:
             _ASSET_ALIAS_CACHE.pop(key, None)
+        shared = [key for key, value in _ARTWORK_ASSET_CACHE.items() if value == asset_key]
+        for key in shared:
+            _ARTWORK_ASSET_CACHE.pop(key, None)
     return len(stale)
+
+
+def _artwork_asset_key(cache_dir, digest, size):
+    """Return the asset one artwork digest already rendered, or an empty string.
+
+    A hit is only a hint: the caller re-reads through ``thumbnail_asset_bytes``,
+    which is the same validated read every other asset request uses, so a sweep
+    that reclaimed the file turns this into a miss rather than a wrong answer.
+    """
+    if not digest or not size:
+        return ""
+    key = (cache_dir, digest, int(size))
+    with _MEMORY_CACHE_LOCK:
+        asset_key = _ARTWORK_ASSET_CACHE.get(key)
+        if asset_key:
+            _ARTWORK_ASSET_CACHE.move_to_end(key)
+        return asset_key or ""
+
+
+def _remember_artwork_asset(cache_dir, digest, size, asset_key):
+    if not digest or not size or not asset_key:
+        return
+    key = (cache_dir, digest, int(size))
+    with _MEMORY_CACHE_LOCK:
+        _ARTWORK_ASSET_CACHE[key] = asset_key
+        _ARTWORK_ASSET_CACHE.move_to_end(key)
+        while len(_ARTWORK_ASSET_CACHE) > _ARTWORK_ASSET_CACHE_LIMIT:
+            _ARTWORK_ASSET_CACHE.popitem(last=False)
+
+
+def _adopt_artwork_asset(alias, missing, digest, config, size, memory_key):
+    """Serve one track from a render another track already paid for.
+
+    Returns the ``(mime, body)`` pair to answer with, or ``None`` to let the
+    caller render.  The alias is written before the value is returned so the
+    next process start can find this track without the in-memory hint, and a
+    failed alias write is not fatal: the bytes in hand are already correct, the
+    same rule the render path applies to every cache write.
+    """
+    asset_key = _artwork_asset_key(_cache_directory(config), digest, size)
+    if not asset_key:
+        return None
+    value = thumbnail_asset_bytes(config, asset_key, size)
+    if value is None:
+        return None
+    try:
+        _atomic_bytes(alias, asset_key.encode("ascii"), config, durable=False)
+    except OSError:
+        pass
+    else:
+        with _MEMORY_CACHE_LOCK:
+            _ASSET_ALIAS_CACHE[alias] = asset_key
+            _ASSET_ALIAS_CACHE.move_to_end(alias)
+            while len(_ASSET_ALIAS_CACHE) > _ASSET_ALIAS_CACHE_LIMIT:
+                _ASSET_ALIAS_CACHE.popitem(last=False)
+    try:
+        if os.path.exists(missing):
+            os.unlink(missing)
+    except OSError:
+        pass
+    _memory_put(memory_key, value)
+    return value
 
 
 def thumbnail_asset_bytes(config, asset_key, size=160):
@@ -841,6 +916,7 @@ def clear_memory_cache():
     with _MEMORY_CACHE_LOCK:
         _MEMORY_CACHE.clear()
         _ASSET_ALIAS_CACHE.clear()
+        _ARTWORK_ASSET_CACHE.clear()
         _MISSING_MARKER_CACHE.clear()
         _MEMORY_CACHE_BYTES = 0
 
@@ -993,6 +1069,8 @@ def thumbnail_prewarm_status():
         memory_entry_limit = _safe_pressure_counter(_MEMORY_CACHE_ENTRY_LIMIT)
         alias_entries = _safe_sequence_length(_ASSET_ALIAS_CACHE)
         alias_limit = _safe_pressure_counter(_ASSET_ALIAS_CACHE_LIMIT)
+        artwork_entries = _safe_sequence_length(_ARTWORK_ASSET_CACHE)
+        artwork_limit = _safe_pressure_counter(_ARTWORK_ASSET_CACHE_LIMIT)
         return {
             "memory_cache": {
                 "entries": memory_entries,
@@ -1001,6 +1079,10 @@ def thumbnail_prewarm_status():
                 "limit_bytes": memory_limit,
                 "alias_entries": min(alias_entries, alias_limit),
                 "alias_limit": alias_limit,
+                # Renders skipped because another track already produced the
+                # same artwork; see docs/LIBRARY_VIEWS_PLAN.md, P3.
+                "artwork_entries": min(artwork_entries, artwork_limit),
+                "artwork_limit": artwork_limit,
             },
             "interactive": {
                 "workers": sum(1 for state in interactive if _safe_state_get(state, "running")),
@@ -1335,12 +1417,19 @@ def cached_thumbnail_for_item(item, config, size, cover_reader, ffmpeg_slot_time
                 while len(_MISSING_MARKER_CACHE) > _MISSING_MARKER_CACHE_LIMIT:
                     _MISSING_MARKER_CACHE.popitem(last=False)
             return None, None
+        artwork_digest = hashlib.sha256(body).hexdigest()
+        shared_value = _adopt_artwork_asset(
+            alias, missing, artwork_digest, config, size, memory_key
+        )
+        if shared_value is not None:
+            return shared_value
         thumbnail = _thumbnail_bytes(body, config, size, ffmpeg_slot_timeout)
         if cancel_event is not None and cancel_event.is_set():
             return None, None
         if not thumbnail:
             return mime, body
-        asset_key = hashlib.sha256(body).hexdigest()
+        asset_key = artwork_digest
+        _remember_artwork_asset(_cache_directory(config), artwork_digest, size, asset_key)
         asset_root, asset_target = _asset_path(config, size, asset_key)
         try:
             if not os.path.isfile(asset_target):

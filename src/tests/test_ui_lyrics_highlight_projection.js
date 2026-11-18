@@ -37,6 +37,14 @@ function functionSource(name) {
   return match[0];
 }
 
+// R591 added a scroll lock whose window lives in a module-level const, so the
+// sandbox has to carry the declaration as well as the function that reads it.
+function constSource(name) {
+  const match = app.match(new RegExp("^const " + name + " = \\d+;", "m"));
+  assert.ok(match, `const ${name} must stay extractable for the lyric projection regression`);
+  return match[0];
+}
+
 function tracked(initial) {
   const node = { writes: [] };
   for (const key of Object.keys(initial)) {
@@ -81,6 +89,11 @@ function setup(options = {}) {
       add(name) { box.writes.push(`class+:${name}`); },
     },
     scrollTo(position) { box.writes.push(`scrollTo(${Math.round(position.top)},${position.behavior})`); },
+    // R591: the projection attaches scroll-intent listeners once.  They are kept
+    // off `writes` so "a hidden panel was not touched" stays a clean assertion.
+    dataset: {},
+    listeners: [],
+    addEventListener(type, handler) { box.listeners.push({ type, handler }); },
   };
   const view = tracked({ hidden: options.hidden === true });
   const calls = [];
@@ -93,10 +106,16 @@ function setup(options = {}) {
     lyricsPollAttempts: 0,
     queue: [{ id: "t1", title: "Song", artist: "Singer" }],
     index: 0,
+    lyricsUserScrollAt: 0,
   };
-  const clock = { now: options.now === undefined ? 25 : options.now };
+  const clock = { now: options.now === undefined ? 25 : options.now, ms: 1000000 };
+  // The scroll lock compares wall-clock milliseconds; a real Date would make the
+  // "three seconds have passed" case depend on how long the test takes to run.
+  class FakeDate extends Date {
+    static now() { return clock.ms; }
+  }
   const context = {
-    state, calls, nodes, box, view, clock,
+    state, calls, nodes, box, view, clock, Date: FakeDate,
     String, Number, Boolean, Math, Array, Object, JSON, Promise, Error, Set, RegExp, setTimeout, clearTimeout,
     $(id) {
       if (id === "lyricsLines") return box;
@@ -138,6 +157,8 @@ function setup(options = {}) {
   vm.runInContext([
     functionSource("showLyricsMessage"),
     functionSource("renderLyrics"),
+    functionSource("ensureLyricScrollIntentTracking"),
+    constSource("LYRICS_SCROLL_LOCK_MS"),
     functionSource("updateLyricHighlight"),
     functionSource("cancelLyricsPoll"),
     functionSource("scheduleLyricsPoll"),
@@ -197,8 +218,43 @@ async function settle() {
   const due = setup({ now: 25 });
   due.updateLyricHighlight();
   assert.deepEqual(activeToggles(due), ["1:toggle(active,true)"], "the second line is the one due at 25 s");
-  assert.equal(scrollWrites(due).length, 1, "and it is scrolled into view once");
+  // R591: line 2 sits at 120 px in a 300 px panel, i.e. inside the middle band,
+  // so the projection leaves the panel alone.  Its centring target would have
+  // clamped to 0 anyway -- the old code issued a scroll that could not move.
+  assert.equal(scrollWrites(due).length, 0,
+    "a line already in the middle of the panel must not restart the scroll animation");
   assert.equal(scans(due), 1, "one projection is one scan of the line nodes");
+
+  // 3b. A cue below the visible band still gets centred, exactly once.
+  const many = Array.from({ length: 12 }, (_, index) => ({ time: 10 * (index + 1), text: "line " + index }));
+  const far = setup({ now: 100, lines: many });
+  far.updateLyricHighlight();
+  assert.equal(scrollWrites(far).length, 1,
+    "line 10 at 1080 px is outside the panel, so it must be brought into view");
+  assert.ok(scrollWrites(far)[0].includes("smooth"), "and it must stay an animated scroll");
+
+  // 3c. A manual scroll wins for three seconds: the highlight keeps moving, the
+  //     panel does not.  Audio Station uses the same rule so a reader can look
+  //     ahead without the next line yanking the view back.
+  const locked = setup({ now: 25, lines: many });
+  locked.updateLyricHighlight();
+  assert.ok(locked.box.listeners.some(entry => entry.type === "wheel"),
+    "the panel must track scroll intent, or it cannot tell a reader from a line change");
+  locked.box.listeners.find(entry => entry.type === "wheel").handler();
+  locked.clock.now = 35;
+  locked.box.writes.length = 0;
+  locked.nodes.forEach(node => { node.writes.length = 0; });
+  locked.updateLyricHighlight();
+  assert.deepEqual(scrollWrites(locked), [],
+    "the reader just scrolled, so the panel must stay where they put it");
+  assert.deepEqual(activeToggles(locked), ["2:toggle(active,true)"],
+    "the highlight itself still follows the song while the panel is held");
+  locked.clock.ms += 3001;
+  locked.clock.now = 45;
+  locked.box.writes.length = 0;
+  locked.updateLyricHighlight();
+  assert.equal(scrollWrites(locked).length, 1,
+    "three seconds after the last manual scroll the panel follows again");
 
   // 4. Defect A: the three polling surfaces funnel here while the active line changes
   //    every few seconds, so a repeated projection of the same line must be free.

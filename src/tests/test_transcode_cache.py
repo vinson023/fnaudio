@@ -387,7 +387,10 @@ class TranscodeCacheTests(unittest.TestCase):
         with mock.patch.object(transcode.subprocess, "run", real_run_marker), \
              mock.patch.object(transcode.subprocess, "Popen", return_value=process), \
              mock.patch.object(transcode.os, "killpg", create=True) as killpg:
-            with self.assertRaisesRegex(transcode.ResourceLimitError, "diagnostic output"):
+            # R598: the diagnostic limit carries its own code instead of being a
+            # bare ResourceLimitError, so the caller can tell it apart from a busy
+            # worker lane (which shares the same exception type).
+            with self.assertRaisesRegex(transcode.TranscodeError, "diagnostic output"):
                 transcode._run_transcode_process(
                     ["ffmpeg"], stdout=transcode.subprocess.DEVNULL, stderr=errors,
                     timeout=1, env={},
@@ -410,7 +413,10 @@ class TranscodeCacheTests(unittest.TestCase):
         real_run_marker.__module__ = "subprocess"
         with mock.patch.object(transcode.subprocess, "run", real_run_marker), \
              mock.patch.object(transcode.subprocess, "Popen", return_value=process):
-            with self.assertRaisesRegex(transcode.ResourceLimitError, "diagnostic output"):
+            # R598: the diagnostic limit carries its own code instead of being a
+            # bare ResourceLimitError, so the caller can tell it apart from a busy
+            # worker lane (which shares the same exception type).
+            with self.assertRaisesRegex(transcode.TranscodeError, "diagnostic output"):
                 transcode._run_transcode_process(
                     ["ffmpeg"], stdout=transcode.subprocess.DEVNULL, stderr=errors,
                     timeout=1, env={},
@@ -426,7 +432,10 @@ class TranscodeCacheTests(unittest.TestCase):
             def too_noisy(command, **_kwargs):
                 with open(command[-1], "wb") as fh:
                     fh.write(b"partial")
-                raise transcode.ResourceLimitError("transcode diagnostic output is too large")
+                raise transcode.TranscodeError(
+                    transcode.CODE_DIAGNOSTIC_TOO_LARGE,
+                    "transcode diagnostic output is too large",
+                )
 
             with mock.patch.object(transcode, "find_ffmpeg", return_value="ffmpeg"), \
                  mock.patch.object(transcode, "_run_transcode_process", side_effect=too_noisy), \

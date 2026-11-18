@@ -61,11 +61,51 @@ class MetadataTextTests(unittest.TestCase):
         self.assertLessEqual(len(display_name("/music/" + "x" * (MAX_TAG_TEXT + 100) + ".flac")), MAX_TAG_TEXT)
 
     def test_probe_aliases_are_normalized_without_ffprobe_or_file_io(self):
+        # R591: ``album_artist`` is its own field now.  It used to be folded into
+        # ``artist``'s alias list, so the key was never produced and the album
+        # grouping's ``COALESCE(album_artist, artist)`` always fell through to a
+        # track artist.  ``artist`` still borrows the album artist when the file
+        # carries no track artist, which is why the first case has both keys.
         self.assertEqual(
             normalize_probe_tags({"TIT2": "Title", "album_artist": "Artist", "TRCK": "04/10", "ignored": "x"}),
-            {"title": "Title", "artist": "Artist", "track_no": 4},
+            {"title": "Title", "artist": "Artist", "album_artist": "Artist", "track_no": 4},
         )
 
+    def test_a_compilation_keeps_album_artist_apart_from_the_track_artist(self):
+        tags = normalize_probe_tags({
+            "artist": "周杰伦", "album_artist": "群星", "album": "合辑",
+            "track": "3/12", "disc": "2/2", "date": "2019-08-30", "comment": "hi",
+        })
+        self.assertEqual(tags["artist"], "周杰伦")
+        self.assertEqual(tags["album_artist"], "群星", "the album artist must not be lost")
+        self.assertEqual(tags["track_no"], 3)
+        self.assertEqual(tags["disc_no"], 2)
+        # ``date`` keeps the tag text so a write-back round-trip does not
+        # truncate it; ``year`` is the numeric projection the column sorts on.
+        self.assertEqual(tags["date"], "2019-08-30")
+        self.assertEqual(tags["year"], 2019)
+        self.assertEqual(tags["comment"], "hi")
+
+    def test_a_file_tagged_only_with_album_artist_still_names_an_artist(self):
+        # The degenerate case the old folding handled by accident: with no
+        # ARTIST at all, ``artist`` has to keep showing something.
+        self.assertEqual(
+            normalize_probe_tags({"ALBUMARTIST": "群星"}),
+            {"album_artist": "群星", "artist": "群星"},
+        )
+
+    def test_disc_and_year_take_the_shapes_taggers_actually_write(self):
+        self.assertEqual(normalize_probe_tags({"disc": "1"})["disc_no"], 1)
+        self.assertEqual(normalize_probe_tags({"DISKNUMBER": "03"})["disc_no"], 3)
+        self.assertEqual(normalize_probe_tags({"disc": "2/3"})["disc_no"], 2)
+        self.assertEqual(normalize_probe_tags({"date": "2020"})["year"], 2020)
+        self.assertEqual(normalize_probe_tags({"date": "2020-05-01"})["year"], 2020)
+        self.assertEqual(normalize_probe_tags({"TDRC": "2020-05-01T00:00:00"})["year"], 2020)
+        self.assertEqual(normalize_probe_tags({"©day": "1999"})["year"], 1999)
+        # Not a year, so not stored: the UI shows nothing rather than a guess.
+        self.assertNotIn("year", normalize_probe_tags({"date": "not a date"}))
+        self.assertNotIn("year", normalize_probe_tags({"date": "99"}))
+        self.assertNotIn("disc_no", normalize_probe_tags({"disc": "0"}))
 
 if __name__ == "__main__":
     unittest.main()

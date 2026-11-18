@@ -89,6 +89,9 @@ public final class PlaybackService extends MediaSessionService {
     public static final String EXTRA_SHUFFLE = "shuffle";
     public static final String EXTRA_SESSION_GENERATION = "session_generation";
     public static final String EXTRA_ENGINE_EPOCH = "engine_epoch";
+    // R588: the sleep timer arrives as an absolute epoch deadline, not a delay.
+    public static final String ACTION_SLEEP_TIMER = "com.fnaudio.client.playback.SLEEP_TIMER";
+    public static final String EXTRA_SLEEP_TIMER_DEADLINE_MS = "sleep_timer_deadline_ms";
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     // The WebView receives server-sent state while it is active. Native
@@ -113,6 +116,14 @@ public final class PlaybackService extends MediaSessionService {
     private static final long MAX_REMOTE_DURATION_MS = 24L * 60L * 60L * 1000L;
     private static final long MAX_PERSISTED_SESSION_AGE_MS = 7L * 24L * 60L * 60L * 1000L;
     private static final int PERSISTED_SESSION_SCHEMA = 1;
+    // R588: the sleep timer has to outlive the WebView that set it. A hidden
+    // WebView's timers are throttled (and a reclaimed one loses them entirely)
+    // while the decoder keeps playing, which is exactly the "played all night"
+    // case the feature exists for -- so the deadline lives here, in the
+    // foreground service, and is persisted so a process reclaim cannot drop it.
+    private static final String SLEEP_TIMER_PREFS = "fnaudio_sleep_timer";
+    private static final String SLEEP_TIMER_KEY = "deadline_epoch_ms";
+    private static final long MAX_SLEEP_TIMER_MS = 24L * 60L * 60L * 1000L;
 
     private ExoPlayer player;
     private RemotePlaybackPlayer remotePlayer;
@@ -144,6 +155,7 @@ public final class PlaybackService extends MediaSessionService {
     private final Runnable remotePoll = this::pollRemoteStatus;
     private final Runnable remoteEventRetry = this::startRemoteEventStream;
     private final Runnable remoteRestore = this::restorePersistedRemoteSession;
+    private final Runnable sleepTimerFire = this::fireSleepTimer;
 
     @Override
     public void onCreate() {
@@ -228,6 +240,7 @@ public final class PlaybackService extends MediaSessionService {
             }
         }
         mainHandler.post(remoteRestore);
+        restoreSleepTimer();
     }
 
     @Override
@@ -242,6 +255,9 @@ public final class PlaybackService extends MediaSessionService {
             if (ACTION_REMOTE_ENABLE.equals(action)) enableRemoteMode(intent);
             else if (ACTION_REMOTE_UPDATE.equals(action)) updateRemoteMode(intent);
             else if (ACTION_LOCAL_ENABLE.equals(action)) enableLocalMode();
+            else if (ACTION_SLEEP_TIMER.equals(action)) {
+                armSleepTimer(intent.getLongExtra(EXTRA_SLEEP_TIMER_DEADLINE_MS, 0L));
+            }
             else if (action != null) Log.w(TAG, "service_start ignored: unknown_action");
         }
         // A remote renderer has no local decoder to keep the service alive.
@@ -283,6 +299,58 @@ public final class PlaybackService extends MediaSessionService {
         super.onTaskRemoved(rootIntent);
     }
 
+    /**
+     * Arms or cancels the sleep timer from an absolute epoch deadline.
+     *
+     * Anything already in the past is a cancel, and anything further out than a
+     * day is a mis-typed number rather than a plan, so both collapse to "no
+     * timer" instead of posting a handler for a week.
+     */
+    private void armSleepTimer(long deadlineMs) {
+        mainHandler.removeCallbacks(sleepTimerFire);
+        long now = System.currentTimeMillis();
+        long deadline = deadlineMs;
+        if (deadline <= now || deadline - now > MAX_SLEEP_TIMER_MS) deadline = 0L;
+        persistSleepTimerDeadline(deadline);
+        if (deadline == 0L) {
+            Log.i(TAG, "sleep_timer cleared");
+            return;
+        }
+        Log.i(TAG, "sleep_timer armed");
+        mainHandler.postDelayed(sleepTimerFire, deadline - now);
+    }
+
+    private void fireSleepTimer() {
+        persistSleepTimerDeadline(0L);
+        // Pausing keeps the queue, the current row and the position, so "wake up
+        // and press play" resumes where the listener fell asleep. A remote
+        // renderer is paused by the page, which owns that command channel.
+        if (player != null) player.pause();
+        Log.i(TAG, "sleep_timer fired");
+    }
+
+    private void persistSleepTimerDeadline(long deadlineMs) {
+        try {
+            getSharedPreferences(SLEEP_TIMER_PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putLong(SLEEP_TIMER_KEY, deadlineMs)
+                    .apply();
+        } catch (RuntimeException ignored) {
+            // Persistence only has to survive a process reclaim; failing to write
+            // it must not disarm the timer that is already armed in memory.
+        }
+    }
+
+    private void restoreSleepTimer() {
+        long deadline;
+        try {
+            deadline = getSharedPreferences(SLEEP_TIMER_PREFS, MODE_PRIVATE).getLong(SLEEP_TIMER_KEY, 0L);
+        } catch (RuntimeException ignored) {
+            deadline = 0L;
+        }
+        if (deadline > 0L) armSleepTimer(deadline);
+    }
+
     @Override
     public void onDestroy() {
         destroyed = true;
@@ -296,6 +364,7 @@ public final class PlaybackService extends MediaSessionService {
         mainHandler.removeCallbacks(remotePoll);
         mainHandler.removeCallbacks(remoteEventRetry);
         mainHandler.removeCallbacks(remoteRestore);
+        mainHandler.removeCallbacks(sleepTimerFire);
         cancelRemoteCommandRequests();
         cancelRemoteStatusRequest();
         closeRemoteEventStream();

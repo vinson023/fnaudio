@@ -102,6 +102,11 @@ def parse_cue_structure(lines, fallback_album="", observe_end_stage=None):
     # on `current`, because library.py reads those dicts by key and an extra
     # field would travel out of the parser.
     index01_seen = False
+    # R591: a sheet that carries no INDEX 01 line at all describes no boundaries,
+    # so every track would start at 0.0 and the library would gain N zero-length
+    # rows.  This is a sheet-level fact, not a track field: adding a key to each
+    # track dict would change the parser's published shape for every consumer.
+    has_index = False
     try:
         source_lines = iter(lines or ())
     except TypeError:
@@ -145,7 +150,8 @@ def parse_cue_structure(lines, fallback_album="", observe_end_stage=None):
             if index_line and int(index_line.group(1)) == 1 and not index01_seen:
                 current["start"] = cue_time_seconds(index_line.group(2))
                 index01_seen = True
+                has_index = True
     if current:
         tracks.append(current)
     _attach_track_ends(tracks, observe_end_stage)
-    return {"album": album, "album_artist": album_artist, "tracks": tracks}
+    return {"album": album, "album_artist": album_artist, "tracks": tracks, "has_index": has_index}

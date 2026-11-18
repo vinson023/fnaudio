@@ -1200,8 +1200,15 @@ for (const field of ["page", "pageItems", "pageTotal", "groupRows", "folderRows"
   // appearing without being classified, and stop the loose gate from being migrated by mistake.
   // R554 added the user-state maintenance call and R559 the identity migration:
   // both are state-changing sites, so they require a parsed document like the
-  // other four.
-  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 19,
+  // other four.  R585 added the saved-view read, which is the one *tolerant*
+  // site: a server that predates the route answers 404, and the capability block
+  // is what tells the UI whether the feature exists at all, so a missing body
+  // must leave the list alone rather than be read as "no saved views".
+  // R598 added the transcode-status probe the media-error handler asks for after a
+  // failed load.  It is deliberately tolerant like the saved-view read: no answer
+  // has to leave the old "advance and remember" behaviour intact, so it reads with
+  // `fallback: null` and never requires a parsed document.
+  assert.equal(countOccurrences(app, "fnAudioResponseJsonLoader.read("), 21,
     "every bounded read is enumerated by this round: a new caller has to classify its body too");
   assert.equal(countOccurrences(app, "parsedBody(result.bodyStatus)"), 6,
     "the list and five state-changing sites require a parsed document");

@@ -11,7 +11,12 @@ TRACK_SORT_COLUMNS = {
     "album": "album COLLATE NOCASE",
     "format": "format COLLATE NOCASE",
     "added": "added_ns",
-    "track_no": "CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END",
+    # R591: album order is disc then track.  ``track_sort`` folds the pair into
+    # one integer (see library_write.track_sort_value) because the keyset cursor
+    # compares a single expression; the ``track_no`` fallback keeps rows written
+    # by an older build -- which have ``track_sort = 0`` -- in their old order
+    # until the next scan fills the column in.
+    "track_no": "CASE WHEN track_sort > 0 THEN track_sort WHEN track_no > 0 THEN track_no ELSE 2147483647 END",
 }
 GROUP_TRACK_COLUMNS = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}
 LIBRARY_ITEM_ID_LIMIT = 120

@@ -153,10 +153,11 @@ class LibraryWriteTests(unittest.TestCase):
 
     # Positions of the label columns inside the track_row tuple that
     # prepare_track_persistence returns, matching the INSERT column list in
-    # library.save_items_to_sqlite.
+    # library.save_items_to_sqlite.  R591 inserted disc_no/year/comment/
+    # track_sort after genre, which shifted the three trailing labels by four.
     TRACK_LABEL_SLOTS = {
         "title": 4, "artist": 5, "album": 6, "album_artist": 8,
-        "composer": 9, "genre": 10, "format": 11, "mime": 12,
+        "composer": 9, "genre": 10, "comment": 13, "format": 15, "mime": 16,
     }
 
     def test_prepare_track_persistence_collapses_every_none_label(self):

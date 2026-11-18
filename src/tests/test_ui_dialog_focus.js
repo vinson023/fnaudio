@@ -18,8 +18,10 @@ assert.match(
 );
 
 const dialogIds = [...html.matchAll(/<dialog\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match => match[1]);
-assert.equal(dialogIds.length, 11, "all 11 native dialogs are covered");
+assert.equal(dialogIds.length, 12, "all 12 native dialogs are covered");
 assert.ok(dialogIds.includes("libraryDirDialog"), "the server-side directory browser is focus managed like every other dialog");
+assert.ok(dialogIds.includes("savedViewDialog"), "saving a library view is a dialog like any other");
+assert.match(html, /id="savedViewDialog"[^>]*data-dialog-initial-focus="savedViewNameInput"/);
 assert.match(html, /id="deleteTrackDialog"[^>]*data-dialog-initial-focus="cancelDeleteTrack"/);
 assert.match(html, /id="cancelDeleteTrack"[^>]*type="button"/);
 

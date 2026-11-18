@@ -315,6 +315,69 @@ class ServerTranscodeStreamTests(unittest.TestCase):
         self.assertGreaterEqual(process.waited, 1)
         self.assertEqual(handler.wfile.getvalue(), b"audio")
 
+    def test_transcode_stream_forbids_storage_so_a_prefetch_can_never_be_reused(self):
+        """R600: the ruling that closed "browser prefetch of the next track URL" rests here.
+
+        A stream URL is not a stable byte sequence -- ``start=`` shifts the byte
+        range, so the same URL can mean different bytes at different times --
+        which is why the reply is ``no-store``.  The browser is then forbidden
+        to keep what it fetched, so a second element (or a ``link rel=prefetch``)
+        asking for that URL has to transfer the bytes again: it can only add a
+        second ffmpeg job, never remove the wait for the first byte of the
+        request that actually plays.  Making this response cacheable would
+        re-open the question -- revisit ``docs/PERF_STABILITY_PLAN.md`` §P1-2
+        before changing it.
+        """
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"audio")
+                self.return_code = 0
+
+            def poll(self):
+                return self.return_code
+
+            def wait(self, timeout=None):
+                return self.return_code
+
+        handler = FakeHandler()
+        with mock.patch.object(server, "transcode_command", return_value=(["ffmpeg"], "audio/mpeg", {})), mock.patch.object(
+            server.subprocess, "Popen", return_value=FakeProcess()
+        ):
+            server.Handler.serve_transcoded_media(handler, {"id": "one"}, "mp3")
+
+        headers = {name.lower(): value for name, value in handler.response_headers}
+        self.assertEqual(headers.get("cache-control"), "no-store")
+        self.assertNotIn("etag", headers)
+        self.assertNotIn("last-modified", headers)
+
+    def test_file_range_offers_no_validator_so_a_prefetch_cannot_be_reused(self):
+        """R600: the cheap path has the same problem in a quieter form.
+
+        A finished cache file goes out through ``serve_file_range`` with no
+        ``ETag``, no ``Last-Modified`` and no ``Cache-Control``.  With no
+        validator a browser has nothing to revalidate against, so a prefetched
+        response cannot be handed to the element that plays the track; the
+        second request pays for the bytes again.  Adding a validator here is a
+        legitimate change on its own merits -- but it changes the premise of
+        the P1-2 ruling, so revisit that ruling rather than deleting this
+        assertion.
+        """
+        handler = FakeHandler()
+        with tempfile.NamedTemporaryFile(delete=False) as fh:
+            fh.write(b"abcdef")
+            path = fh.name
+        try:
+            server.Handler.serve_file_range(handler, path, "audio/mpeg")
+        finally:
+            os.unlink(path)
+
+        headers = {name.lower(): value for name, value in handler.response_headers}
+        self.assertEqual(headers.get("content-type"), "audio/mpeg")
+        self.assertNotIn("cache-control", headers)
+        self.assertNotIn("etag", headers)
+        self.assertNotIn("last-modified", headers)
+
 
 if __name__ == "__main__":
     unittest.main()

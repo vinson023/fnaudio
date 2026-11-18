@@ -157,6 +157,18 @@ def ensure_state_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_playlist_tracks_order ON playlist_tracks(playlist_id, position);
+        -- Saved library views (R585): the filter behind a one-click place such as
+        -- "最近添加的 DSD". Kept beside playlists because both are user state that
+        -- must survive an index rebuild; the criteria are validated by
+        -- library_saved_view_policy before they are ever written here.
+        CREATE TABLE IF NOT EXISTS saved_views (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            criteria TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_views_updated ON saved_views(updated_at DESC, id ASC);
         """
     )
     # A database created before this column existed keeps its old rows and reads

@@ -99,6 +99,9 @@
        <button class="nav-item" type="button" data-view="favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5a5 5 0 0 0-8 1 5 5 0 0 0-8-1c-6 6 8 16 8 16S26 11 20 5Z"/></svg> <span>收藏歌曲</span><b id="favoriteCount">0</b></button>
        <button class="nav-item" type="button" data-view="queue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18M3 11h18M3 17h10m4-2 4 3-4 3Z"/></svg> <span>当前队列</span><b id="queueCount">0</b></button>
       <div id="playlistNav"></div>
+      <div class="nav-title secondary" id="savedViewTitle" hidden>我的视图</div>
+      <div id="savedViewNav"></div>
+      <button class="nav-item new-playlist" id="saveViewBtn" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M17 14v6M14 17h6"/></svg><span>保存当前视图</span></button>
       <button class="nav-item new-playlist" id="newPlaylistBtn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>新建播放列表</span></button>
       </div>
       <div class="sidebar-settings">
@@ -187,6 +190,8 @@
               <p class="dialog-help" id="folderPathText">安装完成后，请在这里选择音乐目录。选择后 fnOS 会自动授权，返回路径后再保存设置。</p>
               <div id="libraryPathList" class="library-path-list"></div>
               <div class="library-path-picker"><button class="secondary-button add-path-button" id="chooseLibraryPathBtn" type="button">+ 添加目录</button><span class="settings-inline-feedback">可浏览本机盘符与已挂载的共享目录</span></div>
+              <div class="metadata-settings-grid"><label><span>CUE 与歌词文本编码</span><select id="libraryTextEncoding" aria-label="CUE 与歌词文本编码"><option value="">自动检测</option><option value="utf-8">UTF-8</option><option value="gb18030">GB18030 / GBK（简体中文）</option><option value="big5">Big5（繁体中文）</option><option value="shift_jis">Shift-JIS（日文）</option></select></label></div>
+              <p class="dialog-help">自动检测对 UTF-8 是可靠的，但在 GBK 与 Big5 之间只能靠字面推断。整库是繁体或日文时请在这里指定；改动后需要重新扫描，CUE 曲目才会按新编码重建，`.lrc` 歌词则立即生效。</p>
               <p class="settings-pane-status" id="librarySettingsStatus" aria-live="polite"></p>
             </div>
             <div class="settings-group">
@@ -198,6 +203,12 @@
               <div class="settings-group-head"><h3>播放输出</h3><span class="settings-badge is-live">立即生效</span></div>
               <p class="dialog-help">选择输出目标与 MP3 转码方式，点击后立即生效，不需要保存。</p>
               <div class="settings-device-controls" id="playbackDeviceControls"></div>
+            </div>
+            <div class="settings-group" data-settings-block="playback-sleep">
+              <div class="settings-group-head"><h3>睡眠定时</h3><span class="settings-badge is-live">立即生效</span></div>
+              <p class="dialog-help">到点后暂停播放，队列与进度都保留。定时按实际时间计算：切到后台、锁屏或重开应用都照样生效。</p>
+              <div class="settings-device-controls" id="sleepTimerControls"></div>
+              <p class="dialog-help" id="sleepTimerStatus" aria-live="polite"></p>
             </div>
             <div class="settings-group" data-settings-block="playback-identity">
               <div class="settings-group-head"><h3>设备身份</h3><span class="settings-badge is-save">需保存</span></div>
@@ -340,6 +351,7 @@
   </dialog>
   <dialog id="libraryDirDialog" aria-labelledby="libraryDirDialogTitle"><div class="dialog-head"><h2 id="libraryDirDialogTitle">选择音乐目录</h2><button class="icon-button dialog-close-button" id="closeLibraryDirDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help" id="libraryDirPath">正在读取目录...</p><div class="library-dir-toolbar"><button class="secondary-button" id="libraryDirUpBtn" type="button">上一级</button><button class="secondary-button" id="libraryDirAddBtn" type="button">添加当前目录</button></div><div class="library-dir-list" id="libraryDirList" role="list"></div><p class="settings-pane-status" id="libraryDirStatus" aria-live="polite"></p></dialog>
   <dialog id="dlnaDiagnosticsDialog" aria-labelledby="dlnaDiagnosticsDialogTitle"><div class="dialog-head"><h2 id="dlnaDiagnosticsDialogTitle">DLNA 兼容性记录</h2><button class="icon-button dialog-close-button" id="closeDlnaDiagnosticsDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help" id="dlnaDiagnosticsSummary"></p><div class="diagnostics-list" id="dlnaDiagnosticsList"></div><button class="secondary-button" id="refreshDlnaDiagnosticsBtn" type="button">刷新记录</button></dialog>
+  <dialog id="savedViewDialog" aria-labelledby="savedViewDialogTitle" data-dialog-initial-focus="savedViewNameInput"><div class="dialog-head"><h2 id="savedViewDialogTitle">保存当前视图</h2><button class="icon-button dialog-close-button" id="closeSavedViewDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help">保存当前的分类、排序与搜索，之后可从左侧“我的视图”一键回到这里。同名会覆盖。</p><div class="path-entry single"><input id="savedViewNameInput" maxlength="48" placeholder="例如：最近添加的 DSD"></div><p class="dialog-help" id="savedViewStatus"></p><button class="secondary-button" id="confirmSaveViewBtn" type="button">保存</button></dialog>
   <dialog id="playlistDialog" aria-labelledby="playlistDialogTitle"><div class="dialog-head"><h2 id="playlistDialogTitle">新建播放列表</h2><button class="icon-button dialog-close-button" id="closePlaylistDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><p class="dialog-help" id="playlistDialogHelp">输入一个名字，创建后可从曲目旁边加入歌曲。</p><div class="path-entry single"><input id="playlistNameInput" placeholder="例如：夜晚听"></div><div id="playlistChoices" class="playlist-choices"></div><p class="dialog-help" id="playlistStatus"></p><button class="secondary-button" id="savePlaylistBtn" type="button">保存</button></dialog>
   <dialog id="trackActionDialog" aria-labelledby="trackActionTitle"><div class="dialog-head"><h2 id="trackActionTitle">歌曲操作</h2><button class="icon-button dialog-close-button" id="closeTrackActionDialog" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10"/><path d="m17 7-10 10"/></svg></button></div><div id="trackActionList" class="track-action-list"></div></dialog>
   <dialog id="metadataCandidateDialog" class="metadata-candidate-dialog" aria-labelledby="metadataCandidateTitle">
@@ -439,6 +451,8 @@
   <script src="library_page_snapshot_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="metadata_row_patch_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="library_page_size_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_capability_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="library_saved_view_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
     <script src="creator_view_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
     <script src="user_media_state_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
     <script src="lyrics_parse_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
@@ -457,6 +471,9 @@
   <script src="ui_sync_scheduler.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="cover_load_scheduler.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="shuffle_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="queue_order_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="playback_capability_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
+  <script src="sleep_timer_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="repeat_mode_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="track_sort_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>
   <script src="library_sort_options_policy.js?v=__FNAUDIO_ASSET_BUILD__"></script>

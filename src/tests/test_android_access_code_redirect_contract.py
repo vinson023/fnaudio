@@ -56,11 +56,15 @@ assert ".followRedirects(false)\n                    .followSslRedirects(false)"
 
 # Both stored tokens expire eventually, which is the "worked for a few days, then
 # stopped" report. The saved password must be spent in the same chain instead of
-# bouncing the user to the connection chooser.
+# bouncing the user to the connection chooser.  R607 moved the hop order out of
+# the failure handler into nextAttemptAfterFailure(), so the table is what has to
+# keep saying it; the handler is now only the caller.
 _handle = AUTH[AUTH.index("private void handleAttemptFailure("):AUTH.index("private void logFailure(")]
-assert "attempt == Attempt.LONG_TOKEN && !password.isEmpty()" in _handle, \
+_next = AUTH[AUTH.index("static Attempt nextAttemptAfterFailure("):AUTH.index("private final Handler mainHandler")]
+assert "current == Attempt.LONG_TOKEN" in _next, "the long-token hop is still in the chain"
+assert "hasPassword ? Attempt.LOGIN_USER : null" in _next, \
     "an expired long token must fall back to the saved password"
-assert _handle.index("send(Attempt.LOGIN_USER);") < _handle.index("finishCredentialRejected(message);"), \
+assert _handle.index("send(next);") < _handle.index("finishCredentialRejected(message);"), \
     "the password attempt comes before giving up"
 
 # Failures name their phase, so a recurrence is diagnosable from logcat alone.

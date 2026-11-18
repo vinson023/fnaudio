@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import errno
+import functools
 import hashlib
 import heapq
 import json
@@ -92,6 +93,7 @@ from library_count_policy import (
 from library_refresh_policy import cancel_refresh, enqueue_refresh, take_refresh
 from library_search_policy import track_search_condition
 from library_search_index_policy import cache_token, search_index_status, uses_fts
+from library_capability_policy import library_capabilities
 from track_identity import content_track_id, cue_track_id, fallback_track_id
 from library_group_policy import group_match_condition as build_group_match_condition
 from library_memory_query import memory_field
@@ -140,7 +142,13 @@ SUPPORTED = {
 # row still carries the id it was stored with, so without the bump a rescan would
 # keep serving path-based ids to some files and content ids to the rest - exactly
 # the mixed state the identity migration exists to avoid.
-METADATA_VERSION = 20
+#
+# R591 raised it to 21 because the tag reader now produces fields it did not
+# produce before (album_artist, disc_no, date/year, comment) and folds disc into
+# track_sort.  A cached row is reused on (size, mtime, version) alone, so without
+# the bump an existing library would keep its empty album_artist/disc columns
+# until every file happened to change -- the new columns would look broken.
+METADATA_VERSION = 21
 MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
 GROUP_LABEL_VERSION = "3"
@@ -701,13 +709,13 @@ def read_metadata(path, root, config=None, probe_tags=None):
     root_label = library_root_label(root, config or {})
     return library_metadata(path, tags, folder, root_label, UNCLASSIFIED)
 
-def read_cue_lines(cue_path):
-    return _read_cue_lines(cue_path)
+def read_cue_lines(cue_path, config=None):
+    return _read_cue_lines(cue_path, config)
 
 def parse_cue_tracks(cue_path, root, config=None, deadline=None):
     if not _path_under(cue_path, root):
         return []
-    text = read_cue_lines(cue_path)
+    text = read_cue_lines(cue_path, config)
     if not text:
         return []
     # The CUE file can disappear between the bounded read above and track
@@ -721,6 +729,12 @@ def parse_cue_tracks(cue_path, root, config=None, deadline=None):
     album = parsed["album"]
     album_artist = parsed["album_artist"]
     tracks = parsed["tracks"]
+    # R591: a sheet with no INDEX 01 line anywhere describes no boundaries at
+    # all.  Expanding it produced one zero-length row per TRACK line -- visible
+    # as N unplayable entries -- where the file itself is a perfectly good
+    # single track.  Leave it to the ordinary scanner in that case.
+    if tracks and not parsed.get("has_index"):
+        return []
     items = []
     cue_dir = os.path.dirname(cue_path)
     for track in tracks:
@@ -780,11 +794,12 @@ def signature_token_for_stat(path, stat_result):
     return "%s:%s:%s" % (path, stat_result.st_mtime_ns, stat_result.st_size)
 
 
-def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0, sink=None):
+def scan_library(root, previous_items=None, config=None, deadline=None, found_offset=0, sink=None, progress=None):
     # A caller that passes a sink keeps the tracks this root has already read
     # even when the walk is cut short by the deadline, so an interrupted scan
     # is able to publish what it found instead of returning nothing at all.
     items = [] if sink is None else sink
+    progress_clock = [0.0]
     signature_parts = []
     scan_started = time.time()
     previous = build_previous_item_index(previous_items)
@@ -809,6 +824,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
             items.extend(cue_items)
             cue_audio_paths.update(os.path.abspath(item.get("path", "")) for item in cue_items if item.get("path"))
             SCAN_STATE["found"] = found_offset + len(items)
+            _publish_scan_progress(progress, items, progress_clock)
             try:
                 stat = os.stat(full)
                 signature_parts.append(signature_token_for_stat(full, stat))
@@ -851,6 +867,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
             if can_reuse_cached_item(cached, stat.st_size, stat.st_mtime_ns, METADATA_VERSION):
                 items.append(cached)
                 SCAN_STATE["found"] = found_offset + len(items)
+                _publish_scan_progress(progress, items, progress_clock)
                 continue
             # Content first: renaming or moving the file must not rename the track.
             item_id = content_track_id(full, stat.st_size) or fallback_track_id(full)
@@ -862,6 +879,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
                 metadata_version=METADATA_VERSION,
             ))
             SCAN_STATE["found"] = found_offset + len(items)
+            _publish_scan_progress(progress, items, progress_clock)
         if len(items) and len(items) % 500 == 0:
             time.sleep(0.01)
     check_scan_deadline(deadline)
@@ -870,7 +888,7 @@ def scan_library(root, previous_items=None, config=None, deadline=None, found_of
     signature = digest_signature_parts(signature_parts)
     return items, signature
 
-def scan_libraries(config, previous_items=None, deadline=None, sink=None):
+def scan_libraries(config, previous_items=None, deadline=None, sink=None, progress=None):
     shared = sink is not None
     all_items = sink if shared else []
     signatures = []
@@ -881,6 +899,9 @@ def scan_libraries(config, previous_items=None, deadline=None, sink=None):
         # With a shared accumulator the scanner writes straight into it, so the
         # offset it reports is the total and the per-root result is already in
         # place; extending again would duplicate every track.
+        # ``progress`` is passed by keyword on purpose: the walk's signature has
+        # grown twice now, and a positional call here silently re-binds every
+        # parameter after it for anything that doubles the scanner.
         items, signature = scan_library(
             root,
             previous_by_root[index],
@@ -888,6 +909,7 @@ def scan_libraries(config, previous_items=None, deadline=None, sink=None):
             deadline,
             0 if shared else len(all_items),
             all_items if shared else None,
+            progress=progress,
         )
         if not shared:
             all_items.extend(items)
@@ -1036,6 +1058,10 @@ def library_status(config):
     status = {
         "library_path": root,
         "library_paths": roots,
+        # R591: the legacy-text encoding that CUE sheets and .lrc files are
+        # decoded with.  "" means auto; the settings card needs to show which
+        # one is in force.
+        "text_encoding": config.get("text_encoding", "") if isinstance(config, dict) else "",
         # Per-root health.  The singular fields above describe roots[0] only,
         # which made the settings card list just the first directory and call a
         # library healthy while a second root was gone or unreadable.  Kept the
@@ -1081,6 +1107,12 @@ def library_status(config):
         "search_index": library_search_index_status(config),
         "supported_formats": sorted(x[1:].upper() for x in SUPPORTED),
     }
+    # What this installation can actually do, so the UI can offer or hide a
+    # feature instead of guessing from a bundle version (see
+    # docs/LIBRARY_VIEWS_PLAN.md, P2-2).
+    status["capabilities"] = library_capabilities(
+        status["search_index"].get("mode"), status["supported_formats"]
+    )
     status["message"] = status_message(status)
     return status
 
@@ -1195,6 +1227,85 @@ def legacy_reuse_items_for_scan(config):
     return items
 
 
+SCAN_PROGRESS_PUBLISH_SECONDS = 1.5
+
+
+def publish_scan_progress(items, config=None):
+    """Show what the walk has found so far while a first scan is still running.
+
+    A fresh install used to publish nothing until the whole walk finished:
+    ``MUSIC_CACHE`` stayed empty, every page request read an empty SQLite index
+    and answered zero rows, so the owner of a large library saw "no music" for
+    the entire scan and the full list only at the end.  Replacing the list
+    reference is enough, because ``query_library_page`` already falls back to
+    the in-memory page while the index holds no row at all.
+
+    Deliberately memory-only: a snapshot write rebuilds every group table and
+    the search index, which is far too heavy to repeat every second.  Pages
+    served this way come from the Python fallback and are therefore slower than
+    a SQLite page -- showing rows late beats showing none.
+    """
+    if not items:
+        return False
+    try:
+        snapshot = list(items)
+    except (TypeError, ValueError):
+        return False
+    if not snapshot:
+        return False
+    MUSIC_CACHE["items"] = snapshot
+    MUSIC_CACHE["stamp"] = time.time()
+    if config is not None:
+        # R603: an index that exists but holds no row answers from SQL, and that
+        # empty answer is cached for the query-cache TTL.  Without this drop the
+        # first publish was invisible for 20s on a 10,880-track host -- measured
+        # 20.1s to the first row although the publish itself happened at 1.5s.
+        # A missing database never hits this (that path answers from memory and
+        # is not cached); this is for the emptied-index rescan.
+        try:
+            invalidate_library_query_cache(config)
+        except Exception:
+            # A stale page must not abort a scan.
+            pass
+    return True
+
+
+def _publish_scan_progress(progress, items, clock):
+    """Publish at most one progress snapshot per interval.
+
+    ``clock`` starts at 0.0 on purpose: the first batch a fresh install finds is
+    published immediately, so the empty list ends as soon as the walk has rows.
+    """
+    if progress is None or not items:
+        return
+    now = time.monotonic()
+    if now - clock[0] < SCAN_PROGRESS_PUBLISH_SECONDS:
+        return
+    clock[0] = now
+    try:
+        # Hand over a snapshot, not the live accumulator: a callback that keeps
+        # the reference would otherwise watch it grow and see the finished list
+        # instead of the prefix it was told about.
+        progress(list(items))
+    except Exception:
+        # Progress is cosmetic; a reader that fails must never abort a scan.
+        pass
+
+
+def scan_progress_publisher(previous_items, config=None):
+    """Progress publishing is for a library that starts empty only.
+
+    A rescan of a populated library already answers pages from the old index;
+    replacing that list with a half-built one would make the owner's library
+    shrink while it is being refreshed.
+    """
+    if previous_items:
+        return None
+    if config is None:
+        return publish_scan_progress
+    return functools.partial(publish_scan_progress, config=config)
+
+
 def publish_partial_library_index(config, items):
     """Publish an interrupted scan so the library is never left empty.
 
@@ -1299,7 +1410,13 @@ def refresh_library_if_changed(config, force=False, change_monitor=None, _refres
         if not previous_items:
             previous_items = legacy_reuse_items_for_scan(config)
         SCAN_STATE["phase"] = "扫描音乐目录"
-        items, signature = scan_libraries(config, previous_items, deadline, partial_scan_items)
+        # R603: only a library that starts empty needs the running commentary.
+        progress = scan_progress_publisher(previous_items, config)
+        # Keyword, not positional: this walk has grown a parameter twice and a
+        # positional call silently re-binds every argument after the new one.
+        items, signature = scan_libraries(
+            config, previous_items, deadline, partial_scan_items, progress=progress
+        )
         check_scan_deadline(deadline)
         if signature != FS_CACHE["signature"] or not os.path.isfile(library_db_path(config)):
             SCAN_STATE["phase"] = "保存音乐库索引"
@@ -2299,6 +2416,76 @@ def query_library_item_by_id(config, item_id):
                 return item
     return lookup_memory_item(MUSIC_CACHE["items"], value)
 
+ALBUM_COVER_FALLBACK_LIMIT = 4
+
+
+def album_cover_fallback_paths(config, item, limit=ALBUM_COVER_FALLBACK_LIMIT):
+    """Return paths of other tracks on the same album, for the cover fallback.
+
+    ``albums.cover_track_id`` is ``MIN(id)`` -- the alphabetically smallest track,
+    not the first one that actually carries artwork.  An album whose covers are
+    embedded per track and only on some of them therefore showed no cover at all,
+    even though a neighbour had one.  Audio Station resolves an album cover by
+    album name, so it never had this hole.
+
+    Bounded on purpose: only called when a cover request is about to miss, and
+    only a handful of neighbours, so the cost is paid once per item per content
+    version (the miss is then negative-cached).
+    """
+    if not isinstance(item, dict):
+        return []
+    album = item.get("album")
+    folder = item.get("folder")
+    if not isinstance(album, str) or not album.strip():
+        return []
+    try:
+        bound = max(1, min(ALBUM_COVER_FALLBACK_LIMIT, int(limit)))
+    except (TypeError, ValueError):
+        bound = ALBUM_COVER_FALLBACK_LIMIT
+    own_id = item.get("id")
+    own_path = item.get("path")
+    # A stored item carries no ``root`` key: the column is written from the
+    # scanner's ``_index_root`` and dropped from ``item_json``.  Derive it from
+    # the configured roots instead -- two roots can hold the same relative folder
+    # name, and borrowing across them would put one album's art on another.  A
+    # path under no configured root gets no fallback rather than a guess.
+    root = ""
+    if isinstance(own_path, str) and own_path:
+        for candidate in normalize_library_paths(config):
+            if _path_under(own_path, candidate):
+                root = candidate
+                break
+    if not root:
+        return []
+    if not os.path.isfile(library_db_path(config)):
+        return []
+    rows = []
+    try:
+        with library_db_connect(config) as conn:
+            rows = conn.execute(
+                "SELECT path FROM tracks"
+                " WHERE album = ? AND COALESCE(folder, '') = COALESCE(?, '')"
+                "   AND COALESCE(root, '') = ?"
+                "   AND id <> COALESCE(?, '') AND COALESCE(path, '') <> COALESCE(?, '')"
+                " ORDER BY CASE WHEN track_sort > 0 THEN track_sort WHEN track_no > 0 THEN track_no ELSE 2147483647 END, id"
+                " LIMIT ?",
+                (album, folder if isinstance(folder, str) else "", root,
+                 own_id if isinstance(own_id, str) else "",
+                 own_path, bound),
+            ).fetchall()
+    except Exception:
+        return []
+    paths = []
+    for row in rows:
+        try:
+            value = row[0]
+        except (TypeError, IndexError, KeyError):
+            continue
+        if isinstance(value, str) and value and value not in paths:
+            paths.append(value)
+    return paths
+
+
 def query_library_item_location(config, item_id):
     item = query_library_item_by_id(config, item_id)
     return resolve_item_location(item, item_id, normalize_library_paths(config), _path_under, MAX_LIBRARY_PATH_TEXT)
@@ -2677,6 +2864,13 @@ def ensure_library_schema(conn):
             album_artist TEXT,
             composer TEXT,
             genre TEXT,
+            disc_no INTEGER NOT NULL DEFAULT 0,
+            year INTEGER NOT NULL DEFAULT 0,
+            comment TEXT,
+            -- Album order is disc then track.  The keyset cursor compares ONE
+            -- expression, so the pair is folded into one sortable integer here
+            -- rather than widening the cursor contract: disc*1000+track_no.
+            track_sort INTEGER NOT NULL DEFAULT 0,
             format TEXT,
             mime TEXT,
             is_dsd INTEGER NOT NULL DEFAULT 0,
@@ -2706,7 +2900,7 @@ def ensure_library_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_tracks_added_title_id_desc ON tracks(added_ns DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_root ON tracks(root);
         CREATE INDEX IF NOT EXISTS idx_tracks_root_folder ON tracks(root, folder);
-        CREATE INDEX IF NOT EXISTS idx_tracks_root_folder_track_no ON tracks(root, folder, track_no);
+        CREATE INDEX IF NOT EXISTS idx_tracks_root_folder_track_sort ON tracks(root, folder, track_sort);
         CREATE INDEX IF NOT EXISTS idx_tracks_is_dsd ON tracks(is_dsd);
         CREATE INDEX IF NOT EXISTS idx_tracks_title_nocase ON tracks(title COLLATE NOCASE);
         CREATE INDEX IF NOT EXISTS idx_tracks_title_nocase_id_asc ON tracks(title COLLATE NOCASE ASC, id ASC);
@@ -2719,8 +2913,8 @@ def ensure_library_schema(conn):
         CREATE INDEX IF NOT EXISTS idx_tracks_album_nocase_title_id_desc ON tracks(album COLLATE NOCASE DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_format_nocase_title_id_asc ON tracks(format COLLATE NOCASE ASC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_format_nocase_title_id_desc ON tracks(format COLLATE NOCASE DESC, title COLLATE NOCASE ASC, id ASC);
-        CREATE INDEX IF NOT EXISTS idx_tracks_track_no_title_id_asc ON tracks((CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END) ASC, title COLLATE NOCASE ASC, id ASC);
-        CREATE INDEX IF NOT EXISTS idx_tracks_track_no_title_id_desc ON tracks((CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END) DESC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_track_sort_title_id_asc ON tracks((CASE WHEN track_sort > 0 THEN track_sort WHEN track_no > 0 THEN track_no ELSE 2147483647 END) ASC, title COLLATE NOCASE ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_tracks_track_sort_title_id_desc ON tracks((CASE WHEN track_sort > 0 THEN track_sort WHEN track_no > 0 THEN track_no ELSE 2147483647 END) DESC, title COLLATE NOCASE ASC, id ASC);
         CREATE INDEX IF NOT EXISTS idx_tracks_folder_nocase ON tracks(folder COLLATE NOCASE);
         CREATE TABLE IF NOT EXISTS albums (
             name TEXT PRIMARY KEY,
@@ -2789,6 +2983,12 @@ def ensure_library_schema(conn):
     conn.execute("DROP INDEX IF EXISTS idx_tracks_added")
     conn.execute("DROP INDEX IF EXISTS idx_tracks_format_nocase")
     conn.execute("DROP INDEX IF EXISTS idx_tracks_track_no")
+    # R591 folded disc into the album order.  The old expressions name a key the
+    # query no longer emits, so keeping them would only cost write time and
+    # leave the planner choosing between two shapes that disagree.
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_track_no_title_id_asc")
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_track_no_title_id_desc")
+    conn.execute("DROP INDEX IF EXISTS idx_tracks_root_folder_track_no")
 
 
 def _migrate_legacy_tracks_columns(conn):
@@ -2817,6 +3017,10 @@ def _migrate_legacy_tracks_columns(conn):
         ("album_artist", "TEXT"),
         ("composer", "TEXT"),
         ("genre", "TEXT"),
+        ("disc_no", "INTEGER NOT NULL DEFAULT 0"),
+        ("year", "INTEGER NOT NULL DEFAULT 0"),
+        ("comment", "TEXT"),
+        ("track_sort", "INTEGER NOT NULL DEFAULT 0"),
         ("format", "TEXT"),
         ("mime", "TEXT"),
         ("is_dsd", "INTEGER NOT NULL DEFAULT 0"),
@@ -3087,14 +3291,17 @@ def save_items_to_sqlite(config, items, signature):
         conn.execute("DELETE FROM cue_tracks WHERE track_id NOT IN (SELECT id FROM current_track_ids)")
         track_upsert_sql = """
             INSERT INTO tracks (
-                id,path,root,folder,title,artist,album,track_no,album_artist,composer,genre,format,mime,is_dsd,
+                id,path,root,folder,title,artist,album,track_no,album_artist,composer,genre,
+                disc_no,year,comment,track_sort,format,mime,is_dsd,
                 duration,size,sample_rate,bit_depth,bitrate,added,added_ns,modified,modified_ns,
                 cue_path,cue_track,cue_start,cue_end,metadata_version,item_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 path=excluded.path, root=excluded.root, folder=excluded.folder, title=excluded.title,
                 artist=excluded.artist, album=excluded.album, track_no=excluded.track_no,
                 album_artist=excluded.album_artist, composer=excluded.composer, genre=excluded.genre,
+                disc_no=excluded.disc_no, year=excluded.year, comment=excluded.comment,
+                track_sort=excluded.track_sort,
                 format=excluded.format, mime=excluded.mime, is_dsd=excluded.is_dsd, duration=excluded.duration,
                 size=excluded.size, sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
                 bitrate=excluded.bitrate, added=excluded.added, added_ns=excluded.added_ns,

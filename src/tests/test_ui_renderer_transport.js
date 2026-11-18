@@ -107,6 +107,7 @@ const sources = [
   "renderIncomingRendererSession",
   "updateRemoteUi",
   "updateIncomingRendererUi",
+  "seekPositionIsSettled",
 ].concat(stalenessLampNames).map(functionSource).join("\n");
 vm.runInNewContext(`${limitConst}
 ${sources}
@@ -209,6 +210,7 @@ const railSources = [
   "setPlayButton",
   "updateNowMarquee",
   "updateIncomingRendererUi",
+  "seekPositionIsSettled",
   "renderIncomingRendererSession",
 ].concat(stalenessLampNames).map(functionSource).join("\n");
 vm.runInNewContext(limitConst + "\n" + railSources + "\nglobalThis.rail = { renderIncomingRendererSession, updateIncomingRendererUi, updateNowMarquee };", railContext);

@@ -5,6 +5,42 @@
 
 ## 决策列表
 
+### D-061：登录失败必须报真实原因，换字段名的降级只在 fnOS 不认请求时执行
+
+- 状态：已实现（R607，待随 0.2.165 发版）
+- 背景：用户输错密码，界面报的是「错误码 8192」，而 8192 实测是「请求缺少必填字段」，
+  真正的原因是上一跳返回的 131072（凭据错误）。根因两条：`LOGIN_USERNAME` 降级跳发的是
+  `user.login` + `username`（fnOS 只认 `user`，一律判缺参），而 `finishCredentialRejected()`
+  只上报**最后一跳**的文案，于是真实原因被覆盖。取证见 `docs/ANALYSIS_FNOS_LOGIN_ERRNO.md`。
+- 决策：① `errno` 必须映射成人话（131072 账号或密码错误 / 8192 请求缺少参数 / 65534 不支持该登录方式），
+  数字仍保留在文案尾部，供支持比对服务端日志；② 换字段名的降级**只在上一跳返回 65534**
+  （请求名不被接受）时执行，131072 直接上报，不再多跑一跳；③ 前两跳
+  （`user.authToken` / `user.tokenLogin`）在 fnOS 1.37.3 上已不存在（拿刚签发的有效 token 也返回
+  65534），但**不删**——它们在密码为空的恢复路径上，若将来版本恢复该能力，删掉就等于丢掉免密恢复。
+- 影响：用户看到「账号或密码错误，请检查后重试。（错误码 131072）」。密码为空时仍会先走两次
+  无效往返（各约 10 ms），代价可接受；`FnOsAuthErrnoTest` 钉住这条表，
+  `test_android_access_code_redirect_contract` 的源码守卫改为检查 `nextAttemptAfterFailure()`。
+
+### D-059：安卓 APP 测试统一在实体机 SM-G965F 上完成
+
+- 状态：当前有效（2026-11-18 起）
+- 决策：安卓 APP 的动态测试一律在实体机 `192.168.5.111:5555` 上跑，一条命令：
+  `powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_android_device.ps1`
+  （SM-G965F / LineageOS 20 / Android 13 SDK 33 / arm64-v8a）。
+- **本决策最初的写法（`:app:assembleDebug` + `:app:connectedDebugAndroidTest`）已被实测推翻**：
+  这台机装的是 release 签名的 `com.fnaudio.client`，debug 包证书不同，`adb install` 直接
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`；卸载再装会丢登录态与本地缓存。改用 **`qaRelease`**
+  （`initWith release` + `debuggable`，同包名同证书，仍可 `run-as` 与 WebView CDP），
+  并以 `am instrument -w` 直跑，绕开 Windows 上 Gradle UTP 的 testlog 目录问题。
+- 副作用（实测，脚本已兜）：`MainActivityWebViewInstrumentedTest` 里的「HTTPS 退出登录」
+  用例会真的清掉活动配置的 token，跑完 APP 停在登录页。脚本默认在测试前快照
+  `shared_prefs`、测试后还原（`-PreserveAppState:$false` 可关闭）。
+- 原因：模拟器是 x86_64 且包名不同（`com.fnaudio.client.emulator`），无法覆盖 ARM64 中继、
+  USB DAC 与手机后台策略；而这台实体机装的就是发布形态的包，验证结果可以直接代表用户看到的东西。
+- 影响：`assembleEmulator` 与 `docs/ANDROID_EMULATOR_TESTING.md` 的流程降级为「手机不可用时
+  的临时自测」，不作为验收证据。设备侧把 ADB 端口固定为 5555 并保证重启后仍可用，
+  改动与回滚见 `artifacts/adb-port-hook/README.md`。
+
 ### D-041：删除歌曲复用飞牛回收站 RPC，不直接操作隐藏目录
 
 - 状态：已实现
@@ -272,7 +308,7 @@
 - 桌面右键与移动端长按使用独立动作集合，避免一端的交互约束污染另一端；桌面菜单的具体删减规则以 D-041 为准。
 - Android Media3 的通知封面不直接依赖未认证的远程 URL；同源 fnOS 封面通过带 token 的 OkHttp 下载并缓存到应用私有目录，再交给 `BitmapLoader`。
 
-### D-041：PC 右键移除直接播放/插播，文件管理只接收父目录
+### D-060：PC 右键移除直接播放/插播，文件管理只接收父目录
 
 - 状态：已确认，待 fnOS 真机验证
 - 背景：桌面右键中的“播放”和“插播所选项目”与行点击及队列操作重复；同时把完整歌曲路径传入 fnOS `openFileManager()` 会让宿主把它解释为打开音频文件。

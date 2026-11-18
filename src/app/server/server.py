@@ -62,6 +62,7 @@ from library import (
     library_track_ids,
     rebuild_track_identity,
     read_cover_for_item,
+    album_cover_fallback_paths,
     save_library_cache,
     safe_float,
     safe_int,
@@ -128,8 +129,10 @@ from services.audio_output_lease import AUDIO_OUTPUT_LEASE
 from services.airplay_service import AirplayService, airplay_probe
 from state_store import (StateConflict, load_user_state, prune_favorites, remap_track_ids,
                          reset_user_state, save_playback_session, save_user_state)
+from library_saved_views import delete_saved_view, save_saved_view, views_snapshot
 from state_projection import playback_queue_ids
 from playback_session_projection import project_playback_session
+from playback_capability_policy import playback_capabilities
 from metadata_service import MAX_ARTWORK_BYTES, MetadataProviders, MetadataService
 from metadata_provider_config import (
     default_metadata_provider_config,
@@ -199,6 +202,7 @@ from network_address import local_address
 from public_url import build_public_base_url
 from cover_item_cache import cached_cover_for_item as cache_cover_for_item, cache_snapshot as cover_cache_snapshot
 from cover_media_type import SNIFF_PREFIX_BYTES, safe_image_media_type
+from text_encoding_policy import normalize_encoding_setting
 from library_presentation import public_library_item, public_library_page
 from version import APP_USER_AGENT
 from cover_cache import (cached_thumbnail_for_item, cover_is_known_missing, cover_source_version,
@@ -236,6 +240,10 @@ PLAYBACK_COMMAND_WAIT_SECONDS = 15.0
 PLAYBACK_CONTROL_ACTIONS = frozenset({
     "play", "resume", "pause", "stop", "seek", "load", "next", "previous",
     "repeat", "shuffle", "volume",
+    # R587: a client reports its own transport position so a reload can resume
+    # instead of restarting the track.  It is a state write, not an output
+    # command: the core stores the number and never forwards it to a plugin.
+    "progress",
 })
 
 
@@ -300,7 +308,16 @@ def sync_metadata_workers(service, config):
         if live:
             stopper = getattr(service, "shutdown", None)
             if callable(stopper):
-                stopper()
+                # R603: do not hold this save for an in-flight tag write.  Joining
+                # here made "取消勾选允许写入 Tag" wait for whatever file the writer
+                # was rewriting (the owner saw several seconds).  The service
+                # signals the stop now and a reaper finishes the join; ``start``
+                # waits for that reaper before a new generation may clear the event.
+                try:
+                    stopper(wait=False)
+                except TypeError:
+                    # A service double without the keyword keeps the old contract.
+                    stopper()
 
 
 def playback_command_cache_status():
@@ -331,6 +348,29 @@ COVER_CACHE_INFLIGHT = {}
 COVER_CACHE_INFLIGHT_LIMIT = 64
 
 
+def read_cover_with_album_fallback(item, config):
+    """Read this track's artwork, then fall back to its album neighbours.
+
+    R591: ``albums.cover_track_id`` is ``MIN(id)``, so an album whose covers are
+    embedded per track and only on some of them showed no cover at all even when
+    a neighbour carried one.  Audio Station resolves an album cover by album
+    name and never had this hole.
+
+    The fallback runs only on a miss and is bounded, so the cost is one short
+    query plus at most ``ALBUM_COVER_FALLBACK_LIMIT`` reads, once per item per
+    content version: the answer is cached (including "still nothing") under the
+    requesting item's key.
+    """
+    mime, body = read_cover_for_item(item, config)
+    if body:
+        return mime, body
+    for path in album_cover_fallback_paths(config, item):
+        mime, body = read_cover_for_item({"path": path}, config)
+        if body:
+            return mime, body
+    return None, None
+
+
 def cached_cover_for_item(item, config):
     """Cache extracted local artwork by its on-disk version.
 
@@ -344,7 +384,7 @@ def cached_cover_for_item(item, config):
         cache=COVER_CACHE,
         cache_lock=COVER_CACHE_LOCK,
         inflight=COVER_CACHE_INFLIGHT,
-        reader=read_cover_for_item,
+        reader=read_cover_with_album_fallback,
         max_entries=COVER_CACHE_MAX_ENTRIES,
         max_path_chars=COVER_CACHE_MAX_PATH_CHARS,
         inflight_limit=COVER_CACHE_INFLIGHT_LIMIT,
@@ -467,6 +507,7 @@ from transcode import (
     transcode_cache_ready,
     transcode_cache_target,
     transcode_command,
+    transcode_failure,
     transcode_to_audio,
     transcode_resource_status,
     shutdown_transcode_cache_worker,
@@ -1171,6 +1212,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/library/roots":
             search = (query.get("search") or [""])[0]
             return self.send_json({"roots": query_library_root_folders(self.server.config, search)})
+        if path == "/api/library/views":
+            # Saved views are user state, not index state: they live in
+            # state.sqlite3 beside favorites and survive a rescan.
+            return self.send_json(views_snapshot(self.server.config))
         if path == "/api/library/items":
             raw_ids = (query.get("ids") or [""])[0]
             try:
@@ -1388,6 +1433,11 @@ class Handler(BaseHTTPRequestHandler):
                     "plugins": PLAYBACK_CORE.registry.describe(),
                 }
             )
+        if path == "/api/playback/capabilities":
+            # R587: the queue cap belongs to the output target, so the client
+            # asks instead of hardcoding 500.  A client that never asks keeps the
+            # old behaviour (no client-side slice).
+            return self.send_json(playback_capabilities())
         if path == "/api/upnp/status":
             device_id = (query.get("device_id") or [""])[0]
             devices = cached_upnp_devices() or discover_upnp()
@@ -1408,7 +1458,15 @@ class Handler(BaseHTTPRequestHandler):
             if not item:
                 return self.send_json({"error": "track not found"}, 404)
             _, mime, ready = transcode_cache_ready(item, self.server.config, mode)
-            return self.send_json({"ready": ready, "mode": mode, "mime": mime})
+            # R598: the page cannot read the status or the body of a failed
+            # <audio> load, so it asks here after an error.  The verdict is read
+            # from the marker the failed job left, never by re-running ffmpeg.
+            return self.send_json({
+                "ready": ready,
+                "mode": mode,
+                "mime": mime,
+                "failure": transcode_failure(item, self.server.config, mode),
+            })
         if path.startswith("/cover/"):
             return self.serve_cover(path.split("/", 2)[2], query, head_only)
         if path.startswith("/cover-asset/"):
@@ -1646,6 +1704,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"ok": False, "error": "confirm must be true"}, 400)
                 return self.send_json({"ok": True, "state": reset_user_state(self.server.config)})
             return self.send_json({"ok": False, "error": "unsupported maintenance action"}, 400)
+        if parsed.path == "/api/library/views":
+            action = payload.get("action")
+            if action == "save":
+                try:
+                    views = save_saved_view(self.server.config, payload.get("view"))
+                except ValueError as error:
+                    # The policy module is the only validator; a rejected view
+                    # must not be silently stored as "almost right".
+                    return self.send_json({"ok": False, "error": str(error)}, 400)
+                return self.send_json({"ok": True, "views": views})
+            if action == "delete":
+                return self.send_json({
+                    "ok": True,
+                    "views": delete_saved_view(self.server.config, payload.get("id")),
+                })
+            return self.send_json({"ok": False, "error": "unsupported action"}, 400)
         if parsed.path == "/api/library/scan/cancel":
             cancelled = cancel_library_refresh()
             return self.send_json({"ok": True, "cancelled": cancelled, "status": library_status(self.server.config)})
@@ -1967,34 +2041,63 @@ class Handler(BaseHTTPRequestHandler):
                 "status": library_connection_pool_status(),
             })
         if parsed.path == "/api/config/library":
+            # R591: this endpoint also carries the legacy-text encoding setting,
+            # because that setting only exists to decode CUE sheets and .lrc
+            # files.  Either field may be sent on its own.
+            has_path_field = "library_path" in payload
             raw_library_path = payload.get("library_path", "")
-            if not isinstance(raw_library_path, str):
-                return self.send_json({"ok": False, "message": "音乐目录必须是文本"}, 400)
-            candidate_paths = []
-            # Scan a bounded window larger than the final root limit so empty
-            # and duplicate separators do not consume valid directory slots.
-            for value in re.split(r"[\r\n;]+", raw_library_path)[:MAX_LIBRARY_PATHS * 4]:
-                text = value.strip()
-                if not text:
-                    continue
-                candidate_paths.append(canonical_library_path(text))
-                if len(candidate_paths) >= MAX_LIBRARY_PATHS:
-                    break
-            if not candidate_paths:
+            raw_text_encoding = payload.get("text_encoding", None)
+            if raw_text_encoding is not None and not isinstance(raw_text_encoding, str):
+                return self.send_json({"ok": False, "message": "文本编码必须是文本"}, 400)
+            candidate_paths = None
+            if has_path_field:
+                if not isinstance(raw_library_path, str):
+                    return self.send_json({"ok": False, "message": "音乐目录必须是文本"}, 400)
+                candidate_paths = []
+                # Scan a bounded window larger than the final root limit so empty
+                # and duplicate separators do not consume valid directory slots.
+                for value in re.split(r"[\r\n;]+", raw_library_path)[:MAX_LIBRARY_PATHS * 4]:
+                    text = value.strip()
+                    if not text:
+                        continue
+                    candidate_paths.append(canonical_library_path(text))
+                    if len(candidate_paths) >= MAX_LIBRARY_PATHS:
+                        break
+                if not candidate_paths:
+                    return self.send_json({"ok": False, "message": "请输入音乐目录"}, 400)
+                bad_path = next((x for x in candidate_paths if not is_allowed_library_path(x) or not os.path.isdir(x)), "")
+                if bad_path:
+                    return self.send_json({"ok": False, "message": "这个目录不能作为音乐目录：%s" % bad_path}, 400)
+            elif raw_text_encoding is None:
                 return self.send_json({"ok": False, "message": "请输入音乐目录"}, 400)
-            bad_path = next((x for x in candidate_paths if not is_allowed_library_path(x) or not os.path.isdir(x)), "")
-            if bad_path:
-                return self.send_json({"ok": False, "message": "这个目录不能作为音乐目录：%s" % bad_path}, 400)
-            if not commit_config_update(
-                self.server,
-                lambda candidate: apply_library_paths(candidate, candidate_paths),
-            ):
+
+            def apply_library_settings(candidate):
+                if candidate_paths is not None:
+                    apply_library_paths(candidate, candidate_paths)
+                if raw_text_encoding is not None:
+                    canonical = normalize_encoding_setting(raw_text_encoding)
+                    # An empty or unknown name means "auto", which is the
+                    # absence of the key rather than a value of its own.
+                    if canonical:
+                        candidate["text_encoding"] = canonical
+                    else:
+                        candidate.pop("text_encoding", None)
+
+            if not commit_config_update(self.server, apply_library_settings):
                 return self.send_json({"ok": False, "message": "保存设置失败"}, 500)
-            # The configured roots are part of the visible root projection.
-            # Retire cached pages immediately after the atomic config commit;
-            # waiting for the short cache TTL can otherwise show old roots.
-            invalidate_library_query_cache(self.server.config)
-            return self.send_json({"ok": True, "restart_required": False, "status": library_status(self.server.config)})
+            if candidate_paths is not None:
+                # The configured roots are part of the visible root projection.
+                # Retire cached pages immediately after the atomic config commit;
+                # waiting for the short cache TTL can otherwise show old roots.
+                invalidate_library_query_cache(self.server.config)
+            # CUE sheets are decoded during a scan, so a new encoding only shows
+            # up there after one.  .lrc files are read on demand and change at once.
+            return self.send_json({
+                "ok": True,
+                "restart_required": False,
+                "rescan_required": candidate_paths is None and raw_text_encoding is not None,
+                "status": library_status(self.server.config),
+            })
         return self.send_json({"error": "not found"}, 404)
 
     def handle_dlna_get(self, path, head_only=False):
@@ -2276,7 +2379,10 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     target, mime = transcode_to_audio(item, self.server.config, mode)
                 except RuntimeError as exc:
-                    return self.send_error(501, str(exc))
+                    # R598: a file the decoder cannot read is 415, a bad moment is
+                    # 503.  The page cannot see either status (an <audio> error
+                    # carries no body), which is what the probe endpoint is for.
+                    return self.send_error(getattr(exc, "status", 503), str(exc))
                 return self.serve_file_range(target, mime, head_only)
             if mode == "mp3":
                 target, mime, ready = transcode_cache_ready(item, self.server.config, mode)
@@ -2294,7 +2400,10 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     target, mime = transcode_to_audio(item, self.server.config, mode)
                 except RuntimeError as exc:
-                    return self.send_error(501, str(exc))
+                    # R598: a file the decoder cannot read is 415, a bad moment is
+                    # 503.  The page cannot see either status (an <audio> error
+                    # carries no body), which is what the probe endpoint is for.
+                    return self.send_error(getattr(exc, "status", 503), str(exc))
                 return self.serve_file_range(target, mime, head_only)
             if head_only:
                 mime = "audio/wav" if mode == "dsd_wav" else "audio/mpeg"
@@ -2307,7 +2416,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             target, mime = transcode_to_audio(item, self.server.config, mode)
         except RuntimeError as exc:
-            return self.send_error(501, str(exc))
+            # R598: a file the decoder cannot read is 415, a bad moment is
+            # 503.  The page cannot see either status (an <audio> error
+            # carries no body), which is what the probe endpoint is for.
+            return self.send_error(getattr(exc, "status", 503), str(exc))
         return self.serve_file_range(target, mime, head_only)
 
     def serve_file_range(self, target, mime, head_only=False, dlna=False):
@@ -2408,22 +2520,34 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "mp3")
             except RuntimeError as exc:
-                return self.send_error(501, str(exc))
+                # R598: a file the decoder cannot read is 415, a bad moment is
+                # 503.  The page cannot see either status (an <audio> error
+                # carries no body), which is what the probe endpoint is for.
+                return self.send_error(getattr(exc, "status", 503), str(exc))
         elif mode == "dsd_wav":
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "dsd_wav")
             except RuntimeError as exc:
-                return self.send_error(501, str(exc))
+                # R598: a file the decoder cannot read is 415, a bad moment is
+                # 503.  The page cannot see either status (an <audio> error
+                # carries no body), which is what the probe endpoint is for.
+                return self.send_error(getattr(exc, "status", 503), str(exc))
         elif mode == "ape_flac":
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "ape_flac")
             except RuntimeError as exc:
-                return self.send_error(501, str(exc))
+                # R598: a file the decoder cannot read is 415, a bad moment is
+                # 503.  The page cannot see either status (an <audio> error
+                # carries no body), which is what the probe endpoint is for.
+                return self.send_error(getattr(exc, "status", 503), str(exc))
         elif item.get("cue_track"):
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "cue_flac")
             except RuntimeError as exc:
-                return self.send_error(501, str(exc))
+                # R598: a file the decoder cannot read is 415, a bad moment is
+                # 503.  The page cannot see either status (an <audio> error
+                # carries no body), which is what the probe endpoint is for.
+                return self.send_error(getattr(exc, "status", 503), str(exc))
         else:
             target = item["path"]
             mime = upnp_resource_mime(item)
@@ -2434,7 +2558,10 @@ class Handler(BaseHTTPRequestHandler):
             start = safe_float((query or {}).get("start", ["0"])[0])
             command, mime, env = transcode_command(item, self.server.config, mode, start)
         except RuntimeError as exc:
-            return self.send_error(501, str(exc))
+            # R598: a file the decoder cannot read is 415, a bad moment is
+            # 503.  The page cannot see either status (an <audio> error
+            # carries no body), which is what the probe endpoint is for.
+            return self.send_error(getattr(exc, "status", 503), str(exc))
         try:
             with ffmpeg_slot(self.server.config, timeout=2):
                 process = None

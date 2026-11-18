@@ -40,6 +40,43 @@ def parse_track_number(value):
     return number if 1 <= number <= 999999 else 0
 
 
+def parse_year(value):
+    """Return a four-digit year from the shapes date tags actually use.
+
+    ``date``/``TDRC``/``©day`` arrive as ``2020``, ``2020-05-01`` or
+    ``2020-05-01T00:00:00``; ``TYER`` as bare digits.  A value that carries no
+    four-digit year is not a year, so it yields 0 rather than a guess -- the
+    caller stores 0 and the UI simply shows nothing.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if 1000 <= value <= 2999 else 0
+    text = clean_tag(value)
+    if not text:
+        return 0
+    match = re.search(r"(?<!\d)(\d{4})(?!\d)", text)
+    if not match:
+        return 0
+    year = int(match.group(1))
+    return year if 1000 <= year <= 2999 else 0
+
+
+def parse_date_text(value):
+    """Return the tag text of a date tag, keeping its original shape.
+
+    The library's canonical field for the year is ``date`` -- that is what
+    ``metadata_service.TRACK_METADATA_FIELDS`` writes back into ``TDRC`` and
+    what the candidate dialog compares.  Storing a truncated year here would
+    make a round-trip lose ``2019-08-30``.
+    """
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    return clean_tag(value)
+
+
 def artist_title_from_filename(path):
     if not isinstance(path, str):
         return "", ""
@@ -82,14 +119,33 @@ def cue_value(line):
 
 
 def normalize_probe_tags(raw_tags):
-    """Normalize ffprobe/format tag aliases into the library's six fields."""
+    """Normalize ffprobe/format tag aliases into the library's fields.
+
+    R591 split ``album_artist`` out of ``artist``.  The two used to share one
+    alias list, which meant the key ``album_artist`` was never produced at all:
+    a compilation's album artist survived only as long as the file had no
+    ``ARTIST`` tag, and ``tracks.album_artist`` -- a column the album grouping
+    already prefers over ``artist`` -- stayed empty for every non-CUE track.
+    ``artist`` still falls back to ``album_artist`` when the file carries no
+    track artist, so a file tagged with only ``ALBUMARTIST`` keeps the name it
+    used to show.
+    """
     aliases = {
         "title": ("title", "tit2", "\xa9nam"),
-        "artist": ("artist", "artists", "album_artist", "albumartist", "performer", "performers", "author", "tpe1", "\xa9art"),
+        "artist": ("artist", "artists", "performer", "performers", "author", "tpe1", "\xa9art"),
         "album": ("album", "talb", "\xa9alb"),
+        "album_artist": ("album_artist", "albumartist", "album artist", "tpe2", "aart", "\xa9aart"),
         "composer": ("composer", "composers", "tcom", "\xa9wrt"),
         "genre": ("genre", "genres", "tcon", "\xa9gen"),
         "track_no": ("track", "tracknumber", "track_number", "trck", "trkn", "\xa9trk", "tracknum", "disktrack"),
+        "disc_no": ("disc", "discnumber", "disknumber", "disc_number", "disk_number", "disk", "tpos", "\xa9dis"),
+        "date": ("date", "year", "tyer", "tdrc", "tdor", "originaldate", "\xa9day"),
+        "comment": ("comment", "comments", "comm", "\xa9cmt"),
+    }
+    parsers = {
+        "track_no": parse_track_number,
+        "disc_no": parse_track_number,
+        "date": parse_date_text,
     }
     raw_tags = raw_tags if isinstance(raw_tags, dict) else {}
     normalized = {}
@@ -98,10 +154,11 @@ def normalize_probe_tags(raw_tags):
             normalized[key.strip().lower()] = value
     tags = {}
     for field, keys in aliases.items():
+        parse = parsers.get(field, clean_tag)
         for key in keys:
             value = normalized.get(key)
             if value:
-                parsed = parse_track_number(value) if field == "track_no" else clean_tag(value)
+                parsed = parse(value)
                 if parsed:
                     tags[field] = parsed
                     break
@@ -109,8 +166,16 @@ def normalize_probe_tags(raw_tags):
         if not isinstance(key, str):
             continue
         name = key.lower()
-        if name in ("title", "artist", "album", "composer", "genre") and value:
+        if name in ("title", "artist", "album", "album_artist", "composer", "genre", "comment") and value:
             cleaned = clean_tag(value)
             if cleaned:
                 tags.setdefault(name, cleaned)
+    if not tags.get("artist") and tags.get("album_artist"):
+        tags["artist"] = tags["album_artist"]
+    # ``year`` is the numeric projection of ``date``: the column needs an
+    # integer to sort on, the tag round-trip needs the original text.  Both are
+    # derived here so they cannot disagree.
+    year = parse_year(tags.get("date"))
+    if year:
+        tags["year"] = year
     return tags

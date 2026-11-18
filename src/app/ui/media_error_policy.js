@@ -15,6 +15,29 @@
     return CODES[Number(code)] || "unknown";
   }
 
+  // R598: 服务端现在会区分「这个文件解不开」和「这会儿不行」。客户端拿到的
+  // 只有 <audio> 的 MediaError（没有状态码、没有响应体），所以出错后要问一句
+  // /api/transcode/status。三种结论对应三种处理：
+  //   permanent —— 文件本身解不开，记进「放不了」名单，下次直接跳过；
+  //   transient —— 机器这会儿不行（磁盘满、转码排队、超时），跳过但**不记名**，
+  //                否则一次磁盘满会把整张专辑永久拉黑；
+  //   unknown   —— 问不到（老服务端、请求超时），保持原来的行为。
+  function classification(failure) {
+    if (!failure || typeof failure !== "object") return "unknown";
+    const code = String(failure.code || "");
+    if (!code) return "unknown";
+    return failure.permanent === true ? "permanent" : "transient";
+  }
+
+  // 停下来时该说什么：机器的问题要报机器的话，不能一律说「无法播放」。
+  function stopMessage(input) {
+    const state = input || {};
+    if (state.classification === "transient") {
+      return String(state.serverMessage || "") || "转码暂时不可用，请稍后重试";
+    }
+    return `连续 ${MAX_CONSECUTIVE} 首无法播放，已停止。`;
+  }
+
   // 返回 "dsd-unsupported" | "stop" | "next"
   //   streak 是**本次失败之前**已经连续失败的次数。
   function decide(input) {
@@ -67,7 +90,7 @@
   }
 
   global.fnAudioMediaErrorPolicy = {
-    MAX_CONSECUTIVE, MAX_UNPLAYABLE, classify, decide, forgetUnplayable, isUnplayable,
-    markUnplayable, nextPlayableIndex,
+    MAX_CONSECUTIVE, MAX_UNPLAYABLE, classification, classify, decide, forgetUnplayable,
+    isUnplayable, markUnplayable, nextPlayableIndex, stopMessage,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -204,8 +204,18 @@ DEBT_AFTER_MOVE_OUT = 8530
 # three throw sites that used to reach the UI thread (TLS stack assembly, the
 # keystore write, and the WebView SSL-error callback dereferencing a null
 # profile); FnOsAuthClient.connect now wraps the request build and the enqueue.
-JAVA_TOTAL_FILES = 67
-JAVA_TOTAL_LINES = 15648
+# R588 re-measured: same 67 files, +104 lines. The sleep timer is the first
+# feature in a while that is mostly Java: PlaybackService owns the deadline (a
+# pending handler, a SharedPreferences key, re-arm on process reclaim), the
+# bridge forwards it from the page, and MainActivity registers the new policy
+# script. Still no new Java file, and the audited faces are untouched.
+# R607 re-measured: 68 files, 15,914 lines. One new file is the first JVM test in
+# this package to pin a login-hop table: FnOsAuthClient grew by the errno
+# semantics measured against fnOS 1.37.3 and by nextAttemptAfterFailure(), which
+# stops swapping `user` for `username` after a rejected password. The audited
+# faces are untouched.
+JAVA_TOTAL_FILES = 68
+JAVA_TOTAL_LINES = 15914
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

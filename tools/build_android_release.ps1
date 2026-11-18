@@ -91,8 +91,21 @@ if (-not $apksigner -or -not $aapt) {
 
 Push-Location -LiteralPath $androidRoot
 try {
-    & .\gradlew.bat :app:assembleRelease
-    if ($LASTEXITCODE -ne 0) { throw "Android release build failed with exit code $LASTEXITCODE." }
+    # javac writes its "deprecated API" notes to stderr, and under
+    # $ErrorActionPreference = "Stop" PowerShell turns any stderr line from a
+    # native command into a terminating NativeCommandError -- so a perfectly good
+    # build aborts here before $LASTEXITCODE is ever read. The exit code is the
+    # only signal that means anything for this call.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & .\gradlew.bat :app:assembleRelease
+        $gradleExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($gradleExit -ne 0) { throw "Android release build failed with exit code $gradleExit." }
 }
 finally {
     Pop-Location

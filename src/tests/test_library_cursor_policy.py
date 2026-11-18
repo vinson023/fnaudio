@@ -16,6 +16,7 @@ from library_cursor_policy import (
     encode_track_cursor,
 )
 from library_query_spec import TRACK_SORT_COLUMNS, parse_library_page_query
+from library_write import track_sort_value
 
 SORT_KEYS = ("title", "artist", "album", "format", "added", "track_no")
 TEXT_SORT_KEYS = {"title", "artist", "album", "format"}
@@ -239,12 +240,18 @@ class LibraryCursorEquivalenceTests(unittest.TestCase):
         cls.conn.row_factory = sqlite3.Row
         cls.conn.execute(
             "CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT, artist TEXT, album TEXT,"
-            " format TEXT, added_ns INTEGER, track_no INTEGER)"
+            " format TEXT, added_ns INTEGER, track_no INTEGER,"
+            " disc_no INTEGER NOT NULL DEFAULT 0, track_sort INTEGER NOT NULL DEFAULT 0)"
         )
+        rows = [
+            dict(row, disc_no=row.get("disc_no", 0),
+                 track_sort=track_sort_value(row.get("disc_no", 0), row["track_no"]))
+            for row in ROWS
+        ]
         cls.conn.executemany(
-            "INSERT INTO tracks (id, title, artist, album, format, added_ns, track_no)"
-            " VALUES (:id, :title, :artist, :album, :format, :added_ns, :track_no)",
-            ROWS,
+            "INSERT INTO tracks (id, title, artist, album, format, added_ns, track_no, disc_no, track_sort)"
+            " VALUES (:id, :title, :artist, :album, :format, :added_ns, :track_no, :disc_no, :track_sort)",
+            rows,
         )
 
     @classmethod
@@ -255,6 +262,17 @@ class LibraryCursorEquivalenceTests(unittest.TestCase):
         if sort_key == "added":
             return row["added_ns"]
         if sort_key == "track_no":
+            # R591: the album order is disc then track, folded into one integer
+            # by ``library_write.track_sort_value``.  The ``track_no`` fallback
+            # is what rows written by an older build still read as, and 0/negative
+            # track numbers sort last exactly as before.  Rows built straight from
+            # ROWS carry no ``track_sort`` column, which is the fallback case.
+            try:
+                folded = row["track_sort"]
+            except (KeyError, IndexError):
+                folded = 0
+            if folded > 0:
+                return folded
             return 2147483647 if row["track_no"] <= 0 else row["track_no"]
         return row[sort_key]
 

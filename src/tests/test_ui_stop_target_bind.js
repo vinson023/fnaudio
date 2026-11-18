@@ -122,6 +122,7 @@ function setup() {
     functionSource("clock"),
     functionSource("setTextContentIfChanged"),
     functionSource("setPlayButton"),
+    functionSource("seekPositionIsSettled"),
     functionSource("updateRemoteUi"),
     functionSource("stopPlayback"),
     "globalThis.h = { stopPlayback, updateRemoteUi, remoteDeviceId };",

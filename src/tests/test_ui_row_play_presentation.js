@@ -11,6 +11,8 @@ function extracted(pattern, label) {
 }
 
 const commitQueueSource = extracted(/^async function commitQueue\([\s\S]*?^\}/m, "commitQueue");
+// R587: a confirmed queue also keeps the remembered shuffle order in step.
+const reconcileShuffleSource = extracted(/^function reconcileShuffleOrder\([\s\S]*?^\}/m, "reconcileShuffleOrder");
 const applyConfirmedSource = extracted(/^function applyConfirmedQueue\([\s\S]*?^\}/m, "applyConfirmedQueue");
 const playByIdSource = extracted(/^async function playById\([\s\S]*?^\}/m, "playById");
 const streamSource = extracted(/^function beginQueueStream\([\s\S]*?^\}/m, "beginQueueStream");
@@ -86,7 +88,7 @@ function build(overrides) {
   };
   vm.createContext(context);
   vm.runInContext(
-    [presentationSource, applyConfirmedSource, commitQueueSource, playByIdSource,
+    [presentationSource, reconcileShuffleSource, applyConfirmedSource, commitQueueSource, playByIdSource,
       streamSource,
       appendSource,
       "globalThis.h = { playById: id => playById(id), append: () => appendNextQueuePage() };"].join("\n\n"),

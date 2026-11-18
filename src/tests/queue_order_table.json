@@ -1,0 +1,25 @@
+{
+  "note": "One table, two implementations. R587 put the queue navigation rule in src/app/server/queue_order_policy.py and src/app/ui/queue_order_policy.js; both test suites read this file so the two copies cannot drift apart silently.",
+  "max_items": 50000,
+  "repeat_modes": ["off", "all", "one"],
+  "cases": [
+    {"why": "an empty queue has nowhere to go", "index": -1, "length": 0, "repeat": "off", "next": -1, "previous": -1},
+    {"why": "an empty queue stays empty even with repeat all", "index": 0, "length": 0, "repeat": "all", "next": -1, "previous": -1},
+    {"why": "no current row starts at the first row", "index": -1, "length": 3, "repeat": "off", "next": 0, "previous": -1},
+    {"why": "first of three, repeat off", "index": 0, "length": 3, "repeat": "off", "next": 1, "previous": -1},
+    {"why": "middle of three, repeat off", "index": 1, "length": 3, "repeat": "off", "next": 2, "previous": 0},
+    {"why": "the queue ends rather than wrapping", "index": 2, "length": 3, "repeat": "off", "next": -1, "previous": 1},
+    {"why": "repeat all wraps forwards", "index": 2, "length": 3, "repeat": "all", "next": 0, "previous": 1},
+    {"why": "repeat all wraps backwards", "index": 0, "length": 3, "repeat": "all", "next": 1, "previous": 2},
+    {"why": "repeat one restarts the current row", "index": 1, "length": 3, "repeat": "one", "next": 1, "previous": 1},
+    {"why": "repeat one at the tail does not wrap", "index": 2, "length": 3, "repeat": "one", "next": 2, "previous": 2},
+    {"why": "repeat one with no current row still starts at the first", "index": -1, "length": 3, "repeat": "one", "next": 0, "previous": -1},
+    {"why": "a single row ends, it does not replay", "index": 0, "length": 1, "repeat": "off", "next": -1, "previous": -1},
+    {"why": "repeat all keeps a one-row queue alive", "index": 0, "length": 1, "repeat": "all", "next": 0, "previous": 0},
+    {"why": "repeat one on a single row is the same row", "index": 0, "length": 1, "repeat": "one", "next": 0, "previous": 0},
+    {"why": "an unknown repeat mode falls back to off", "index": 1, "length": 3, "repeat": "shuffle", "next": 2, "previous": 0},
+    {"why": "a non-integer cursor means nothing is playing", "index": 1.5, "length": 3, "repeat": "off", "next": 0, "previous": -1},
+    {"why": "a negative length is an empty queue", "index": 0, "length": -1, "repeat": "all", "next": -1, "previous": -1},
+    {"why": "length is clamped to MAX_ITEMS, so the last row is 49999", "index": 0, "length": 60000, "repeat": "all", "next": 1, "previous": 49999}
+  ]
+}

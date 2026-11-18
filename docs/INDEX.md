@@ -8,6 +8,13 @@
 - `LIBRARY_CONNECTION_POOL.md`：曲库索引空闲连接复用开关的默认值、严格布尔取值口径、关闭即排空空闲句柄的保证与观测面。
 - `LIBRARY_CURSOR_NULL_GROUPS.md`：浏览器游标续页面对 SQL NULL 标签组的可寻址边界、前瞻行锚点、降序末块残差与写路径归一/一次性迁移的分工。
 - `LIBRARY_CHANGE_DETECTION.md`：inotify、generation、溢出回退与符号链接边界。
+- `LIBRARY_VIEWS_PLAN.md`：库浏览体验的 P1–P3 计划（保存的视图／搜索字段限定／能力协商／封面键）——每条建议的指标、会失败的守卫与复核方式，以及从 Audio Station 抄了会更差的三条「不值得做」。
+- `ANALYSIS_LIBRARY_INDEX_VS_DS_AUDIO.md`：Audio Station 音乐库与媒体索引的逆向结论，与 fnAudio 索引的 25 行差异总表、证据分档（APK 可验证／SPK 只能推断）与 10 万曲基准。
+- `ANALYSIS_PLAYER_QUEUE_VS_DS_AUDIO.md`：Audio Station 播放器与播放队列的逆向结论——队列是「源列表 + 播放序排列」，随机是打乱排列而非随机取下一首；与 fnAudio 的 20 行差异总表、值得借鉴的四条与不值得借鉴的五条。
+- `ANALYSIS_TAGS_COVERS_LYRICS_CUE_VS_DS_AUDIO.md`：Audio Station 的标签/封面/歌词/CUE 逆向结论——标签九字段但移动端只读、封面按 `MD5(bundle)` 缓存且无失效、歌词是三级瀑布且负缓存永久、客户端零 CUE 概念；与 fnAudio 的差异总表、值得借鉴的十条（P1 两条：编码打分、`album_artist` 独立，已由 R591 全部落地）与不借鉴的六条（2026-11-18 已裁定不再排期）。
+- `ANALYSIS_UI_INTERACTION_VS_DS_AUDIO.md`：Audio Station 的界面与交互逆向结论——壳层/列表/播放器/模式/状态/触控六面的证据与数值（抽屉 280dp、行高 60dp、播放条 96dp = 70dp 可视 + 52dp 进度带、进度条命中区 52:4），与 fnAudio 的差异总表、值得借鉴的六条（P1 两条：seek 松手后 200ms 稳定窗、进度条命中区）与不借鉴的六条（已裁定不再排期）；§7 与 §10 记了 R594 的落地状态——四条落地、两条经复查撤回、一条关闭。
+- `ANALYSIS_DEVICE_OUTPUT_VS_DS_AUDIO.md`：Audio Station 的设备输出与系统集成的逆向结论——七种播放器类型（服务端 ∪ 手机本地 Chromecast）、十个字段的目标模型（分组/密码/能力位）、**能力位采集了但客户端从不读取**、自研三态音频焦点（投送中不暂停、duck 可配）、`mediasession` 包与 Android Auto；与 fnAudio 的差异总表，以及一个真 bug：远端目标下网页音量滑块只改本机元素，而服务端 `volume` 动作与 mixer 拒绝文案都已就绪。值得借鉴三条（P1 一条）、不借鉴六条（已裁定不再排期）；§7 与 §10 记了 R596 的落地状态——P1/P2 已落地，P3 duck-vs-pause 因只能真机验证而关闭。
+- `PERF_STABILITY_PLAN.md`：播放稳定性与性能的 P0–P2 计划（同上三件套），含已撤回条目与负责人裁定的边界。
 - `PLAYBACK_OUTPUT_POLICY.md`：输出适配器、upmpdcli 角色、硬件 Mixer 与 DSD 策略。
 - `ANDROID_HTTPS_PINNING.md`：Android 自签名 HTTPS 的按连接 TOFU 指纹固定。
 - `ANDROID_EMULATOR_TESTING.md`：Android API 35 模拟器的连接记录、TLS 固定与 Media3 自动化入口及验收边界。

@@ -47,6 +47,8 @@ function setup(overrides) {
   };
   vm.createContext(context);
   vm.runInContext([
+    // R587: a confirmed queue also keeps the remembered shuffle order in step.
+    functionSource("reconcileShuffleOrder"),
     functionSource("applyCoreSnapshot"),
     functionSource("applyConfirmedQueue"),
     "globalThis.g = { core: (...args) => applyCoreSnapshot(...args), confirmed: (...args) => applyConfirmedQueue(...args) };",

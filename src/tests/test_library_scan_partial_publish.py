@@ -100,7 +100,7 @@ class ScanSinkTests(unittest.TestCase):
             second = write_tracks(os.path.join(root, "two"), 1)
             calls = []
 
-            def fake_scan(library_root, previous_items, config, deadline, offset, sink):
+            def fake_scan(library_root, previous_items, config, deadline, offset, sink, progress=None):
                 calls.append((library_root, offset, sink))
                 sink.append(audio_item(library_root, "track-%s.flac" % os.path.basename(library_root)))
                 return list(sink), "sig-%s" % os.path.basename(library_root)
@@ -123,7 +123,7 @@ class ScanSinkTests(unittest.TestCase):
             second = write_tracks(os.path.join(root, "two"), 1)
             calls = []
 
-            def fake_scan(library_root, previous_items, config, deadline, offset, sink):
+            def fake_scan(library_root, previous_items, config, deadline, offset, sink, progress=None):
                 calls.append((library_root, offset, sink))
                 name = "track-%s.flac" % os.path.basename(library_root)
                 return [audio_item(library_root, name)], "sig-%s" % os.path.basename(library_root)
@@ -204,7 +204,7 @@ class PartialPublishTests(unittest.TestCase):
             config, music = self.refresh_config(root)
             read = [audio_item(music, "track-00.flac")]
 
-            def scan(scan_config, previous_items, deadline, sink):
+            def scan(scan_config, previous_items, deadline, sink, progress=None):
                 sink.extend(read)
                 raise library.ScanTimedOut("library scan made no progress for 1 seconds")
 
@@ -225,7 +225,7 @@ class PartialPublishTests(unittest.TestCase):
             config, music = self.refresh_config(root)
             read = [audio_item(music, "track-00.flac")]
 
-            def scan(scan_config, previous_items, deadline, sink):
+            def scan(scan_config, previous_items, deadline, sink, progress=None):
                 sink.extend(read)
                 raise library.ScanCancelled("library scan cancelled")
 
@@ -242,7 +242,7 @@ class PartialPublishTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             config, music = self.refresh_config(root)
 
-            def scan(scan_config, previous_items, deadline, sink):
+            def scan(scan_config, previous_items, deadline, sink, progress=None):
                 raise library.ScanTimedOut("library scan made no progress for 1 seconds")
 
             with patch.object(library, "scan_libraries", side_effect=scan), \

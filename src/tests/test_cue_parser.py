@@ -351,7 +351,28 @@ class CueParserTests(unittest.TestCase):
         self.assertEqual([track["start"] for track in tracks], [240.0, 600.0])
 
     def test_non_iterable_lines_fall_back_to_empty_source(self):
-        self.assertEqual(parse_cue_structure(object(), "fallback"), {"album": "fallback", "album_artist": "未知艺术家", "tracks": []})
+        self.assertEqual(
+            parse_cue_structure(object(), "fallback"),
+            {"album": "fallback", "album_artist": "未知艺术家", "tracks": [], "has_index": False},
+        )
+
+    def test_a_sheet_without_any_index_line_says_so(self):
+        # R591: ``has_index`` is the sheet-level fact the scanner reads to leave
+        # such a file as one ordinary track.  A sheet that names tracks but never
+        # says where they start describes no boundaries at all, and expanding it
+        # used to produce one zero-length row per TRACK line.
+        without = parse_cue_structure(['FILE "disc.flac" WAVE', "  TRACK 01 AUDIO", '    TITLE "One"', "  TRACK 02 AUDIO"])
+        self.assertFalse(without["has_index"])
+        self.assertEqual(len(without["tracks"]), 2, "the parser still reports what it saw")
+        with_index = parse_cue_structure([
+            'FILE "disc.flac" WAVE', "  TRACK 01 AUDIO", "    INDEX 01 00:00:00",
+            "  TRACK 02 AUDIO", "    INDEX 01 04:12:00",
+        ])
+        self.assertTrue(with_index["has_index"])
+        # INDEX 00 is a pregap marker, not a start, so on its own it must not
+        # count as "this sheet says where the tracks begin".
+        pregap_only = parse_cue_structure(['FILE "disc.flac" WAVE', "  TRACK 01 AUDIO", "    INDEX 00 00:00:00"])
+        self.assertFalse(pregap_only["has_index"])
 
 
 if __name__ == "__main__":

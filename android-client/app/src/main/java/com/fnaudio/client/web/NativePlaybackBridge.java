@@ -158,6 +158,41 @@ public final class NativePlaybackBridge {
         startPlaybackService(new Intent(context, PlaybackService.class).setAction(PlaybackService.ACTION_LOCAL_ENABLE), false);
     }
 
+    /**
+     * R588: hands the sleep timer's absolute deadline to the foreground service.
+     *
+     * The page keeps its own copy for the countdown, but a WebView that is
+     * hidden, throttled or reclaimed cannot be trusted to fire a timer while the
+     * decoder keeps playing -- the service can, and it persists the number so a
+     * process reclaim re-arms it.
+     */
+    @JavascriptInterface
+    public void scheduleSleepTimer(double deadlineEpochMs) {
+        if (!Double.isFinite(deadlineEpochMs) || deadlineEpochMs <= 0d) {
+            cancelSleepTimer();
+            return;
+        }
+        sendSleepTimerDeadline(Math.round(deadlineEpochMs));
+    }
+
+    @JavascriptInterface
+    public void cancelSleepTimer() {
+        sendSleepTimerDeadline(0L);
+    }
+
+    private void sendSleepTimerDeadline(long deadlineMs) {
+        Intent intent = new Intent(context, PlaybackService.class)
+                .setAction(PlaybackService.ACTION_SLEEP_TIMER)
+                .putExtra(PlaybackService.EXTRA_SLEEP_TIMER_DEADLINE_MS, Math.max(0L, deadlineMs));
+        try {
+            startPlaybackService(intent, false);
+        } catch (RuntimeException ignored) {
+            // Android refuses a background service start when the app is not
+            // visible. The page still holds the deadline and re-arms it the next
+            // time it is opened, so this is a missed backstop, not a lost timer.
+        }
+    }
+
     @JavascriptInterface
     public void requestJson(String requestId, String method, String url, String headersJson, String body) {
         String safeRequestId = requestId == null ? "" : requestId.trim();
@@ -202,7 +237,11 @@ public final class NativePlaybackBridge {
         provider.dispatchWhenReady(controller -> {
             controller.setMediaItems(items, safeIndex, positionMs);
             controller.setRepeatMode(repeatMode(repeat));
-            controller.setShuffleModeEnabled(shuffle);
+            // R587: the queue arrives in play order, because the WebView already
+            // reordered it when shuffle was switched on. Letting ExoPlayer shuffle
+            // as well would randomise a second time: the row the UI highlights and
+            // the row the decoder plays would drift apart.
+            controller.setShuffleModeEnabled(false);
             controller.prepare();
             if (autoPlay) controller.play();
         });
@@ -291,7 +330,10 @@ public final class NativePlaybackBridge {
 
     @JavascriptInterface
     public void setShuffle(boolean enabled) {
-        provider.dispatchWhenReady(controller -> controller.setShuffleModeEnabled(enabled));
+        // R587: kept for the WebView contract, but the host player never shuffles
+        // on its own -- shuffle is an order the page applies to the queue before
+        // handing it over. See setQueue().
+        provider.dispatchWhenReady(controller -> controller.setShuffleModeEnabled(false));
     }
 
     private List<MediaItem> parseItems(JSONArray array) {

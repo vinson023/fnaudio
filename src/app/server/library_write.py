@@ -35,6 +35,11 @@ NULLABLE_LABEL_COLUMNS = (
     "genre",
     "format",
     "mime",
+    # R591 added the comment column.  No keyset predicate reads it, but it is
+    # still a text column dumped from the same dict as ``item_json``: letting an
+    # explicit None through would store SQL NULL in the column while the JSON
+    # copy says ``null``, which is the disagreement this collapse exists to stop.
+    "comment",
 )
 
 
@@ -157,6 +162,35 @@ def root_index_summary(items, roots=()):
     return summary
 
 
+def track_sort_value(disc_no, track_no):
+    """Fold the album order (disc, then track) into one sortable integer.
+
+    The keyset cursor compares a single expression, so ``ORDER BY disc,
+    track_no`` would have forced a composite cursor key through the cursor
+    policy, the page-result projection and both expression indexes.  Folding the
+    pair into ``disc*1000 + track_no`` keeps the contract at one column.
+
+    Zero means "no usable album order".  A track tagged ``disc=2 track=3``
+    sorts after every track of disc 1 and before ``disc=3 track=1``; a track
+    with no disc tag keeps its plain track number, which is exactly what the
+    column held before R591 and what the SQL fallback reads for rows written by
+    an older build.
+    """
+    try:
+        disc = int(disc_no)
+    except (TypeError, ValueError, OverflowError):
+        disc = 0
+    try:
+        track = int(track_no)
+    except (TypeError, ValueError, OverflowError):
+        track = 0
+    if track <= 0 or track > 999:
+        return 0
+    if disc <= 0 or disc > 99:
+        return track
+    return disc * 1000 + track
+
+
 def prepare_track_persistence(item, *, safe_int, safe_float, dumps):
     """Prepare the immutable SQLite track and optional CUE rows.
 
@@ -174,6 +208,8 @@ def prepare_track_persistence(item, *, safe_int, safe_float, dumps):
         _bounded_path(source.get("folder")), source.get("title", ""),
         source.get("artist", ""), source.get("album", ""), safe_int(source.get("track_no")),
         source.get("album_artist", ""), source.get("composer", ""), source.get("genre", ""),
+        safe_int(source.get("disc_no")), safe_int(source.get("year")), source.get("comment", ""),
+        track_sort_value(safe_int(source.get("disc_no")), safe_int(source.get("track_no"))),
         source.get("format", ""), source.get("mime", ""), 1 if source.get("is_dsd") else 0,
         safe_float(source.get("duration")), safe_int(source.get("size")),
         safe_int(source.get("sample_rate")), safe_int(source.get("bit_depth")),

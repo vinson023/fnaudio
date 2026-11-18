@@ -22,6 +22,8 @@ const PROJECTIONS = [
   "deviceTargetKindLabel",
   "deviceTargetIsOnline",
   "deviceTargetStatusText",
+  // R596: the subtitle also carries whether the output can be turned down.
+  "targetVolumeNote",
   "deviceTargetDetail",
 ];
 
@@ -110,6 +112,22 @@ test("the subtitle prefers the reason a device is unusable over its capability l
     "USB DAC · 96k",
   );
   assert.equal(device.deviceTargetDetail({ id: "a", kind: "usb_dac", caps: ["96k"] }), "USB DAC · 96k");
+  // R596: a target that declares a fixed volume says so next to the rest of what
+  // the reader is choosing between, instead of being discovered by dragging.
+  assert.equal(
+    device.deviceTargetDetail({ id: "a", kind: "usb_dac", caps: ["96k"], capabilities: { volume: false } }),
+    "USB DAC · 96k · 固定音量",
+  );
+  assert.equal(
+    device.deviceTargetDetail({ id: "a", kind: "usb_dac", message: "USB 设备被拔出", capabilities: { volume: false } }),
+    "USB 设备被拔出 · 固定音量",
+  );
+  // An absent key is "unknown", not "unsupported": the UPnP push path sets its
+  // volume through the same MPD mixer as the DAC and does work.
+  assert.equal(
+    device.deviceTargetDetail({ id: "a", kind: "usb_dac", caps: ["96k"], capabilities: { seek: true } }),
+    "USB DAC · 96k",
+  );
   assert.equal(device.deviceTargetDetail({ id: "a", kind: "usb_dac" }), "USB DAC");
   assert.equal(device.deviceTargetDetail({ id: "a" }), "USB DAC");
 });

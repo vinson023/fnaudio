@@ -99,7 +99,20 @@ assert.match(css, /\.pager\.mobile-visible\{display:block!important\}/);
 // Guard the rule that actually renders: the 136px three-row footer is the one
 // that wins inside the 760px block, so pinning the retired 144px variant would
 // have protected nothing.
-assert.match(css, /\.player\{grid-template-columns:1fr!important;grid-template-rows:44px 24px 50px!important;height:136px!important/, "the mobile footer must stay a fixed 136px three-row grid");
+// R594 widened the middle row from 24px to 38px so the seek input has a fingertip
+// target instead of 8px.  The three rows plus the two 2px gaps still add up to the
+// same 136px, so the footer height -- the thing this assertion exists to protect --
+// is unchanged; only the split between the rows moved.
+assert.match(css, /\.player\{grid-template-columns:1fr!important;grid-template-rows:44px 38px 50px!important;height:136px!important/, "the mobile footer must stay a fixed 136px three-row grid");
+{
+  // The footer height is the invariant; the split between rows is not.  Doing the
+  // arithmetic here means a future row change has to keep the total honest instead
+  // of quietly growing the footer by a few pixels.
+  const rows = css.match(/grid-template-rows:(\d+)px (\d+)px (\d+)px!important;height:(\d+)px/);
+  assert.ok(rows, "the mobile footer keeps three explicit rows and its height");
+  const [first, second, third, total] = rows.slice(1).map(Number);
+  assert.equal(first + second + third + 2 * 2, total, "the three rows plus the two 2px gaps must still add up to the footer height");
+}
 assert.match(css, /\.player-actions\{display:none!important\}/, "the base mobile stylesheet must not restore the footer action row");
 const finalMobileContract = css.slice(css.lastIndexOf("/* Mobile navigation owns settings"));
 assert.match(css, /\.player-actions\{display:none!important\}/, "the mobile stylesheet must hide the footer action row");

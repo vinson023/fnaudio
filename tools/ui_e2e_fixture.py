@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import urllib.parse
@@ -71,6 +73,10 @@ TRACKS = [
         "url": "media/fixture-4",
     },
 ]
+
+# R585: saved library views, kept in memory for the duration of one test run.
+SAVED_VIEWS = []
+MAX_SAVED_VIEWS = 24
 
 
 # The real metadata service generally makes an initial request enqueue work,
@@ -261,6 +267,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
             offset = bounded_query_int((query.get("offset") or [""])[0], 0, 0, 100000)
             limit = bounded_query_int((query.get("limit") or [""])[0], 120, 1, 500)
             return self.send_json({"items": rows[offset:offset + limit], "count": len(rows), "limit": limit, "offset": offset}, head_only=head_only)
+        if path == "/api/library/views":
+            return self.send_json({"views": SAVED_VIEWS, "limit": MAX_SAVED_VIEWS}, head_only=head_only)
         if path == "/api/library/items":
             wanted = {value for value in str((query.get("ids") or [""])[0]).split(",") if value}
             return self.send_json({"items": [item for item in TRACKS if item["id"] in wanted]}, head_only=head_only)
@@ -278,6 +286,23 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 "exists": True,
                 "readable": True,
                 "supported_formats": ["DFF", "DSF", "FLAC", "MP3"],
+                # R585: the UI only offers saved views and the field-search hint
+                # when the status block advertises them, so the fixture must
+                # answer with the same shape the real server projects.
+                "capabilities": {
+                    "version": 1,
+                    "saved_views": {"enabled": True, "limit": MAX_SAVED_VIEWS},
+                    "search": {
+                        "mode": "fts5-trigram",
+                        "min_chars": 3,
+                        "field_syntax": True,
+                        "fields": ["title", "artist", "album", "album_artist", "composer", "genre", "folder", "path", "format"],
+                        "field_min_chars": 3,
+                    },
+                    "sort": {"keys": ["title", "artist", "album", "format", "added", "track_no"], "directions": ["asc", "desc"]},
+                    "views": ["all", "dsd", "recent", "random100", "favorites", "queue", "folders", "albums", "artists", "composers", "genres"],
+                    "formats": ["DFF", "DSF", "FLAC", "MP3"],
+                },
             }, head_only=head_only)
         if path == "/api/library/groups":
             view = str((query.get("view") or ["albums"])[0])
@@ -393,6 +418,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "invalid json"}, status=400)
         if not isinstance(payload, dict):
             return self.send_json({"ok": False, "error": "invalid payload"}, status=400)
+        if self.path.startswith("/api/library/views"):
+            return self.serve_saved_views(payload)
         if self.path.startswith("/api/state/maintenance"):
             action = str(payload.get("action") or "")
             if action == "prune-favorites":
@@ -420,6 +447,32 @@ class FixtureHandler(BaseHTTPRequestHandler):
             core["queue"] = [str(item.get("id") if isinstance(item, dict) else item) for item in queue[:MAX_QUEUE_ITEMS]]
             core["current"] = str(payload.get("current_id") or payload.get("current") or "")
         return self.send_json({"ok": True, "core": core, "state": {"initialized": True, "revision": 1}})
+
+    def serve_saved_views(self, payload):
+        global SAVED_VIEWS
+        action = str(payload.get("action") or "")
+        if action == "save":
+            view = payload.get("view") if isinstance(payload.get("view"), dict) else {}
+            name = str(view.get("name") or "").strip()[:48]
+            if not name:
+                return self.send_json({"ok": False, "error": "view name is required"}, status=400)
+            criteria = view.get("criteria") if isinstance(view.get("criteria"), dict) else {}
+            view_id = "sv_" + hashlib.sha1(name.casefold().encode("utf-8")).hexdigest()[:12]
+            entry = {
+                "id": view_id,
+                "name": name,
+                "criteria": criteria,
+                "created_at": 1,
+                "updated_at": int(time.time()),
+            }
+            SAVED_VIEWS = [entry] + [item for item in SAVED_VIEWS if item.get("id") != view_id]
+            del SAVED_VIEWS[MAX_SAVED_VIEWS:]
+            return self.send_json({"ok": True, "views": SAVED_VIEWS})
+        if action == "delete":
+            target = str(payload.get("id") or "")
+            SAVED_VIEWS = [item for item in SAVED_VIEWS if item.get("id") != target]
+            return self.send_json({"ok": True, "views": SAVED_VIEWS})
+        return self.send_json({"ok": False, "error": "unsupported action"}, status=400)
 
     def serve_control(self, payload, core):
         action = str(payload.get("action") or "")

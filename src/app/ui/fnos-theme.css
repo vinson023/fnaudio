@@ -515,7 +515,13 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
   .now-playing { grid-column: 1 !important; grid-row: 1 !important; }
   .transport { grid-column: 2 !important; grid-row: 1 !important; }
   .progress { grid-column: 1 !important; grid-row: 2 !important; }
-  .player-actions { grid-column: 2 !important; grid-row: 2 !important; justify-content: center !important; }
+  /* R603: right-aligned, like the wider layout.  Centring this row made the icons
+   * slide left the moment the window crossed 1100px -- measured on the fixture:
+   * the last icon sat 20px from the player's right edge at 1440, 103px at 1100 and
+   * 78px at 1000.  The owner's complaint is exactly that drift ("固定靠右不管宽度
+   * 怎么变都不能动"), and `end` keeps the 20px edge constant across the whole
+   * 761-1100 band.  `test_ui_player_actions_right_edge.js` holds it there. */
+  .player-actions { grid-column: 2 !important; grid-row: 2 !important; justify-content: end !important; }
 }
 @media (max-width: 760px) {
   :root { --ui-header-height: 104px; --ui-player-height: calc(144px + env(safe-area-inset-bottom, 0px)); }
@@ -1670,5 +1676,11 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
     background: var(--ui-surface) !important;
     border-color: var(--fn-line) !important;
     box-shadow: none !important;
+  }
+  /* 保存的视图：桌面端删除按钮只在行悬停时显形，触摸端没有指针可悬停，
+     所以静止态就淡显一半；点过之后粘住的悬停态也回到同一个值。 */
+  .saved-view-remove,
+  .saved-view-row:hover .saved-view-remove{
+    opacity: .6 !important;
   }
 }

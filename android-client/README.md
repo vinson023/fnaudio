@@ -1,6 +1,6 @@
 # fnAudio Android 客户端
 
-这是 fnAudio `0.2.163` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。当前配套服务端版本基线为 `0.2.163`。
+这是 fnAudio `0.2.165` 的轻量混合客户端：WebView 继续承载现有界面，Android Media3 前台媒体服务持有本机播放，并在远程输出时维护不解码音频的媒体会话。当前配套服务端版本基线为 `0.2.165`。
 
 ## 已实现
 
@@ -97,6 +97,31 @@ $env:ANDROID_HOME = 'D:\fnAudio\tools\android-sdk'
 
 Debug APK 使用 Android 调试证书，只适合当前开发验证，不应作为正式发布包。
 
+
+## 测试设备（约定，2026-11-18 起）
+
+**安卓 APP 的测试一律在实体机 `192.168.5.111:5555` 上完成**：SM-G965F / LineageOS 20 /
+Android 13（SDK 33）/ arm64-v8a，已装 `com.fnaudio.client`，`adb root` 可用。
+
+一条命令跑完构建、安装、全套 instrumentation 测试，跑完把正式包装回去：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_android_device.ps1
+```
+
+- 常用开关：`-TestClass <类名>` 只跑一个类、`-SkipBuild` 复用上次产物、
+  `-InstrumentArg key=value,...` 传 instrumentation 参数（如真 NAS 回放需要
+  `fnaudioHost/fnaudioUser/fnaudioPassword/fnaudioPort`）、`-RestoreRelease` 结束后装回 release 包。
+- **不要用 `assembleDebug` 直接装**：机上装的是 release 签名的包，debug 证书不同会
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，卸载重装会丢登录态。脚本用的是 `qaRelease`
+  （`initWith release` + `debuggable`，同包名同证书），所以 `adb install -r` 能覆盖、数据保留。
+- **不要用 `assembleEmulator`**：x86_64 + 包名 `com.fnaudio.client.emulator`，装到这台机上会
+  `INSTALL_FAILED_NO_MATCHING_ABIS`。
+- 连接：`adb connect 192.168.5.111:5555`。端口已固定，重启后仍在（见
+  `artifacts/adb-port-hook/README.md`）；万一被改掉用 `python tools/adb_wireless.py connect`。
+- 测试会清登录态：`MainActivityWebViewInstrumentedTest` 的「HTTPS 退出登录」用例会真的清掉
+  活动配置的 token。脚本默认快照并还原 `shared_prefs`，不要用 `-PreserveAppState:$false` 关掉它。
+- 下面这节模拟器流程**只在手机不可用时临时自测**，不作为验收证据。
 
 ## 本地模拟器验收
 

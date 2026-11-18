@@ -77,8 +77,10 @@ class LargeLibraryBenchmarkTests(unittest.TestCase):
             "added_desc": "idx_tracks_added_title_id_desc",
             "format_asc": "idx_tracks_format_nocase_title_id_asc",
             "format_desc": "idx_tracks_format_nocase_title_id_desc",
-            "track_no_asc": "idx_tracks_track_no_title_id_asc",
-            "track_no_desc": "idx_tracks_track_no_title_id_desc",
+            # R591 folded disc into the album order, so the expression these
+            # indexes cover (and therefore their names) changed with it.
+            "track_no_asc": "idx_tracks_track_sort_title_id_asc",
+            "track_no_desc": "idx_tracks_track_sort_title_id_desc",
         }
         self.assertEqual(set(result["sorted_pages"]), set(expected_indexes))
         for name, index_name in expected_indexes.items():

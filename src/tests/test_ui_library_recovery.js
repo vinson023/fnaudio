@@ -37,6 +37,9 @@ function harness(t, view, respond, configuredRoots = []) {
     groupViews: { albums: 'album', artists: 'artist', composers: 'composer', genres: 'genre' },
     $: id => nodes[id], displayText: String, sortDirectionFactor: () => 1,
     scanProgressText: () => '', renderLibraryHealth() {}, currentItem: () => null,
+    // R585: the status decorator now delegates capability negotiation to one
+    // call; the saved-view machinery is outside this test.
+    applyLibraryCapabilities() {},
     browseCursorForPage: () => '', rememberBrowsePageCursor() {},
     cancelReferencedItemHydrationSchedule() {}, cancelMetadataRowRender() {},
     cancelVisibleMetadataPrefetch() {}, cancelLibraryNavigationHoverDwell() {},

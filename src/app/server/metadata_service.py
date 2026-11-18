@@ -51,6 +51,7 @@ from file_permissions import preserve_owner_and_mode, secure_directory, secure_f
 from transcode import find_ffmpeg
 from audio_fingerprint import capability as fingerprint_capability, fingerprint as audio_fingerprint
 from embedded_lyrics import extract_embedded_lyrics
+from text_encoding_policy import decode_text
 from metadata_release_date import normalize_release_date
 from metadata_provider_payload import (
     MAX_PROVIDER_CANDIDATES, candidate_has_displayable_fields,
@@ -2238,11 +2239,14 @@ def read_local_lyrics(path, config=None):
             continue
         if len(raw) > MAX_PROVIDER_LYRICS_BYTES:
             continue
-        for encoding in ("utf-8-sig", "utf-16", "gb18030"):
-            try:
-                return raw.decode(encoding).strip()
-            except UnicodeError:
-                continue
+        # R591: the old chain stopped at gb18030, which accepts almost every byte
+        # pair -- a Big5 or Shift-JIS lyric file was decoded into mojibake with no
+        # error, and a Traditional Chinese .lrc had no tier at all.  The policy
+        # module owns BOM/UTF-8 detection, the per-library override and the
+        # scored legacy fallback.
+        text, _encoding = decode_text(raw, (config or {}).get("text_encoding", ""))
+        if text:
+            return text.strip()
     return ""
 
 
@@ -2319,6 +2323,12 @@ class MetadataService:
         # a dead pool and race through ``start()``, producing duplicate workers
         # or a transient unavailable response.
         self._lifecycle_lock = threading.RLock()
+        # R603: a config save stops the lanes without waiting for whatever is in
+        # flight, so the join happens on this reaper instead. ``_shutdown_lock``
+        # only guards handing out one reaper; it is never held while joining, or
+        # the status call that follows the save would queue behind it.
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_thread = None
         self._status_cache_lock = threading.RLock()
         self._status_snapshot = None
         self._status_snapshot_at = 0.0
@@ -2842,6 +2852,11 @@ class MetadataService:
                 )
 
     def start(self):
+        # A config save may have signalled a stop and left the join to a reaper.
+        # Clearing ``stop_event`` before that generation leaves would let it run
+        # into the new one, so wait for the reaper first.  Done outside the
+        # lifecycle lock because the reaper never takes it: no lock order here.
+        self._await_pending_shutdown()
         with self._lifecycle_lock:
             fetch_alive = bool(self.fetch_threads) and all(
                 worker is not None and worker.is_alive() for worker in self.fetch_threads
@@ -3104,55 +3119,129 @@ class MetadataService:
         """
         METADATA_CONNECTION_POOL.drop(os.path.abspath(library_db_path(self.config)))
 
-    def shutdown(self):
+    def shutdown(self, wait=True):
+        """Stop every lane, optionally without waiting for the join.
+
+        ``wait=False`` signals the stop and returns immediately; a reaper thread
+        finishes the join.  A config save uses that form because joining waits
+        for whatever is in flight, and a tag write is a synchronous file rewrite:
+        turning the switch off used to hold the HTTP response for as long as that
+        file took, which the owner reported as "保存要等好几秒".
+
+        The reaper joins the worker set captured at signal time, and ``start()``
+        waits for a pending reaper before clearing ``stop_event``.  Without both,
+        a restart could clear the event while the old generation was still
+        running and let two generations process the same job.
+        """
+        self.stop_event.set()
+        self.fetch_wake_event.set()
+        self.tag_wake_event.set()
+        self.priority_wake_event.set()
+        if not wait:
+            return self._shutdown_in_background()
         # Keep shutdown and restart mutually exclusive.  Clearing
         # ``stop_event`` while an old worker is still joining would let that
         # worker continue into the next lifecycle generation.
         with self._lifecycle_lock:
-            self.stop_event.set()
-            self.fetch_wake_event.set()
-            self.tag_wake_event.set()
-            self.priority_wake_event.set()
-            current = threading.current_thread()
-            started = time.monotonic()
-            hard_deadline = started + float(MAX_JOB_BUDGET_SECONDS + 1)
-            deadline = min(hard_deadline, started + self._worker_shutdown_timeout())
+            return self._join_workers()
 
-            def join(worker):
-                nonlocal deadline
-                if worker is None or worker is current or not worker.is_alive():
+    def _join_workers(self):
+        """Join every current lane, bounded by the job budget."""
+        current = threading.current_thread()
+        started = time.monotonic()
+        hard_deadline = started + float(MAX_JOB_BUDGET_SECONDS + 1)
+        deadline = min(hard_deadline, started + self._worker_shutdown_timeout())
+
+        def join(worker):
+            nonlocal deadline
+            if worker is None or worker is current or not worker.is_alive():
+                return
+            while True:
+                # Every lane clears its own shared wake event after waking, so a
+                # worker that reaches ``wait()`` just after a sibling cleared it
+                # would sleep its whole tick past shutdown and keep SQLite
+                # handles open.  Re-signalling between short join slices costs
+                # nothing (a set flag is idempotent) and guarantees each worker
+                # sees a wake-up before the budget expires.
+                self.fetch_wake_event.set()
+                self.tag_wake_event.set()
+                self.priority_wake_event.set()
+                # A provider chain claimed a moment before ``stop_event`` was set
+                # registers its deadline after the first measurement, so the
+                # budget has to follow *that deadline*.  Extending by the idle
+                # base timeout instead would slide the budget forward on every
+                # slice and turn one shared wait into a fresh wait per worker.
+                ends_at = self._active_job_ends_at()
+                if ends_at is not None:
+                    deadline = min(hard_deadline, max(deadline, ends_at + 1.0))
+                worker.join(timeout=min(0.25, max(0.0, deadline - time.monotonic())))
+                if not worker.is_alive() or time.monotonic() >= deadline:
                     return
-                while True:
-                    # Every lane clears its own shared wake event after waking, so a
-                    # worker that reaches ``wait()`` just after a sibling cleared it
-                    # would sleep its whole tick past shutdown and keep SQLite
-                    # handles open.  Re-signalling between short join slices costs
-                    # nothing (a set flag is idempotent) and guarantees each worker
-                    # sees a wake-up before the budget expires.
-                    self.fetch_wake_event.set()
-                    self.tag_wake_event.set()
-                    self.priority_wake_event.set()
-                    # A provider chain claimed a moment before ``stop_event`` was set
-                    # registers its deadline after the first measurement, so the
-                    # budget has to follow *that deadline*.  Extending by the idle
-                    # base timeout instead would slide the budget forward on every
-                    # slice and turn one shared wait into a fresh wait per worker.
-                    ends_at = self._active_job_ends_at()
-                    if ends_at is not None:
-                        deadline = min(hard_deadline, max(deadline, ends_at + 1.0))
-                    worker.join(timeout=min(0.25, max(0.0, deadline - time.monotonic())))
-                    if not worker.is_alive() or time.monotonic() >= deadline:
-                        return
 
-            for worker in list(self.fetch_threads):
-                join(worker)
-            join(self.tag_thread)
-            join(self.priority_thread)
-            # Every lane has been joined, so no handle is in flight: release the
-            # idle ones instead of keeping the index files pinned for a service
-            # that is winding down.
+        for worker in list(self.fetch_threads):
+            join(worker)
+        join(self.tag_thread)
+        join(self.priority_thread)
+        # Every lane has been joined, so no handle is in flight: release the
+        # idle ones instead of keeping the index files pinned for a service
+        # that is winding down.
+        self.release_idle_connections()
+        return not self._has_live_workers()
+
+    def _shutdown_in_background(self):
+        """Hand the join to a reaper so the caller is not held by an in-flight job."""
+        with self._shutdown_lock:
+            existing = self._shutdown_thread
+            if existing is not None and existing.is_alive():
+                return True
+            workers = [worker for worker in self._worker_snapshot() if worker is not None]
+            if not any(worker.is_alive() for worker in workers):
+                self.release_idle_connections()
+                return True
+            reaper = threading.Thread(
+                target=self._reap_workers,
+                args=(workers,),
+                name="fnaudio-metadata-shutdown",
+                daemon=True,
+            )
+            self._shutdown_thread = reaper
+            try:
+                reaper.start()
+            except Exception:
+                self._shutdown_thread = None
+                return False
+            return True
+
+    def _worker_snapshot(self):
+        workers = list(self.fetch_threads)
+        workers.extend((self.tag_thread, self.priority_thread))
+        return workers
+
+    def _reap_workers(self, workers):
+        """Join exactly the generation that was signalled, then release handles."""
+        current = threading.current_thread()
+        deadline = time.monotonic() + self._worker_shutdown_timeout()
+        for worker in workers:
+            if worker is current or not worker.is_alive():
+                continue
+            while worker.is_alive():
+                self.fetch_wake_event.set()
+                self.tag_wake_event.set()
+                self.priority_wake_event.set()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                worker.join(timeout=min(0.25, remaining))
+        if not self._has_live_workers():
             self.release_idle_connections()
-            return not self._has_live_workers()
+        return not self._has_live_workers()
+
+    def _await_pending_shutdown(self):
+        """Wait for a background shutdown before a new generation may start."""
+        reaper = self._shutdown_thread
+        if reaper is None or reaper is threading.current_thread() or not reaper.is_alive():
+            return
+        reaper.join(timeout=self._worker_shutdown_timeout() + 1.0)
 
     def _active_job_ends_at(self):
         """Absolute end of the longest in-flight job budget, or ``None``.

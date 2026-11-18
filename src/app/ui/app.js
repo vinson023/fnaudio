@@ -1,4 +1,23 @@
 const state = { items: [], view: "all", queue: [], index: -1, devices: [], repeat: "off", shuffle: false, folderPath: "", playTarget: "local", playTargetName: "本机播放", libraryDirPath: "", libraryDirParent: "" };
+// R587: the queue *is* the play order, so shuffle needs the order it replaced.
+// `shuffleOriginal` holds the ids of the list before shuffle was switched on;
+// it is not persisted, so a reload while shuffled forgets the pre-shuffle order
+// (the current row still stays put, which is the part the user can see).
+state.shuffleOriginal = [];
+// R587: playback capabilities (queue caps, position reporting) arrive from the
+// server; zero means "no limit known" and keeps the pre-R587 behaviour. Only the
+// remote cap is kept: the local queue is already bounded by the server's
+// MAX_QUEUE_TRACKS, so a client-side copy of that number would be a write-only
+// field (R158 removed one of those).
+state.queueRemoteMaxItems = 0;
+state.queueTruncationNotified = false;
+state.playbackCapabilitiesRequested = false;
+state.positionReportAt = 0;
+state.positionReportIntervalMs = 30000;
+// R588: absolute deadline (epoch ms), 0 = no timer. Never a remaining-seconds
+// countdown -- see sleep_timer_policy.js.
+state.sleepTimerDeadline = 0;
+state.sleepTimerTickId = 0;
 const $ = (id) => document.getElementById(id);
 const SETTINGS_SAVE_BUTTON_IDS = [
   "saveLibrarySettingsBtn",
@@ -157,6 +176,11 @@ state.accessProfileLoader = globalThis.fnAudioAccessProfileLoader?.create({
 state.mp3Transcode = localStorage.getItem("fnaudio.mp3Transcode") === "1";
 state.sortDir = localStorage.getItem("fnaudio.sortDir.v2") || "asc";
 state.sortKey = localStorage.getItem("fnaudio.sortKey.v1") || "title";
+// R594: rows or a wall of covers.  Audio Station lets the same list render as
+// either (FileSongListAdapter picks one of two view types per row); the rows
+// carry the metadata, the grid is what you want when you are hunting a cover.
+// Device-local on purpose: it is a density choice, not library state.
+state.albumLayout = localStorage.getItem("fnaudio.albumLayout.v1") === "grid" ? "grid" : "list";
 state.remoteStatus = null;
 state.dacStrategy = null;
 state.lyrics = [];
@@ -173,9 +197,25 @@ state.lyricsPollAttempts = 0;
 // [data-lyric] nodes were not painted by me", which is what renderLyrics() and
 // showLyricsMessage() declare whenever they rebuild the panel.
 state.lyricsActiveLine = null;
+// R591: when the reader last scrolled the lyric panel themselves.  Audio Station
+// stops following the song for three seconds after a manual scroll, so reading
+// ahead is not undone by the next line change.
+state.lyricsUserScrollAt = 0;
 state.seeking = false;
+// R594: when the last seek was dispatched.  The player keeps reporting the OLD
+// position for a tick or two after `seekTo`, and repainting the rail from it
+// makes the thumb snap back and then jump -- one visible stutter per seek.
+// Audio Station guards exactly this with a 200 ms window after the seek
+// (widget/MediaSeekBar.setProgress + getMIsWaitingForSeekCompleted).
+state.seekSettledAt = 0;
 state.streamOffset = 0;
 state.pendingSeekTime = null;
+// R587: where a restored session left off. Kept apart from pendingSeekTime
+// because that one is overwritten by every CUE start; this one belongs to one
+// specific row and is consumed by the first load of it.
+state.restoreSeekTime = null;
+state.restoreSeekTrackId = "";
+state.restoreSeekAt = 0;
 state.transcodeCacheReady = false;
 state.transcodeStatusRequestToken = 0;
 state.transcodeStatusController = null;
@@ -428,6 +468,10 @@ state.albumMetadata = globalThis.fnAudioAlbumMetadataCache?.(4096) || {
 };
 state.settingsTab = "library";
 state.searchTimer = null;
+// R585: saved views are loaded only after the status block advertises them.
+state.savedViews = [];
+state.savedViewLimit = 0;
+state.savedViewsRequested = false;
 state.nativePlayback = { available: false, mediaId: "", queueIds: [], position: 0, duration: 0, playing: false, playbackState: 1 };
 state.mediaSession = { supported: false, metadata: false, actions: [], host: "standalone" };
 state.hostPlaybackSession = typeof window.fnAudioCreateHostPlaybackSession === "function"
@@ -918,14 +962,19 @@ function nativeRemoteEnter(force = false) {
   const position = currentSeconds();
   const duration = seekDuration();
   const transport = String(state.remoteStatus?.transport?.state || "").toUpperCase();
-  const signature = JSON.stringify([state.playTarget, nativeQueueSignature(), state.index]);
+  // R587: slice to what the device accepts *and say so*. The native snapshot used
+  // to drop row 501 silently; the cap itself is fine, the silence was the bug.
+  const rows = nativeQueueItems();
+  const bounded = boundedRemoteQueue(rows);
+  if (bounded.dropped) notifyQueueTruncation(bounded.dropped, bounded.limit);
+  const signature = JSON.stringify([state.playTarget, nativeQueueSignature(bounded.items), state.index]);
   if (!force && state.nativeRemoteSignature === signature) {
     nativeBridgeCall("updateRemoteState", state.playTarget, state.index, position, duration,
       transport === "PLAYING" || transport === "TRANSITIONING", state.remoteGeneration, state.remoteEngineEpoch);
     return true;
   }
   state.nativeRemoteSignature = signature;
-  nativeBridgeCall("enterRemoteMode", state.playTarget, state.playTargetName || "远程播放", JSON.stringify(nativeQueueItems()), state.index,
+  nativeBridgeCall("enterRemoteMode", state.playTarget, state.playTargetName || "远程播放", JSON.stringify(bounded.items), state.index,
     position, duration, transport === "PLAYING" || transport === "TRANSITIONING", state.repeat, Boolean(state.shuffle),
     state.remoteGeneration, state.remoteEngineEpoch);
   return true;
@@ -972,11 +1021,14 @@ function nativeLoadQueue(autoPlay = true, startSeconds = 0, force = false) {
     // whatever repeat mode it was given last time, and a stale REPEAT_MODE_ONE is
     // exactly how the last track ends up looping for ever.
     nativePlaybackCall("setRepeat", state.repeat);
-    nativePlaybackCall("setShuffle", Boolean(state.shuffle));
+    // R587: never hand ExoPlayer a shuffle flag. The queue it receives is already
+    // in play order, so its own shuffle order would randomise a second time and
+    // the row the UI highlights would stop matching the row it plays.
+    nativePlaybackCall("setShuffle", false);
     if (autoPlay) nativePlaybackCall("play");
     return true;
   }
-  nativePlaybackCall("setQueue", JSON.stringify(rows), state.index, Math.max(0, Number(startSeconds || 0)), Boolean(autoPlay), state.repeat, Boolean(state.shuffle));
+  nativePlaybackCall("setQueue", JSON.stringify(rows), state.index, Math.max(0, Number(startSeconds || 0)), Boolean(autoPlay), state.repeat, false);
   return true;
 }
 function nativeQueueNeedsRestore() {
@@ -1034,7 +1086,7 @@ window.fnAudioNativeOnState = payload => {
   const seconds = playbackSeconds(snapshot.position);
   setTextContentIfChanged($("elapsed"), clock(seconds));
   setTextContentIfChanged($("duration"), clock(duration));
-  if (!state.seeking) $("seek").value = duration ? Math.max(0, Math.min(100, seconds / duration * 100)) : 0;
+  if (seekPositionIsSettled()) $("seek").value = duration ? Math.max(0, Math.min(100, seconds / duration * 100)) : 0;
   syncPlayerProgress();
   updateLyricHighlight();
 };
@@ -1715,6 +1767,16 @@ async function restorePlaybackSession(playback) {
   state.playTarget = String(playback.target_id || "local");
   state.playTargetName = state.playTarget === "local" ? "当前设备" : "已恢复播放设备";
   await validateRestoredPlaybackTarget();
+  // R587: the session already stored where the listener was, but nothing read it
+  // back, so a reload restarted the track at 0:00 while the queue, the row and
+  // the transport state all came back correctly. Only the local target resumes:
+  // a renderer reports its own position and seeking it on restore fights it.
+  const savedPosition = playbackSeconds(playback.position);
+  if (state.playTarget === "local" && savedPosition > 1 && state.index >= 0) {
+    state.restoreSeekTime = savedPosition;
+    state.restoreSeekTrackId = String(state.queue[state.index]?.id || currentId);
+    state.restoreSeekAt = Date.now();
+  }
   const nativeCurrentId = String(state.nativePlayback.mediaId || "");
   if (state.playTarget === "local" && nativeCurrentId) {
     const nativeIndex = state.queue.findIndex(item => String(item.id || "") === nativeCurrentId);
@@ -1786,6 +1848,12 @@ function refreshSortedView() {
     render();
   }
 }
+function persistSortPreference() {
+  // One writer for the two sort keys: the column header path and a restored
+  // saved view must not drift into different storage keys (R585).
+  writeStoredPreference("fnaudio.sortKey.v1", state.sortKey);
+  writeStoredPreference("fnaudio.sortDir.v2", state.sortDir);
+}
 function applyTrackSort(sortKey) {
   if (!sortOptionsForView().some(([value]) => value === sortKey)) return;
   if (state.sortKey === sortKey) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
@@ -1793,8 +1861,7 @@ function applyTrackSort(sortKey) {
     state.sortKey = sortKey;
     state.sortDir = "asc";
   }
-  writeStoredPreference("fnaudio.sortKey.v1", state.sortKey);
-  writeStoredPreference("fnaudio.sortDir.v2", state.sortDir);
+  persistSortPreference();
   refreshSortedView();
 }
 function columnDragIcon() {
@@ -2268,6 +2335,23 @@ function syncPlayerProgress() {
   updateSeekRail();
   updateTransportStateUnknown();
 }
+// R594: the rail follows the player only when the player's position is worth
+// believing -- i.e. the finger is not on the slider AND the seek it just sent has
+// had time to land.  200 ms is the window Audio Station uses for the same guard
+// (widget/MediaSeekBar.getMIsWaitingForSeekCompleted).  It is a literal rather
+// than a module constant because every regression sandbox that extracts this
+// function would otherwise have to carry the constant too.
+// Pure on purpose: four repaint paths call it per tick, and a predicate that
+// consumed its own deadline would be a trap.
+function seekPositionIsSettled() {
+  if (state.seeking) return false;
+  // A missing or non-numeric deadline means "no seek was ever sent", which is
+  // settled.  Written this way on purpose: `Date.now() - undefined` is NaN, and
+  // `NaN > 200` is false, so the obvious form would freeze the rail forever if
+  // the field were ever absent.
+  const settledAt = Number(state.seekSettledAt);
+  return !(settledAt > 0) || Date.now() - settledAt > 200;
+}
 function updateSeekRail(value = $("seek")?.value || 0) {
   const fill = seekPercent(value);
   // The buffered band never sits behind the played edge.  A seek past the buffer
@@ -2635,7 +2719,7 @@ function updateRemoteUi() {
   if (!isRemoteTarget()) return;
   const transport = state.remoteStatus?.transport?.state || "";
   const duration = seekDuration();
-  const seconds = duration > 0 && !state.seeking ? currentSeconds() : -1;
+  const seconds = duration > 0 && seekPositionIsSettled() ? currentSeconds() : -1;
   const current = currentItem()?.id || "";
   const previous = state.remoteUiLast || {};
   // Avoid rewriting the same DOM/media-session state on every timer tick.
@@ -2645,7 +2729,7 @@ function updateRemoteUi() {
   state.remoteUiLast = { transport, duration, seconds, current };
   if (duration > 0) {
     setTextContentIfChanged($("duration"), clock(duration));
-    if (!state.seeking) {
+    if (seekPositionIsSettled()) {
       setTextContentIfChanged($("elapsed"), clock(seconds));
       $("seek").value = Math.max(0, Math.min(100, seconds / duration * 100));
     }
@@ -2665,7 +2749,7 @@ function updateIncomingRendererUi() {
   const session = state.rendererSession;
   const transport = String(session.transport || "").toUpperCase();
   const duration = seekDuration();
-  const seconds = duration > 0 && !state.seeking ? currentSeconds() : -1;
+  const seconds = duration > 0 && seekPositionIsSettled() ? currentSeconds() : -1;
   const previous = state.rendererUiLast || {};
   // Exact equality on purpose. `updateRemoteUi` can afford a 0.45s tolerance because it
   // only ticks while this app owns the target; this channel is repainted every 500ms
@@ -2680,7 +2764,7 @@ function updateIncomingRendererUi() {
   if (!unchanged) state.rendererUiLast = { uri: session.uri, transport, duration, seconds };
   if (duration > 0) {
     setTextContentIfChanged($("duration"), clock(duration));
-    if (!state.seeking) {
+    if (seekPositionIsSettled()) {
       setTextContentIfChanged($("elapsed"), clock(seconds));
       if (!unchanged) {
         $("seek").value = Math.max(0, Math.min(100, seconds / duration * 100));
@@ -2825,7 +2909,7 @@ function applyCoreSnapshot(core, shouldLoad = true, options = {}) {
   updateFavoriteControls();
   return true;
 }
-async function coreControl(action, position = null, payload = {}) {
+async function coreControl(action, position = null, payload = {}, options = {}) {
   if (state.deviceSwitchInFlight) return false;
   // 本地优先建队会把手里的队列延后同步给服务端。要服务端替我们"下一首"之前，
   // 必须先把这次同步落下去，否则它面对的是空队列。
@@ -2851,10 +2935,16 @@ async function coreControl(action, position = null, payload = {}) {
     return { ok: true, native: true };
   }
   const item = currentItem();
+  // R601: a caller may have already moved `state.index` (the local fast path in
+  // `advanceLocalQueueForTrackEnd`). The server steps *from* the track it is told
+  // about -- `control_track_alignment` adopts a browser's reported track before
+  // dispatching `next`/`previous` -- so reporting the new one would make the core
+  // adopt it and then step again, skipping a track. The ended track is passed in.
+  const reportedTrackId = String(options.trackId ?? (item?.id || ""));
   const response = await apiFetch("api/playback/control", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ target_id: remoteDeviceId() || "local", action, position, track_id: item?.id || "", command_id: playbackCommandId(), ...payload }),
+    body: JSON.stringify({ target_id: remoteDeviceId() || "local", action, position, track_id: reportedTrackId, command_id: playbackCommandId(), ...payload }),
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) return false;
@@ -4178,6 +4268,47 @@ function renderCreatorAllSongsEntry(groups = groupedTracks()) {
     ${breadcrumbChevronMarkup("artist-all-songs-chevron")}
   </button>`;
 }
+const ALBUM_LAYOUT_KEY = "fnaudio.albumLayout.v1";
+function setAlbumLayout(mode) {
+  const next = mode === "grid" ? "grid" : "list";
+  if (next === state.albumLayout) return;
+  // Switching layout rebuilds every group node, so the reader's place has to be
+  // put back by hand -- both immediately and after the row commit, which is the
+  // frame that would otherwise scroll the list back to the top.
+  const scroll = $("libraryScroll");
+  const top = scroll ? scroll.scrollTop : 0;
+  state.albumLayout = next;
+  writeStoredPreference(ALBUM_LAYOUT_KEY, state.albumLayout);
+  render();
+  if (scroll) {
+    scroll.scrollTop = top;
+    requestAnimationFrame(() => { scroll.scrollTop = top; });
+  }
+}
+function albumLayoutBar(count) {
+  const grid = state.albumLayout === "grid";
+  return `<div class="album-layout-bar"><span>${libraryCount(count)} 张专辑</span>`
+    + `<button type="button" class="album-layout-toggle${grid ? "" : " is-active"}" data-album-layout="list" aria-pressed="${grid ? "false" : "true"}" title="列表" aria-label="列表">`
+    + `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>`
+    + `<button type="button" class="album-layout-toggle${grid ? " is-active" : ""}" data-album-layout="grid" aria-pressed="${grid ? "true" : "false"}" title="网格" aria-label="网格">`
+    + `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>`
+    + `</div>`;
+}
+function renderAlbumTiles(groups = []) {
+  const tiles = groups.map(group => {
+    const name = displayText(group.name || "未分类");
+    const key = `group:albums:${name}`;
+    const metadata = state.albumMetadata.get(name) || {};
+    const artist = displayText(metadata.artist || group.artist || "未知歌手");
+    const trackCount = libraryCount(group.track_count);
+    // The tile carries the same data-group-* contract as a row, so click,
+    // long-press and selection keep working without a second code path.
+    return `<div class="album-tile${state.selectedGroupKeys.has(key) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(key)}" data-group-type="group" data-group-view="albums" data-group-name="${encodeURIComponent(name)}" data-group-track-count="${trackCount}" data-album-metadata-name="${escapeHtml(name)}" role="button" tabindex="0" aria-label="${escapeHtml(name)}">`
+      + groupIcon("albums", [state.itemCache.get(String(group.cover_track_id || ""))].filter(Boolean), group.cover_track_id, name, group.image_url)
+      + `<strong class="album-tile-name">${escapeHtml(name)}</strong><span class="album-tile-artist">${escapeHtml(artist)}</span></div>`;
+  }).join("");
+  return `<div class="album-grid">${tiles}</div>`;
+}
 function renderAlbumGroups(groups = groupedTracks()) {
   const albums = groups.map(group => {
     const name = displayText(group.name || "未分类");
@@ -4188,7 +4319,8 @@ function renderAlbumGroups(groups = groupedTracks()) {
     const trackCount = libraryCount(group.track_count);
     return `<div class="album-group-row${state.selectedGroupKeys.has(key) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(key)}" data-group-type="group" data-group-view="albums" data-group-name="${encodeURIComponent(name)}" data-group-track-count="${trackCount}" data-album-metadata-name="${escapeHtml(name)}"><div class="album-group-title">${groupIcon("albums", [state.itemCache.get(String(group.cover_track_id || ""))].filter(Boolean), group.cover_track_id, name, group.image_url)}<strong>${escapeHtml(name)}</strong></div><span class="album-group-artist">${escapeHtml(artist)}</span><span class="album-group-release-date">${escapeHtml(releaseDate)}</span></div>`;
   }).join("");
-  return `${isCreatorAlbumView() ? renderCreatorAllSongsEntry(groups) : ""}${albums}`;
+  const body = state.albumLayout === "grid" ? renderAlbumTiles(groups) : albums;
+  return `${isCreatorAlbumView() ? renderCreatorAllSongsEntry(groups) : ""}${albumLayoutBar(groups.length)}${body}`;
 }
 function renderCreatorAllTracks(list) {
   const creator = displayText(currentCreatorName() || `未知${currentCreatorLabel()}`);
@@ -4468,6 +4600,9 @@ function render() {
       };
     });
   }
+  document.querySelectorAll("[data-album-layout]").forEach(button => button.onclick = () => {
+    setAlbumLayout(String(button.dataset.albumLayout || "list"));
+  });
   document.querySelectorAll("[data-group-back]").forEach(b => b.onclick = () => {
     if (isCreatorAllTracksView()) setCurrentCreatorAllTracks(false);
     else if (isCreatorView() && state.groupName) state.groupName = "";
@@ -4540,6 +4675,165 @@ function renderPlaylistNav() {
       setMobileNavigation(false);
     };
   });
+}
+// R585: saved library views — the *filter*, not the page. The server validates
+// and stores the record (library_saved_view_policy.py); this side captures the
+// current filter and projects a stored one back into the query parameters.
+// The feature is only offered when /api/library/status advertises it, so an
+// older server loses the button instead of erroring (capability negotiation).
+function savedViewCapabilities() {
+  const policy = globalThis.fnAudioLibraryCapabilityPolicy;
+  return policy ? policy.features(state.libraryStatus) : null;
+}
+function savedViewsEnabled() {
+  const features = savedViewCapabilities();
+  return Boolean(features && features.savedViews && features.savedViews.enabled);
+}
+function applyLibraryCapabilities() {
+  // One place reads the capability block, one place acts on it: the search box
+  // learns the field syntax (or keeps the plain placeholder), and the saved-view
+  // section either appears or stays hidden.
+  const features = savedViewCapabilities();
+  if (features && $("searchInput")) {
+    const policy = globalThis.fnAudioLibraryCapabilityPolicy;
+    const placeholder = policy?.searchPlaceholder(features);
+    if (placeholder) $("searchInput").placeholder = placeholder;
+    // The field syntax does not fit in the box without being cut off, so it is
+    // kept in the tooltip and the accessible name rather than the placeholder.
+    const hint = policy?.searchHint?.(features);
+    if (hint) {
+      $("searchInput").title = hint;
+      $("searchInput").setAttribute("aria-label", hint);
+    }
+  }
+  renderSavedViews();
+  if (!state.savedViewsRequested && savedViewsEnabled()) {
+    state.savedViewsRequested = true;
+    void requestSavedViews();
+  }
+}
+function renderSavedViews() {
+  const nav = $("savedViewNav");
+  if (!nav) return;
+  const views = Array.isArray(state.savedViews) ? state.savedViews : [];
+  const enabled = savedViewsEnabled();
+  const title = $("savedViewTitle");
+  const saveButton = $("saveViewBtn");
+  if (title) title.hidden = !enabled || !views.length;
+  if (saveButton) saveButton.hidden = !enabled;
+  nav.hidden = !enabled || !views.length;
+  const summaryOf = globalThis.fnAudioLibrarySavedViewPolicy?.summary;
+  const markup = !enabled ? "" : views.map(view => {
+    const summary = summaryOf ? summaryOf(view.criteria) : "";
+    return `<div class="saved-view-row"><button type="button" class="nav-item saved-view-item" data-saved-view="${escapeHtml(view.id)}" title="${escapeHtml(summary)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h6"/><path d="m15 12 4 4-4 4"/></svg><span>${escapeHtml(view.name)}</span></button><button class="icon-button saved-view-remove" type="button" data-remove-saved-view="${escapeHtml(view.id)}" title="删除视图" aria-label="删除视图">×</button></div>`;
+  }).join("");
+  if (nav.dataset.fnaudioSavedViewMarkup === markup) return;
+  nav.innerHTML = markup;
+  nav.dataset.fnaudioSavedViewMarkup = markup;
+  nav.querySelectorAll("[data-saved-view]").forEach(button => {
+    button.onclick = () => applySavedView(button.dataset.savedView);
+  });
+  nav.querySelectorAll("[data-remove-saved-view]").forEach(button => {
+    button.onclick = event => {
+      event.stopPropagation();
+      void deleteSavedView(button.dataset.removeSavedView);
+    };
+  });
+}
+function applySavedView(id) {
+  const view = (Array.isArray(state.savedViews) ? state.savedViews : []).find(item => item.id === id);
+  if (!view) return;
+  const policy = globalThis.fnAudioLibrarySavedViewPolicy;
+  const criteria = policy ? policy.toQueryParams(view.criteria) : {};
+  const searchText = String(criteria.search || "");
+  [$("searchInput"), $("mobileSearchInput")].forEach(input => { if (input) input.value = searchText; });
+  updateSearchClearButtons();
+  state.sortKey = String(criteria.sort || "title");
+  state.sortDir = criteria.dir === "desc" ? "desc" : "asc";
+  persistSortPreference();
+  state.groupName = String(criteria.group || "");
+  state.folderRoot = criteria.folder ? String(criteria.root || "") : "";
+  state.folderPath = String(criteria.folder || "");
+  state.page = 1;
+  state.folderPage = 1;
+  const nextView = String(criteria.view || "all");
+  if (String(state.view || "") !== nextView) {
+    // setView starts its own load; invalidating first would drop that request.
+    setView(nextView);
+  } else {
+    invalidateLibraryLoad();
+    requestLibraryLoad(1, false);
+  }
+  setMobileNavigation(false);
+}
+async function requestSavedViews() {
+  try {
+    const result = await globalThis.fnAudioResponseJsonLoader.read({
+      request: fetch("api/library/views", { cache: "no-store" }),
+      timeoutMs: 5000,
+      fallback: null,
+    });
+    const payload = result.response?.ok ? result.data : null;
+    if (!payload || !Array.isArray(payload.views)) return;
+    state.savedViews = payload.views;
+    state.savedViewLimit = Number(payload.limit) || 0;
+    renderSavedViews();
+  } catch (_) {
+    // Saved views are a convenience: an older server without the route simply
+    // never enables them (the capability block says so).
+  }
+}
+async function deleteSavedView(id) {
+  if (!id) return;
+  try {
+    const response = await apiFetch("api/library/views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-FnAudio-Path": "/api/library/views" },
+      body: JSON.stringify({ action: "delete", id: String(id) }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || payload.ok !== true) return;
+    state.savedViews = Array.isArray(payload.views) ? payload.views : [];
+    renderSavedViews();
+  } catch (_) { /* keep the row: a failed delete must not look like success */ }
+}
+function openSavedViewDialog() {
+  const dialog = $("savedViewDialog");
+  const input = $("savedViewNameInput");
+  if (!dialog || !input) return;
+  input.value = "";
+  setTextContentIfChanged($("savedViewStatus"), "");
+  dialog.showModal();
+  input.focus();
+}
+async function saveCurrentSavedView() {
+  const policy = globalThis.fnAudioLibrarySavedViewPolicy;
+  const input = $("savedViewNameInput");
+  const status = $("savedViewStatus");
+  if (!policy || !input) return;
+  const name = policy.validateName(input.value);
+  if (!name) {
+    setTextContentIfChanged(status, "请输入名称");
+    return;
+  }
+  const criteria = policy.capture(state, currentQueryText());
+  try {
+    const response = await apiFetch("api/library/views", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-FnAudio-Path": "/api/library/views" },
+      body: JSON.stringify({ action: "save", view: { name, criteria } }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || payload.ok !== true) {
+      setTextContentIfChanged(status, payload?.error || "保存失败");
+      return;
+    }
+    state.savedViews = Array.isArray(payload.views) ? payload.views : [];
+    renderSavedViews();
+    $("savedViewDialog")?.close();
+  } catch (_) {
+    setTextContentIfChanged(status, "保存失败");
+  }
 }
 function updateNavigationActiveState() {
   const view = String(state.view || "all");
@@ -4719,6 +5013,32 @@ async function resolveSelectedGroupTracks(groupKey = "") {
     return true;
   });
 }
+// Keep the remembered pre-shuffle order in step with the queue that was just
+// committed: a removed row leaves it, and a row added while shuffled belongs at
+// its end (it was never part of the list shuffle replaced).
+function reconcileShuffleOrder(items) {
+  const remembered = Array.isArray(state.shuffleOriginal) ? state.shuffleOriginal : [];
+  if (!state.shuffle) {
+    state.shuffleOriginal = [];
+    return;
+  }
+  const present = new Set();
+  const inQueue = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const id = String(item?.id || "");
+    if (!id || present.has(id)) continue;
+    present.add(id);
+    inQueue.push(id);
+  }
+  const kept = remembered.filter(id => present.has(id));
+  const seen = new Set(kept);
+  for (const id of inQueue) {
+    if (seen.has(id)) continue;
+    kept.push(id);
+    seen.add(id);
+  }
+  state.shuffleOriginal = kept;
+}
 function applyConfirmedQueue(queue, core, requestedId = "") {
   state.queue = Array.isArray(queue) ? queue : [];
   // The reply describes the server's queue, which a command that landed while
@@ -4732,6 +5052,7 @@ function applyConfirmedQueue(queue, core, requestedId = "") {
   if (state.index < 0 && state.queue.length) state.index = 0;
   if (core?.repeat) state.repeat = core.repeat;
   if (typeof core?.shuffle === "boolean") state.shuffle = core.shuffle;
+  reconcileShuffleOrder(state.queue);
   updateRepeatShuffleButtons();
   updateFavoriteControls();
 }
@@ -4785,6 +5106,252 @@ async function syncServerQueueBestEffort() {
   } catch (_) {
     // 同步失败只影响"别的设备看到什么"，本机播放照旧。
   }
+}
+// R587: queue caps belong to the output target, so the server says what they are
+// instead of the client hardcoding 500. Everything here degrades to the pre-R587
+// behaviour when the block is missing: no client-side slice, no notice.
+function playbackCapabilityPolicy() {
+  const policy = globalThis.fnAudioPlaybackCapabilityPolicy;
+  return policy && typeof policy.read === "function" ? policy : null;
+}
+function applyPlaybackCapabilities(data) {
+  const policy = playbackCapabilityPolicy();
+  if (!policy) return false;
+  const capabilities = policy.read(data);
+  state.queueRemoteMaxItems = capabilities.queue.remote;
+  state.positionReportIntervalMs = capabilities.position.minIntervalMs;
+  return true;
+}
+async function requestPlaybackCapabilities() {
+  if (state.playbackCapabilitiesRequested) return false;
+  state.playbackCapabilitiesRequested = true;
+  try {
+    const response = await apiFetch("api/playback/capabilities", {
+      headers: { "X-FnAudio-Path": "/api/playback/capabilities" },
+    });
+    const data = await readResponseJsonBounded(response);
+    if (!response.ok || !data || typeof data !== "object") return false;
+    return applyPlaybackCapabilities(data);
+  } catch (_) {
+    return false;
+  }
+}
+function boundedRemoteQueue(items) {
+  const list = Array.isArray(items) ? items : [];
+  const policy = playbackCapabilityPolicy();
+  if (!policy || !state.queueRemoteMaxItems) return { items: list, dropped: 0, limit: 0 };
+  return policy.boundQueue(list, state.queueRemoteMaxItems);
+}
+// Silent truncation is the bug, not the cap: the native remote snapshot has
+// always stopped at 500 rows and the listener was never told. One notice per
+// session is enough -- repeating it on every track change would be worse than
+// saying nothing.
+function notifyQueueTruncation(dropped, limit) {
+  if (!dropped || state.queueTruncationNotified) return false;
+  state.queueTruncationNotified = true;
+  const policy = playbackCapabilityPolicy();
+  const message = policy ? policy.truncationMessage(dropped, limit) : "";
+  if (!message) return false;
+  alert(message);
+  return true;
+}
+// R587: the browser owns the transport for a local target, so it is the only
+// thing that knows where the listener is. Report it on the events that end a
+// session (pause, tab hidden, page leaving) plus every 30s while playing.
+//
+// Audio Station writes a status file once per second; that is a write per second
+// per client for a number that only has to be right at the moment the session
+// ends. The payload deliberately carries no command_id and no session identity:
+// a progress report is not a transport command and must not take ownership of
+// the session ticket.
+function reportPlaybackPosition(force = false, keepalive = false) {
+  if (state.playTarget !== "local" || !state.queue.length) return false;
+  const seconds = currentSeconds();
+  if (!(seconds > 0)) return false;
+  const now = Date.now();
+  const interval = Math.max(5000, Number(state.positionReportIntervalMs) || 30000);
+  if (!force && now - state.positionReportAt < interval) return false;
+  state.positionReportAt = now;
+  const body = JSON.stringify({ target_id: "local", action: "progress", position: seconds });
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-FnAudio-Path": "/api/playback/control" },
+    body,
+  };
+  if (keepalive) {
+    // The document is going away: no bridge, no promise chain, just a request
+    // that is allowed to outlive it.
+    try { fetch("api/playback/control", { ...init, keepalive: true }); } catch (_) {}
+    return true;
+  }
+  apiFetch("api/playback/control", init).catch(() => {});
+  return true;
+}
+// R587: take the restored position once, for the row it belongs to. Any other
+// row leaves it alone -- a restore must not seek a song the listener picked
+// after the reload -- and the value is cleared as soon as it is used, so a
+// second play of the same row starts at 0:00 like any other.
+function consumeRestoreSeekTime(item) {
+  if (state.restoreSeekTime == null) return 0;
+  if (state.restoreSeekTrackId && String(item?.id || "") !== state.restoreSeekTrackId) return 0;
+  // A restore is a startup event. Ten minutes later the listener has picked
+  // their own music, and a stale seek would be a surprise, not a resume.
+  if (Date.now() - Number(state.restoreSeekAt || 0) > 600000) {
+    state.restoreSeekTime = null;
+    state.restoreSeekTrackId = "";
+    return 0;
+  }
+  const seconds = playbackSeconds(state.restoreSeekTime);
+  state.restoreSeekTime = null;
+  state.restoreSeekTrackId = "";
+  return seconds;
+}
+// R588: sleep timer. The deadline is absolute and lives in three places on
+// purpose: this page (so the label counts down), localStorage (so a reload keeps
+// it) and the foreground service (so it still fires when the WebView is
+// suspended or destroyed). Only the service one is authoritative when the page
+// is gone -- a `setTimeout` in a hidden WebView is not a promise.
+function sleepTimerPolicy() {
+  const policy = globalThis.fnAudioSleepTimerPolicy;
+  return policy && typeof policy.deadlineFrom === "function" ? policy : null;
+}
+function sleepTimerStorage() {
+  try {
+    return window.localStorage;
+  } catch (_) {
+    return null;
+  }
+}
+function pauseForSleepTimer() {
+  // Same three transports the play button handles, minus the "start playing"
+  // branches: at the deadline the only useful action is to stop making sound.
+  if (isIncomingRendererSession()) {
+    controlIncomingRenderer("pause");
+    return "renderer";
+  }
+  if (isRemoteTarget()) {
+    if (String(state.remoteStatus?.transport?.state || "").toUpperCase() === "PLAYING") remoteControl("pause");
+    return "remote";
+  }
+  if (nativePlaybackAvailable()) {
+    if (state.nativePlayback.playing) nativePlaybackCall("pause");
+    return "native";
+  }
+  if (!audio.paused) audio.pause();
+  return "local";
+}
+function applySleepTimerDeadline(deadline) {
+  const policy = sleepTimerPolicy();
+  const target = policy ? Number(deadline) || 0 : 0;
+  state.sleepTimerDeadline = target > 0 ? target : 0;
+  if (policy) policy.writeStored(sleepTimerStorage(), state.sleepTimerDeadline);
+  if (state.sleepTimerDeadline) {
+    armSleepTimerTick();
+    nativePlaybackCall("scheduleSleepTimer", state.sleepTimerDeadline);
+  } else {
+    disarmSleepTimerTick();
+    nativePlaybackCall("cancelSleepTimer");
+  }
+  updateSleepTimerStatus();
+  return state.sleepTimerDeadline > 0;
+}
+function setSleepTimer(minutes) {
+  const policy = sleepTimerPolicy();
+  if (!policy) return false;
+  return applySleepTimerDeadline(policy.deadlineFrom(minutes, Date.now()));
+}
+function cancelSleepTimer() {
+  return applySleepTimerDeadline(0);
+}
+function armSleepTimerTick() {
+  if (state.sleepTimerTickId) return;
+  state.sleepTimerTickId = setInterval(tickSleepTimer, 1000);
+}
+function disarmSleepTimerTick() {
+  if (!state.sleepTimerTickId) return;
+  clearInterval(state.sleepTimerTickId);
+  state.sleepTimerTickId = 0;
+}
+function tickSleepTimer() {
+  const policy = sleepTimerPolicy();
+  if (!policy || !state.sleepTimerDeadline) {
+    disarmSleepTimerTick();
+    return;
+  }
+  if (policy.isExpired(state.sleepTimerDeadline, Date.now())) {
+    fireSleepTimer();
+    return;
+  }
+  updateSleepTimerStatus();
+}
+function fireSleepTimer() {
+  const target = pauseForSleepTimer();
+  applySleepTimerDeadline(0);
+  updateSleepTimerStatus(target === "local" || target === "native"
+    ? "睡眠定时已到点，已暂停播放。"
+    : "睡眠定时已到点，已请求暂停播放。");
+}
+// A reload must not lose the timer, and an expired one from yesterday must not
+// pause the song somebody just started: the policy decides which is which.
+function restoreSleepTimer() {
+  const policy = sleepTimerPolicy();
+  if (!policy) return false;
+  const stored = policy.readStored(sleepTimerStorage());
+  if (!stored) return false;
+  if (policy.isActive(stored, Date.now())) return applySleepTimerDeadline(stored);
+  if (policy.isFreshExpiry(stored, Date.now())) {
+    state.sleepTimerDeadline = stored;
+    fireSleepTimer();
+    return true;
+  }
+  applySleepTimerDeadline(0);
+  return false;
+}
+function ensureSleepTimerControls() {
+  const host = $("sleepTimerControls");
+  const policy = sleepTimerPolicy();
+  if (!host || !policy || host.dataset.ready === "1") return;
+  host.dataset.ready = "1";
+  const choices = policy.OPTIONS.map(minutes => ({ minutes, label: `${minutes} 分钟` }));
+  choices.push({ minutes: 0, label: "关闭定时" });
+  host.replaceChildren();
+  for (const choice of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button";
+    button.dataset.sleepMinutes = String(choice.minutes);
+    button.textContent = choice.label;
+    button.onclick = () => {
+      if (choice.minutes) setSleepTimer(choice.minutes);
+      else cancelSleepTimer();
+    };
+    host.append(button);
+  }
+  updateSleepTimerStatus();
+}
+function updateSleepTimerStatus(message = "") {
+  const policy = sleepTimerPolicy();
+  const host = $("sleepTimerControls");
+  const status = $("sleepTimerStatus");
+  const deadline = state.sleepTimerDeadline;
+  const active = Boolean(policy && deadline && policy.isActive(deadline, Date.now()));
+  if (host) {
+    host.querySelectorAll("[data-sleep-minutes]").forEach(button => {
+      const minutes = Number(button.dataset.sleepMinutes || 0);
+      // "关闭定时" is only meaningful while something is set.
+      if (!minutes) button.disabled = !active;
+    });
+  }
+  if (!status) return;
+  if (message) {
+    status.textContent = message;
+    return;
+  }
+  if (!policy) {
+    status.textContent = "当前页面缺少睡眠定时模块，定时不可用。";
+    return;
+  }
+  status.textContent = active ? policy.describe(deadline, Date.now()).text : "未设置睡眠定时。";
 }
 async function commitQueue(queue, currentId = "", options = {}) {
   const response = await apiFetch("api/playback/queue", {
@@ -4959,15 +5526,42 @@ async function playFromCurrentTrack(trackId) {
   loadCurrent();
   render();
 }
+// R589: 插播一首**已经在队列里**的歌，原先是彻底静默的。
+//
+// 旧实现只把"队列里没有的"挑出来追加，已在队列的 id 被过滤掉；如果挑完是空的，
+// 整个函数直接 return —— 界面不动、也没有任何提示（2026-11-18 报的"点了没反应"）。
+// 但用户点「插播所选项目」要的是一个**位置**（把这首挪到下一首），不是"再多一份"，
+// 所以已在队列的歌应当被**移动**而不是被跳过。
+//
+// 纯函数，方便直接钉：不碰网络、不碰 state、不渲染。
+function reorderQueueForInsert(queue, index, items) {
+  const rows = Array.isArray(queue) ? queue : [];
+  const anchorId = index >= 0 && index < rows.length ? String(rows[index]?.id || "") : "";
+  // 当前曲就是"下一首"的锚点，把它自己也挪走只会和自己的锚点打架。
+  const wanted = [];
+  for (const item of items || []) {
+    const id = String(item?.id || "");
+    if (!id || id === anchorId) continue;
+    if (wanted.some(row => String(row.id) === id)) continue;
+    wanted.push(item);
+  }
+  if (!wanted.length) return rows;
+  const moving = new Set(wanted.map(item => String(item.id)));
+  const rest = rows.filter(row => !moving.has(String(row.id)));
+  // 锚点在上面被排除了，所以它一定还在 rest 里，位置就是插入点。
+  const at = anchorId ? rest.findIndex(row => String(row.id) === anchorId) : -1;
+  const insertAt = at >= 0 ? at + 1 : rest.length;
+  return [...rest.slice(0, insertAt), ...wanted, ...rest.slice(insertAt)];
+}
 async function insertSelectedTracks(ids = []) {
   const items = selectedItems(ids);
   if (!items.length) return;
-  const existing = new Set(state.queue.map(item => String(item.id)));
-  const additions = items.filter(item => !existing.has(String(item.id)));
-  if (!additions.length) return;
-  const insertAt = state.index >= 0 ? state.index + 1 : state.queue.length;
-  const queue = [...state.queue];
-  queue.splice(insertAt, 0, ...additions);
+  const queue = reorderQueueForInsert(state.queue, state.index, items);
+  // 选中的是当前曲、或者本来就排在下一首：不发请求，否则每点一次都要整条重发
+  // `setMediaItems`，原生那边会把正在播的流重新加载一遍。
+  const unchanged = queue.length === state.queue.length
+    && queue.every((item, at) => String(item.id) === String(state.queue[at]?.id));
+  if (unchanged) return;
   try {
     await commitQueue(queue, state.queue[state.index]?.id || queue[0]?.id || "");
     render();
@@ -5171,27 +5765,48 @@ function playableTracks() {
   if (isPlaylistView()) return playlistTracks();
   return filteredTracks();
 }
-// Mirrors the server's `next_track()` exactly, including repeat "one".
+// Mirrors the server's `queue_order_policy` exactly, including repeat "one".
 //
-// The client used to treat "one" as "no next", so anything that navigated on the
-// client side (the native bridge, the cue tail guard) disagreed with the server
-// about what "next" means at the end of the queue.
+// R587: the queue is the play order. Turning shuffle on reorders the queue once
+// (`applyShuffleOrder`), so "next" is the following row -- not a fresh coin flip
+// per press. The old random pick could not promise a pass without repeats, could
+// not make "previous" return to the row you actually came from, and disagreed
+// with ExoPlayer's own shuffle order on Android.
+//
+// The policy module owns the table; the inline copy keeps a cached page whose
+// script list predates this file working (it is the same table, minus nothing).
+function queueOrderPolicy() {
+  const policy = globalThis.fnAudioQueueOrderPolicy;
+  return policy && typeof policy.nextIndex === "function" ? policy : null;
+}
+// The inline copy exists only for a cached page whose script list predates the
+// policy module.  It normalises its inputs the same way, so the shared table in
+// tests/queue_order_table.json holds for both paths.
+const QUEUE_ORDER_MAX_ITEMS = 50000;
+function queueOrderCursor() {
+  const length = Array.isArray(state.queue) ? state.queue.length : 0;
+  const size = Math.max(0, Math.min(length, QUEUE_ORDER_MAX_ITEMS));
+  const current = Number.isInteger(state.index) ? state.index : -1;
+  const mode = ["off", "all", "one"].includes(state.repeat) ? state.repeat : "off";
+  return { size, current, mode };
+}
 function nextIndex() {
-  if (!state.queue.length) return -1;
-  if (state.repeat === "one" && state.index >= 0) return state.index;
-  if (state.shuffle && state.queue.length > 1) {
-    let next = state.index;
-    while (next === state.index) next = Math.floor(Math.random() * state.queue.length);
-    return next;
-  }
-  if (state.index < state.queue.length - 1) return state.index + 1;
-  return state.repeat === "all" ? 0 : -1;
+  const policy = queueOrderPolicy();
+  if (policy) return policy.nextIndex(state.index, state.queue.length, state.repeat);
+  const { size, current, mode } = queueOrderCursor();
+  if (!size) return -1;
+  if (mode === "one" && current >= 0) return current;
+  if (current < size - 1) return current + 1;
+  return mode === "all" ? 0 : -1;
 }
 function previousIndex() {
-  if (!state.queue.length) return -1;
-  if (state.repeat === "one" && state.index >= 0) return state.index;
-  if (state.index > 0) return state.index - 1;
-  return state.repeat === "all" ? state.queue.length - 1 : -1;
+  const policy = queueOrderPolicy();
+  if (policy) return policy.previousIndex(state.index, state.queue.length, state.repeat);
+  const { size, current, mode } = queueOrderCursor();
+  if (!size) return -1;
+  if (mode === "one" && current >= 0) return current;
+  if (current > 0) return current - 1;
+  return mode === "all" ? size - 1 : -1;
 }
 async function warmCurrentTrackCache(item) {
   if (!item || !shouldTranscodeToMp3(item) || state.transcodeCacheReady || isRemoteTarget()) return false;
@@ -5214,6 +5829,20 @@ async function warmCurrentTrackCache(item) {
 // track ahead is enough: the encode of a normal song finishes long before the
 // current one ends, and only one extra job is ever queued.
 let upcomingWarmTrackId = "";
+// R601: the answer to that POST used to be thrown away, so `loadCurrent` asked the
+// same question again -- and that second round trip sat *before* `audio.src` was
+// assigned, i.e. squarely in the gap between two tracks. Keep the "already cached"
+// answer and spend it on the very next load of that track.
+let upcomingWarmReadyId = "";
+// One-shot on purpose: a stale "ready" that outlived its transition would make
+// `loadCurrent` claim a cache hit it never checked. Missing once is harmless
+// (the await still runs); being wrong once is not.
+function consumeUpcomingWarmReady(trackId) {
+  const id = String(trackId || "");
+  if (!id || upcomingWarmReadyId !== id) return false;
+  upcomingWarmReadyId = "";
+  return true;
+}
 function warmUpcomingTrackCache() {
   if (isRemoteTarget()) return;
   const next = nextIndex();
@@ -5222,17 +5851,25 @@ function warmUpcomingTrackCache() {
   const trackId = String(item?.id || "");
   // 曾在这里预热"下一首的流地址"（隐藏 audio + preload=metadata）。R578 在测试机上
   // 量过：冷启 603/726ms、预热后 638/617ms，没有收益；而且它会开一条转码流，
-  // 和真正要播的请求抢 ffmpeg 槽（默认并发只有 2）。已撤。
+  // 和真正要播的请求抢 ffmpeg 槽（默认并发只有 2）。已撤。R600 补上了它为什么
+  // 必然没收益：媒体响应不可复用（流式 no-store，缓存文件无 ETag），预取的字节
+  // 交不到播放元素手里。别再往这里加隐藏音频元素的预取，也别加 link 预取。
   if (!trackId || !shouldTranscodeToMp3(item) || trackId === upcomingWarmTrackId) return;
   upcomingWarmTrackId = trackId;
   apiFetch("api/transcode/warm", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ track_id: trackId, mode: "mp3" }),
-  }).catch(() => {
-    // A warm-up is an optimisation; the next load falls back to streaming.
-    upcomingWarmTrackId = "";
-  });
+  }).then(response => readResponseJsonBounded(response))
+    .then(data => {
+      // Only the positive answer is worth keeping; "not ready yet" has to take the
+      // ordinary path, otherwise this would be a cache hit nobody verified.
+      if (data && data.ready === true && upcomingWarmTrackId === trackId) upcomingWarmReadyId = trackId;
+    })
+    .catch(() => {
+      // A warm-up is an optimisation; the next load falls back to streaming.
+      upcomingWarmTrackId = "";
+    });
 }
 
 async function loadCurrent() {
@@ -5325,14 +5962,30 @@ async function loadCurrent() {
   preemptIncomingRendererForLocalPlayback();
   const needsMp3 = shouldTranscodeToMp3(item);
   if (needsMp3 && !state.transcodeCacheReady) {
-    state.transcodeCacheReady = await warmCurrentTrackCache(item);
-    if (loadToken !== state.playbackLoadToken || String(currentItem()?.id || "") !== String(item.id || "")) return;
+    // R601: the warm-up one track ago already asked the server this exact question.
+    // Spending its answer keeps one round trip off the path to `audio.src`. Only a
+    // confirmed "ready" is reused; everything else goes through the ordinary ask,
+    // and only that branch suspends -- which is why the load-token re-check below
+    // stays inside it.
+    if (consumeUpcomingWarmReady(item.id)) {
+      state.transcodeCacheReady = true;
+    } else {
+      state.transcodeCacheReady = await warmCurrentTrackCache(item);
+      if (loadToken !== state.playbackLoadToken || String(currentItem()?.id || "") !== String(item.id || "")) return;
+    }
   }
   if (nativePlaybackAvailable()) {
     state.playSourceKind = "native";
     const shouldResume = String(state.nativePlayback.mediaId || "") === String(item.id || "")
       && state.nativePlayback.playing === true;
-    nativeLoadQueue(true, shouldResume ? playbackSeconds(state.nativePlayback.position) : 0);
+    // R587: the host player keeps its own position while this track stays loaded.
+    // When it does not (fresh process, restored session), the position the
+    // server persisted is the only thing that knows where the listener was.
+    const resumeSeconds = shouldResume
+      ? playbackSeconds(state.nativePlayback.position)
+      : (consumeRestoreSeekTime(item) || playbackSeconds(state.pendingSeekTime));
+    nativeLoadQueue(true, resumeSeconds);
+    if (state.pendingSeekTime != null) state.pendingSeekTime = null;
     warmUpcomingTrackCache();
     setTextContentIfChanged($("nowTitle"), displayTrackTitle(item));
     setTextContentIfChanged($("nowArtist"), `${displayText(item.artist)} · ${item.format} · ${playbackBadge(item)}`);
@@ -5373,6 +6026,11 @@ async function loadCurrent() {
     state.playSourceKind = "cue_segment";
     state.pendingSeekTime = null;
   } else if (playbackSeconds(item.cue_start) > 0) state.pendingSeekTime = playbackSeconds(item.cue_start);
+  // R587: a restored session resumes where the listener stopped. The restored
+  // number wins over a CUE start because it was measured inside this very
+  // segment; `loadedmetadata` applies it once the duration is known.
+  const restoredSeek = consumeRestoreSeekTime(item);
+  if (restoredSeek > 0) state.pendingSeekTime = restoredSeek;
   setTextContentIfChanged($("elapsed"), "0:00");
   setTextContentIfChanged($("duration"), clock(seekDuration()));
   $("seek").value = 0;
@@ -5390,6 +6048,29 @@ async function loadCurrent() {
   updateNowMarquee();
   syncState();
   refreshCurrentTranscodeStatus();
+}
+// R601: auto-advance used to ask the server which track comes next and only then
+// assign `audio.src` -- one LAN round trip sitting inside the gap between two
+// tracks, spent on a decision this page can make on its own (`nextIndex()` is a
+// pure function over `state.queue`). Advance locally first; the server's reply
+// reconciles afterwards, and `applyCoreSnapshot` already reloads when the two
+// disagree. That window is one round trip, shorter than the first byte of any
+// track, so the disagreement is not audible.
+//
+// Only when this page is the player. With a cast or an incoming render session
+// owning the output, the server has to choose *and* push the next track, so the
+// old awaited path stays in charge.
+function advanceLocalQueueForTrackEnd() {
+  if (isRemoteTarget() || isIncomingRendererSession()) return false;
+  const next = nextIndex();
+  // `next === state.index` is 循环=单曲: the track is meant to restart itself, and
+  // the server reply is what drives that reload today. Left untouched here.
+  if (next < 0 || next === state.index) return false;
+  const previousIndex = state.index;
+  state.index = next;
+  syncCurrentQueuePresentation(previousIndex);
+  loadCurrent();
+  return true;
 }
 // Extrapolation only has to bridge the gap between two *accepted* status
 // snapshots. The slowest healthy source is the remote fallback poll (5000 ms,
@@ -5582,6 +6263,8 @@ function commitSeek(value = $("seek").value) {
   const duration = seekDuration();
   state.seeking = false;
   if (!duration) return;
+  // The seek goes out below; until it lands the player reports the old position.
+  state.seekSettledAt = Date.now();
   const seconds = seekPercent(value) / 100 * duration;
   setTextContentIfChanged($("elapsed"), clock(seconds));
   if (isIncomingRendererSession()) {
@@ -6198,8 +6881,23 @@ async function openLyrics() {
   // the only projection a reused lyric gets. A fresh render already did its own.
   updateLyricHighlight();
 }
+const LYRICS_SCROLL_LOCK_MS = 3000;
+// The panel follows the song unless the reader is steering it.  Tracking intent
+// (pointer / wheel / touch / key) instead of the `scroll` event is deliberate:
+// our own smooth `scrollTo` fires scroll events too, and telling those apart
+// from a reader's needs a state machine that never quite settles.
+function ensureLyricScrollIntentTracking() {
+  const box = $("lyricsLines");
+  if (!box || box.dataset.scrollIntent === "1") return;
+  box.dataset.scrollIntent = "1";
+  const mark = () => { state.lyricsUserScrollAt = Date.now(); };
+  ["pointerdown", "wheel", "touchmove", "keydown"].forEach(type => {
+    box.addEventListener(type, mark, { passive: true });
+  });
+}
 function updateLyricHighlight() {
   if (!state.lyrics.length || $("lyricsView").hidden) return;
+  ensureLyricScrollIntentTracking();
   const now = currentSeconds();
   // A cue only becomes active once its own timestamp is due, so "no line yet" is
   // a real state: an intro before the first cue, and every plain-text lyric
@@ -6220,10 +6918,20 @@ function updateLyricHighlight() {
   if (active < 0) return;
   const activeNode = document.querySelector(`[data-lyric="${active}"]`);
   const lyricBox = $("lyricsLines");
-  if (activeNode && lyricBox) {
-    const target = activeNode.offsetTop - (lyricBox.clientHeight / 2) + (activeNode.clientHeight / 2);
-    lyricBox.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-  }
+  if (!activeNode || !lyricBox) return;
+  // Reading ahead wins for a moment: the highlight still moves, the panel does not.
+  if (Date.now() - state.lyricsUserScrollAt < LYRICS_SCROLL_LOCK_MS) return;
+  // Already in the comfortable middle band: scrolling again would restart the
+  // animation for a line the reader can see, which reads as the panel twitching
+  // once per lyric line.
+  const offsetTop = activeNode.offsetTop - lyricBox.scrollTop;
+  const height = lyricBox.clientHeight;
+  const comfortable = height > 0
+    && offsetTop >= height * 0.25
+    && offsetTop + activeNode.clientHeight <= height * 0.75;
+  if (comfortable) return;
+  const target = activeNode.offsetTop - (height / 2) + (activeNode.clientHeight / 2);
+  lyricBox.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
 }
 function syncState() {
   scheduleUserStateSave();
@@ -6281,6 +6989,27 @@ function clearLibraryResponseCaches() {
   state.librarySnapshotEmptyGuardUsed = false;
 }
 
+// R603: a first scan of a large library used to publish nothing until it ended,
+// so the owner stared at an empty library for the whole walk. The server now
+// shows what the walk has already found; this asks for that page once the status
+// poll reports rows. Deliberately limited to the case where nothing is on screen
+// yet -- once rows are visible, the ordinary end-of-scan reload fills in the rest
+// without re-rendering the list under the user's hands.
+const SCAN_PROGRESS_RELOAD_DELAY_MS = 1200;
+function scheduleScanProgressReload() {
+  if (state.scanProgressReloadTimer) return false;
+  if (state.libraryLoading || state.pageItems?.length) return false;
+  if (currentQueryText()) return false;
+  if (state.view === "folders") return false;
+  state.scanProgressReloadTimer = setTimeout(() => {
+    state.scanProgressReloadTimer = 0;
+    if (state.libraryStatus?.scanning !== true) return;
+    if (state.libraryLoading || state.pageItems?.length) return;
+    clearLibraryResponseCaches();
+    requestLibraryLoad(1, false);
+  }, SCAN_PROGRESS_RELOAD_DELAY_MS);
+  return true;
+}
 function shouldRetainSnapshotForEmptyResponse(data, refresh = false) {
   return Boolean(globalThis.fnAudioLibraryEmptyResponsePolicy?.shouldRetainSnapshot(
     data,
@@ -6459,6 +7188,10 @@ function setDatasetStateIfChanged(node, value) {
 }
 function updateLibraryStatusDecorations() {
   renderLibraryHealth();
+  // R585: capability negotiation. Kept behind one call so the pure status
+  // decorator stays testable without the saved-view machinery; see
+  // docs/LIBRARY_VIEWS_PLAN.md, P2-2.
+  applyLibraryCapabilities();
   const loadError = $("libraryLoadError");
   if (loadError) loadError.hidden = !state.libraryLoadError;
   setTextContentIfChanged($("libraryLoadErrorText"), state.libraryLoadError || "");
@@ -7759,12 +8492,19 @@ function deviceTargetStatusText(target, isCurrent) {
   if (!deviceTargetIsOnline(target)) return "离线";
   return isCurrent ? "正在播放" : "可用";
 }
+// R596: whether the output can be turned down is part of what the reader is
+// choosing between, not something to discover after dragging the slider.
+function targetVolumeNote(target) {
+  const capabilities = target && typeof target === "object" ? target.capabilities : null;
+  return capabilities && capabilities.volume === false ? "固定音量" : "";
+}
 function deviceTargetDetail(target) {
   const message = displayText(target.message || "");
   const caps = target.caps ? dacCapsText(target.caps) : "";
   const kind = deviceTargetKindLabel(target);
-  if (message) return message;
-  return caps ? `${kind} · ${caps}` : kind;
+  const base = message || (caps ? `${kind} · ${caps}` : kind);
+  const volume = targetVolumeNote(target);
+  return volume ? `${base} · ${volume}` : base;
 }
 function renderDeviceTargets(targets, currentTarget) {
   targets = globalThis.fnAudioDeviceTargetPresentation.projectTargets(targets);
@@ -7781,6 +8521,9 @@ function renderDeviceTargets(targets, currentTarget) {
     })),
   });
   state.deviceTargetsRendered = targets;
+  // R596: runs before the unchanged-signature early return on purpose -- the
+  // active target can change while the list itself does not.
+  syncVolumeAvailability();
   if (signature === state.deviceTargetsSignature) return;
   state.deviceTargetsSignature = signature;
   const current = targets.find(target => target.id === currentTarget);
@@ -7981,7 +8724,12 @@ async function saveLibraryPathsFromDialog(statusText = "已保存。需要更新
   const response = await apiFetch("api/config/library", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ library_path: paths.join("\n") }),
+    // R591: the encoding setting rides on the same endpoint because it only
+    // exists to decode CUE sheets and .lrc files.
+    body: JSON.stringify({
+      library_path: paths.join("\n"),
+      text_encoding: $("libraryTextEncoding")?.value || "",
+    }),
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) {
@@ -8014,12 +8762,14 @@ function loadAboutVersion() {
 }
 async function openFolderBrowser(path = "") {
   ensurePlaybackSettingsControls();
+  ensureSleepTimerControls();
   resetSettingsDirty();
   loadAboutVersion();
   $("folderDialog").showModal();
   ensureSettingsStatusNodes();
   setSettingsTab("library");
   renderLibraryPathInputs(state.libraryStatus?.library_paths || []);
+  renderLibraryTextEncoding();
   ["librarySettingsStatus", "runtimeSettingsStatus", "metadataOverviewSettingsStatus", "metadataTagSettingsStatus", "playbackSettingsStatus"].forEach(id => {
     const node = $(id);
     if (node) node.textContent = "";
@@ -8287,6 +9037,7 @@ async function discardSettingsChanges() {
   // The path list only lives in the DOM until it is saved, so redrawing it from
   // the last known server status is what actually puts the edits back.
   renderLibraryPathInputs(state.libraryStatus?.library_paths || []);
+  renderLibraryTextEncoding();
   updateSettingsSummaries();
 }
 function openSettingsDetail() {
@@ -9432,6 +10183,17 @@ function openDlnaDiagnostics() {
   $("dlnaDiagnosticsDialog").showModal();
   loadDlnaDiagnostics();
 }
+// The select offers exactly the names the server's encoding policy accepts, so
+// a value it reports that is not in the list can only come from a hand-edited
+// config; showing "自动检测" for it is honest, and the policy already treats an
+// unknown name as auto.
+function renderLibraryTextEncoding() {
+  const select = $("libraryTextEncoding");
+  if (!select) return;
+  const value = String(state.libraryStatus?.text_encoding || "");
+  select.value = [...select.options].some(option => option.value === value) ? value : "";
+  select.onchange = () => markSettingsDirty("library");
+}
 function renderLibraryPathInputs(paths = [""]) {
   const values = (Array.isArray(paths) ? paths : [paths]).map(x => String(x || "").trim()).filter(Boolean);
   if (!values.length) values.push("");
@@ -10373,16 +11135,26 @@ function showTrackInformation(trackId) {
   const item = itemById(trackId);
   if (!item) return;
   $("trackActionTitle").textContent = "歌曲信息";
+  // R591: album_artist, date and disc_no reach the client now, so the dialog
+  // shows them; before this the reader had no way to tell a two-disc set from a
+  // single one, and a compilation's album artist was invisible even when present.
+  const disc = Number(item.disc_no || 0);
+  const trackNo = Number(item.track_no || 0);
   const details = [
     ["歌手", displayText(item.artist) || "未填写"],
     ["专辑", displayText(item.album) || "未填写"],
+    ["专辑艺人", displayText(item.album_artist) || "未填写"],
     ["作曲者", displayText(item.composer) || "未填写"],
     ["类型", displayText(item.genre) || "未分类"],
+    ["年份", displayText(item.date) || "未填写"],
+    ["音轨", trackNo > 0 ? (disc > 0 ? `第 ${disc} 碟 · 第 ${trackNo} 首` : `第 ${trackNo} 首`) : "未填写"],
     ["格式", item.format || "未知"],
     ["音质", trackQuality(item)],
     ["时长", Number(item.duration || 0) ? clock(Number(item.duration)) : "未知"],
     ["文件", item.path || "未知"],
   ];
+  // Only when the file actually carries one: an empty row on every track is noise.
+  if (displayText(item.comment)) details.push(["备注", displayText(item.comment)]);
   $("trackActionList").innerHTML = `<div class="track-info-detail">${details.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></div>`).join("")}</div>`;
   $("trackActionDialog").showModal();
 }
@@ -10977,11 +11749,53 @@ async function toggleRepeat() {
   updateRepeatShuffleButtons();
   syncState();
 }
+// R587: shuffle is an order, not a coin flip. Switching it on reorders the
+// queue once, keeping the playing row in its slot, so everything after it is a
+// single pass without repeats. Switching it off puts the remembered order back
+// and keeps the playing row -- only its position changes, never the song.
+async function applyShuffleOrder(enabled) {
+  const policy = queueOrderPolicy();
+  const wanted = Boolean(enabled);
+  if (!policy) {
+    state.shuffle = wanted;
+    return false;
+  }
+  if (wanted && state.shuffle && state.shuffleOriginal.length === state.queue.length) {
+    // Already walking a shuffled order; re-shuffling would only move the goal.
+    state.shuffle = true;
+    return false;
+  }
+  const currentId = String(currentItem()?.id || "");
+  if (wanted) {
+    state.shuffleOriginal = policy.orderIds(state.queue);
+    const result = policy.shuffleQueue(state.queue, state.index);
+    const target = currentId || String(result.items[result.index]?.id || "");
+    // The commit carries the flag, so a failed save leaves the old order and the
+    // old flag together instead of half-switching the mode.
+    await commitQueue(result.items, target, { shuffle: true });
+    state.shuffle = true;
+  } else {
+    const result = policy.restoreQueue(state.queue, state.index, state.shuffleOriginal);
+    const target = currentId || String(result.items[result.index]?.id || "");
+    await commitQueue(result.items, target, { shuffle: false });
+    state.shuffle = false;
+    state.shuffleOriginal = [];
+  }
+  render();
+  return true;
+}
 async function toggleShuffle() {
   const data = await coreControl("shuffle");
-  if (data?.core && typeof data.core.shuffle === "boolean") state.shuffle = data.core.shuffle;
-  else state.shuffle = !state.shuffle;
-  if (nativePlaybackAvailable()) nativePlaybackCall("setShuffle", Boolean(state.shuffle));
+  const wanted = data?.core && typeof data.core.shuffle === "boolean" ? data.core.shuffle : !state.shuffle;
+  try {
+    await applyShuffleOrder(wanted);
+  } catch (error) {
+    alert(error.message || "播放队列保存失败");
+    return;
+  }
+  // The host player must not shuffle a second time: the queue it was handed is
+  // already in play order.
+  if (nativePlaybackAvailable()) nativePlaybackCall("setShuffle", false);
   updateRepeatShuffleButtons();
   syncState();
 }
@@ -11108,6 +11922,7 @@ async function refreshLibraryStatus(refresh = false) {
       if (!metadataChanged) state.metadataProjectionSignature = signature;
       retryCurrentTrackMetadataAfterRecovery(metadata);
     }
+    if (data.scanning === true) scheduleScanProgressReload();
     if (wasScanning && data.scanning !== true) {
       clearLibraryResponseCaches();
       await loadLibrary(false);
@@ -11593,6 +12408,9 @@ window.addEventListener("focus", clearTransientListSelection);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     cancelVisibleMetadataPrefetch({ releaseKeys: true });
+    // A backgrounded tab can be discarded without warning; this is the last
+    // reliable moment to say where the listener was.
+    reportPlaybackPosition(true);
     return;
   }
   clearTransientListSelection();
@@ -11710,6 +12528,15 @@ $("dlnaDiagnosticsBtn").onclick = openDlnaDiagnostics;
 $("closeDlnaDiagnosticsDialog").onclick = () => $("dlnaDiagnosticsDialog").close();
 $("refreshDlnaDiagnosticsBtn").onclick = loadDlnaDiagnostics;
 $("newPlaylistBtn").onclick = () => openPlaylistDialog();
+if ($("saveViewBtn")) $("saveViewBtn").onclick = () => openSavedViewDialog();
+$("closeSavedViewDialog")?.addEventListener("click", () => $("savedViewDialog")?.close());
+$("confirmSaveViewBtn")?.addEventListener("click", () => { void saveCurrentSavedView(); });
+$("savedViewNameInput")?.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void saveCurrentSavedView();
+  }
+});
 $("closePlaylistDialog").onclick = () => $("playlistDialog").close();
 $("closeTrackActionDialog").onclick = closeTrackActionDialog;
 $("closeMetadataCandidateDialog").onclick = closeTrackActionDialog;
@@ -11850,12 +12677,68 @@ function updateVolumeRail(value = Number($("volume")?.value || 0)) {
   const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);
   setStyleVarIfChanged($("volume"), "--volume-fill", `${percent}%`);
 }
+// R596: the volume slider has to drive the target that is actually audible.
+//
+// Until now it only wrote the local <audio> element (and the native bridge), so on
+// a USB DAC or a UPnP renderer it moved, the rail filled, and nothing changed
+// anywhere.  The server had the whole path ready the whole time:
+// /api/playback/control accepts a `volume` action, checks the mixer policy and
+// answers with a message when the output is fixed-volume (server.py:3693), and
+// playback/mpd_client.py:808 does the actual `setvol`.
+//
+// Only an explicit `volume: false` disables the slider.  A missing key means
+// "unknown", not "unsupported": the UPnP push path sets its volume through the
+// same MPD mixer as the DAC, so guessing would switch off a control that works.
+function activeTargetCapabilities() {
+  const id = String(state.playTarget || "local");
+  const rows = Array.isArray(state.deviceTargetsRendered) ? state.deviceTargetsRendered : [];
+  const row = rows.find(entry => entry && String(entry.id || "") === id);
+  const capabilities = row ? row.capabilities : null;
+  return capabilities && typeof capabilities === "object" ? capabilities : null;
+}
+function targetVolumeIsFixed() {
+  const capabilities = activeTargetCapabilities();
+  return Boolean(capabilities && capabilities.volume === false);
+}
+function applyVolumeToTarget(fraction) {
+  const value = Math.max(0, Math.min(1, Number(fraction)));
+  if (!Number.isFinite(value)) return;
+  if (!isRemoteTarget()) {
+    audio.volume = value;
+    if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+    return;
+  }
+  // The command speaks 0-100; the control speaks 0-1.  Fire-and-forget, but a
+  // transport failure must not surface as an unhandled rejection.
+  remoteControl("volume", Math.round(value * 100)).catch(() => {});
+}
+function syncVolumeAvailability() {
+  const input = $("volume");
+  if (!input) return;
+  const fixed = targetVolumeIsFixed();
+  input.disabled = fixed;
+  const button = $("volumeBtn");
+  if (button) {
+    button.classList.toggle("is-fixed-volume", fixed);
+    const label = fixed ? "音量（此输出为固定音量）" : "音量";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+  input.title = fixed ? "此输出为固定音量，请在功放或音箱上调整" : "";
+}
 $("volume").oninput = e => {
   const value = Number(e.target.value);
-  audio.volume = value;
-  if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
   updateVolumeRail(value);
+  // A remote target is committed on release: one POST per drag instead of one per
+  // pixel, and the same preview/commit split the seek rail already uses.
+  if (!isRemoteTarget()) {
+    audio.volume = value;
+    if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+  }
 };
+$("volume").onchange = e => applyVolumeToTarget(e.target.value);
+$("volume").onpointerup = e => applyVolumeToTarget(e.target.value);
+$("volume").ontouchend = e => applyVolumeToTarget(e.target.value);
 $("volumeBtn").onclick = event => {
   event.stopPropagation();
   $("volumePanel").hidden = !$("volumePanel").hidden;
@@ -11871,6 +12754,11 @@ if ($("volume")) $("volume").value = "1";
 // into CSS once.  Without this the popover opens with a grey rail and a handle
 // parked at the top (R488).
 updateVolumeRail();
+// Until the first targets payload arrives the capability is unknown, and unknown
+// means "leave the control alone".
+syncVolumeAvailability();
+// R587: a long listen has to survive a hard kill, not only a clean pause.
+setInterval(() => { if (!audio.paused) reportPlaybackPosition(false); }, 30000);
 audio.onplay = () => {
   setPlayButton(true);
   updateMediaSessionPlaybackState();
@@ -11879,14 +12767,43 @@ audio.onplay = () => {
   // hold is free to be used for the next one.
   warmUpcomingTrackCache();
 };
-audio.onpause = () => { setPlayButton(false); updateMediaSessionPlaybackState(); syncState(); };
+audio.onpause = () => { setPlayButton(false); updateMediaSessionPlaybackState(); syncState(); reportPlaybackPosition(true); };
 // 播放失败的处理，对齐 Audio Station：格式类错误明说并停，其它自动跳下一首；
 // 连续失败到上限就停，避免一首坏文件把整个队列刷一遍。
-audio.onerror = () => {
+// R598: the page never sees the server's transcode verdict -- an <audio> error
+// carries neither a status nor a body -- so it asks the status endpoint the
+// player already polls for cache readiness.  Bounded and failure-tolerant: a slow
+// probe must not hold up the skip the reader is waiting for, and "no answer" has
+// to keep the old behaviour.
+async function localTranscodeVerdict(item, policy) {
+  const unknown = { classification: "unknown", message: "" };
+  if (!item || typeof shouldTranscodeToMp3 !== "function" || !shouldTranscodeToMp3(item)) return unknown;
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  try {
+    const request = fetch(`api/transcode/status?track_id=${encodeURIComponent(item.id)}&mode=mp3`, {
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    const result = await globalThis.fnAudioResponseJsonLoader.read({
+      request,
+      timeoutMs: 1200,
+      onTimeout: () => { try { controller?.abort(); } catch (_) {} },
+      fallback: null,
+    });
+    const failure = result && result.data ? result.data.failure : null;
+    return { classification: policy.classification(failure), message: String(failure?.message || "") };
+  } catch (_) {
+    return unknown;
+  }
+}
+audio.onerror = async () => {
   const item = currentItem();
   if (!item) return;
   const policy = globalThis.fnAudioMediaErrorPolicy;
   if (!policy) return;
+  const verdict = await localTranscodeVerdict(item, policy);
+  // The probe took a moment; a skip or a new load in the meantime owns the row now.
+  if (String(currentItem()?.id || "") !== String(item.id || "")) return;
   const streak = Math.max(0, Number(state.localErrorStreak) || 0);
   const next = nextIndex();
   const action = policy.decide({
@@ -11903,8 +12820,9 @@ audio.onerror = () => {
     return;
   }
   if (action === "next") {
-    // 记下这首，下次点它直接跳过，不再先失败三遍。
-    rememberUnplayable(item.id);
+    // 只有「这个文件解不开」才值得记名。转码排队、磁盘满、超时都是机器的问题，
+    // 记进名单会让一次磁盘满把整张专辑永久拉黑。
+    if (verdict.classification !== "transient") rememberUnplayable(item.id);
     state.localErrorStreak = streak + 1;
     const previousIndex = state.index;
     state.index = next;
@@ -11918,7 +12836,7 @@ audio.onerror = () => {
   }
   // 连续失败上限，或队尾没有下一首：停下并给一句人话。
   if (streak + 1 > policy.MAX_CONSECUTIVE) {
-    alert(`连续 ${policy.MAX_CONSECUTIVE} 首无法播放，已停止。`);
+    alert(policy.stopMessage({ classification: verdict.classification, serverMessage: verdict.message }));
   }
   state.localErrorStreak = 0;
   stopLocalAudio();
@@ -11942,7 +12860,16 @@ audio.onended = async () => {
   state.pendingSeekTime = null;
   state.transcodeCacheReady = false;
   state.playSourceKind = "";
-  const moved = await coreControl("next");
+  // R601: 先接上声音，再让服务端对齐它的账本（见 advanceLocalQueueForTrackEnd）。
+  // `autoAdvancing` 必须留到服务端回话之后再清：它的回复可能触发一次重载，
+  // 而那次重载同样要走"跳过放不了的曲目"的策略。
+  //
+  // `endedTrackId` 要在本地步进之前取：服务端会先把游标对齐到浏览器上报的曲目
+  // 再步进（`control_track_alignment`），上报新曲目会让它多跳一首。
+  const endedTrackId = String(currentItem()?.id || "");
+  let moved = advanceLocalQueueForTrackEnd();
+  const reply = await coreControl("next", null, {}, { trackId: endedTrackId }).catch(() => false);
+  if (reply) moved = true;
   state.autoAdvancing = false;
   if (!moved) updateMediaSessionPlaybackState();
 };
@@ -11986,7 +12913,7 @@ audio.ontimeupdate = () => {
     return;
   }
   setTextContentIfChanged($("elapsed"), clock(currentSeconds()));
-  if (!state.seeking) {
+  if (seekPositionIsSettled()) {
     $("seek").value = duration ? currentSeconds() / duration * 100 : 0;
   }
   syncPlayerProgress();
@@ -12056,6 +12983,12 @@ void getTrimSdk();
 if (restoreLibraryPageSnapshot(1)) render();
 requestLibraryLoad(1, false);
 loadServerUserState();
+// R587: queue caps and the position-report interval come from the server, once.
+void requestPlaybackCapabilities();
+// R588: a reload keeps the timer (absolute deadline in localStorage) and hands
+// the same number to the host player, which is the only side that survives the
+// WebView being suspended.
+restoreSleepTimer();
 const uiSyncScheduler = globalThis.fnAudioUiSyncScheduler.create({
   document,
   isInteractionBlocked: uiBackgroundWorkBlocked,
@@ -12072,6 +13005,9 @@ const uiSyncScheduler = globalThis.fnAudioUiSyncScheduler.create({
   updateRemoteUi,
 });
 window.addEventListener("pagehide", stopRemoteOnUnload);
+// R587: a closing tab still has to leave its position behind. `keepalive` is what
+// lets the request outlive the document; the native bridge cannot help here.
+window.addEventListener("pagehide", () => { reportPlaybackPosition(true, true); });
 window.addEventListener("beforeunload", stopRemoteOnUnload);
 window.addEventListener("pageshow", () => { if (isRemoteTarget()) startRemoteEventStream(); });
 window.addEventListener("resize", updateNowMarquee);

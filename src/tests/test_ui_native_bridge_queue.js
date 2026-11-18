@@ -26,6 +26,21 @@ if (sliceStart < 0 || sliceEnd < 0 || sliceEnd <= sliceStart) {
   throw new Error("Native bridge slice anchors moved; update this test deliberately");
 }
 const bridgeSource = source.slice(sliceStart, sliceEnd);
+
+// R587: `nativeRemoteEnter` now asks the capability policy how many rows the
+// target accepts.  The policy module is not loaded here, so the real helpers
+// resolve to "no cap known" -- which is exactly the pre-R587 path, and the one
+// these checks are about.
+function helperSource(name) {
+  const match = source.match(new RegExp(`^function ${name}\\([\\s\\S]*?^\\}`, "m"));
+  assert.ok(match, `${name} must stay extractable`);
+  return match[0];
+}
+const capabilityHelpers = [
+  helperSource("playbackCapabilityPolicy"),
+  helperSource("boundedRemoteQueue"),
+  helperSource("notifyQueueTruncation"),
+].join("\n\n");
 // The slice spans nativePlaybackAvailable .. nativeQueueNeedsRestore: every named
 // function of this face plus the two entry callbacks it publishes on window.
 assert.match(bridgeSource, /function nativePlaybackAvailable\(\) \{/, "slice must start at the availability gate");
@@ -121,7 +136,9 @@ function loadContext(bridge, rows) {
     shouldTranscodeDsdToWav: item => item?.is_dsd === true && !isRemoteTargetShim(state) && !shouldTranscodeToMp3Shim(state, item),
   };
   const context = vm.createContext(sandbox);
-  vm.runInNewContext(`${bridgeSource}
+  vm.runInNewContext(`${capabilityHelpers}
+
+${bridgeSource}
 this.nativeLoadQueue = nativeLoadQueue;
 this.nativeQueueItems = nativeQueueItems;
 this.nativeQueueSignature = nativeQueueSignature;
@@ -246,7 +263,10 @@ const DEFAULT_ROWS = () => [
   assert.equal(args[2], 0, "a negative start offset must clamp to zero");
   assert.equal(args[3], false, "autoPlay must be forwarded as a boolean");
   assert.equal(args[4], "one");
-  assert.equal(args[5], true);
+  // R587: the queue reaches the bridge in play order, so the shuffle argument is
+  // always false even while `state.shuffle` is on. Letting ExoPlayer shuffle a
+  // second time is what made the highlighted row and the playing row drift apart.
+  assert.equal(args[5], false, "the host player must never be asked to shuffle the queue");
   // An identical, already-loaded queue with no force must only resume playback.
   state.nativePlayback.mediaId = "t-2";
   state.nativePlayback.queueIds = ["t-1", "t-2", "t,3"];

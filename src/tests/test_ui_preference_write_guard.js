@@ -72,7 +72,9 @@ function harness(options) {
 }
 
 // ---- A. applyTrackSort: the two preference writes sit before the re-render ----
-const sortHost = topLevelFunction("applyTrackSort", "function columnDragIcon");
+// R585 folded the two sort keys into one writer so a restored saved view and a
+// column header cannot drift into different keys; the slice starts there.
+const sortHost = topLevelFunction("persistSortPreference", "function columnDragIcon");
 
 {
   const state = { sortKey: "title", sortDir: "asc" };
@@ -195,9 +197,10 @@ for (const [name, after, host] of [
 assert.match(guardSource(),
   /function writeStoredPreference\(key, value\) \{[\s\S]{0,600}?try \{[\s\S]{0,80}?localStorage\.setItem\(key, value\);[\s\S]{0,40}?\} catch \(_\) \{/,
   "the guarded writer must wrap exactly the storage call, and only that call");
-assert.equal(writesOf(app, "writeStoredPreference("), 9,
-  "the writer plus eight call sites: the four R172 converted, the transcode switch "
-  + "adopted on hydration (R567), the page size (R569), and the unplayable-track list (R576)");
+assert.equal(writesOf(app, "writeStoredPreference("), 10,
+  "the writer plus nine call sites: the four R172 converted, the transcode switch "
+  + "adopted on hydration (R567), the page size (R569), the unplayable-track list (R576), "
+  + "and the album layout choice (R594)");
 assert.match(app, /function writeStoredUserMedia\(key, value\) \{/,
   "the user-media writer stays separate: its payload is JSON, the preference payload is not");
 

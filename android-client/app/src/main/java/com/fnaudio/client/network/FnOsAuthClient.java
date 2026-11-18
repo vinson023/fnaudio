@@ -29,6 +29,21 @@ public final class FnOsAuthClient {
     private static final int MAX_AUTH_MESSAGE_CHARS = 256 * 1024;
     private static final int MAX_AUTH_VALUE_CHARS = 16 * 1024;
     private static final int MAX_ACCESS_CODE_REDIRECTS = 4;
+
+    // fnOS answers every rejection with {"errno":N,"result":"fail"} and never
+    // sends an `errmsg`, so the number is the only thing a user-facing message
+    // can be built from. These three were measured by replaying the frames
+    // against fnOS 1.37.3 (docs/ANALYSIS_FNOS_LOGIN_ERRNO.md):
+    //
+    //   131072  credentials rejected -- wrong password, unknown user, and an
+    //           empty password all land here; fnOS does not tell them apart
+    //     8192  a required field is missing from the request; an absent
+    //           `password`, or `username` sent instead of `user`
+    //    65534  the request name itself is not recognised
+    static final int ERRNO_CREDENTIALS_REJECTED = 131072;
+    static final int ERRNO_MISSING_FIELD = 8192;
+    static final int ERRNO_UNKNOWN_REQUEST = 65534;
+
     public interface Callback {
         void onSuccess(ConnectionProfile authenticatedProfile);
 
@@ -40,11 +55,38 @@ public final class FnOsAuthClient {
         }
     }
 
-    private enum Attempt {
+    enum Attempt {
         AUTH_TOKEN,
         LONG_TOKEN,
         LOGIN_USER,
         LOGIN_USERNAME
+    }
+
+    /**
+     * Which hop to try after fnOS rejected {@code current}, or {@code null} when
+     * nothing is left and the rejection must be reported.
+     *
+     * <p>Package-private so the table can be tested without a socket: the
+     * ordering here is the whole login contract, and one branch of it used to
+     * hide the real error (see the comment inside).
+     */
+    static Attempt nextAttemptAfterFailure(Attempt current, int errno, boolean hasLongToken, boolean hasPassword) {
+        if (current == Attempt.AUTH_TOKEN) {
+            return hasLongToken ? Attempt.LONG_TOKEN : null;
+        }
+        if (current == Attempt.LONG_TOKEN) {
+            return hasPassword ? Attempt.LOGIN_USER : null;
+        }
+        // Swapping `user` for `username` is only worth a round trip when fnOS
+        // said it did not recognise the request at all. A rejected password
+        // (131072) has to be reported as it is: the swapped frame is answered
+        // with errno 8192 ("a required field is missing"), and because only the
+        // last message was surfaced, a wrong password reached the user as
+        // "错误码 8192" while the real 131072 was thrown away.
+        if (current == Attempt.LOGIN_USER && errno == ERRNO_UNKNOWN_REQUEST) {
+            return Attempt.LOGIN_USERNAME;
+        }
+        return null;
     }
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -81,6 +123,10 @@ public final class FnOsAuthClient {
         private ConnectionProfile verifiedProfile;
         private WebSocket socket;
         private Attempt attempt;
+        /** Message from the hop before {@code LOGIN_USERNAME}, kept so the
+         *  swapped frame's generic rejection does not become the only thing the
+         *  user sees. */
+        private String loginFallbackMessage = "";
         private String requestId = "";
         private String sessionCookie = "";
         private int accessCodeHops = 0;
@@ -304,7 +350,8 @@ public final class FnOsAuthClient {
                 }
                 String finalLongToken = longToken.isEmpty() ? verifiedProfile.longToken : longToken;
                 if (finalToken.isEmpty()) {
-                    handleAttemptFailure(messageFrom(payload, "登录成功响应中缺少会话令牌。"));
+                    handleAttemptFailure(intField(payload, "errno", 0),
+                            messageFrom(payload, "登录成功响应中缺少会话令牌。"));
                     return;
                 }
                 finishSuccess(verifiedProfile.withTokens(finalToken, finalLongToken));
@@ -312,7 +359,7 @@ public final class FnOsAuthClient {
             }
 
             if (payload.has("result") || payload.has("errno") || payload.has("errmsg") || payload.has("error")) {
-                handleAttemptFailure(messageFrom(payload, "fnOS 拒绝了登录请求。"));
+                handleAttemptFailure(intField(payload, "errno", 0), messageFrom(payload, "fnOS 拒绝了登录请求。"));
             }
         }
 
@@ -367,23 +414,27 @@ public final class FnOsAuthClient {
             if (!socket.send(request.toString())) finishError("登录请求未能发送到 fnOS。 ");
         }
 
-        private void handleAttemptFailure(String message) {
-            if (attempt == Attempt.AUTH_TOKEN && !profile.longToken.isEmpty()) {
-                send(Attempt.LONG_TOKEN);
-                return;
-            }
+        private void handleAttemptFailure(int errno, String message) {
+            AuthDiagnostics.record("login rejected attempt=" + attempt + " errno=" + errno);
             // fnOS expires both stored tokens eventually (the short one in
             // minutes, the long one in weeks), so a record that worked for a
             // while stops working days later. The saved password is still the
             // credential the user already gave this app; spend it here instead of
             // surfacing a failure the caller then has to recover from with a
             // second round trip and a chooser screen.
-            if (attempt == Attempt.LONG_TOKEN && !password.isEmpty()) {
-                send(Attempt.LOGIN_USER);
+            Attempt next = nextAttemptAfterFailure(
+                    attempt, errno, !profile.longToken.isEmpty(), !password.isEmpty());
+            if (next != null) {
+                // The swapped-user frame only runs after fnOS said the request
+                // itself was not understood, and it is answered with a generic
+                // "missing field" number. Keep the earlier message so the user
+                // is told what actually happened.
+                if (attempt == Attempt.LOGIN_USER) loginFallbackMessage = message;
+                send(next);
                 return;
             }
-            if (attempt == Attempt.LOGIN_USER) {
-                send(Attempt.LOGIN_USERNAME);
+            if (attempt == Attempt.LOGIN_USERNAME && !loginFallbackMessage.isEmpty()) {
+                finishCredentialRejected(loginFallbackMessage);
                 return;
             }
             finishCredentialRejected(message);
@@ -514,9 +565,30 @@ public final class FnOsAuthClient {
 
     private static String messageFrom(JSONObject payload, String fallback) {
         String message = firstString(payload, "errmsg", "message", "error", "msg");
-        if (message.isEmpty()) message = fallback;
         int errno = intField(payload, "errno", 0);
+        if (message.isEmpty()) message = knownErrnoMessage(errno);
+        if (message.isEmpty()) message = fallback;
         return errno == 0 ? message : message + "（错误码 " + errno + "）";
+    }
+
+    /**
+     * What a bare {@code errno} means, in words a user can act on.
+     *
+     * <p>Returns an empty string for anything unmapped so the caller can fall
+     * back to its own wording. The number is still appended by the caller: it is
+     * the only thing support can match against a server log.
+     */
+    static String knownErrnoMessage(int errno) {
+        switch (errno) {
+            case ERRNO_CREDENTIALS_REJECTED:
+                return "账号或密码错误，请检查后重试。";
+            case ERRNO_MISSING_FIELD:
+                return "登录请求缺少参数，这台 fnOS 的登录接口可能变了，请更新客户端。";
+            case ERRNO_UNKNOWN_REQUEST:
+                return "这台 fnOS 不支持当前的登录方式，请更新客户端。";
+            default:
+                return "";
+        }
     }
 
     private static boolean booleanField(JSONObject object, String key) {

@@ -1,5 +1,15 @@
 # Android emulator automated testing
 
+> **Not the default target any more.** Since 2026-11-18 Android app testing is
+> done on the physical phone `192.168.5.111:5555` (SM-G965F / LineageOS 20 /
+> Android 13 / arm64-v8a), because that is where the app actually ships. The
+> device path is one command:
+> `powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_android_device.ps1`
+> (see D-059). The emulator described here stays usable for quick local checks
+> when the phone is offline, but it is **not** acceptance evidence — it is x86_64
+> under a different package name (`com.fnaudio.client.emulator`), so it cannot
+> stand in for ARM64 relay, DAC, or phone background-policy behaviour either.
+
 ## Scope
 
 `tools/test_android_emulator.ps1` creates and uses the isolated

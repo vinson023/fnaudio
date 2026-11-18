@@ -18,7 +18,23 @@ import uuid
 import weakref
 from typing import Any, Dict
 
+import json
+
 from resource_limits import FFMPEG_GATE, ResourceLimitError, bounded_int, disk_has_reserve, ffmpeg_slot
+from transcode_error_policy import (
+    CODE_BUSY,
+    CODE_DIAGNOSTIC_TOO_LARGE,
+    CODE_DISK_FULL,
+    CODE_FFMPEG_MISSING,
+    CODE_PUBLISH_FAILED,
+    CODE_SOURCE_MISSING,
+    CODE_START_FAILED,
+    CODE_TIMEOUT,
+    classify_ffmpeg_detail,
+    http_status,
+    is_permanent,
+    public_message,
+)
 from file_permissions import secure_directory, secure_file
 from network_host import is_private_host
 
@@ -28,6 +44,93 @@ APE_EXTENSIONS = {".ape"}
 CACHE_TTL_SECONDS = 2 * 24 * 60 * 60
 CACHE_CLEANUP_INTERVAL = 6 * 60 * 60
 MAX_TRANSCODE_STDERR_BYTES = 64 * 1024
+
+
+class TranscodeError(RuntimeError):
+    """A transcode failure that carries a classification.
+
+    Subclasses ``RuntimeError`` so every existing ``except RuntimeError`` keeps
+    catching it; the added ``code`` is what tells "this file cannot be decoded"
+    apart from "the box is out of disk".
+    """
+
+    def __init__(self, code, message=""):
+        self.code = code
+        self.permanent = is_permanent(code)
+        self.status = http_status(code)
+        self.public_message = public_message(code)
+        super().__init__(message or self.public_message)
+
+
+def _failure_marker(target):
+    return target + ".failed"
+
+
+def _record_transcode_failure(target, code, source_mtime):
+    """Remember a permanent verdict next to the cache target it belongs to.
+
+    Only permanent failures are recorded: a timeout or a full disk says nothing
+    about the file, and writing a marker for those would make the next probe
+    report a perfectly good track as undecodable.
+    """
+    if not is_permanent(code):
+        return
+    marker = _failure_marker(target)
+    try:
+        with open(marker, "w", encoding="utf-8") as handle:
+            json.dump({"code": code, "source_mtime": source_mtime}, handle)
+    except OSError:
+        pass
+
+
+def _clear_transcode_failure(target):
+    try:
+        os.remove(_failure_marker(target))
+    except OSError:
+        pass
+
+
+def transcode_failure(item, config, mode=None):
+    """Return the recorded permanent failure for one item, or None.
+
+    Reads the markers instead of running ffmpeg again: the caller asks this after
+    a playback error, and re-running the job to find out why it failed would cost
+    exactly what the classification exists to avoid.  A marker is stale as soon
+    as the source changes, so the recorded mtime is compared first.
+    """
+    if not isinstance(item, dict):
+        return None
+    modes = (mode,) if mode else ("mp3", "dsd_wav", "cue_flac", "ape_flac")
+    source_mtime = _transcode_source_mtime(item)
+    for candidate in modes:
+        try:
+            target, _mime = transcode_cache_target(item, config, candidate)
+        except Exception:
+            continue
+        marker = _failure_marker(target)
+        if not os.path.isfile(marker):
+            continue
+        try:
+            with open(marker, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        code = payload.get("code") if isinstance(payload, dict) else ""
+        if not isinstance(code, str) or not code:
+            continue
+        recorded_mtime = payload.get("source_mtime")
+        if source_mtime is not None and recorded_mtime is not None and recorded_mtime != source_mtime:
+            # The file changed after the verdict: the verdict is about the old bytes.
+            _clear_transcode_failure(target)
+            continue
+        return {
+            "code": code,
+            "mode": candidate,
+            "permanent": is_permanent(code),
+            "message": public_message(code),
+            "status": http_status(code),
+        }
+    return None
 TRANSCODE_JOBS = set()
 TRANSCODE_LOCK = threading.Lock()
 TRANSCODE_QUEUE = []
@@ -61,7 +164,7 @@ def _run_transcode_process(command, *, stdout, stderr, timeout, env):
             if hasattr(stderr, "tell"):
                 stderr.seek(0, os.SEEK_END)
                 if stderr.tell() > MAX_TRANSCODE_STDERR_BYTES:
-                    raise ResourceLimitError("transcode diagnostic output is too large")
+                    raise TranscodeError(CODE_DIAGNOSTIC_TOO_LARGE, "transcode diagnostic output is too large")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
@@ -73,7 +176,7 @@ def _run_transcode_process(command, *, stdout, stderr, timeout, env):
         if hasattr(stderr, "tell"):
             stderr.seek(0, os.SEEK_END)
             if stderr.tell() > MAX_TRANSCODE_STDERR_BYTES:
-                raise ResourceLimitError("transcode diagnostic output is too large")
+                raise TranscodeError(CODE_DIAGNOSTIC_TOO_LARGE, "transcode diagnostic output is too large")
     except subprocess.TimeoutExpired:
         try:
             if os.name != "nt":
@@ -326,7 +429,7 @@ def transcode_to_audio(item, config, mode="mp3"):
         return item["path"], item["mime"]
     ffmpeg = find_ffmpeg(config)
     if not ffmpeg:
-        raise RuntimeError("系统中未找到可用的 ffmpeg")
+        raise TranscodeError(CODE_FFMPEG_MISSING, "系统中未找到可用的 ffmpeg")
     cache_dir = config.get("cache_dir") or os.path.join(os.path.dirname(item["path"]), ".fnaudio-cache")
     secure_directory(cache_dir)
     stem = _cache_item_stem(item)
@@ -359,14 +462,14 @@ def transcode_to_audio(item, config, mode="mp3"):
         if not disk_has_reserve(cache_dir, minimum_free):
             prune_transcode_cache(config, max_age_seconds=0)
         if not disk_has_reserve(cache_dir, minimum_free):
-            raise ResourceLimitError("转码缓存磁盘空间低于保留水位")
+            raise TranscodeError(CODE_DISK_FULL, "转码缓存磁盘空间低于保留水位")
     # Playback can request a cache miss while its low-priority warmup is
     # already running.  They previously shared one deterministic .tmp path,
     # allowing one job to remove or replace the other's output.
         with _target_lock(item, mode):
             source_mtime = _transcode_source_mtime(item)
             if source_mtime is None:
-                raise RuntimeError("audio source is no longer readable")
+                raise TranscodeError(CODE_SOURCE_MISSING, "audio source is no longer readable")
             if not os.path.isfile(target) or os.path.getmtime(target) < source_mtime:
                 env = os.environ.copy()
                 env["LD_LIBRARY_PATH"] = "/usr/trim/lib/mediasrv/lib:" + env.get("LD_LIBRARY_PATH", "")
@@ -388,21 +491,28 @@ def transcode_to_audio(item, config, mode="mp3"):
                                 os.remove(temp)
                             except OSError:
                                 pass
-                            raise RuntimeError("音频转码失败: " + detail)
+                            code = classify_ffmpeg_detail(detail)
+                            _record_transcode_failure(target, code, source_mtime)
+                            raise TranscodeError(code, "音频转码失败: " + detail)
                 except (subprocess.TimeoutExpired, ResourceLimitError) as exc:
                     try:
                         os.remove(temp)
                     except OSError:
                         pass
                     if isinstance(exc, subprocess.TimeoutExpired):
-                        raise RuntimeError("audio transcode timed out") from exc
-                    raise RuntimeError("audio transcode diagnostic output exceeded safety limit") from exc
+                        raise TranscodeError(CODE_TIMEOUT, "audio transcode timed out") from exc
+                    if isinstance(exc, ResourceLimitError):
+                        # The diagnostic-limit case now raises TranscodeError from
+                        # the runner itself, so what reaches here is the worker
+                        # lane being full -- a different thing entirely.
+                        raise TranscodeError(CODE_BUSY, "transcode worker lane is busy") from exc
+                    raise TranscodeError(CODE_TIMEOUT, "audio transcode timed out") from exc
                 except OSError as exc:
                     try:
                         os.remove(temp)
                     except OSError:
                         pass
-                    raise RuntimeError("failed to start ffmpeg: %s" % exc) from exc
+                    raise TranscodeError(CODE_START_FAILED, "failed to start ffmpeg: %s" % exc) from exc
                 # A full or read-only cache volume must also degrade to a
                 # handled 5xx, never to an OSError escaping the request path.
                 try:
@@ -410,7 +520,8 @@ def transcode_to_audio(item, config, mode="mp3"):
                     os.replace(temp, target)
                     secure_file(target)
                 except OSError as exc:
-                    raise RuntimeError("failed to publish transcode cache: %s" % exc) from exc
+                    raise TranscodeError(CODE_PUBLISH_FAILED, "failed to publish transcode cache: %s" % exc) from exc
+        _clear_transcode_failure(target)
         return target, mime
     finally:
         # Every failed attempt must release its unique temporary output
@@ -539,7 +650,7 @@ def warm_transcode_cache(item, config, mode="mp3", priority=100):
 def transcode_command(item, config, mode, start=0):
     ffmpeg = find_ffmpeg(config)
     if not ffmpeg:
-        raise RuntimeError("系统中未找到可用的 ffmpeg")
+        raise TranscodeError(CODE_FFMPEG_MISSING, "系统中未找到可用的 ffmpeg")
     command = [ffmpeg, "-threads", "0", "-hide_banner", "-loglevel", "error"]
     # 不要再加 -probesize / -analyzeduration：R574 在测试机上量过，带与不带
     # 首字节分别是 23ms / 22ms（各 5 次中位数），没有收益；而缩短探测窗口对
@@ -583,8 +694,11 @@ def prune_transcode_cache(config, max_age_seconds=CACHE_TTL_SECONDS):
     for name in names:
         lower_name = name.lower()
         is_transcode = lower_name.endswith((".mp3", ".dsd-96k-24bit.wav", ".cue-segment.flac", ".ape-source.flac"))
+        # R598: a permanent-failure marker belongs to the cache entry it sits next
+        # to, so it ages out with it instead of accumulating forever.
+        is_marker = lower_name.endswith(".failed")
         is_transcode_temp = ".tmp." in lower_name and lower_name.endswith((".mp3", ".wav", ".flac"))
-        if not is_transcode and not is_transcode_temp:
+        if not is_transcode and not is_transcode_temp and not is_marker:
             continue
         path = os.path.join(cache_dir, name)
         if not os.path.isfile(path):

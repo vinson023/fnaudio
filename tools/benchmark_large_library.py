@@ -24,6 +24,8 @@ if SERVER not in sys.path:
 
 import library  # noqa: E402
 import metadata_service  # noqa: E402
+from library_query_spec import parse_library_page_query  # noqa: E402
+from library_write import track_sort_value  # noqa: E402
 
 
 # Group cardinality has to scale with the library. The fixture used to stop at 2000 albums no
@@ -74,8 +76,8 @@ def _populate(config: Dict[str, Any], track_count: int) -> float:
     started = time.perf_counter()
     index_root = library.normalize_library_paths(config)[0]
     insert_sql = """
-        INSERT INTO tracks(id,path,root,folder,title,artist,album,track_no,format,added_ns,item_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO tracks(id,path,root,folder,title,artist,album,track_no,track_sort,format,added_ns,item_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """
     with library.library_db_connect(config) as conn:
         for first in range(0, track_count, 2000):
@@ -101,7 +103,11 @@ def _populate(config: Dict[str, Any], track_count: int) -> float:
                     # retain that contract in the synthetic benchmark too.
                     "metadata_source": {"title": "tag", "artist": "tag", "album": "tag"},
                 }
-                rows.append((track_id, item["path"], item["root"], item["folder"], item["title"], item["artist"], item["album"], track_no, item["format"], index * 1000000000, json.dumps(item, separators=(",", ":"))))
+                rows.append((
+                    track_id, item["path"], item["root"], item["folder"], item["title"],
+                    item["artist"], item["album"], track_no, track_sort_value(0, track_no),
+                    item["format"], index * 1000000000, json.dumps(item, separators=(",", ":")),
+                ))
             conn.executemany(insert_sql, rows)
         conn.execute("INSERT OR REPLACE INTO library_meta(key,value) VALUES (?,?)", ("library_path", library.display_library_path(config)))
         conn.execute("INSERT OR REPLACE INTO library_meta(key,value) VALUES (?,?)", ("metadata_version", str(library.METADATA_VERSION)))
@@ -322,14 +328,15 @@ def run_benchmark(cache_dir: str, track_count: int = 100000, page_size: int = 12
                     })
                     if page["count"] != track_count or len(page["items"]) > page_size or not page.get("paged"):
                         raise RuntimeError("sorted library query violated bounded pagination")
-                if sort_key == "added":
-                    order_by = "added_ns %s, title COLLATE NOCASE ASC, id ASC" % ("DESC" if sort_dir == "desc" else "ASC")
-                elif sort_key == "track_no":
-                    order_by = "CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END %s, title COLLATE NOCASE ASC, id ASC" % ("DESC" if sort_dir == "desc" else "ASC")
-                else:
-                    order_by = "%s COLLATE NOCASE %s, title COLLATE NOCASE ASC, id ASC" % (
-                        sort_key, "DESC" if sort_dir == "desc" else "ASC",
-                    )
+                # Build the plan's ORDER BY from the production query spec instead
+                # of restating it here.  R591 folded disc into the album order and
+                # changed the track-number expression; this hand-written copy kept
+                # the old one, so the benchmark reported a full scan for a query
+                # the service still served from an index -- the benchmark was
+                # measuring its own stale string.
+                order_by = parse_library_page_query({
+                    "view": "all", "sort": sort_key, "dir": sort_dir,
+                }).sql_order_by
                 plan = [
                     row[3] for row in conn.execute(
                         "EXPLAIN QUERY PLAN SELECT item_json FROM tracks ORDER BY %s LIMIT ? OFFSET ?" % order_by,

@@ -1,0 +1,32 @@
+{
+  "generated_by": "tools/measure_cover_key_strategy.py",
+  "result": {
+    "album_keyed_bytes": 12288,
+    "alias_overhead_bytes": 768,
+    "bytes_unchanged": true,
+    "per_track_render": {
+      "alias_bytes": 768,
+      "alias_files": 12,
+      "asset_bytes": 12288,
+      "asset_files": 1,
+      "cold_renders": 12,
+      "total_bytes": 13056,
+      "warm_renders": 0
+    },
+    "renders_saved": 11,
+    "renders_saved_percent": 91.67,
+    "shared_render": {
+      "alias_bytes": 768,
+      "alias_files": 12,
+      "asset_bytes": 12288,
+      "asset_files": 1,
+      "cold_renders": 1,
+      "total_bytes": 13056,
+      "warm_renders": 0
+    },
+    "size": 160,
+    "thumbnail_bytes": 12288,
+    "tracks": 12
+  },
+  "what": "cold renders and bytes for one album that shares artwork"
+}

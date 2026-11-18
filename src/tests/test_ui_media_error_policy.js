@@ -58,11 +58,37 @@ assert.equal(policy.MAX_CONSECUTIVE, 3, "上限是 3 首，改它要同时改文
   assert.equal(policy.classify(undefined), "unknown");
 }
 
+// R598：服务端能分辨「这个文件解不开」与「这会儿不行」，客户端按分类决定记不记名。
+// 只有 permanent 才进「放不了」名单；transient（磁盘满、转码排队、超时）跳过但不记名，
+// 否则一次磁盘满会把整张专辑永久拉黑。
+{
+  assert.equal(policy.classification({ code: "unsupported_format", permanent: true }), "permanent");
+  assert.equal(policy.classification({ code: "disk_full", permanent: false }), "transient");
+  assert.equal(policy.classification({ code: "timeout" }), "transient", "缺 permanent 时按暂时处理");
+  assert.equal(policy.classification(null), "unknown");
+  assert.equal(policy.classification({}), "unknown", "没有 code 就是没问到");
+  assert.equal(policy.classification({ code: "" }), "unknown");
+  assert.equal(policy.classification("nonsense"), "unknown");
+}
+
+// 停下来时说的话要分得清「文件坏了」和「机器这会儿不行」。
+{
+  assert.match(policy.stopMessage({ classification: "transient", serverMessage: "转码缓存空间不足，请清理后重试" }),
+    /空间不足/, "机器的问题要报机器的话");
+  assert.match(policy.stopMessage({ classification: "transient" }), /稍后/, "没有服务端文案时给一句兜底");
+  assert.match(policy.stopMessage({ classification: "permanent" }), /连续 3 首/, "文件的问题用原来的文案");
+  assert.match(policy.stopMessage({}), /连续 3 首/, "unknown 保持原样");
+}
+
 // 接线检查：app.js 真的调用了它，index.html 真的加载了它。
 {
   const app = fs.readFileSync("app/ui/app.js", "utf8");
   assert.match(app, /fnAudioMediaErrorPolicy/, "app.js must consult the policy");
-  assert.match(app, /audio\.onerror = \(\) => \{/, "the error handler must stay wired");
+  // R598 made it async: it asks the server what kind of failure this was before
+  // deciding whether the track belongs on the "unplayable" list.
+  assert.match(app, /audio\.onerror = async \(\) => \{/, "the error handler must stay wired");
+  assert.match(app, /localTranscodeVerdict\(item, policy\)/, "and it must consult the server's verdict");
+  assert.match(app, /verdict\.classification !== "transient"/, "a transient failure must not blacklist the track");
   assert.match(app, /action === "next"/, "the handler must act on the 'next' branch");
   assert.match(app, /localErrorStreak/, "the streak must be tracked on state");
   const html = fs.readFileSync("app/ui/index.html", "utf8");
@@ -107,8 +133,16 @@ assert.equal(policy.MAX_CONSECUTIVE, 3, "上限是 3 首，改它要同时改文
   assert.match(app, /policy\.nextPlayableIndex\(/, "自动续播要用策略挑下一首");
   assert.match(app, /rememberUnplayable\(/, "失败要记名单");
   assert.match(app, /forgetUnplayable\(/, "成功要除名");
-  // 预热在 R578 被量体推翻并撤掉：现在只要求它不再回来
-  assert.doesNotMatch(app, /preheatUpcomingStream\(/, "预热无收益已撤，别悄悄加回来");
+  // 预热在 R578 被量体推翻并撤掉；R600 补上了它为什么不可能有收益的机制原因：
+  // 转码流是 `no-store`，命中缓存的文件走 serve_file_range 又不带 ETag/Last-Modified，
+  // 两种响应浏览器都无权复用给另一个元素，预取只会多开一条转码流。判死，别再回来。
+  //
+  // 只查整行注释之外的内容：注释里提到这些写法（比如说明"为什么不要加"）不算回归，
+  // 否则这条守卫会把解释本身当成违规，下一个人只能删注释来让它变绿。
+  const codeLines = app.split("\n").filter(line => !/^\s*\/\//.test(line)).join("\n");
+  assert.doesNotMatch(codeLines, /preheatUpcomingStream\(/, "预热已判不可行（响应不可复用，见 PERF_STABILITY_PLAN §P1-2）");
+  assert.doesNotMatch(codeLines, /new Audio\(/, "预取下一首 URL 已判不可行，别加回来");
+  assert.doesNotMatch(codeLines, /rel=["']prefetch["']/, "link rel=prefetch 对媒体无效（响应不可复用）");
 }
 
 console.log("Media error policy regression checks passed.");

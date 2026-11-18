@@ -16,6 +16,7 @@ import library
 from library import UNCLASSIFIED, group_match_condition, library_db_connect, library_search_index_status, query_library_folders, query_library_groups, query_library_item_location, query_library_items_by_ids, query_library_page, query_library_root_folders, read_metadata, save_items_to_sqlite
 from scan_control import ScanCancelled, ScanDeadline, ScanTimedOut, check_scan_deadline
 from library_search_index_policy import FTS_MODE, LIKE_MODE, cache_token, search_index_status, uses_fts
+from library_query_spec import TRACK_SORT_COLUMNS
 
 
 class LibraryConnectionPoolingTests(unittest.TestCase):
@@ -2053,8 +2054,8 @@ class LibrarySqliteTests(unittest.TestCase):
             queries = {
                 ("format COLLATE NOCASE", "ASC"): "idx_tracks_format_nocase_title_id_asc",
                 ("format COLLATE NOCASE", "DESC"): "idx_tracks_format_nocase_title_id_desc",
-                ("CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END", "ASC"): "idx_tracks_track_no_title_id_asc",
-                ("CASE WHEN track_no <= 0 THEN 2147483647 ELSE track_no END", "DESC"): "idx_tracks_track_no_title_id_desc",
+                (TRACK_SORT_COLUMNS["track_no"], "ASC"): "idx_tracks_track_sort_title_id_asc",
+                (TRACK_SORT_COLUMNS["track_no"], "DESC"): "idx_tracks_track_sort_title_id_desc",
             }
             with library_db_connect(config) as conn:
                 available = {row[1] for row in conn.execute("PRAGMA index_list(tracks)")}
