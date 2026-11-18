@@ -10,6 +10,7 @@ symlink escapes, bounded result size, and a user-facing message on refusal.
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -389,6 +390,113 @@ class RemoteMountBrowseTests(unittest.TestCase):
             library_paths.reset_remote_mount_cache()
             library_paths.cached_remote_mount_paths()
             self.assertEqual(len(calls), 2)
+
+
+class OfflineShareTests(unittest.TestCase):
+    """A share whose backend is down must not be able to hang the picker.
+
+    2026-11-19: an rclone cloud drive mounted at /vol02/1000-1-9ed159d1 answered
+    one scandir() in 142 s.  The picker readdir()ed it on every request — once as
+    a user home, because fnOS gives a cloud drive the same "1000-1-<hash>" name
+    as 我的文件 — so /api/library/dirs took 32 s and regularly crossed nginx's
+    60 s limit.  The settings pane could not list a single directory, and the
+    user could not add a music folder at all.  These tests pin the three places
+    that used to touch the mount.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = self.temp.name
+        self.addCleanup(self.temp.cleanup)
+        library_paths.reset_remote_mount_cache()
+        library_paths.reset_remote_probe_cache()
+        self.addCleanup(library_paths.reset_remote_mount_cache)
+        self.addCleanup(library_paths.reset_remote_probe_cache)
+
+    def make_dir(self, *parts):
+        path = os.path.join(self.root, *parts)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def fake_share(self, readable):
+        """Patch the world so ``self.root`` holds a home and one mount point."""
+        share = self.make_dir("1000-1-9ed159d1")
+        home = self.make_dir("1000", "music")
+        patches = (
+            mock.patch.object(library_paths, "_volume_root_candidates", return_value=[self.root]),
+            mock.patch.object(library_paths, "is_allowed_library_path", return_value=True),
+            mock.patch.object(library_paths, "cached_remote_mount_paths", return_value=[os.path.realpath(share)]),
+            mock.patch.object(library_paths, "_scan_is_readable", return_value=readable),
+        )
+        return share, home, patches
+
+    def test_a_share_named_like_a_user_home_is_not_scanned_as_a_home(self):
+        share, home, patches = self.fake_share(readable=True)
+        scanned = []
+        original = library_paths._has_visible_child_directory
+
+        def record(path):
+            scanned.append(path)
+            return original(path)
+
+        with patches[0], patches[1], patches[2], patches[3], \
+                mock.patch.object(library_paths, "_has_visible_child_directory", record):
+            roots = library_paths.library_browse_roots()
+        self.assertEqual(scanned, [os.path.realpath(os.path.dirname(home))])
+        self.assertEqual(
+            [entry["path"] for entry in roots],
+            [os.path.realpath(os.path.dirname(home)), os.path.realpath(share)],
+        )
+
+    def test_an_offline_share_is_not_offered_as_a_browse_root(self):
+        _share, home, patches = self.fake_share(readable=False)
+        with patches[0], patches[1], patches[2], patches[3]:
+            roots = library_paths.library_browse_roots()
+        self.assertEqual([entry["path"] for entry in roots], [os.path.realpath(os.path.dirname(home))])
+
+    def test_browsing_an_offline_share_is_refused_before_the_path_is_resolved(self):
+        share, _home, patches = self.fake_share(readable=False)
+
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("an offline share must not be realpath()ed or stat()ed")
+
+        with patches[0], patches[1], patches[2], patches[3], \
+                mock.patch.object(library_paths, "canonical_library_path", refuse):
+            with self.assertRaises(ValueError) as caught:
+                library_paths.list_library_directories(os.path.realpath(share) + "/album")
+        self.assertIn("连不上", str(caught.exception))
+        self.assertIn(os.path.realpath(share), str(caught.exception))
+
+    def test_a_stuck_probe_leaves_one_worker_and_answers_immediately(self):
+        share = self.make_dir("share")
+        calls = []
+
+        def stuck(path):
+            calls.append(path)
+            time.sleep(0.4)
+            return True
+
+        with mock.patch.object(library_paths, "_scan_is_readable", stuck), \
+                mock.patch.object(library_paths, "REMOTE_PROBE_SECONDS", 0.05):
+            started = time.monotonic()
+            for _ in range(5):
+                self.assertFalse(library_paths.remote_mount_reachable(share))
+            elapsed = time.monotonic() - started
+        self.assertEqual(len(calls), 1)
+        self.assertLess(elapsed, 0.35)
+
+    def test_a_reachable_share_is_probed_once_and_cached(self):
+        share = self.make_dir("share")
+        calls = []
+
+        def readable(path):
+            calls.append(path)
+            return True
+
+        with mock.patch.object(library_paths, "_scan_is_readable", readable):
+            for _ in range(5):
+                self.assertTrue(library_paths.remote_mount_reachable(share))
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

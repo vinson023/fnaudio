@@ -21,6 +21,8 @@
 - `FNOS_MUSIC_MEDIASESSION_RESEARCH_20260831.md`：trim.music 与飞牛 APP 的跨平台播放会话、MediaSession、后台保活和宿主桥接研究。
 - `ANDROID_RELEASE.md`：正式 Android 签名构建、产物校验和密钥保管边界。
 - `RELEASE_EVIDENCE_0.2.33.md`：0.2.33 历史 FPK 的校验和状态、源码 provenance 缺口和恢复规则。
+- `FNOS_APPCENTER_INSTALL_TEST.md`：飞牛侧安装测试的唯一规程——应用中心的升级与全新安装两条分支（向导必须走完）、三条成功判据（登记版本、经 CGI 代理的健康检查、退出码）、装完还要用浏览器点一遍真实路径，以及 `:53199` 403 与 `dirs` 504 这两个常见误判来源。
+- `RELEASE_TAG_BACKFILL.md`：2026-11-19 回补的 19 个发布标签（v0.2.130／v0.2.145／v0.2.147–v0.2.163）逐个对应的提交、产物哈希与效力边界，以及四个有产物却从未被任何提交声明过的版本。
 - `FILE_PERMISSIONS_AND_PATH_BOUNDARIES.md`：私有/公开 mode、原子写、删除白名单与降权边界。
 - `REAL_DEVICE_COVER_BACKFILL_0.1.225.md`：缓存封面写入 Tag 的根因、一次性回填迁移与内网机前后证据。
 - `history/releases/UPDATE_0.1.172_TO_0.2.1.md`：0.1.172 至 0.2.1 的面向用户发布摘要。

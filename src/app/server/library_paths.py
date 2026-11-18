@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 
 
@@ -57,6 +58,18 @@ MOUNT_TABLE_PATH = "/proc/mounts"
 # appears while a listing is open shows up on the next refresh.
 REMOTE_MOUNT_CACHE_SECONDS = 2.0
 _REMOTE_MOUNT_CACHE = {"read_at": None, "paths": []}
+
+# A share whose backend is offline makes readdir() block for minutes.  On
+# 2026-11-19 an rclone cloud drive mounted at /vol02/1000-1-9ed159d1 answered
+# one scandir() in 142 s; the picker probed that mount on *every* request, so
+# /api/library/dirs took 32 s when it was lucky and blew past nginx's 60 s limit
+# when it was not, and the user could not add a music directory at all.  A share
+# is therefore probed with a deadline and the verdict is cached: a dead backend
+# costs one blocked worker thread instead of one blocked request, and a share
+# that comes back is picked up within a minute.
+REMOTE_PROBE_SECONDS = 2.0
+REMOTE_PROBE_RETRY_SECONDS = 60.0
+_REMOTE_PROBE = {}
 
 
 def _decode_mount_field(value):
@@ -140,6 +153,18 @@ def remote_mount_paths(mount_table=None):
 def reset_remote_mount_cache():
     _REMOTE_MOUNT_CACHE["read_at"] = None
     _REMOTE_MOUNT_CACHE["paths"] = []
+
+
+def reset_remote_probe_cache():
+    _REMOTE_PROBE.clear()
+
+
+def enclosing_remote_mount(path):
+    """Return the share that *path* lives in, or "" when it is local storage."""
+    for mount in cached_remote_mount_paths():
+        if path == mount or path.startswith(mount + os.sep):
+            return mount
+    return ""
 
 
 def cached_remote_mount_paths():
@@ -369,6 +394,7 @@ def _user_home_roots(volumes):
     one on the desktop instead of a dump of system directories.
     """
     homes = []
+    shares = set(cached_remote_mount_paths())
     for volume in volumes:
         try:
             with os.scandir(volume) as iterator:
@@ -381,7 +407,15 @@ def _user_home_roots(volumes):
                             continue
                     except OSError:
                         continue
-                    real = os.path.realpath(os.path.join(volume, name))
+                    lexical = os.path.join(volume, name)
+                    real = os.path.realpath(lexical)
+                    # fnOS parks cloud drives under a volume root using the same
+                    # "1000-1-<hash>" shape as a user home, so a share used to be
+                    # mistaken for 我的文件 here and then readdir()ed below.  A
+                    # share is offered from the mount table instead; probing it as
+                    # a home is what hung the picker.
+                    if lexical in shares or real in shares:
+                        continue
                     if is_allowed_library_path(real):
                         homes.append(real)
         except OSError:
@@ -404,6 +438,58 @@ def _has_visible_child_directory(path):
     except OSError:
         return False
     return False
+
+
+def _scan_is_readable(path):
+    """True when one readdir() of *path* succeeds.
+
+    Unlike ``_has_visible_child_directory`` this does not care what the entries
+    are: an empty share is still reachable, and hiding it would take a working
+    mount out of the picker.
+    """
+    try:
+        with os.scandir(path) as iterator:
+            for _ in iterator:
+                break
+        return True
+    except OSError:
+        return False
+
+
+def remote_mount_reachable(path):
+    """True when *path* answers a readdir() within ``REMOTE_PROBE_SECONDS``.
+
+    A blocking readdir() cannot be interrupted from the same thread, so the
+    probe runs in a worker and this call stops waiting at the deadline.  The
+    verdict is cached, and a worker that is still stuck is never replaced by a
+    second one, so an offline backend leaves exactly one thread behind no matter
+    how many times the picker is opened.
+    """
+    state = _REMOTE_PROBE.setdefault(path, {"thread": None, "readable": None, "checked_at": 0.0})
+    worker = state["thread"]
+    if worker is not None:
+        if worker.is_alive():
+            return False
+        state["thread"] = None
+        state["readable"] = bool(state.get("result"))
+        state["checked_at"] = time.monotonic()
+    readable = state["readable"]
+    if readable is not None and time.monotonic() - state["checked_at"] < REMOTE_PROBE_RETRY_SECONDS:
+        return readable
+
+    def run():
+        state["result"] = _scan_is_readable(path)
+
+    state["thread"] = threading.Thread(target=run, name="fnaudio-share-probe", daemon=True)
+    state["thread"].start()
+    state["thread"].join(REMOTE_PROBE_SECONDS)
+    if state["thread"].is_alive():
+        # Still stuck: leave it running and answer "not reachable" meanwhile.
+        return False
+    state["thread"] = None
+    state["readable"] = bool(state.get("result"))
+    state["checked_at"] = time.monotonic()
+    return state["readable"]
 
 
 def _dedupe_roots(entries):
@@ -488,6 +574,11 @@ def library_browse_roots():
         # same files under a second name.
         if any(mount == entry["path"] or mount.startswith(entry["path"].rstrip(os.sep) + os.sep) for entry in roots):
             continue
+        # An offline share must not be offered: clicking it would block the
+        # request until nginx gives up, which is the failure the probe exists to
+        # avoid.
+        if not remote_mount_reachable(mount):
+            continue
         for extra in _dedupe_roots([mount]):
             if all(entry["path"] != extra for entry in roots):
                 base = os.path.basename(extra.rstrip(os.sep)) or extra
@@ -513,6 +604,13 @@ def list_library_directories(path=""):
     roots = library_browse_roots()
     if not text:
         return {"path": "", "parent": "", "entries": [], "roots": roots, "truncated": False}
+    # Refuse an offline share before touching the path at all: realpath() and
+    # isdir() walk into the mount, and on a dead backend that stat() blocks for
+    # minutes.  abspath() is lexical, so this check itself cannot block.
+    requested = os.path.abspath(os.path.expanduser(text))
+    mount = enclosing_remote_mount(requested)
+    if mount and not remote_mount_reachable(mount):
+        raise ValueError("这台共享存储现在连不上：%s" % mount)
     canonical = canonical_library_path(text)
     if not is_allowed_library_path(canonical):
         raise ValueError("这个目录不在允许的音乐目录范围内")
