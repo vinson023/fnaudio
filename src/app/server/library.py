@@ -30,7 +30,7 @@ from library_query_cache import LibraryQueryCache
 from library_query_cache_key import MAX_CACHE_KEY_VALUES
 from library_cache_failure_policy import describe_failure, increment_failure, project_failures
 from library_persist_retry import PersistRetrySlot, is_transient_lock
-from library_query_spec import LIBRARY_ITEM_ID_LIMIT, first_param, normalize_library_item_id, normalize_library_item_sequence, parse_library_folder_query, parse_library_group_query, parse_library_page_query, parse_library_root_search
+from library_query_spec import GROUP_SORT_COLUMNS, LIBRARY_ITEM_ID_LIMIT, first_param, normalize_library_item_id, normalize_library_item_sequence, parse_library_folder_query, parse_library_group_query, parse_library_page_query, parse_library_root_search
 from library_pagination import counted_page_rows, paged_rows_with_total
 from library_track_filter_policy import build_track_filters
 from library_item_hydration import hydrate_items_by_ids
@@ -151,7 +151,7 @@ SUPPORTED = {
 METADATA_VERSION = 21
 MAX_PROBE_OUTPUT_BYTES = 2 * 1024 * 1024
 UNCLASSIFIED = "未分类"
-GROUP_LABEL_VERSION = "3"
+GROUP_LABEL_VERSION = "4"
 MAX_LIBRARY_SIGNATURE_PARTS = 200_000
 MAX_LIBRARY_SIGNATURE_BYTES = 8 * 1024 * 1024
 SEARCH_INDEX_VERSION = "1"
@@ -1946,10 +1946,45 @@ def _query_memory_library_page(config, params):
         shuffle=random.shuffle, randrange=random.randrange,
     )
 
-def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer="", cursor=""):
-    browse_query = parse_library_group_query(view, search, limit, offset, sort_dir, artist, composer, cursor)
+def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer="", cursor="", sort_key="name"):
+    browse_query = parse_library_group_query(view, search, limit, offset, sort_dir, artist, composer, cursor, sort_key)
     view, search, page = browse_query.view, browse_query.search, browse_query.page
     direction, artist, composer, cursor = browse_query.sql_sort_dir, browse_query.artist, browse_query.composer, decode_browse_cursor(browse_query.cursor)
+    # The keyset cursor encodes a position in the *name* order -- it stores the
+    # last name it emitted.  Handing it to a different ORDER BY would resume from
+    # a position that order never produces, so the other keys fall back to OFFSET
+    # paging: correct, just without the bounded deep-page path.
+    if browse_query.sort_key != "name":
+        cursor = ""
+    order_expression = GROUP_SORT_COLUMNS.get(browse_query.sort_key, "name COLLATE NOCASE")
+    if browse_query.sort_key == "name":
+        # `, name ASC` is not decoration: the ordering indexes are composite
+        # `(name COLLATE NOCASE <dir>, name ASC)`, and this second term is what
+        # matches their second column.  Drop it and the ORDER BY no longer fits
+        # the index, so SQLite falls back to a temporary B-tree over the whole
+        # table -- and picks whichever of the two single-column indexes is
+        # cheapest to scan, which is how the direction-specific attribution in
+        # `test_every_group_ordering_index_is_named_by_a_real_browse_path` broke.
+        order_clause = "name COLLATE NOCASE %s, name ASC" % direction
+    elif browse_query.sort_key == "release_date":
+        # An album whose files carry no date tag has release_year 0.  Ordering on
+        # the column alone would put every undated album ahead of the dated ones
+        # in ascending order, so the first term parks them at the end whichever
+        # direction was asked for.  That CASE is also why this order is a sort
+        # over the albums table rather than an index seek: the cost is bounded by
+        # the number of albums, which is the point of denormalizing the year.
+        order_clause = (
+            "CASE WHEN release_year = 0 THEN 1 ELSE 0 END ASC, release_year %s, name COLLATE NOCASE ASC"
+            % direction
+        )
+    else:
+        # The remaining keys repeat `name`: two albums by one artist, or two from
+        # one year, otherwise have no defined order, and a page boundary could
+        # then show one of them twice while skipping the other.  The artist order
+        # turns the tie-break over with the direction, because a descending read
+        # is then the reversed scan of `(artist COLLATE NOCASE, name COLLATE
+        # NOCASE)` instead of a temporary B-tree over the whole table.
+        order_clause = "%s %s, name COLLATE NOCASE %s" % (order_expression, direction, direction)
     if browse_cursor_page(cursor, "group", browse_query.sql_sort_dir.lower()):
         offset = 0
         page = type(page)(page.limit, 0) if page is not None else None
@@ -1958,7 +1993,7 @@ def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir
     if not table or not os.path.isfile(library_db_path(config)):
         return {"groups": [], "count": 0, "limit": 0, "offset": 0, "paged": True} if limit is not None else []
     use_fts, search_cache_token = _search_plan(config, search)
-    cache_values = (view, search, page.limit, page.offset, direction, artist, composer, browse_query.cursor) if page else ()
+    cache_values = (view, search, page.limit, page.offset, direction, artist, composer, browse_query.cursor, browse_query.sort_key) if page else ()
     if page and search_cache_token:
         cache_values += (search_cache_token,)
     cache_epoch = _library_cache_epoch(config) if page else None
@@ -1983,15 +2018,20 @@ def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir
         )
         cte_args = [UNCLASSIFIED] + owner_args + search_args
         artist_expr = "COALESCE(NULLIF(MIN(NULLIF(s.album_artist, '')), ''), NULLIF(MIN(NULLIF(s.artist, '')), ''), ?)"
+        # The year travels with the row for the same reason it is denormalized
+        # onto `albums`: this branch aggregates the tracks itself, so the album
+        # table's copy is not in scope.  Without it, ordering this view by
+        # release date would name a column the derived table does not have.
+        year_expr = "COALESCE(MIN(NULLIF(s.year, 0)), 0)"
         grouped_sql = (
-            "SELECT s.group_name AS name, %s AS artist, COUNT(*) AS track_count, MIN(s.id) AS cover_track_id "
+            "SELECT s.group_name AS name, %s AS artist, COUNT(*) AS track_count, MIN(s.id) AS cover_track_id, %s AS release_year "
             "FROM scoped s JOIN matched m ON m.group_name = s.group_name GROUP BY s.group_name"
-            % artist_expr
+            % (artist_expr, year_expr)
         )
         with library_db_connect(config) as conn:
             if page is None:
                 rows = conn.execute(
-                    cte + grouped_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC",
+                    cte + grouped_sql + " ORDER BY " + order_clause,
                     cte_args + [UNCLASSIFIED],
                 )
                 return materialize_browse_rows(rows)
@@ -2001,18 +2041,18 @@ def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir
             # out-of-range page has no row from which to read the window
             # value, so only that exceptional path retains the count query.
             window_sql = (
-                cte + "SELECT name,artist,track_count,cover_track_id,COUNT(*) OVER() AS total_count "
-                "FROM (" + grouped_sql + ") grouped ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+                cte + "SELECT name,artist,track_count,cover_track_id,release_year,COUNT(*) OVER() AS total_count "
+                "FROM (" + grouped_sql + ") grouped ORDER BY " + order_clause + " LIMIT ? OFFSET ?"
             )
             count_sql = cte + "SELECT COUNT(*) FROM matched"
-            page_sql = cte + grouped_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+            page_sql = cte + grouped_sql + " ORDER BY " + order_clause + " LIMIT ? OFFSET ?"
             cursor_condition, _cursor_args = browse_cursor_next_group_where(cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE")
             if cursor_condition:
                 rows = _browse_cursor_rows(
                     conn,
                     cte + "SELECT * FROM (" + grouped_sql + ") grouped",
                     " WHERE ",
-                    "name COLLATE NOCASE " + direction + ", name ASC",
+                    order_clause,
                     cte_args + [UNCLASSIFIED],
                     cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE", "name", page.limit,
                 )
@@ -2054,23 +2094,23 @@ def query_library_groups(config, view, search="", limit=None, offset=0, sort_dir
     with library_db_connect(config) as conn:
         if page is None:
             return materialize_browse_rows(conn.execute(
-                matched_sql + select_sql + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC",
+                matched_sql + select_sql + " ORDER BY " + order_clause,
                 args,
             ))
         count_sql = matched_sql + ("SELECT COUNT(*) FROM matched" if search_condition else "SELECT COUNT(*) FROM %s" % table)
         cursor_condition, _cursor_args = browse_cursor_next_group_where(cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE")
-        page_sql = matched_sql + "SELECT * FROM (" + select_sql + ") grouped ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+        page_sql = matched_sql + "SELECT * FROM (" + select_sql + ") grouped ORDER BY " + order_clause + " LIMIT ? OFFSET ?"
         window_sql = (
             matched_sql
             + "SELECT grouped.*, COUNT(*) OVER() AS total_count FROM (" + select_sql + ") grouped"
-            + " ORDER BY name COLLATE NOCASE " + direction + ", name ASC LIMIT ? OFFSET ?"
+            + " ORDER BY " + order_clause + " LIMIT ? OFFSET ?"
         )
         if cursor_condition:
             rows = _browse_cursor_rows(
                 conn,
                 matched_sql + "SELECT * FROM (" + select_sql + ") grouped",
                 " WHERE ",
-                "name COLLATE NOCASE " + direction + ", name ASC",
+                order_clause,
                 args,
                 cursor, "group", browse_query.sql_sort_dir.lower(), "name COLLATE NOCASE", "name", page.limit,
             )
@@ -2920,7 +2960,8 @@ def ensure_library_schema(conn):
             name TEXT PRIMARY KEY,
             artist TEXT,
             track_count INTEGER NOT NULL DEFAULT 0,
-            cover_track_id TEXT
+            cover_track_id TEXT,
+            release_year INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS artists (
             name TEXT PRIMARY KEY,
@@ -2976,6 +3017,21 @@ def ensure_library_schema(conn):
     # because this migration was defined but never invoked. The composite key
     # is required when distinct music roots contain the same folder names.
     _migrate_tracks_columns(conn)
+    # An upgraded database has an albums table without the column the release
+    # date order needs.  CREATE TABLE IF NOT EXISTS above cannot add it, so the
+    # column is added here; the next full or incremental rebuild fills it in.
+    album_columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)")}
+    if album_columns and "release_year" not in album_columns:
+        conn.execute("ALTER TABLE albums ADD COLUMN release_year INTEGER NOT NULL DEFAULT 0")
+    # Created here rather than beside CREATE TABLE because the index names a
+    # column an upgraded database only just gained.  Only the artist order gets
+    # one: it is `(artist COLLATE NOCASE, name COLLATE NOCASE)`, exactly the two
+    # terms that order emits.  The release-date order leads with a CASE that
+    # parks undated albums at the end, and no index can serve an expression, so
+    # that one is deliberately left to sort the albums table in memory -- its
+    # cost is bounded by the number of albums, which is why the year was
+    # denormalized onto this table in the first place.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_artist_nocase ON albums(artist COLLATE NOCASE, name COLLATE NOCASE)")
     # The original one-column index cannot satisfy the visible-page title/ID
     # tie-breaker and leaves SQLite to build a temporary sort. The composite
     # indexes created above cover its ordered-read use while keeping recent
@@ -3110,7 +3166,7 @@ def _migrate_tracks_columns(conn):
         conn.execute("DELETE FROM composers")
         conn.execute("DELETE FROM genres")
         if conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]:
-            _rebuild_group_table(conn, "albums", "album", "album_artist")
+            _rebuild_album_table(conn)
             _rebuild_simple_group(conn, "artists", "artist")
             _rebuild_simple_group(conn, "composers", "composer")
             _rebuild_simple_group(conn, "genres", "genre")
@@ -3473,6 +3529,29 @@ def library_summary_from_sqlite(config):
                     LIBRARY_SUMMARY_INFLIGHT.pop(database, None)
                     completion.set()
 
+def _rebuild_album_table(conn):
+    """Rebuild the album table, including the year its tracks were released.
+
+    ``release_year`` is the album's earliest non-zero tag year.  It is
+    denormalized here because the album list can be ordered by it, and ordering
+    on a join against ``tracks`` would have to read every album's tracks before
+    it could answer the first page.  Albums whose files carry no date tag keep
+    0: the list renders that as "-" and the release-date order sorts them last,
+    which is where an unknown date belongs.
+    """
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO albums (name, artist, track_count, cover_track_id, release_year)
+        SELECT COALESCE(NULLIF(album, ''), ?),
+               COALESCE(NULLIF(MIN(NULLIF(album_artist, '')), ''), NULLIF(MIN(NULLIF(artist, '')), ''), ?),
+               COUNT(*), MIN(id),
+               COALESCE(MIN(NULLIF(year, 0)), 0)
+        FROM tracks GROUP BY COALESCE(NULLIF(album, ''), ?)
+        """,
+        (UNCLASSIFIED, UNCLASSIFIED, UNCLASSIFIED),
+    )
+
+
 def _rebuild_group_table(conn, table, column, artist_column):
     conn.execute(
         f"""
@@ -3552,10 +3631,11 @@ def _refresh_group_tables_for_changes(conn, collect=True):
             if artist_column:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO albums(name, artist, track_count, cover_track_id)
+                    INSERT OR REPLACE INTO albums(name, artist, track_count, cover_track_id, release_year)
                     SELECT ?,
                            COALESCE(NULLIF(MIN(NULLIF(album_artist, '')), ''), NULLIF(MIN(NULLIF(artist, '')), ''), ?),
-                           COUNT(*), MIN(id)
+                           COUNT(*), MIN(id),
+                           COALESCE(MIN(NULLIF(year, 0)), 0)
                     FROM tracks WHERE COALESCE(NULLIF(album, ''), ?) = ?
                     HAVING COUNT(*) > 0
                     """,

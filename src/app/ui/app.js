@@ -176,11 +176,6 @@ state.accessProfileLoader = globalThis.fnAudioAccessProfileLoader?.create({
 state.mp3Transcode = localStorage.getItem("fnaudio.mp3Transcode") === "1";
 state.sortDir = localStorage.getItem("fnaudio.sortDir.v2") || "asc";
 state.sortKey = localStorage.getItem("fnaudio.sortKey.v1") || "title";
-// R594: rows or a wall of covers.  Audio Station lets the same list render as
-// either (FileSongListAdapter picks one of two view types per row); the rows
-// carry the metadata, the grid is what you want when you are hunting a cover.
-// Device-local on purpose: it is a density choice, not library state.
-state.albumLayout = localStorage.getItem("fnaudio.albumLayout.v1") === "grid" ? "grid" : "list";
 state.remoteStatus = null;
 state.dacStrategy = null;
 state.lyrics = [];
@@ -4268,46 +4263,12 @@ function renderCreatorAllSongsEntry(groups = groupedTracks()) {
     ${breadcrumbChevronMarkup("artist-all-songs-chevron")}
   </button>`;
 }
-const ALBUM_LAYOUT_KEY = "fnaudio.albumLayout.v1";
-function setAlbumLayout(mode) {
-  const next = mode === "grid" ? "grid" : "list";
-  if (next === state.albumLayout) return;
-  // Switching layout rebuilds every group node, so the reader's place has to be
-  // put back by hand -- both immediately and after the row commit, which is the
-  // frame that would otherwise scroll the list back to the top.
-  const scroll = $("libraryScroll");
-  const top = scroll ? scroll.scrollTop : 0;
-  state.albumLayout = next;
-  writeStoredPreference(ALBUM_LAYOUT_KEY, state.albumLayout);
-  render();
-  if (scroll) {
-    scroll.scrollTop = top;
-    requestAnimationFrame(() => { scroll.scrollTop = top; });
-  }
-}
-function albumLayoutBar(count) {
-  const grid = state.albumLayout === "grid";
-  return `<div class="album-layout-bar"><span>${libraryCount(count)} 张专辑</span>`
-    + `<button type="button" class="album-layout-toggle${grid ? "" : " is-active"}" data-album-layout="list" aria-pressed="${grid ? "false" : "true"}" title="列表" aria-label="列表">`
-    + `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>`
-    + `<button type="button" class="album-layout-toggle${grid ? " is-active" : ""}" data-album-layout="grid" aria-pressed="${grid ? "true" : "false"}" title="网格" aria-label="网格">`
-    + `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></button>`
-    + `</div>`;
-}
-function renderAlbumTiles(groups = []) {
-  const tiles = groups.map(group => {
-    const name = displayText(group.name || "未分类");
-    const key = `group:albums:${name}`;
-    const metadata = state.albumMetadata.get(name) || {};
-    const artist = displayText(metadata.artist || group.artist || "未知歌手");
-    const trackCount = libraryCount(group.track_count);
-    // The tile carries the same data-group-* contract as a row, so click,
-    // long-press and selection keep working without a second code path.
-    return `<div class="album-tile${state.selectedGroupKeys.has(key) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(key)}" data-group-type="group" data-group-view="albums" data-group-name="${encodeURIComponent(name)}" data-group-track-count="${trackCount}" data-album-metadata-name="${escapeHtml(name)}" role="button" tabindex="0" aria-label="${escapeHtml(name)}">`
-      + groupIcon("albums", [state.itemCache.get(String(group.cover_track_id || ""))].filter(Boolean), group.cover_track_id, name, group.image_url)
-      + `<strong class="album-tile-name">${escapeHtml(name)}</strong><span class="album-tile-artist">${escapeHtml(artist)}</span></div>`;
-  }).join("");
-  return `<div class="album-grid">${tiles}</div>`;
+function albumListBar(count) {
+  // The album list's order lives in the column headers, which is where it was
+  // always meant to be: this bar only reports how many albums there are.  It
+  // used to carry a list/grid toggle, and for one round three sort buttons that
+  // duplicated the headers -- both are gone.
+  return `<div class="album-list-bar"><span>${libraryCount(count)} 张专辑</span></div>`;
 }
 function renderAlbumGroups(groups = groupedTracks()) {
   const albums = groups.map(group => {
@@ -4315,12 +4276,15 @@ function renderAlbumGroups(groups = groupedTracks()) {
     const key = `group:albums:${name}`;
     const metadata = state.albumMetadata.get(name) || {};
     const artist = displayText(metadata.artist || group.artist || "未知歌手");
-    const releaseDate = displayText(metadata.release_date || "-");
+    const releaseDate = displayText(metadata.release_date || (group.release_year ? String(group.release_year) : "") || "-");
     const trackCount = libraryCount(group.track_count);
     return `<div class="album-group-row${state.selectedGroupKeys.has(key) ? " is-selected" : ""}" data-group-row data-group-key="${escapeHtml(key)}" data-group-type="group" data-group-view="albums" data-group-name="${encodeURIComponent(name)}" data-group-track-count="${trackCount}" data-album-metadata-name="${escapeHtml(name)}"><div class="album-group-title">${groupIcon("albums", [state.itemCache.get(String(group.cover_track_id || ""))].filter(Boolean), group.cover_track_id, name, group.image_url)}<strong>${escapeHtml(name)}</strong></div><span class="album-group-artist">${escapeHtml(artist)}</span><span class="album-group-release-date">${escapeHtml(releaseDate)}</span></div>`;
   }).join("");
-  const body = state.albumLayout === "grid" ? renderAlbumTiles(groups) : albums;
-  return `${isCreatorAlbumView() ? renderCreatorAllSongsEntry(groups) : ""}${albumLayoutBar(groups.length)}${body}`;
+  const body = albums;
+  // `groups` is one page, not the library.  The server states the album total
+  // next to every page, so the header reports that instead of "60 张专辑" on a
+  // library that has nine hundred.
+  return `${isCreatorAlbumView() ? renderCreatorAllSongsEntry(groups) : ""}${albumListBar(state.pageTotal || groups.length)}${body}`;
 }
 function renderCreatorAllTracks(list) {
   const creator = displayText(currentCreatorName() || `未知${currentCreatorLabel()}`);
@@ -4600,9 +4564,6 @@ function render() {
       };
     });
   }
-  document.querySelectorAll("[data-album-layout]").forEach(button => button.onclick = () => {
-    setAlbumLayout(String(button.dataset.albumLayout || "list"));
-  });
   document.querySelectorAll("[data-group-back]").forEach(b => b.onclick = () => {
     if (isCreatorAllTracksView()) setCurrentCreatorAllTracks(false);
     else if (isCreatorView() && state.groupName) state.groupName = "";
@@ -8060,7 +8021,14 @@ async function loadPagedLibraryWorker(page = 1, refresh = false) {
     const groupContinuation = browseCursorForPage("group", state.page);
     params.set("offset", groupContinuation ? "0" : String(Math.max(0, (state.page - 1) * state.pageSize)));
     if (groupContinuation) params.set("cursor", groupContinuation);
+    // Which column the album list is ordered by.  This is the same
+    // `state.sortKey` / `state.sortDir` the column headers already maintain
+    // through `applyTrackSort`, which is the point: the headers were there all
+    // along, they just had no way to reach the server.  Only albums send a key
+    // -- the artist and composer lists have one order and one clickable header,
+    // so a key there would only be a wider cache identity.
     params.set("dir", state.sortDir || "asc");
+    if ((params.get("view") || "") === "albums") params.set("sort", state.sortKey || "album");
     const data = await fetchLibraryResponse(`api/library/groups?${params.toString()}`, "读取分类失败", refresh, requestSignal);
     if (seq !== state.libraryRequestSeq) return;
     state.groupRows = fnAudioLibraryRenderPolicy.boundedRows(data.groups);

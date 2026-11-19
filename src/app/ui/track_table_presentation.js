@@ -36,10 +36,22 @@
       template: "minmax(280px,1fr)",
       markup: `<div class="album-header-cell"><button class="track-head-button" type="button" data-track-sort="${groupSortKey}">标题${sortIndicator(groupSortKey, currentSort, sortDir)}</button></div>`,
     };
-    if (mode === "album-collection") return {
-      template: "minmax(280px,1fr) minmax(160px,240px) 130px",
-      markup: `<div class="album-header-cell"><button class="track-head-button" type="button" data-track-sort="album">标题${sortIndicator("album", currentSort, sortDir)}</button></div><div class="album-header-cell">歌手</div><div class="album-header-cell">发行日期</div>`,
-    };
+    if (mode === "album-collection") {
+      // All three headers sort *where the view registers the order*.  The
+      // artist's own album list registers only the album name (and the release
+      // date), so the remaining header has to fall back to a plain label --
+      // a button whose key `applyTrackSort` would refuse is a dead control.
+      const sortable = new Set(safeColumns(sortableSortKeys));
+      const cell = (key, label) => `<div class="album-header-cell">`
+        + (sortable.has(key)
+          ? `<button class="track-head-button" type="button" data-track-sort="${key}">${label}${sortIndicator(key, currentSort, sortDir)}</button>`
+          : `<span class="track-head-label">${label}</span>`)
+        + `</div>`;
+      return {
+        template: "minmax(280px,1fr) minmax(160px,240px) 130px",
+        markup: cell("album", "标题") + cell("artist", "歌手") + cell("release_date", "发行日期"),
+      };
+    }
     const sortable = new Set(safeColumns(sortableSortKeys));
     const markup = safeColumns(columns).map(key => {
       const definition = definitions[key] || {};

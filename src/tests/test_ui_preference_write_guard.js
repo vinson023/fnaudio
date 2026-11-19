@@ -197,10 +197,11 @@ for (const [name, after, host] of [
 assert.match(guardSource(),
   /function writeStoredPreference\(key, value\) \{[\s\S]{0,600}?try \{[\s\S]{0,80}?localStorage\.setItem\(key, value\);[\s\S]{0,40}?\} catch \(_\) \{/,
   "the guarded writer must wrap exactly the storage call, and only that call");
-assert.equal(writesOf(app, "writeStoredPreference("), 10,
-  "the writer plus nine call sites: the four R172 converted, the transcode switch "
+assert.equal(writesOf(app, "writeStoredPreference("), 9,
+  "the writer plus eight call sites: the four R172 converted, the transcode switch "
   + "adopted on hydration (R567), the page size (R569), the unplayable-track list (R576), "
-  + "and the album layout choice (R594)");
+  + "and the sort key plus its direction (R611) -- the album list reads the same two "
+  + "preferences through its column headers, so it adds no write of its own");
 assert.match(app, /function writeStoredUserMedia\(key, value\) \{/,
   "the user-media writer stays separate: its payload is JSON, the preference payload is not");
 

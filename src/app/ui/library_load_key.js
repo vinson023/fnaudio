@@ -35,6 +35,9 @@
       creatorAllTracks: typeof isCreatorAllTracks === "function" ? Boolean(isCreatorAllTracks()) : false,
       sortKey: safeText(source.sortKey, "title") || "title",
       sortDir: safeText(source.sortDir, "asc") || "asc",
+      // `sortKey` / `sortDir` above are the album list's order too -- its column
+      // headers drive the same state the track table does -- so a remembered
+      // page cursor is already scoped to the ORDER BY it was read with.
       search: typeof currentQueryText === "function" ? safeText(currentQueryText()) : "",
     };
     try {

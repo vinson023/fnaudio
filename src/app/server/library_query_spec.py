@@ -19,6 +19,24 @@ TRACK_SORT_COLUMNS = {
     "track_no": "CASE WHEN track_sort > 0 THEN track_sort WHEN track_no > 0 THEN track_no ELSE 2147483647 END",
 }
 GROUP_TRACK_COLUMNS = {"albums": "album", "artists": "artist", "composers": "composer", "genres": "genre"}
+# Group browsing only had one order (name, with a direction toggle).  The album
+# list now offers two more, and they are deliberately a closed set: the key is
+# interpolated into ORDER BY, so anything outside this tuple must never reach the
+# statement.
+GROUP_SORT_COLUMNS = {
+    "name": "name COLLATE NOCASE",
+    "artist": "artist COLLATE NOCASE",
+    # `release_year` is denormalized onto the albums table at index time (see
+    # library._rebuild_album_table).  Sorting on a join against tracks would have
+    # to visit every album's tracks before it could return the first page.
+    "release_date": "release_year",
+}
+GROUP_SORT_KEYS = tuple(GROUP_SORT_COLUMNS)
+# Keys the browser uses for the same orders under a different name.  The album
+# list's headers carry the track table's option ids (`album`, not `name`), and
+# the two mean the same ORDER BY here.  Resolved before the whitelist so a
+# canonical key is what reaches SQL *and* the cache.
+GROUP_SORT_ALIASES = {"album": "name"}
 LIBRARY_ITEM_ID_LIMIT = 120
 MAX_LIBRARY_QUERY_TEXT_CHARS = 512
 MAX_LIBRARY_PATH_CHARS = 4096
@@ -155,6 +173,7 @@ class LibraryGroupQuery:
     artist: str
     composer: str
     cursor: str
+    sort_key: str = "name"
 
 
 @dataclass(frozen=True)
@@ -246,12 +265,20 @@ def parse_library_page_query(params):
     )
 
 
-def parse_library_group_query(view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer="", cursor=""):
+def parse_library_group_query(view, search="", limit=None, offset=0, sort_dir="asc", artist="", composer="", cursor="", sort_key="name"):
     """Normalize group browsing inputs before building SQLite filters/cache keys."""
     values = {
         "view": view, "search": search, "dir": sort_dir,
-        "artist": artist, "composer": composer, "cursor": cursor,
+        "artist": artist, "composer": composer, "cursor": cursor, "sort": sort_key,
     }
+    # An unknown key falls back to the default rather than reaching SQL.  The key
+    # is part of the cache identity, so it has to be canonical before it is
+    # stored -- otherwise two spellings of "name" would fill the cache twice.
+    # `album` is the album list's own name for the name order: its column header
+    # carries the option id the track table uses, and the two orders are the same
+    # SQL, so the alias is resolved here rather than widening the whitelist.
+    requested_sort = param_text(values, "sort", "name", maximum=32, strip=True, lower=True) or "name"
+    requested_sort = GROUP_SORT_ALIASES.get(requested_sort, requested_sort)
     return LibraryGroupQuery(
         view=param_text(values, "view", "", maximum=64, strip=True, lower=True),
         search=param_text(values, "search", strip=True, lower=True),
@@ -260,6 +287,7 @@ def parse_library_group_query(view, search="", limit=None, offset=0, sort_dir="a
         artist=param_text(values, "artist", maximum=MAX_LIBRARY_QUERY_TEXT_CHARS),
         composer=param_text(values, "composer", maximum=MAX_LIBRARY_QUERY_TEXT_CHARS),
         cursor=param_text(values, "cursor", maximum=768, strip=True),
+        sort_key=requested_sort if requested_sort in GROUP_SORT_KEYS else "name",
     )
 
 
@@ -281,4 +309,4 @@ def parse_library_root_search(search=""):
     return param_text({"search": search}, "search", strip=True, lower=True)
 
 
-__all__ = ["GROUP_TRACK_COLUMNS", "LIBRARY_ITEM_ID_LIMIT", "LibraryFolderQuery", "LibraryGroupQuery", "LibraryPageQuery", "LibraryPageWindow", "MAX_LIBRARY_ITEM_ID_CHARS", "MAX_LIBRARY_ITEM_IDS_CHARS", "MAX_LIBRARY_OFFSET", "MAX_LIBRARY_PATH_CHARS", "MAX_LIBRARY_QUERY_TEXT_CHARS", "TRACK_SORT_COLUMNS", "first_param", "normalize_library_item_id", "normalize_library_item_sequence", "numeric_int", "param_int", "param_text", "parse_library_folder_query", "parse_library_group_query", "parse_library_item_ids", "parse_library_page_query", "parse_library_root_search", "parse_optional_page"]
+__all__ = ["GROUP_SORT_ALIASES", "GROUP_SORT_COLUMNS", "GROUP_SORT_KEYS", "GROUP_TRACK_COLUMNS", "LIBRARY_ITEM_ID_LIMIT", "LibraryFolderQuery", "LibraryGroupQuery", "LibraryPageQuery", "LibraryPageWindow", "MAX_LIBRARY_ITEM_ID_CHARS", "MAX_LIBRARY_ITEM_IDS_CHARS", "MAX_LIBRARY_OFFSET", "MAX_LIBRARY_PATH_CHARS", "MAX_LIBRARY_QUERY_TEXT_CHARS", "TRACK_SORT_COLUMNS", "first_param", "normalize_library_item_id", "normalize_library_item_sequence", "numeric_int", "param_int", "param_text", "parse_library_folder_query", "parse_library_group_query", "parse_library_item_ids", "parse_library_page_query", "parse_library_root_search", "parse_optional_page"]

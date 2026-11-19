@@ -2,7 +2,10 @@
 
 from collections.abc import Mapping
 
-GROUP_FIELDS = ("name", "artist", "track_count", "cover_track_id")
+# `release_year` is part of the album row, not decoration: the album list can be
+# ordered by release date and the row shows the year it sorted on.  Dropping it
+# here would leave the order unexplained on screen.
+GROUP_FIELDS = ("name", "artist", "track_count", "cover_track_id", "release_year")
 FOLDER_FIELDS = ("path", "root", "parent", "name", "track_count", "cover_track_id")
 MAX_PROJECTED_ROWS = 5000
 

@@ -1190,15 +1190,19 @@ class Handler(BaseHTTPRequestHandler):
             search = (query.get("search") or [""])[0]
             artist = (query.get("artist") or [""])[0]
             composer = (query.get("composer") or [""])[0]
+            # Which column the album list is ordered by.  Validated in
+            # `parse_library_group_query` against a whitelist, so an unknown key
+            # never reaches SQL; it just falls back to the album name.
+            sort_key = (query.get("sort") or ["name"])[0]
             if query.get("paged") == ["1"]:
                 limit = query.get("limit", ["100"])[0]
                 offset = query.get("offset", ["0"])[0]
                 cursor = query.get("cursor", [""])[0]
                 sort_dir = (query.get("dir") or ["asc"])[0]
-                result = query_library_groups(self.server.config, view, search, limit, offset, sort_dir, artist, composer, cursor)
+                result = query_library_groups(self.server.config, view, search, limit, offset, sort_dir, artist, composer, cursor, sort_key)
                 return self.send_json(METADATA_SERVICE.enrich_groups(view, result) if METADATA_SERVICE else result)
             sort_dir = (query.get("dir") or ["asc"])[0]
-            result = {"groups": query_library_groups(self.server.config, view, search, sort_dir=sort_dir, artist=artist, composer=composer)}
+            result = {"groups": query_library_groups(self.server.config, view, search, sort_dir=sort_dir, artist=artist, composer=composer, sort_key=sort_key)}
             return self.send_json(METADATA_SERVICE.enrich_groups(view, result) if METADATA_SERVICE else result)
         if path == "/api/library/folders":
             parent = (query.get("parent") or [""])[0]

@@ -492,10 +492,13 @@ function activeIndexes(markup) {
   assert.ok(opened.calls.includes("requestLibraryLoad(1,false)"), "and the new page is loaded once");
   assert.deepEqual(opened.viewport.writes, ["scrollTop=0"], "its scroll position is reset");
   assert.deepEqual(opened.list.writes, ["scrollTop=0"], "in both scrollable containers");
-  // R594 added the album tile, which carries the same data-group-* contract as the
-  // row it replaces -- so it is a fourth producer of the highlight, not a second
-  // selection model.  What this pins is that the set of producers stays closed.
-  assert.equal((app.match(/class="[^"]*\$\{state\.selectedGroupKeys\.has\([^)]*\) \? " is-selected" : ""\}/g) || []).length, 4,
+  // R594 added an album tile that carried the same data-group-* contract as the
+  // row it replaced, which made it a fourth producer of the highlight. The grid
+  // has since been withdrawn in favour of an order bar, so the tile is gone and
+  // the closed set is back to the three list templates.  What this pins is that
+  // the set of producers stays closed: a new one has to be counted here rather
+  // than slipped in beside them.
+  assert.equal((app.match(/class="[^"]*\$\{state\.selectedGroupKeys\.has\([^)]*\) \? " is-selected" : ""\}/g) || []).length, 3,
     "the group templates are the only producers of a group highlight, so a cleared state cannot leave a stale mark");
   assert.match(app, /^  return Promise\.resolve\(\)\.then\(.*\)\.catch\(\(\) => \{\}\);$/m,
     "the loader a fire-and-forget caller chains from swallows its own rejection, so a finally there cannot surface as an unhandled one");
