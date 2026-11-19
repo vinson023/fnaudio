@@ -612,6 +612,18 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .album-detail-actions .secondary-button{height:30px!important;font-size:12px!important}
   .album-detail-table-head{display:none!important}
   .album-detail-track-list{min-height:1px!important;flex:none!important;overflow:visible!important}
+  /* On a phone every cell but .track-main is hidden (see the .track-cell rule),
+     yet these rows kept the desktop template from
+     `.album-detail-track-list .track{grid-template-columns:var(--fnaudio-track-columns)}`
+     -- that selector is more specific than the generic mobile `.track` one, so it
+     won.  .track-main is pinned to column 1, so its width came from whichever
+     column the user happens to have first: with the 序号 column enabled that is
+     48px, and the title and artist were squeezed into it and clipped away.  The
+     album then looked like one cover with an empty track area below it.  Collapse
+     the row to a single column here so the title always owns the full width,
+     independent of the saved column set. */
+  .album-detail-track-list .track{grid-template-columns:minmax(0,1fr)!important}
+  .album-detail-track-list .track-main{grid-column:1 / -1!important}
 }
 .album-group-row{display:grid!important;grid-template-columns:minmax(280px,1fr) minmax(160px,240px) 130px!important;align-items:center!important;gap:18px!important;min-height:70px!important;padding:10px 14px!important;border-bottom:1px solid var(--ui-line)!important;color:var(--ui-muted)!important;font-size:13px!important;cursor:pointer!important}.album-group-row:hover,.album-group-row.is-selected{background:var(--ui-hover)!important}.album-group-title{display:flex!important;align-items:center!important;gap:12px!important;min-width:0!important}.album-group-title .group-icon{width:42px!important;height:42px!important;flex:0 0 42px!important}.album-group-title strong{min-width:0!important;overflow:hidden!important;color:var(--ui-text)!important;font-size:13px!important;font-weight:400!important;text-overflow:ellipsis!important;white-space:nowrap!important}.album-header-cell{display:flex!important;align-items:center!important;height:30px!important;color:var(--ui-muted)!important;font-size:11px!important;text-align:left!important}@media(max-width:760px){.album-group-row{grid-template-columns:minmax(0,1fr)!important;gap:4px!important}.album-group-row>span{display:block!important;min-width:0;overflow:hidden;padding-left:56px!important;color:var(--ui-muted)!important;font-size:12px!important;text-overflow:ellipsis;white-space:nowrap}.album-group-title .group-icon{width:44px!important;height:44px!important}}
 .artist-all-songs-entry{display:grid!important;grid-template-columns:42px minmax(0,1fr) auto 18px!important;align-items:center!important;gap:12px!important;width:calc(100% - 20px)!important;min-height:62px!important;margin:8px 10px!important;padding:8px 12px!important;border:1px solid var(--ui-border)!important;border-radius:6px!important;background:var(--ui-sidebar)!important;color:var(--ui-secondary)!important;text-align:left!important;cursor:pointer!important}.artist-all-songs-entry:hover{border-color:var(--ui-border)!important;background:var(--ui-hover)!important}.artist-all-songs-entry:focus-visible{outline:2px solid var(--ui-accent)!important;outline-offset:1px!important}.artist-all-songs-icon{display:grid!important;place-items:center!important;width:42px!important;height:42px!important;border-radius:6px!important;background:var(--ui-selected)!important;color:var(--ui-accent)!important}.artist-all-songs-icon svg{width:23px!important;height:23px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}.artist-all-songs-copy{display:block!important;min-width:0!important}.artist-all-songs-copy strong,.artist-all-songs-copy small{display:block!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}.artist-all-songs-copy strong{font-size:13px!important;font-weight:550!important;color:var(--ui-text)!important}.artist-all-songs-copy small{margin-top:3px!important;color:var(--ui-muted)!important;font-size:11px!important}.artist-all-songs-count{color:var(--ui-muted)!important;font-size:12px!important;white-space:nowrap!important}.artist-all-tracks-breadcrumb{position:sticky!important;z-index:4!important;top:0!important;display:flex!important;align-items:center!important;gap:7px!important;min-height:42px!important;padding:0 14px!important;border-bottom:1px solid var(--ui-line)!important;background:var(--ui-sidebar)!important;color:var(--ui-muted)!important;font-size:12px!important;white-space:nowrap!important;overflow:hidden!important}.artist-all-tracks-breadcrumb button{min-width:0!important;max-width:220px!important;padding:0!important;border:0!important;background:transparent!important;color:var(--ui-accent-hover)!important;font:inherit!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;cursor:pointer!important}.artist-all-tracks-breadcrumb button:hover{text-decoration:underline!important}.artist-all-tracks-breadcrumb strong{min-width:0!important;color:var(--ui-text)!important;font-weight:550!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}.track-list.artist-all-tracks-mode{padding-top:0!important}
@@ -868,7 +880,27 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 
 /* Final search and compact mobile library toolbar. */
 @media(max-width:760px){
+  /* The song table's columns collapse to a single line on a phone, so its header
+     has nothing left to label.  The album collection and the category lists are
+     different: their order is chosen from this very row and there is no second
+     control, so hiding it left the phone unable to sort at all -- the artist and
+     release-date orders added in 0.2.167 were unreachable on a handset.  Keep
+     the row there as a compact, scrollable sort bar instead of a column ruler. */
   .table-head{display:none!important}
+  .table-head[data-table-mode="album-collection"],
+  .table-head[data-table-mode="group"]{
+    display:flex!important;
+    align-items:center;
+    gap:18px;
+    padding:0 14px!important;
+    overflow-x:auto;
+    overflow-y:hidden;
+    scrollbar-width:none;
+  }
+  .table-head[data-table-mode="album-collection"]::-webkit-scrollbar,
+  .table-head[data-table-mode="group"]::-webkit-scrollbar{display:none}
+  .table-head[data-table-mode="album-collection"] .album-header-cell,
+  .table-head[data-table-mode="group"] .album-header-cell{flex:0 0 auto!important}
 }
 
 /* Desktop right-click menu mirrors the row overflow actions without interrupting browsing. */

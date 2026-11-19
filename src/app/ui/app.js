@@ -3635,6 +3635,10 @@ function renderTableHead(target = $("tableHead")) {
   // Do not use a NUL separator here: DOMString/dataset implementations may
   // normalize it to U+FFFD, turning every comparison into a false mismatch.
   // JSON keeps the three bounded strings unambiguous across old WebViews.
+  // The mode also lands on the element: the narrow-screen rules keep this row
+  // for the album and category lists, whose only sort control it is, and hide it
+  // for the song table, whose columns collapse to one line there.
+  head.dataset.tableMode = mode;
   const signature = JSON.stringify([mode, template, markup]);
   const changed = head.dataset.fnaudioTableHeadSignature !== signature;
   if (changed) {

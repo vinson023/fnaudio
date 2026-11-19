@@ -3705,6 +3705,46 @@ class LibrarySqliteTests(unittest.TestCase):
             self.assertEqual(page["count"], 8)
             self.assertFalse(any("SELECT COUNT(*) FROM albums" in sql for sql in statements), statements)
 
+    def test_an_upgraded_database_gains_the_release_year_column_before_the_group_rebuild(self):
+        # 0.2.167 给 albums 加了 release_year，同时把 group_label_version 提到 4。
+        # 两件事都在 ensure_library_schema 里，而后者会重建 albums 表、它的 INSERT
+        # 已经带上新列。ALTER 只要排在重建之后就会抛
+        # "table albums has no column named release_year"，library_db_connect 随即
+        # 回滚、把 ALTER 一起撤掉，于是每次重试都在同一处失败：分类浏览永远 503，
+        # 而纯曲目列表因为不碰 albums 表照样能用。5.2 上装 0.2.167 就是这个现象。
+        with tempfile.TemporaryDirectory() as root:
+            music_root = os.path.join(root, "music")
+            os.makedirs(music_root)
+            config = {"cache_dir": os.path.join(root, "cache"), "library_paths": [music_root]}
+            save_items_to_sqlite(
+                config,
+                [self._item("one", os.path.join(music_root, "A", "one.flac"), "One", 1)],
+                "test",
+            )
+            with library_db_connect(config) as conn:
+                # 还原成 0.2.166 的库：albums 没有 release_year，分组版本还是 3。
+                conn.execute("DROP TABLE albums")
+                conn.execute(
+                    "CREATE TABLE albums (name TEXT PRIMARY KEY, artist TEXT,"
+                    " track_count INTEGER NOT NULL DEFAULT 0, cover_track_id TEXT)"
+                )
+                conn.execute("DELETE FROM library_meta WHERE key = 'group_label_version'")
+                conn.execute(
+                    "INSERT INTO library_meta (key, value) VALUES ('group_label_version', '3')"
+                )
+                library.ensure_library_schema(conn)
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)")}
+                self.assertIn("release_year", columns)
+                # 版本跳跃顺带把分组表重建了，所以这一列不只要存在，还得有值。
+                self.assertEqual(
+                    [(row["name"], row["release_year"]) for row in conn.execute("SELECT name, release_year FROM albums")],
+                    [("Album", 0)],
+                )
+                version = conn.execute(
+                    "SELECT value FROM library_meta WHERE key = 'group_label_version'"
+                ).fetchone()["value"]
+                self.assertEqual(version, library.GROUP_LABEL_VERSION)
+
     @staticmethod
     def _item(item_id, path, title, track_no):
         return {

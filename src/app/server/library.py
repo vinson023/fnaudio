@@ -3013,16 +3013,26 @@ def ensure_library_schema(conn):
         );
         """
     )
+    # An upgraded database has an albums table without the column the release
+    # date order needs.  CREATE TABLE IF NOT EXISTS above cannot add it, so the
+    # column is added here; the next full or incremental rebuild fills it in.
+    #
+    # This has to happen BEFORE _migrate_tracks_columns, not after.  That
+    # migration bumps the group label version, and bumping it rebuilds the album
+    # table with an INSERT that already names `release_year`.  Ordered the other
+    # way round the ALTER was still pending, so the rebuild raised
+    # "table albums has no column named release_year", the whole schema call
+    # aborted, and library_db_connect rolled the transaction back -- which undid
+    # the ALTER as well.  Every later attempt repeated the same failure, so an
+    # upgraded database could never gain the column and every group browse
+    # answered 503 while plain track listing still worked.
+    album_columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)")}
+    if album_columns and "release_year" not in album_columns:
+        conn.execute("ALTER TABLE albums ADD COLUMN release_year INTEGER NOT NULL DEFAULT 0")
     # New databases used to retain the legacy `folders(path)` primary key
     # because this migration was defined but never invoked. The composite key
     # is required when distinct music roots contain the same folder names.
     _migrate_tracks_columns(conn)
-    # An upgraded database has an albums table without the column the release
-    # date order needs.  CREATE TABLE IF NOT EXISTS above cannot add it, so the
-    # column is added here; the next full or incremental rebuild fills it in.
-    album_columns = {row["name"] for row in conn.execute("PRAGMA table_info(albums)")}
-    if album_columns and "release_year" not in album_columns:
-        conn.execute("ALTER TABLE albums ADD COLUMN release_year INTEGER NOT NULL DEFAULT 0")
     # Created here rather than beside CREATE TABLE because the index names a
     # column an upgraded database only just gained.  Only the artist order gets
     # one: it is `(artist COLLATE NOCASE, name COLLATE NOCASE)`, exactly the two

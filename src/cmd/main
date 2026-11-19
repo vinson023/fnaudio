@@ -15,6 +15,96 @@ elif [ -f "${TRIM_APPDEST}/server/server.py" ]; then
 else
   APP_ROOT="${TRIM_APPDEST}/target/server"
 fi
+# fnOS does not hand the install/upgrade callbacks and the service supervisor the
+# same config directory.  On an app that was installed by an older fnOS and then
+# upgraded, the callbacks write @appconf/fnaudio/config.json while this script is
+# started with @appcenter/fnaudio/etc, so the two sides each kept their own file:
+# the callbacks wrote the real configuration (music roots included) to one, and
+# persist_backend_port below created a stub {"server_port": N} in the other --
+# exactly the 22 bytes that made 5.141 report an empty library after upgrading to
+# 0.2.167.  The service reads only ${TRIM_PKGETC}/config.json, so the missing half
+# has to be adopted here, where the path the server will actually use is known.
+#
+# Only the stub is replaced.  A real config always carries the audio, metadata and
+# output settings as well, so a library the user deliberately cleared stays
+# cleared instead of being refilled from a stale sibling file.
+reconcile_config_file() {
+  export FNAUDIO_CONFIG_PATH="${TRIM_PKGETC}/config.json"
+  export FNAUDIO_CONFIG_CANDIDATES="${TRIM_APPDEST}/etc/config.json
+$(dirname "$(dirname "${TRIM_APPDEST}")")/@appconf/fnaudio/config.json"
+  "${PYTHON_BIN}" - <<'PY'
+import json, os, stat, sys, tempfile
+
+target = os.environ["FNAUDIO_CONFIG_PATH"]
+candidates = [path.strip() for path in os.environ["FNAUDIO_CONFIG_CANDIDATES"].splitlines() if path.strip()]
+target_real = os.path.abspath(target)
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+def paths_from(payload):
+    raw = payload.get("library_paths") or [payload.get("library_path")]
+    if not isinstance(raw, list):
+        raw = [payload.get("library_path")]
+    return [value.strip() for value in raw if isinstance(value, str) and value.strip()]
+
+def write(path, payload):
+    mode = stat.S_IMODE(os.stat(path).st_mode) if os.path.exists(path) else 0o600
+    fd, temporary = tempfile.mkstemp(prefix=".config.json.", dir=os.path.dirname(path) or ".")
+    try:
+        try:
+            os.fchmod(fd, mode)
+        except AttributeError:
+            # fnOS is Linux; this branch only exists so the reconciliation can be
+            # exercised by the test suite on a machine without fchmod.
+            os.chmod(temporary, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+current = load(target) or {}
+if set(current) - {"server_port"}:
+    sys.exit(0)
+for candidate in candidates:
+    if os.path.abspath(candidate) == target_real:
+        continue
+    previous = load(candidate)
+    if not previous:
+        continue
+    paths = paths_from(previous)
+    if not paths:
+        continue
+    merged = dict(previous)
+    merged.update(current)
+    merged["library_path"] = "\n".join(paths)
+    merged["library_paths"] = paths
+    try:
+        write(target, merged)
+    except Exception as error:
+        print("fnAudio could not adopt %s: %s" % (candidate, error))
+        sys.exit(0)
+    print("fnAudio adopted library configuration from %s" % candidate)
+    break
+PY
+}
+if adopted_config="$(reconcile_config_file)"; then
+  if [ -n "${adopted_config}" ]; then
+    printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${adopted_config}" >> "${LOG_FILE}"
+  fi
+fi
 SERVER_PORT="53199"
 if [ -f "${TRIM_PKGETC}/config.json" ]; then
   configured_port="$(sed -n 's/.*"server_port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${TRIM_PKGETC}/config.json" | head -n 1)"

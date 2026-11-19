@@ -122,4 +122,52 @@ assert.match(
   "CREATE TABLE IF NOT EXISTS cannot add a column to an existing index; the migration has to",
 );
 
+// --- 8. 手机端必须留着这行表头 -----------------------------------------------
+// 窄屏规则原本是 `.table-head{display:none!important}`，于是手机上整行排序入口
+// 一起消失：0.2.167 新加的按歌手/发行日期排序在真机上根本够不着。歌曲表的列在
+// 手机上塌成一行，表头确实没东西可标；但专辑列表和分类列表的排序只有这一处，
+// 所以它们要把这行留成一条可点的排序条。
+const narrowStart = cssSource.indexOf("/* The song table's columns collapse");
+const narrowEnd = cssSource.indexOf("/* Desktop right-click menu", narrowStart);
+assert.ok(narrowStart >= 0 && narrowEnd > narrowStart, "the narrow-screen header rule moved; re-read app.css before editing this test");
+const narrowBlock = cssSource.slice(narrowStart, narrowEnd);
+assert.match(narrowBlock, /\.table-head\{display:none!important\}/, "the song table still drops its header on a phone");
+for (const mode of ["album-collection", "group"]) {
+  assert.ok(
+    narrowBlock.includes(`.table-head[data-table-mode="${mode}"]`),
+    `${mode} lists must keep their sort row on a phone`,
+  );
+}
+assert.match(narrowBlock, /display:flex!important/, "the kept row is a sort bar, not a column ruler");
+assert.match(
+  appSource,
+  /head\.dataset\.tableMode = mode/,
+  "the narrow-screen rules key off the header mode, so renderTableHead must publish it",
+);
+
+// --- 9. 手机端专辑详情的曲目行必须塌成一列 ------------------------------------
+// 窄屏把除 .track-main 以外的单元格全隐藏了（`.track-cell{display:none}`），
+// 但 `.album-detail-track-list .track{grid-template-columns:var(--fnaudio-track-columns)}`
+// 的优先级是 0,2,0，压过手机端通用的 `.track{grid-template-columns:minmax(0,1fr) 40px 54px}`，
+// 于是这一行还按桌面的六列模板排。`.track-main` 被钉在第 1 列，第 1 列是「序号」
+// 时只有 48px，标题和歌手被塞进去再裁掉 —— 真机上整片曲目区只剩一个封面缩略图。
+// 列集合是用户可配的，所以这里不能靠「第 1 列刚好是宽的标题列」蒙对。
+const detailNarrowStart = cssSource.indexOf("/* The library viewport owns scrolling on phones");
+const detailNarrowEnd = cssSource.indexOf(".album-group-row{display:grid", detailNarrowStart);
+assert.ok(
+  detailNarrowStart >= 0 && detailNarrowEnd > detailNarrowStart,
+  "the album-detail narrow-screen block moved; re-read app.css before editing this test",
+);
+const detailNarrowBlock = cssSource.slice(detailNarrowStart, detailNarrowEnd);
+assert.match(
+  detailNarrowBlock,
+  /\.album-detail-track-list \.track\{grid-template-columns:minmax\(0,1fr\)!important\}/,
+  "album-detail rows must collapse to one column on a phone, or the title inherits the 序号 column's 48px",
+);
+assert.match(
+  detailNarrowBlock,
+  /\.album-detail-track-list \.track-main\{grid-column:1 \/ -1!important\}/,
+  "the single visible cell has to span the whole row, not just column 1",
+);
+
 console.log("Album sort regression checks passed.");
