@@ -1,9 +1,9 @@
-# 部署与真机验证手册（0.2.167 实测版）
+# 部署与真机验证手册（0.2.168 实测版）
 
 日期：2026-11-19
 适用：把当前源码部署到飞牛 `192.168.5.141`，并在安卓真机上验证
 
-这份文档按 0.2.167 的实际执行顺序写，命令都是跑过的，不是设计稿。
+这份文档按 0.2.168 的实际执行顺序写，命令都是跑过的，不是设计稿。
 文末「本次实测结果」记的是这一轮真实发生的事，包括没通过的部分。
 
 ---
@@ -66,8 +66,8 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 ### 2.1 改版本坐标（八处）
 
 ```bash
-VERSION                                    # 0.2.167
-src/manifest                               # version=0.2.167
+VERSION                                    # 0.2.168
+src/manifest                               # version=0.2.168
 android-client/app/build.gradle            # versionName + versionCode（424→425）
 README.md                                  # 6 处
 ARCHITECTURE.md
@@ -126,7 +126,7 @@ git status --porcelain -- src android-client    # 必须为空
 ### 2.5 产物自检
 
 ```powershell
-& .\tools\verify_release_evidence.ps1 -ArtifactDirectory artifacts\0.2.167
+& .\tools\verify_release_evidence.ps1 -ArtifactDirectory artifacts\0.2.168
 # Validated / AndroidValidated / EvidenceComplete 三项都应为 True
 ```
 
@@ -145,8 +145,8 @@ SSH 解包 + `cmd/main start` 是部署，不是安装，验证不了向导与 i
 
 ```bash
 NODE_PATH=tools/browser-e2e/node_modules \
-  node tools/install_via_app_center.js artifacts/0.2.167/fnaudio-0.2.167-fnpack.fpk \
-  --out artifacts/0.2.167/install-trace
+  node tools/install_via_app_center.js artifacts/0.2.168/fnaudio-0.2.168-fnpack.fpk \
+  --out artifacts/0.2.168/install-trace
 ```
 
 可选环境变量：`FNAUDIO_HOST`（默认 `http://192.168.5.141:5666`）、
@@ -168,17 +168,25 @@ NODE_PATH=tools/browser-e2e/node_modules \
 
 ## 4. 部署后验证
 
-### 4.1 一键探针（接口 + 界面，13 项）
+### 4.1 一键探针（接口 + 桌面 + 窄屏，24 项）
 
 ```bash
-NODE_PATH=tools/browser-e2e/node_modules node artifacts/0.2.167/verify_deployed.js
+NODE_PATH=tools/browser-e2e/node_modules node artifacts/0.2.168/verify_deployed.js
 # 期望最后一行：DEPLOY_VERIFY_OK
 ```
 
-它检查：`/api/health`、`/api/library/status` 的曲目数、
-四种 `ORDER BY`（album/artist/release_date，含降序）返回的行与顺序、
-专辑表头三格是否都是按钮、点「歌手」后行序是否真的变了、箭头是否出现、
-网格瓦片是否为 0。截图落在 `artifacts/0.2.167/deploy-verify/`。
+它检查三层：
+
+- **接口层**：`/api/health`、`/api/access` 报的版本号、`/api/library/status` 的曲目数与 `library_paths`、
+  四种 `ORDER BY`（album/artist/release_date，含降序）返回的行与顺序。
+  `library_paths` 非空就是「升级没清空曲库」的直接证据。
+- **桌面层**：专辑表头三格是否都是按钮、点「歌手」后行序是否真的变了、箭头是否出现、网格瓦片是否为 0。
+- **窄屏层**（390×844）：表头 `display` 不是 `none` 且三个按钮齐全、点「歌手」行序变化、
+  打开曲目最多的那张专辑（曲目数取自接口的 `track_count`，不写死专辑名）、
+  量 `.track-main` 宽度必须 > 200px、`.track-title` 宽度必须 > 40px。
+
+窄屏那一层不能省。R613/R614 两次都是「接口对、桌面对、手机空白」——
+只看元素存不存在会漏，必须量真实几何。截图落在 `artifacts/0.2.168/deploy-verify/`。
 
 ### 4.2 手工复核（接口层）
 
@@ -239,7 +247,7 @@ ADB=./tools/android-sdk/platform-tools/adb.exe
 ### 5.2 安装
 
 ```bash
-"$ADB" -s 192.168.5.111:5555 install -r artifacts/0.2.167/fnaudio-android-0.2.167-release.apk
+"$ADB" -s 192.168.5.111:5555 install -r artifacts/0.2.168/fnaudio-android-0.2.168-release.apk
 ```
 
 `-r` 覆盖安装保留登录态与缓存。证书不同会报
@@ -284,19 +292,60 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 | 5 | 点专辑 | 进详情，面包屑正确 |
 | 6 | 详情曲目 | 列出该专辑的歌 |
 | 7 | 播放 | 进度走动，按钮变暂停 |
-| 8 | 列标题排序 | 手机上**目前没有表头**，见 6.2 |
+| 8 | 列标题排序 | 专辑页搜索框下方有「标题 / 歌手 / 发行日期」；点「歌手」箭头出现在该列、行序变化 |
+| 9 | 专辑详情曲目 | 点开多曲目专辑，曲名与「歌手 · 专辑」都看得见，不是只有一个封面 |
+| 10 | 升级后曲库 | 侧栏计数不为 0；`/api/library/status` 的 `library_paths` 非空 |
 
 截图命令：
 
 ```bash
-"$ADB" -s $D exec-out screencap -p > artifacts/0.2.167/phone-1.png
+"$ADB" -s $D exec-out screencap -p > artifacts/0.2.168/phone-1.png
 ```
 
 ---
 
-## 6. 本次实测结果（0.2.167）
+## 6. 实测结果
 
-### 6.1 通过
+### 6.1 0.2.168（当前版本，2026-11-19）
+
+三个已知问题全修完才出包，逐个在真机复核：
+
+**① 升级不再清空曲库**
+
+- 应用中心：`0.2.167/start → 0.2.168/starting → 0.2.168/running`，`INSTALL_OK`，health 200
+- `/api/library/status`：`count=118`，`library_paths` = `["/vol1/1000/music","/vol02/1000-1-9ed159d1/music"]`（非空）
+- `@appcenter/etc/config.json` 与 `@appconf/config.json` 都是 1704 字节且内容一致
+- `/var/apps/fnaudio/manifest` 的 `version = 0.2.168`
+- 首次安装曾失败一次（端口探测误报），重试通过，见第 7 节
+
+**② 手机上专辑列表能排序**
+
+390×844 视口：`#tableHead` 的 `display:flex`、`rect=[0,116,390,44]`、
+`data-table-mode="album-collection"`、三个按钮 `["标题","歌手","发行日期"]`；
+点「歌手」后行序 `'Til You Can't / 100 Greatest Pride Songs` → `Do It To It / 30`，箭头出现。
+
+真机（SM-G965F / 1440×2960）：搜索框下方出现三个排序按钮，「标题」带箭头；
+点「歌手」后箭头移位，顺序变为 `Acraze, Cherish → Adele → Adele → AGA`，「81 张专辑」保留。
+
+**③ 手机上专辑详情能看到曲目**
+
+窄屏几何：`.track` 的 `grid-template-columns` = `362px`（单列），
+`.track-main` 宽 362px，`.track-title` 宽 136px。修复前分别是 `48px 267px 166px 160px 120px 0px`、48px、0px。
+
+真机：`Dawn FM` 14 首全部显示曲名与「The Weeknd · Dawn FM」，
+一路滚到 `Every Angel Is Terrifying` 自然结束，没有截断。
+探针量到的 DOM 行数 14 与接口 `track_count` 14 一致。
+
+**手机侧**
+
+`versionCode 426` / `versionName 0.2.168` 覆盖安装成功，`firstInstallTime` 仍是 11-11
+（证明是升级不是重装），启动后直接进 `MainActivity`——登录态保留。
+
+部署探针：**24/24 PASS**，`DEPLOY_VERIFY_OK`。
+
+### 6.2 0.2.167
+
+#### 通过
 
 - 应用中心：`0.2.166/running → 0.2.167/starting → 0.2.167/running`，约 10 秒，`INSTALL_OK`
 - 经代理 `/api/health`：200，`ok:true`
@@ -309,7 +358,7 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 - 手机：`versionCode 425` / `versionName 0.2.167` 覆盖安装成功，登录态保留；
   主界面列出 118 首、侧栏计数一致、专辑页显示「81 张专辑」
 
-### 6.2 没通过 / 需要注意
+### 6.3 0.2.167 没通过项（历史，均已在 0.2.168 修复）
 
 **① 升级后曲库配置被清空（严重）**
 
@@ -364,6 +413,10 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 | `adb devices` 忽然为空 | 手机掉线 | adb server 被回收，同一条命令里重新 `connect` |
 | `test_offline.ps1` 立刻中止、日志 0 字节 | 用例失败 | 输出被重定向/接管道，PS 5.1 把 stderr 转成 `ErrorRecord` |
 | `git_provenance_status: dirty` | 构建脚本有问题 | 工作区没提交干净 |
+| 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**重试一次即通过**，日志里能看到这两行 |
+| `dumpsys package com.fnaudio.player` 什么都不输出 | 应用没装上 | 包名是 `com.fnaudio.client`（另有 `com.fnaudio.client.test` 是 instrumentation 包，versionCode 0，不是应用） |
+| `/api/health` 里找不到 `version` | 接口坏了 | health 只有 `ok/name/request_id/components/metrics`；版本在 `/api/access`（前端「关于」也读它） |
+
 
 ---
 
@@ -376,4 +429,4 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 - `tools/verify_release_evidence.ps1` —— 产物证据校验
 - `tools/adb_wireless.py` —— 无线调试端口发现
 - `tools/run_on_nas.py` —— SSH/SFTP 执行诊断脚本
-- `artifacts/0.2.167/verify_deployed.js` —— 本次部署验收探针
+- `artifacts/0.2.168/verify_deployed.js` —— 本次部署验收探针（24 项，含窄屏层）
