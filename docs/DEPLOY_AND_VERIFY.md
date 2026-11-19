@@ -366,13 +366,26 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
    手工启动、已被 init 收养，应用中心停服务时管不到它。于是升级两次都撞
    「服务端口 53199 已被占用」，`kill` 掉再装就一次通过。**这不是重试能解决的，
    得先把孤儿进程杀掉。**
-2. **曲库路径指向了空目录**。配置里 `library_path=/vol2/1000/music`（空），
+2. **曲库路径指向了空目录，且原因尚未查清**。配置里 `library_path=/vol2/1000/music`（空），
    真实音乐在 `/vol2/1000/111/music`（344 个 mp3，索引 10,865 首）。
-   查 `fnaudio.jsonl` 的 `POST /api/config/library` 记录，最后一次成功写入是
-   **11:52:11**，比本次安装（13:13）早 1 小时 21 分——**不是这次安装改的**，
-   是更早一次探针调用改的。用产品接口 `POST /api/config/library` 改回后
-   `count` 从 0 变 10,865。顺带记下：`/api/library/status` 报 `count=0` 时
-   专辑接口仍返回旧行，这两个数会不一致。
+   `/vol1/1000/fnaudio/upgrade-backups/20261118-175418/config.json` 记的旧值正是 `111/music`。
+
+   已知的事实与推断分开写：
+
+   - 事实：`fnaudio.jsonl` 里 `POST /api/config/library` 共 4 条，最后一次成功写入
+     `ts=1795060331` = **11:52:11**，当时扫到 `count=10865`——说明那一刻路径是对的。
+   - 事实：本次安装后 `@appconf/config.json` 是 **1698 字节**；用接口改回长路径后是 **1706 字节**。
+     `/vol2/1000/111/music` 比 `/vol2/1000/music` 长 4 字符、在文件里出现两次，正好差 8 字节。
+     所以安装写下去的就是它读到的短路径——**安装沿用了已有值，没有改它**。
+   - 推断（未证实）：11:52 改成 `111/music` 之后、13:13 安装之前，这个值被改回了短路径。
+     最可疑的是那个 `ppid=1` 的孤儿服务进程：我为了腾端口用 `kill` 结束它，
+     若它在退出时把内存里的配置刷回磁盘，就会把 11:52 的改动盖掉。
+     这条没有证据，**只作为下次升级要盯的点**。
+   - 处置：用产品接口 `POST /api/config/library` 改回 `111/music`，`count` 0 → 10,865。
+   - 顺带记下：`/api/library/status` 报 `count=0` 时，专辑接口仍返回旧行，这两个数会不一致。
+
+   下次升级要在安装前后各读一次 `@appconf/config.json` 的 `library_paths` 并比对，
+   才能确定到底是谁写的。现在 `install_callback` 不打印它读到/写入的路径，事后无从取证。
 3. **服务读的配置路径和 5.141 不同**。5.2 上 `/usr/local/apps/@appcenter/fnaudio/etc/config.json`
    根本不存在，服务是 `--config /usr/local/apps/@appconf/fnaudio/config.json` 启动的。
    也就是说 `reconcile_config_file()` 的「两个目录」假设在 5.2 上退化成同一个文件。
