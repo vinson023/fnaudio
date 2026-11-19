@@ -168,11 +168,16 @@ NODE_PATH=tools/browser-e2e/node_modules \
 
 ## 4. 部署后验证
 
-### 4.1 一键探针（接口 + 桌面 + 窄屏，24 项）
+### 4.1 一键探针（接口 + 桌面 + 窄屏，25 项）
 
 ```bash
 NODE_PATH=tools/browser-e2e/node_modules node artifacts/0.2.168/verify_deployed.js
 # 期望最后一行：DEPLOY_VERIFY_OK
+
+# 换一台机器时用环境变量指目标与输出目录，别改脚本
+NODE_PATH=tools/browser-e2e/node_modules \
+  FNAUDIO_HOST=http://192.168.5.2:5666 FNAUDIO_OUT=artifacts/0.2.168/deploy-verify-52 \
+  node artifacts/0.2.168/verify_deployed.js
 ```
 
 它检查三层：
@@ -182,11 +187,20 @@ NODE_PATH=tools/browser-e2e/node_modules node artifacts/0.2.168/verify_deployed.
   `library_paths` 非空就是「升级没清空曲库」的直接证据。
 - **桌面层**：专辑表头三格是否都是按钮、点「歌手」后行序是否真的变了、箭头是否出现、网格瓦片是否为 0。
 - **窄屏层**（390×844）：表头 `display` 不是 `none` 且三个按钮齐全、点「歌手」行序变化、
-  打开曲目最多的那张专辑（曲目数取自接口的 `track_count`，不写死专辑名）、
+  用搜索框定位曲目最多的那张专辑（曲目数取自接口的 `track_count`，不写死专辑名）、
   量 `.track-main` 宽度必须 > 200px、`.track-title` 宽度必须 > 40px。
 
 窄屏那一层不能省。R613/R614 两次都是「接口对、桌面对、手机空白」——
 只看元素存不存在会漏，必须量真实几何。截图落在 `artifacts/0.2.168/deploy-verify/`。
+
+写这个探针时踩过四个坑，都是判据本身写错、不是产品问题，改判据时别踩回去：
+
+| 判据 | 错在哪 | 正确写法 |
+| --- | --- | --- |
+| 版本号读 `health.version` | `/api/health` 只有 `ok/name/request_id/components/metrics` | 读 `/api/access` 的 `version` |
+| 排序用 `localeCompare(..., "zh")` | 服务端是大小写不敏感的 NOCASE 码位序；`.141` 全 ASCII 时碰巧通过 | 折成小写再比码位 |
+| 专辑详情的 DOM 行数必须等于 `track_count` | 详情列表按 `pageSize` 截断，默认 50；72 首的专辑只渲染 50 行是设计如此 | 比 `min(track_count, pageSize)` |
+| 按列表序号点开目标专辑 | 大库专辑列表分页，目标可能没渲染 | 用搜索框 `#mobileSearchInput` 过滤后再点 |
 
 ### 4.2 手工复核（接口层）
 
@@ -341,7 +355,27 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 `versionCode 426` / `versionName 0.2.168` 覆盖安装成功，`firstInstallTime` 仍是 11-11
 （证明是升级不是重装），启动后直接进 `MainActivity`——登录态保留。
 
-部署探针：**24/24 PASS**，`DEPLOY_VERIFY_OK`。
+部署探针：**25/25 PASS**，`DEPLOY_VERIFY_OK`。
+
+**第二台机器 5.2（10,865 首的大库）**
+
+同一套探针也跑在 5.2 上，同样 **25/25 PASS**。这台机器暴露了三件 5.141 上看不到的事：
+
+1. **安装被一个孤儿进程挡住**。`ss -lntp` 显示 53199 被 `pid=562759, ppid=1` 占着，
+   命令行是 `server/server.py --config /usr/local/apps/@appconf/fnaudio/config.json`——
+   手工启动、已被 init 收养，应用中心停服务时管不到它。于是升级两次都撞
+   「服务端口 53199 已被占用」，`kill` 掉再装就一次通过。**这不是重试能解决的，
+   得先把孤儿进程杀掉。**
+2. **曲库路径指向了空目录**。配置里 `library_path=/vol2/1000/music`（空），
+   真实音乐在 `/vol2/1000/111/music`（344 个 mp3，索引 10,865 首）。
+   查 `fnaudio.jsonl` 的 `POST /api/config/library` 记录，最后一次成功写入是
+   **11:52:11**，比本次安装（13:13）早 1 小时 21 分——**不是这次安装改的**，
+   是更早一次探针调用改的。用产品接口 `POST /api/config/library` 改回后
+   `count` 从 0 变 10,865。顺带记下：`/api/library/status` 报 `count=0` 时
+   专辑接口仍返回旧行，这两个数会不一致。
+3. **服务读的配置路径和 5.141 不同**。5.2 上 `/usr/local/apps/@appcenter/fnaudio/etc/config.json`
+   根本不存在，服务是 `--config /usr/local/apps/@appconf/fnaudio/config.json` 启动的。
+   也就是说 `reconcile_config_file()` 的「两个目录」假设在 5.2 上退化成同一个文件。
 
 ### 6.2 0.2.167
 
