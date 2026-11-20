@@ -427,9 +427,28 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 - 经代理 `/api/health`：**200 / 78 ms**
 - 页面资源戳：`v=0.2.171-793ac531d5d8`
 - 53199 由新 PID `1420712` 持有
-- 产物：`fnaudio-0.2.171-fnpack.fpk` `748C5DDA…AFBE8D`；
-  `fnaudio-android-0.2.171-release.apk` `D2C04E36…0E07EAD`（`versionCode 429`，`Validated: True`）
+- 产物（**发布用，从提交 `f5bcc80` 的干净工作区重出**）：
+  `fnaudio-0.2.171-fnpack.fpk` 5,486,834 B / `4A09F496…00F66B`；
+  `fnaudio-android-0.2.171-release.apk` 13,013,704 B / `D2C04E36…0E07EAD`
+  （`versionCode 429`，`Validated: True`）
 - `verify_release_evidence.ps1`：`Validated / AndroidValidated / EvidenceComplete` 三项均 True
+- `SOURCE_PROVENANCE`：`git_provenance_status: clean`、`git_tracked_edits: 0`、
+  `git_untracked_inputs: 0`、`source_manifest_sha256 77E93164…`（911 行）、`staged_file_count 367`
+
+**③-2 关于「发布包」与「已装机包」字节不同（必读）**
+
+`.141` 上实际运行的是提交前构建的那份 `748C5DDA…`（5,486,956 B），发布的是提交后重出的
+`4A09F496…`（5,486,834 B）。**fnpack 的输出不是字节可复现的**：tar 的 mtime 进了包，
+`app.tgz` 与 `manifest` 里的 `checksum` 每次都变。逐文件比对的结果：
+
+- 包内 **349 个文件全部一致**（逐个 SHA-256 相同）
+- 18 个顶层文件里只有 `app.tgz` 与 `manifest` 不同
+- `manifest` 只差 `checksum` 一行，而它就是 `app.tgz` 的 md5
+- 两份的 `source_manifest_sha256` 同为 `77E93164…`、`asset_build` 同为 `0.2.171-793ac531d5d8`
+
+所以没有为了「字节一致」再装一遍——要验的是内容，不是 tar 头。
+**下次要留意的**：若哪天需要「发布包 == 已装机包」严格成立，得先把 `fnpack` 的
+mtime 归一化（或用固定 mtime 重打包），否则只能装完再发。
 
 **④ 真机复验：飞牛 app 载体（`com.trim.app`，远程中转 `office.app.5ddd.com:46533`，无原生桥）**
 
@@ -450,11 +469,29 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
   （`src` 从 `5481233725f22278` 换成 `037af5290a618076`）；循环 `one→off`；随机 `false→true`；
   全部请求 200。
 
+**④-2 真机复验：独立 APK 载体（`com.fnaudio.client`，直连 `192.168.5.141:5666`，有原生桥）**
+
+- 覆盖安装 `versionCode 429` / `versionName 0.2.171`，`lastUpdateTime` 15:31:22，
+  `firstInstallTime` 仍是 11-11（升级不是重装）
+- 开关同在 `playback-identity` 块内、**16×17 @ (20,596)**、可见可点、命中自身、
+  `switchStillInNetworkPane=false`；`hasBridge: true`
+- 截图 `artifacts/0.2.171/device/apk-playback.png`
+
+两个载体的开关几何完全一样（同一视口），差别只在 `hasBridge`——这正是 401 分支的分水岭：
+有桥走自动续期，无桥才说「登录已失效，请重新打开 fnAudio 后重试。」。
+
 **⑤ 门禁**
 
 - JS：**143/143**（含新增 `test_ui_browser_auth_notice.js`）
 - Python：**3506 项全过**，`OK (skipped=7)`
 - `SOURCE_MANIFEST.sha256`：911 条，已刷新
+
+**⑥ 发布**
+
+提交 `f5bcc80` 与注解标签 `v0.2.171` 已 push，Release 已发：
+https://github.com/vinson023/fnaudio/releases/tag/v0.2.171
+
+`v0.2.170` 不发——它从未装上，没有对外发布的理由。
 
 ### 6.3 0.2.167
 
