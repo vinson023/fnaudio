@@ -630,6 +630,7 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 | `curl` 拿到 `invalid token` | 接口坏了 | 没带 fnOS 会话 Cookie |
 | 手机报「无法连接 NAS」 | NAS 挂了 | 手机里存的档案是模拟器地址 `10.0.2.2:18099` |
 | `adb devices` 忽然为空 | 手机掉线 | adb server 被回收，同一条命令里重新 `connect` |
+| 后台跑 `load_signing_env.ps1 -ThenBuild`，APK 摘要（`Signed` / `Validated`）都打完了，任务却一直不结束、最后被判失败 | 构建失败 | **构建已经成功了**，那几行摘要就是它自己打的。挂住的是外层管道：`… 2>&1 \| Select-Object -Last 20` 要等上游 stdout 关闭，而 gradle 拉起的 java 进程继承了那个句柄，daemon 不退管道就不关。**这条是推断、没复现**（实测 0.2.170 那次：14:31 构建完成，进程挂到 18:49 才被回收，4h19m）。规避办法：输出重定向到日志文件再读，别接管道 |
 | `test_offline.ps1` 立刻中止、日志 0 字节 | 用例失败 | 输出被重定向/接管道，PS 5.1 把 stderr 转成 `ErrorRecord` |
 | `git_provenance_status: dirty` | 构建脚本有问题 | 工作区没提交干净 |
 | 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**0.2.171 起升级场景已放行自己的旧实例**；0.2.170 及以前**重试也没用**（旧实例被 `trim_http_cgi.service` 保活，杀不掉），见 6.2 |
