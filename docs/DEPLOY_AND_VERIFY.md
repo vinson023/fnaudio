@@ -1,11 +1,11 @@
-# 部署与真机验证手册（0.2.171 实测版）
+# 部署与真机验证手册（0.2.173 实测版）
 
 日期：2026-11-20
 适用：把当前源码部署到飞牛 `192.168.5.141`，并在安卓真机上验证
 
-这份文档按 0.2.171 的实际执行顺序写，命令都是跑过的，不是设计稿。
+这份文档按 0.2.173 的实际执行顺序写，命令都是跑过的，不是设计稿。
 文末「本次实测结果」记的是这一轮真实发生的事，包括没通过的部分。
-0.2.170 从未装上（见 6.2 与第 7 节），所以 6.1 之后直接跳到 6.2。
+6.2 是 0.2.171（0.2.170 从未装上），6.3 是 0.2.173（0.2.172 装上了但随即作废）。
 
 ---
 
@@ -321,7 +321,7 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 
 ## 6. 实测结果
 
-### 6.1 0.2.168（当前版本，2026-11-19）
+### 6.1 0.2.168（2026-11-19）
 
 三个已知问题全修完才出包，逐个在真机复核：
 
@@ -392,7 +392,7 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
    根本不存在，服务是 `--config /usr/local/apps/@appconf/fnaudio/config.json` 启动的。
    也就是说 `reconcile_config_file()` 的「两个目录」假设在 5.2 上退化成同一个文件。
 
-### 6.2 0.2.171（当前版本，2026-11-20）
+### 6.2 0.2.171（2026-11-20）
 
 0.2.170 **一次都没装上**，所以 0.2.169 之后的第一件真事是「升级被自己的端口校验挡住」。
 6.1 的两条界面修复（开关搬家、401 文案）是随 0.2.171 才落到 NAS 上的。
@@ -493,7 +493,73 @@ https://github.com/vinson023/fnaudio/releases/tag/v0.2.171
 
 `v0.2.170` 不发——它从未装上，没有对外发布的理由。
 
-### 6.3 0.2.167
+### 6.3 0.2.173（当前版本，2026-11-20）
+
+负责人的话：「renderer开关应该和renderer名称放在一起，不然用户两头找」。
+
+**① 问题不在分类，在距离**
+
+R619 已经把开关从「服务与网络」搬进了「播放与输出 → 设备身份」，分类是对的。
+但 DOM 顺序是：开关（带两行 `<small>` 说明）→ 一段 `dialog-help` → 名称输入。
+于是同一个面板里，用户仍要往上找开关、往下找名称。
+
+**② 改法**
+
+- 两者收进同一张 `.renderer-identity` 卡片：开关在上，名称紧跟其下
+- 两段说明合并成一句，下沉到卡片底部
+- 卡片沿用 `.library-health` 的内嵌样式（1px 边框 + 6px 圆角 + `--ui-sidebar` 底色）
+- 卡片内把 `.metadata-toggle` 的 `min-height`、`.metadata-settings-grid` 的 `margin` 清零
+
+**③ 真机实测（飞牛 app 与独立 APK 数值完全一致）**
+
+| 量 | 值 |
+| --- | --- |
+| 卡片 | 380×200 @ (16,589) |
+| `nameInSameCard` / `cardContainsBoth` | `true` / `true` |
+| 开关 | 17×17 @ (20,603)，`switchHitIsSelf:true` |
+| 名称输入 | 354×38 @ (29,655)，label 上沿 631 |
+| **开关行下沿 → 名称上沿** | **8px** |
+| `blockersBetween` | `[]`（中间没有任何 `<p>` 或 `<small>`） |
+| `helpAfterName` | `true`（说明整段在名称之后） |
+| `stillInNetworkPane` | `false` |
+
+探针：`tools/browser-e2e/cdp_feiniu_renderer_card.js`；
+截图 `artifacts/0.2.173/device/feiniu-renderer-card.png`、
+`artifacts/0.2.173/device/apk-renderer-card.png`。
+
+**④ 顺带查出的第二处矛盾：侧栏摘要与输入框各说各的**
+
+设置侧栏「播放与输出」的摘要在进 pane 时就先算过一次，而 `loadPlaybackSettings`
+的请求那时还没回来，于是摘要一直显示「跟随设备名」，下面输入框里却已经是
+`fnAudio Renderer`。同一件事两处说法不同——和「开关没有」是同一类问题。
+
+修法：采纳服务端回显之后调一次 `updateSettingsSummaries()`。
+修完真机 `railSummary` 从「跟随设备名」变成 `fnAudio Renderer`。
+
+**⑤ 0.2.172 为什么作废**
+
+0.2.172 先装上了（`0.2.171 → 0.2.172/running`，health 200），之后才补上摘要那处修复。
+再装同一个版本号时被飞牛挡回来：
+
+```
+无法安装  fnAudio 已安装相同或更高版本的 fnAudio
+```
+
+**同一版本号不能重装。** 于是 0.2.172 作废（`fnOS` 里留着的就是它那份），
+改发 0.2.173。教训：同一次改动要一次性出包，装完再改源码就得再吃一个版本号。
+
+**⑥ 安装结果与门禁**
+
+- 应用中心：`0.2.172/upgrading → 0.2.173/starting → 0.2.173/running`，`INSTALL_OK`
+- 经代理 `/api/health`：200 / 80 ms
+- 产物：`fnaudio-0.2.173-fnpack.fpk` 5,487,117 B / `A67703CE…40248560`
+  （provenance clean，基线 `d7b81cb`）；
+  `fnaudio-android-0.2.173-release.apk` 13,014,408 B / `158E917B…2BABAF0F`（`versionCode 431`）
+- `verify_release_evidence.ps1` 三项全 True
+- JS：**143/143**（`test_ui_runtime_settings.js` 新增 6 条断言）
+- Python：`Ran 3506 tests in 285.507s` → `OK (skipped=7)`
+
+### 6.4 0.2.167
 
 #### 通过
 
@@ -508,7 +574,7 @@ https://github.com/vinson023/fnaudio/releases/tag/v0.2.171
 - 手机：`versionCode 425` / `versionName 0.2.167` 覆盖安装成功，登录态保留；
   主界面列出 118 首、侧栏计数一致、专辑页显示「81 张专辑」
 
-### 6.4 0.2.167 没通过项（历史，均已在 0.2.168 修复）
+### 6.5 0.2.167 没通过项（历史，均已在 0.2.168 修复）
 
 **① 升级后曲库配置被清空（严重）**
 
@@ -565,6 +631,7 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 | `git_provenance_status: dirty` | 构建脚本有问题 | 工作区没提交干净 |
 | 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**0.2.171 起升级场景已放行自己的旧实例**；0.2.170 及以前**重试也没用**（旧实例被 `trim_http_cgi.service` 保活，杀不掉），见 6.2 |
 | 改了 `src/cmd/install_callback`、重新出包，装上去还报同一个错 | 修改没生效 / 包坏了 | fnOS 执行的是**部署目录**的 `/var/apps/fnaudio/cmd/install_callback`，不是新包里的那份。用 `grep -c <新加的标识> /var/apps/fnaudio/cmd/install_callback` 验证，为 0 就是没同步进去 |
+| 应用中心弹「无法安装 fnAudio 已安装相同或更高版本的 fnAudio」 | 包做坏了 | **同一版本号不能重装**。改完源码要再装一次，就得先把 `VERSION` / `src/manifest` / `versionCode` 一起往上推。0.2.172 就是这样作废的 |
 | 应用中心点「停用」后状态还是 `start`、卡片只剩「启用」 | 我们的 stop 脚本坏了 | `/stop/check`、`/stop/start` 都回 `code:0`，但登记状态不变——fnOS 认为已停，所以不会去停；而 `trim_http_cgi.service` 还在保活 `server.py`，端口照旧被占 |
 | `dumpsys package com.fnaudio.player` 什么都不输出 | 应用没装上 | 包名是 `com.fnaudio.client`（另有 `com.fnaudio.client.test` 是 instrumentation 包，versionCode 0，不是应用） |
 | `/api/health` 里找不到 `version` | 接口坏了 | health 只有 `ok/name/request_id/components/metrics`；版本在 `/api/access`（前端「关于」也读它） |
@@ -579,6 +646,8 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 - `tools/app_center_apps.js` —— 应用中心操作（`--list` / `--inspect` / `--click` / `--stop`），
   0.2.171 起用来停用/启应用；按应用名节点收卡片，不按按钮文字找
 - `tools/browser-e2e/cdp_feiniu_playback.js` —— 在飞牛 app 内嵌 WebView 里复验设置项位置
+- `tools/browser-e2e/cdp_feiniu_renderer_card.js` —— 复验「开关与名称是否挨着」：
+  量卡片归属、两行间距、中间有没有段落
 - `tools/build_release.ps1` / `tools/build_android_release.ps1` —— 出包
 - `tools/load_signing_env.ps1` —— 注入签名变量后构建
 - `tools/verify_release_evidence.ps1` —— 产物证据校验
