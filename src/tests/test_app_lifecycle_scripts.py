@@ -55,6 +55,23 @@ class AppLifecycleScriptTests(unittest.TestCase):
         self.assertIn('${wizard_server_port:-${existing_server_port:-53199}}', script)
         self.assertIn("服务端口 %s 已被占用", script)
 
+    def test_install_callback_lets_an_upgrade_take_over_its_own_port(self):
+        # 2026-11-20：升级一律失败在「执行脚本出错且原因未知」。真因是这段
+        # 端口校验无条件 bind，而旧实例还在监听 —— 应用中心甚至以为应用已经
+        # 停了，于是既不先停它，也不给出任何能看懂的原因。
+        root = pathlib.Path(__file__).resolve().parents[2]
+        script = (root / "src" / "cmd" / "install_callback").read_text(encoding="utf-8")
+        self.assertIn('"${server_port}" "${existing_server_port}" <<\'PY\'', script)
+        self.assertIn("def fnaudio_holder(candidate):", script)
+        self.assertIn('needle = "--port %d" % candidate', script)
+        self.assertIn('if "/fnaudio/" in raw and "server.py" in raw and needle in raw:', script)
+        self.assertIn("if upgrade_port and str(port) == upgrade_port and holder:", script)
+        # 实际路径是 .../fnaudio/server/server.py，写死 "fnaudio/server.py" 永远匹配不上，
+        # 会静默退回「端口被占」那条老路 —— 2026-11-20 就是这样白装了一次。
+        self.assertNotIn('if "fnaudio/server.py" in raw', script)
+        # 外来进程仍必须被拒 —— 否则换端口这条安全网就没了。
+        self.assertIn('print("服务端口 %s 已被占用，请返回并选择其他端口。" % port)', script)
+
     def test_uninstall_defaults_to_keep_and_supports_explicit_purge(self):
         root = pathlib.Path(__file__).resolve().parents[2]
         script = (root / "src" / "cmd" / "uninstall_callback").read_text(encoding="utf-8")

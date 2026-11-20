@@ -1,10 +1,11 @@
-# 部署与真机验证手册（0.2.168 实测版）
+# 部署与真机验证手册（0.2.171 实测版）
 
-日期：2026-11-19
+日期：2026-11-20
 适用：把当前源码部署到飞牛 `192.168.5.141`，并在安卓真机上验证
 
-这份文档按 0.2.168 的实际执行顺序写，命令都是跑过的，不是设计稿。
+这份文档按 0.2.171 的实际执行顺序写，命令都是跑过的，不是设计稿。
 文末「本次实测结果」记的是这一轮真实发生的事，包括没通过的部分。
+0.2.170 从未装上（见 6.2 与第 7 节），所以 6.1 之后直接跳到 6.2。
 
 ---
 
@@ -331,6 +332,7 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 - `@appcenter/etc/config.json` 与 `@appconf/config.json` 都是 1704 字节且内容一致
 - `/var/apps/fnaudio/manifest` 的 `version = 0.2.168`
 - 首次安装曾失败一次（端口探测误报），重试通过，见第 7 节
+  ——**「重试能过」是运气，不是机制**：0.2.170 连试三次都没过，真因与修法见 6.2
 
 **② 手机上专辑列表能排序**
 
@@ -390,7 +392,71 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
    根本不存在，服务是 `--config /usr/local/apps/@appconf/fnaudio/config.json` 启动的。
    也就是说 `reconcile_config_file()` 的「两个目录」假设在 5.2 上退化成同一个文件。
 
-### 6.2 0.2.167
+### 6.2 0.2.171（当前版本，2026-11-20）
+
+0.2.170 **一次都没装上**，所以 0.2.169 之后的第一件真事是「升级被自己的端口校验挡住」。
+6.1 的两条界面修复（开关搬家、401 文案）是随 0.2.171 才落到 NAS 上的。
+
+**① 0.2.170 装不上的真因**
+
+- `/var/log/apps/fnaudio.log` 全文只有两行：`服务端口 53199 已被占用，请返回并选择其他端口。`（14:33:04）
+- `install_via_app_center.js`：`clicked 同意` → `t+2s status:upgrading` → `t+10s status:start`
+  + 界面报「无法更新 fnaudio 执行脚本出错且原因未知」；`/app-center/v1/update/status` 回
+  `{"code":10238,"progress":0,"status":3}`
+- 死锁形状：`server.py` 与 `mpd` 的 cgroup 都是 `/system.slice/trim_http_cgi.service`，
+  `cmd/main stop` 杀掉后 1 秒内出现新 PID，且 `info.log` 里没有 `Starting fnAudio`
+  ——**不是我们的脚本起的**；应用中心 `/stop/check`、`/stop/start` 都 `code:0`，
+  登记状态却一直是 `start`，卡片上只剩「启用」。fnOS 认为它已停，于是不去停，端口一直占着。
+- 修法：`install_callback` 的端口校验带上 `existing_server_port`，扫 `/proc` 认自己的旧实例，
+  是升级就放行；外来进程照旧拒绝。
+
+**② 装上去之前又踩的两个坑（都会重犯，必须记住）**
+
+1. **fnOS 执行的是部署目录的 `/var/apps/fnaudio/cmd/install_callback`，不是新包里的那份。**
+   改 `src/cmd/*` 并重新出包，对当次升级完全无效——07:00 那次 0.2.171 仍报同样的错。
+   直到 `grep -c fnaudio_holder /var/apps/fnaudio/cmd/install_callback` 返回 0 才确认。
+   只能把修好的脚本同步进部署目录（备份 `install_callback.bak-R620`），装成功后才被包内版本覆盖。
+2. **匹配串不能写死 `fnaudio/server.py`。** 真实路径是 `@appcenter/fnaudio/server/server.py`，
+   第一版永远匹配不上，于是每次静默退回「端口被占用」——又白装一次。
+   NAS 探针实测：占端口的 `1400869` 的 cmdline 含 `--port 53199`，旧串扫不到它。
+   改成 `"/fnaudio/" in raw and "server.py" in raw and needle in raw` 才对上。
+
+**③ 安装结果**
+
+- 应用中心：`0.2.169/start → 0.2.171/starting(35%) → 0.2.171/running`，`INSTALL_OK`
+- 经代理 `/api/health`：**200 / 78 ms**
+- 页面资源戳：`v=0.2.171-793ac531d5d8`
+- 53199 由新 PID `1420712` 持有
+- 产物：`fnaudio-0.2.171-fnpack.fpk` `748C5DDA…AFBE8D`；
+  `fnaudio-android-0.2.171-release.apk` `D2C04E36…0E07EAD`（`versionCode 429`，`Validated: True`）
+- `verify_release_evidence.ps1`：`Validated / AndroidValidated / EvidenceComplete` 三项均 True
+
+**④ 真机复验：飞牛 app 载体（`com.trim.app`，远程中转 `office.app.5ddd.com:46533`，无原生桥）**
+
+这一轮**特意换到这个载体**——0.2.169 的复验全做在独立 APK 里，而负责人用的是飞牛 app，
+结论不能互推。两条都过了：
+
+- **开关在「播放输出 → 设备身份」**：重载后资源戳 `v=0.2.171-793ac531d5d8`；
+  `dlnaRendererEnabledInput` 几何 **16×17 @ (20,596)**，`elementFromPoint` 命中自身，
+  `checked:false`，`inputBlock=playback-identity`、`inputPaneId=settings-pane-playback`，
+  反证 `switchStillInNetworkPane=false`（「服务与网络」里已没有它）。
+  截图 `artifacts/0.2.171/device/feiniu-playback.png` 肉眼可见
+  「设备身份 → 作为播放器被其他设备推送 → Renderer 名称」。
+- **401 说得出下一步**：用 CDP `Fetch.fulfillRequest` 真造 401 → `playNextTrack()` 返回 `false`，
+  提示条文案为「登录已失效，请重新打开 fnAudio 后重试。」。
+  （`const browserFetch = window.fetch.bind(window)` 在 `app.js:688` 加载时绑死，
+  事后替换 `window.fetch` 拦不住任何请求，造 401 只能走 CDP。）
+- **四个运输键可用**：`playNextTrack()` 返回 `true`，`Big Energy → Dawn FM`
+  （`src` 从 `5481233725f22278` 换成 `037af5290a618076`）；循环 `one→off`；随机 `false→true`；
+  全部请求 200。
+
+**⑤ 门禁**
+
+- JS：**143/143**（含新增 `test_ui_browser_auth_notice.js`）
+- Python：**3506 项全过**，`OK (skipped=7)`
+- `SOURCE_MANIFEST.sha256`：911 条，已刷新
+
+### 6.3 0.2.167
 
 #### 通过
 
@@ -405,7 +471,7 @@ adb 驱动方式（坐标按 1440×2960）：点输入框 → `KEYCODE_MOVE_END`
 - 手机：`versionCode 425` / `versionName 0.2.167` 覆盖安装成功，登录态保留；
   主界面列出 118 首、侧栏计数一致、专辑页显示「81 张专辑」
 
-### 6.3 0.2.167 没通过项（历史，均已在 0.2.168 修复）
+### 6.4 0.2.167 没通过项（历史，均已在 0.2.168 修复）
 
 **① 升级后曲库配置被清空（严重）**
 
@@ -460,7 +526,9 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 | `adb devices` 忽然为空 | 手机掉线 | adb server 被回收，同一条命令里重新 `connect` |
 | `test_offline.ps1` 立刻中止、日志 0 字节 | 用例失败 | 输出被重定向/接管道，PS 5.1 把 stderr 转成 `ErrorRecord` |
 | `git_provenance_status: dirty` | 构建脚本有问题 | 工作区没提交干净 |
-| 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**重试一次即通过**，日志里能看到这两行 |
+| 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**0.2.171 起升级场景已放行自己的旧实例**；0.2.170 及以前**重试也没用**（旧实例被 `trim_http_cgi.service` 保活，杀不掉），见 6.2 |
+| 改了 `src/cmd/install_callback`、重新出包，装上去还报同一个错 | 修改没生效 / 包坏了 | fnOS 执行的是**部署目录**的 `/var/apps/fnaudio/cmd/install_callback`，不是新包里的那份。用 `grep -c <新加的标识> /var/apps/fnaudio/cmd/install_callback` 验证，为 0 就是没同步进去 |
+| 应用中心点「停用」后状态还是 `start`、卡片只剩「启用」 | 我们的 stop 脚本坏了 | `/stop/check`、`/stop/start` 都回 `code:0`，但登记状态不变——fnOS 认为已停，所以不会去停；而 `trim_http_cgi.service` 还在保活 `server.py`，端口照旧被占 |
 | `dumpsys package com.fnaudio.player` 什么都不输出 | 应用没装上 | 包名是 `com.fnaudio.client`（另有 `com.fnaudio.client.test` 是 instrumentation 包，versionCode 0，不是应用） |
 | `/api/health` 里找不到 `version` | 接口坏了 | health 只有 `ok/name/request_id/components/metrics`；版本在 `/api/access`（前端「关于」也读它） |
 
@@ -471,9 +539,13 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 
 - `docs/FNOS_APPCENTER_INSTALL_TEST.md` —— 飞牛安装规程
 - `tools/install_via_app_center.js` —— 安装唯一入口
+- `tools/app_center_apps.js` —— 应用中心操作（`--list` / `--inspect` / `--click` / `--stop`），
+  0.2.171 起用来停用/启应用；按应用名节点收卡片，不按按钮文字找
+- `tools/browser-e2e/cdp_feiniu_playback.js` —— 在飞牛 app 内嵌 WebView 里复验设置项位置
 - `tools/build_release.ps1` / `tools/build_android_release.ps1` —— 出包
 - `tools/load_signing_env.ps1` —— 注入签名变量后构建
 - `tools/verify_release_evidence.ps1` —— 产物证据校验
 - `tools/adb_wireless.py` —— 无线调试端口发现
 - `tools/run_on_nas.py` —— SSH/SFTP 执行诊断脚本
-- `artifacts/0.2.168/verify_deployed.js` —— 本次部署验收探针（24 项，含窄屏层）
+- `artifacts/0.2.168/verify_deployed.js` —— 部署验收探针（24 项，含窄屏层）
+- `artifacts/0.2.171/device/feiniu-playback.png` —— 开关搬到「设备身份」后的真机截图

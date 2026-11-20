@@ -47,6 +47,11 @@ assert.match(networkPane, /<input id="dlnaTypeDetectionInput" type="checkbox"/, 
 // instead of taking effect on click.
 assert.match(networkPane, /data-settings-block="network-dlna"[^>]*>[\s\S]*?dlnaTypeDetectionInput/, "the DLNA switch must sit in its own savable block");
 assert.doesNotMatch(networkPane, /data-settings-block="network-dlna"[^>]*data-settings-live/, "the DLNA switch must not be marked as a live control");
+// R619: 「作为播放器被其他设备推送」必须和 Renderer 名称待在同一个分类里。
+// 用户按字面去「播放与输出」里找它，找不到就是「开关没有」；把开关留在
+// 「服务与网络」是分类错，不是用户看错地方。
+assert.match(playbackPane, /data-settings-block="playback-identity"[\s\S]*?dlnaRendererEnabledInput/, "the renderer switch must sit with the renderer identity");
+assert.doesNotMatch(networkPane, /dlnaRendererEnabledInput/, "the renderer switch must not stay behind in the service pane");
 assert.match(playbackPane, /<input id="rendererNameInput" type="text" maxlength="128"/, "the renderer name editor belongs to playback and devices and is bounded");
 assert.doesNotMatch(networkPane, /rendererNameInput/, "DLNA diagnostics must not own the general renderer identity field");
 assert.match(advancedPane, /<option value="8388608" selected>/, "the select must offer the shipped default");
@@ -250,8 +255,22 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   // 5e) Renderer identity is saved independently from the advanced controls.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
     await h.context.savePlaybackSettings();
-  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio" }, "the playback save must carry only the renderer identity");
+  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio", [dlnaRendererEnabledKey[1]]: false }, "the playback save must carry the renderer identity and its switch");
   assert.equal(h.nodes.rendererNameInput.value, "书房播放器");
+
+  // 5e2) 开关搬到「播放与输出」后，这个 pane 的保存必须把开关一起提交，
+  // 并且以服务端回显为准——否则勾了「开」但界面停在「关」。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器", dlna_renderer_enabled: true } } }]);
+  h.nodes.dlnaRendererEnabledInput.checked = false;
+  await h.context.savePlaybackSettings();
+  assert.equal(h.calls[0].body[dlnaRendererEnabledKey[1]], false, "an unchecked renderer switch must send false rather than be omitted");
+  assert.equal(h.nodes.dlnaRendererEnabledInput.checked, true, "the renderer switch must follow the server echo, not the click");
+
+  // 5e3) 控件不在就别发这个键：漏发是保留服务端值，发 false 等于偷偷关掉。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
+  delete h.nodes.dlnaRendererEnabledInput;
+  await h.context.savePlaybackSettings();
+  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio" }, "a pane without the switch must not send the key at all");
 
   // Playback read feedback is scoped to its pane and a successful retry clears only that stale warning.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);

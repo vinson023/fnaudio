@@ -853,22 +853,51 @@ window.fnAudioNativeOnHttpChunk = (transferId, index, total, chunk) => {
   clearNativeHttpTransfer(key, transfer);
   window.fnAudioNativeOnHttpResponse(transfer.chunks.join(""));
 };
+// fnOS expires the short session token in minutes. Inside the fnOS mobile app
+// there is nothing that can renew it: the host SDK refuses the call outright
+// ("refreshToken is not supported on mobile platform"), and reloading the page
+// hands back the very same fnos-token. A 401 there therefore has exactly one
+// honest answer - say so, in words the user can act on - instead of letting
+// every transport button look dead or blaming "the connection to the NAS".
+// One notice per minute: a library page, its covers and a queue save all answer
+// 401 together, and three identical banners say nothing the first did not.
+let browserAuthFailureNoticedAt = 0;
+let lastBrowserAuthFailureAt = 0;
+function browserAuthFailedRecently(windowMs = 3000) {
+  // `0` is "no failure yet"; without this guard a fresh page reports a session
+  // failure purely because Date.now() is larger than zero.
+  if (!lastBrowserAuthFailureAt) return false;
+  return Date.now() - lastBrowserAuthFailureAt < windowMs;
+}
+function noteBrowserAuthFailure(response) {
+  if (!response || response.status !== 401) return response;
+  const bridge = window.FnAudioNative;
+  if (bridge && typeof bridge.refreshSession === "function") return response;
+  const now = Date.now();
+  lastBrowserAuthFailureAt = now;
+  // `0` means "never shown yet". Comparing the raw timestamp against it would
+  // make the first notice depend on how large Date.now() happens to be.
+  if (browserAuthFailureNoticedAt && now - browserAuthFailureNoticedAt < 60000) return response;
+  browserAuthFailureNoticedAt = now;
+  showAppError("登录已失效，请重新打开 fnAudio 后重试。");
+  return response;
+}
 function apiFetch(input, init = {}) {
   const requestMethod = String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
   let url;
   try {
     url = new URL(typeof Request !== "undefined" && input instanceof Request ? input.url : String(input), window.location.href);
   } catch (error) {
-    return browserFetch(input, init);
+    return browserFetch(input, init).then(noteBrowserAuthFailure);
   }
   if (!nativeHttpAvailable() || !isFnAudioApiUrl(url)) {
-    return browserFetch(input, init);
+    return browserFetch(input, init).then(noteBrowserAuthFailure);
   }
   if (typeof Request !== "undefined" && input instanceof Request && init.body == null) {
-    return browserFetch(input, init);
+    return browserFetch(input, init).then(noteBrowserAuthFailure);
   }
   const body = init.body == null ? "" : init.body;
-  if (typeof body !== "string") return browserFetch(input, init);
+  if (typeof body !== "string") return browserFetch(input, init).then(noteBrowserAuthFailure);
   const headers = new Headers(typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined);
   new Headers(init.headers || {}).forEach((value, name) => headers.set(name, value));
   const headerObject = {};
@@ -3054,13 +3083,13 @@ async function playPreviousTrack() {
   // coreControl answers false for a refused command, a rejected request and an
   // expired session alike. Saying nothing made the button indistinguishable from
   // one that never received the tap.
-  if (!ok) showAppError("上一曲没有执行成功，请检查与 NAS 的连接后重试。");
+  if (!ok && !browserAuthFailedRecently()) showAppError("上一曲没有执行成功，请检查与 NAS 的连接后重试。");
   return ok;
 }
 async function playNextTrack() {
   if (!state.queue.length) return false;
   const ok = Boolean(await coreControl("next"));
-  if (!ok) showAppError("下一曲没有执行成功，请检查与 NAS 的连接后重试。");
+  if (!ok && !browserAuthFailedRecently()) showAppError("下一曲没有执行成功，请检查与 NAS 的连接后重试。");
   return ok;
 }
 function setupMediaSession() {
@@ -9040,7 +9069,12 @@ function updateSettingsSummaries() {
   const paths = Array.isArray(state.libraryStatus?.library_paths) ? state.libraryStatus.library_paths : [];
   settingsSummaryText("settingsSummaryLibrary", paths.length ? `${paths.length} 个目录` : "未选择目录");
   const renderer = typeof playbackRendererNameInput === "function" ? playbackRendererNameInput() : null;
-  settingsSummaryText("settingsSummaryPlayback", renderer?.value?.trim() || "跟随设备名");
+  // The rail is the only place a user sees this group before opening it, and the
+  // renderer switch is the one setting in there that changes what the device does
+  // on the network. Leaving it out of the summary is how "开关没有" started.
+  const rendererSwitch = typeof dlnaRendererEnabledInput === "function" ? dlnaRendererEnabledInput() : null;
+  const rendererLabel = renderer?.value?.trim() || "跟随设备名";
+  settingsSummaryText("settingsSummaryPlayback", rendererSwitch && rendererSwitch.checked ? `${rendererLabel} · 可被推送` : rendererLabel);
   const metadata = $("metadataEnabledInput");
   settingsSummaryText("settingsSummaryMetadata", metadata ? (metadata.checked ? "已启用" : "已关闭") : "");
   const port = $("serverPortValue")?.textContent?.trim();
@@ -9062,6 +9096,9 @@ function bindSettingsDirtyTracking() {
     const block = target.closest("[data-settings-block]");
     if (!block) return;
     markSettingsDirty(block.dataset.settingsBlock);
+    // The rail summary quotes the renderer switch, so it has to follow the box
+    // while the user is still in the pane rather than only after a save.
+    updateSettingsSummaries();
   };
   shell.addEventListener("input", onChange);
   shell.addEventListener("change", onChange);
@@ -9272,6 +9309,14 @@ async function loadPlaybackSettings() {
     if (typeof data?.config?.[RENDERER_NAME_SETTING_KEY] === "string" && data.config[RENDERER_NAME_SETTING_KEY].trim()) {
       renderer.value = data.config[RENDERER_NAME_SETTING_KEY];
     }
+    // The renderer switch moved into this pane because that is where users look
+    // for it: the renderer's *name* already lived here, its on/off did not, and
+    // the switch sitting alone under 服务与网络 was reported as "没有这个开关".
+    // Its server echo has to be adopted here for the same reason the name is.
+    const rendererSwitch = dlnaRendererEnabledInput();
+    if (rendererSwitch && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
+      rendererSwitch.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
+    }
     if (status) status.textContent = "";
     return data;
   } catch (error) {
@@ -9289,15 +9334,25 @@ async function savePlaybackSettings() {
       || (codePoint >= 0xD800 && codePoint <= 0xDFFF) || codePoint === 0xFFFE || codePoint === 0xFFFF;
   });
   if (invalidRendererName) throw new Error("播放与设备设置控件不可用");
+  const body = { [RENDERER_NAME_SETTING_KEY]: rendererName };
+  // Omitted keys are preserved server-side, so a pane that did not render the
+  // switch must not send it at all rather than send `false` and turn the
+  // renderer off behind the user's back. The switch lives in this pane now, so
+  // saving the device identity is also what commits it.
+  const rendererSwitch = dlnaRendererEnabledInput();
+  if (rendererSwitch) body[DLNA_RENDERER_ENABLED_SETTING_KEY] = rendererSwitch.checked === true;
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [RENDERER_NAME_SETTING_KEY]: rendererName }),
+    body: JSON.stringify(body),
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存播放与设备设置失败");
   if (typeof data?.config?.[RENDERER_NAME_SETTING_KEY] === "string" && data.config[RENDERER_NAME_SETTING_KEY].trim()) {
     renderer.value = data.config[RENDERER_NAME_SETTING_KEY];
+  }
+  if (rendererSwitch && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
+    rendererSwitch.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
   }
   return data;
 }
@@ -11840,7 +11895,7 @@ async function toggleRepeat() {
     // is what "循环点不动" looked like from the outside: four taps, four identical
     // screens, no error anywhere.
     updateRepeatShuffleButtons();
-    showAppError("循环模式没有切换成功，请检查与 NAS 的连接后重试。");
+    if (!browserAuthFailedRecently()) showAppError("循环模式没有切换成功，请检查与 NAS 的连接后重试。");
     return false;
   }
   if (data?.core) state.repeat = data.core.repeat || state.repeat;
@@ -11891,7 +11946,7 @@ async function toggleShuffle() {
     // Without the core's answer the wanted direction is a guess, and reordering
     // the queue on a guess would leave the order and the flag disagreeing.
     updateRepeatShuffleButtons();
-    showAppError("随机播放没有切换成功，请检查与 NAS 的连接后重试。");
+    if (!browserAuthFailedRecently()) showAppError("随机播放没有切换成功，请检查与 NAS 的连接后重试。");
     return false;
   }
   const wanted = data?.core && typeof data.core.shuffle === "boolean" ? data.core.shuffle : !state.shuffle;

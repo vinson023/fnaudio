@@ -213,6 +213,7 @@
             </div>
             <div class="settings-group" data-settings-block="playback-identity">
               <div class="settings-group-head"><h3>设备身份</h3><span class="settings-badge is-save">需保存</span></div>
+              <label class="metadata-toggle"><input id="dlnaRendererEnabledInput" type="checkbox"><span><strong>作为播放器被其他设备推送</strong><small>开启后，局域网内的手机、电脑可以把音乐推送到 fnAudio 播放，fnAudio 也会出现在它们的投送列表里。默认关闭。</small></span></label>
               <p class="dialog-help">给局域网中的多台 fnAudio 设置不同名称，只改变 Renderer 显示名称，不改变设备身份。</p>
               <div class="metadata-settings-grid"><label><span>Renderer 名称</span><input id="rendererNameInput" type="text" maxlength="128" placeholder="例如：客厅播放器"></label></div>
               <p class="dialog-help" id="playbackSettingsStatus" aria-live="polite"></p>
@@ -258,7 +259,6 @@
           <section id="settings-pane-network" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-network" data-settings-pane="network" hidden>
             <div class="settings-group" data-settings-block="network-dlna">
               <div class="settings-group-head"><h3>DLNA 设备</h3><span class="settings-badge is-save">需保存</span></div>
-              <label class="metadata-toggle"><input id="dlnaRendererEnabledInput" type="checkbox"><span><strong>作为播放器被其他设备推送</strong><small>开启后，局域网内的手机、电脑可以把音乐推送到 fnAudio 播放，fnAudio 也会出现在它们的投送列表里。默认关闭。</small></span></label>
               <label class="metadata-toggle"><input id="dlnaTypeDetectionInput" type="checkbox" checked><span><strong>检测设备类型能力</strong><small>关闭后允许直接尝试推送设备未声明支持的 DSD 格式。</small></span></label>
               <p class="dialog-help">关闭检测后，设备能否播放由设备自身决定；fnAudio 仍会发送原始 DSD 文件，不会自动转码。</p>
               <div class="settings-inline-actions"><button class="secondary-button" id="dlnaDiagnosticsBtn" type="button">DLNA 兼容性记录</button></div>

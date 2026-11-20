@@ -126,18 +126,61 @@ if [ "${server_port}" -lt 1024 ] || [ "${server_port}" -gt 65535 ]; then
   fi
 fi
 
-"${PYTHON_BIN}" - "${server_port}" <<'PY'
+"${PYTHON_BIN}" - "${server_port}" "${existing_server_port}" <<'PY'
+import os
 import socket
 import sys
 
 port = int(sys.argv[1])
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        sock.bind(("0.0.0.0", port))
-    except OSError:
-        print("服务端口 %s 已被占用，请返回并选择其他端口。" % port)
-        raise SystemExit(1)
+upgrade_port = (sys.argv[2] if len(sys.argv) > 2 else "").strip()
+
+
+def port_free(candidate):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", candidate))
+        except OSError:
+            return False
+    return True
+
+
+def fnaudio_holder(candidate):
+    """PID of a running fnAudio server listening on `candidate`, else "".
+
+    During an upgrade the previous instance is still up and is *supposed* to be:
+    fnOS does not always stop it first, and on 2026-11-20 it had actually
+    marked the app stopped while the process kept holding 53199.  Failing here
+    turned every upgrade into "执行脚本出错且原因未知" with nothing in the UI
+    to explain it.  `cmd/main start` already sweeps stale fnAudio servers
+    before it binds, so the takeover works - this check only has to tell our
+    own instance apart from a genuinely foreign listener.
+    """
+    needle = "--port %d" % candidate
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % entry, "rb") as handle:
+                raw = handle.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        # The deployed path is .../fnaudio/server/server.py, so looking for the
+        # literal "fnaudio/server.py" never matches - that mistake cost an
+        # extra install attempt on 2026-11-20, with the same opaque error.
+        if "/fnaudio/" in raw and "server.py" in raw and needle in raw:
+            return entry
+    return ""
+
+
+if port_free(port):
+    raise SystemExit(0)
+holder = fnaudio_holder(port)
+if upgrade_port and str(port) == upgrade_port and holder:
+    print("服务端口 %s 由 fnAudio 旧实例（PID %s）持有，升级将继续并由新实例接管。" % (port, holder))
+    raise SystemExit(0)
+print("服务端口 %s 已被占用，请返回并选择其他端口。" % port)
+raise SystemExit(1)
 PY
 [ "$?" -eq 0 ] || exit 1
 
