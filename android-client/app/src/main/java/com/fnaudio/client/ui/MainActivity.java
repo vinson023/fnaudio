@@ -72,6 +72,7 @@ import com.fnaudio.client.network.SessionCookies;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.ArrayDeque;
 import java.util.List;
@@ -124,6 +125,16 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private boolean httpFnConnectProfile;
     private OkHttpClient webResourceClient;
     private final ConcurrentHashMap<String, Call> nativeHttpCalls = new ConcurrentHashMap<>();
+    /**
+     * Guards the session-renewal handshake. fnOS expires the short token in
+     * minutes, so an app left open for hours answers every request with 401
+     * "invalid token" - which is what made the transport buttons and the
+     * settings save button look dead. Callers that hit a 401 register here and
+     * share one login instead of racing each other with the same credential.
+     */
+    private final Object sessionRefreshLock = new Object();
+    private final List<String> pendingSessionRefreshes = new ArrayList<>();
+    private boolean sessionRefreshRunning;
     private AuthenticatedCoverCache coverCache;
     private FnConnectResolver fnConnectResolver;
     private final FnOsAuthClient authClient = new FnOsAuthClient();
@@ -1010,6 +1021,103 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
                 } catch (RuntimeException ignored) {
                     return;
                 }
+            }
+        });
+    }
+
+    @Override
+    public void refreshSession(String requestId) {
+        final String safeRequestId = requestId == null ? "" : requestId.trim();
+        if (safeRequestId.isEmpty() || safeRequestId.length() > MAX_NATIVE_HTTP_REQUEST_ID_CHARS) return;
+        ConnectionProfile candidate;
+        synchronized (sessionRefreshLock) {
+            candidate = profile;
+            if (candidate == null) {
+                deliverSessionRefresh(safeRequestId, false);
+                return;
+            }
+            if (candidate.webSession) {
+                // An FN Connect route is authorised by a cookie the WebView owns.
+                // There is no credential here to replay, so the page has to go
+                // back through the fnOS entry instead of retrying this request.
+                deliverSessionRefresh(safeRequestId, false);
+                return;
+            }
+            pendingSessionRefreshes.add(safeRequestId);
+            if (sessionRefreshRunning) return;
+            sessionRefreshRunning = true;
+        }
+        startSessionRefresh(candidate);
+    }
+
+    private void startSessionRefresh(ConnectionProfile candidate) {
+        final String password = candidate.password == null ? "" : candidate.password;
+        // Off the UI thread for the same reason authenticateBeforeLoading is: the
+        // start path touches a socket, and a NetworkOnMainThreadException would
+        // reach the user as a crash instead of a failed renewal.
+        new Thread(() -> {
+            try {
+                authClient.authenticate(this, candidate, password, new FnOsAuthClient.Callback() {
+                    @Override
+                    public void onSuccess(ConnectionProfile refreshed) {
+                        if (destroyed) return;
+                        persistProfile(new SecureProfileStore(MainActivity.this), refreshed);
+                        // requestJson reads `profile` for every request, so the
+                        // renewed token has to land there before the replay runs.
+                        // useProfile rather than a bare assignment: it is the only
+                        // place that keeps the http-FN-Connect flag in step with
+                        // the profile, and a token renewal can change nothing but
+                        // the tokens. It has no other side effect, so it cannot
+                        // reload the page out from under the replay.
+                        useProfile(refreshed);
+                        finishSessionRefresh(true);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        finishSessionRefresh(false);
+                    }
+
+                    @Override
+                    public void onCredentialRejected(String message) {
+                        finishSessionRefresh(false);
+                    }
+                });
+            } catch (RuntimeException error) {
+                Log.e(TAG, "session renewal could not be started", error);
+                finishSessionRefresh(false);
+            }
+        }, "fnaudio-session-refresh").start();
+    }
+
+    private void finishSessionRefresh(boolean ok) {
+        List<String> waiting;
+        synchronized (sessionRefreshLock) {
+            waiting = new ArrayList<>(pendingSessionRefreshes);
+            pendingSessionRefreshes.clear();
+            sessionRefreshRunning = false;
+        }
+        for (String requestId : waiting) deliverSessionRefresh(requestId, ok);
+    }
+
+    private void deliverSessionRefresh(String requestId, boolean ok) {
+        if (destroyed) return;
+        String payload;
+        try {
+            JSONObject object = new JSONObject();
+            object.put("requestId", requestId);
+            object.put("ok", ok);
+            payload = object.toString();
+        } catch (Exception ignored) {
+            return;
+        }
+        final String script = "window.fnAudioNativeOnSessionRefreshed && window.fnAudioNativeOnSessionRefreshed("
+                + JSONObject.quote(payload) + ");";
+        uiHandler.post(() -> {
+            if (destroyed || webView == null || isFinishing() || isDestroyed()) return;
+            try {
+                webView.evaluateJavascript(script, null);
+            } catch (RuntimeException ignored) {
             }
         });
     }

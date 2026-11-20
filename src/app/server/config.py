@@ -23,6 +23,13 @@ MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024
 DEFAULT_LIBRARY_CONNECTION_POOL = True
 DEFAULT_RENDERER_NAME = "fnAudio Renderer"
 DEFAULT_DLNA_TYPE_DETECTION = True
+# The renderer role is what lets another device push audio into fnAudio. It is
+# off unless asked for: a NAS that answers AVTransport also shows up in every
+# phone's cast list, and a user who never casts only gets the confusion of a
+# second fnAudio entry next to the one they are driving. The media server role
+# stays on, because browsing the library over DLNA is the reason the service is
+# advertised at all.
+DEFAULT_DLNA_RENDERER_ENABLED = False
 MAX_RENDERER_NAME_CHARS = 128
 
 
@@ -34,6 +41,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "server_name": "fnAudio",
         "renderer_name": DEFAULT_RENDERER_NAME,
         "dlna_type_detection": DEFAULT_DLNA_TYPE_DETECTION,
+        "dlna_renderer_enabled": DEFAULT_DLNA_RENDERER_ENABLED,
         "server_port": DEFAULT_PORT,
         "mpd_port": DEFAULT_MPD_PORT,
         "mpd_output_alsa_id": "",
@@ -102,6 +110,9 @@ def load_config(path: str) -> Dict[str, Any]:
         config.get("library_connection_pool"), DEFAULT_LIBRARY_CONNECTION_POOL
     )
     config["dlna_type_detection"] = _strict_bool(config.get("dlna_type_detection"), DEFAULT_DLNA_TYPE_DETECTION)
+    config["dlna_renderer_enabled"] = _strict_bool(
+        config.get("dlna_renderer_enabled"), DEFAULT_DLNA_RENDERER_ENABLED
+    )
     config["mpd_dop"] = _strict_bool(config.get("mpd_dop"), False)
     config["metadata_enabled"] = _strict_bool(config.get("metadata_enabled"), False)
     config["metadata_fingerprint_enabled"] = _strict_bool(config.get("metadata_fingerprint_enabled"), False)
@@ -168,6 +179,9 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         "server_name": _bounded_text(config.get("server_name"), 128) or "fnAudio",
         "renderer_name": normalize_renderer_name(config.get("renderer_name")),
         "dlna_type_detection": _strict_bool(config.get("dlna_type_detection"), DEFAULT_DLNA_TYPE_DETECTION),
+        "dlna_renderer_enabled": _strict_bool(
+            config.get("dlna_renderer_enabled"), DEFAULT_DLNA_RENDERER_ENABLED
+        ),
         "server_port": _bounded_int(config.get("server_port"), DEFAULT_PORT, 1024, 65535),
         "mpd_port": _bounded_int(config.get("mpd_port"), DEFAULT_MPD_PORT, 1024, 65535),
         "mpd_output_alsa_id": _bounded_text(config.get("mpd_output_alsa_id"), 512),
@@ -302,4 +316,4 @@ def _normalized_mixer_type(value) -> str:
     return mixer_type if mixer_type in ("none", "software", "hardware") else "none"
 
 
-__all__ = ["load_config", "save_config", "save_proxy_port", "normalize_renderer_name", "renderer_name_is_valid"]
+__all__ = ["load_config", "save_config", "save_proxy_port", "normalize_renderer_name", "renderer_name_is_valid", "DEFAULT_DLNA_RENDERER_ENABLED"]

@@ -214,8 +214,13 @@ DEBT_AFTER_MOVE_OUT = 8530
 # semantics measured against fnOS 1.37.3 and by nextAttemptAfterFailure(), which
 # stops swapping `user` for `username` after a rejected password. The audited
 # faces are untouched.
+# R618 re-measured: same 68 files, +124 lines, no new file. Both halves are the
+# session-renewal path for 「令牌过期后播放控件点不动」: MainActivity grew the
+# refreshSession bridge entry plus start/finish/deliverSessionRefresh and three
+# fields (+108), and NativePlaybackBridge grew the handler default and the
+# @JavascriptInterface method (+16). The audited faces are untouched.
 JAVA_TOTAL_FILES = 68
-JAVA_TOTAL_LINES = 15914
+JAVA_TOTAL_LINES = 16038
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

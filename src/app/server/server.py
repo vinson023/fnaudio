@@ -22,6 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 
 from config import load_config, normalize_renderer_name, renderer_name_is_valid, save_config, save_proxy_port
+from config import DEFAULT_DLNA_RENDERER_ENABLED
 from library import (
     FS_CACHE,
     MUSIC_CACHE,
@@ -221,6 +222,38 @@ METADATA_SERVICE = None
 STARTUP_THUMBNAIL_PREWARM_LIMIT = 96
 AIRPLAY_SERVICE = None
 DLNA_DIAGNOSTICS = DlnaDiagnostics()
+
+
+def dlna_renderer_enabled(config) -> bool:
+    """Whether fnAudio accepts audio pushed in by another DLNA device.
+
+    Only a real JSON boolean counts, for the same reason the pool switch is
+    strict: ``"false"`` arriving as a string must not read as enabled.
+    """
+    return config.get("dlna_renderer_enabled", DEFAULT_DLNA_RENDERER_ENABLED) is True
+
+
+def apply_dlna_renderer_enabled(config) -> bool:
+    """Re-announce SSDP so the renderer role appears or disappears now.
+
+    Returns True when the advertised role set actually changed. The renderer
+    object itself stays constructed either way: it is inert until something
+    drives its AVTransport, and tearing it down would leave the MediaServer
+    half of the same protocol service pointing at a dead reference.
+    """
+    if not DLNA_SSDP:
+        return False
+    set_roles = getattr(DLNA_SSDP, "set_roles", None)
+    if not callable(set_roles):
+        return False
+    roles = ("renderer", "server") if dlna_renderer_enabled(config) else ("server",)
+    try:
+        return bool(set_roles(roles))
+    except Exception:
+        # Discovery is best effort. A failed announce must not fail the save the
+        # user just made; the next startup lands on the same role set anyway.
+        return False
+
 CUE_AUTO_ADVANCE = {"track_id": "", "at": 0.0}
 DLNA_MONITOR_GUARD = {"target_id": "", "suppress_stop_until": 0.0}
 REMOTE_OUTPUT_MONITOR_STOP = None
@@ -1136,6 +1169,7 @@ class Handler(BaseHTTPRequestHandler):
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                     "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
+                    "dlna_renderer_enabled": dlna_renderer_enabled(self.server.config),
                 },
                 "status": library_connection_pool_status(),
             })
@@ -1405,8 +1439,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(payload)
         if path == "/api/dlna/renderer/status":
             if not DLNA_PROTOCOL:
-                return self.send_json({"available": False, "message": "DLNA renderer is not initialized"}, 503)
-            return self.send_json({"available": True, "state": DLNA_PROTOCOL.renderer.snapshot()})
+                return self.send_json({"available": False, "enabled": False, "message": "DLNA renderer is not initialized"}, 503)
+            if not dlna_renderer_enabled(self.server.config):
+                # A switched-off renderer is a normal state, not a failed request:
+                # the pane renders it as "已关闭", and the 1.5s session poll reads
+                # `available:false` as "no incoming session", which is the truth.
+                return self.send_json({"available": False, "enabled": False, "state": {}})
+            return self.send_json({
+                "available": True,
+                "enabled": True,
+                "state": DLNA_PROTOCOL.renderer.snapshot(),
+            })
         if path == "/api/dlna/capabilities":
             if not DLNA_PROTOCOL:
                 return self.send_json({"available": False, "message": "DLNA service is not initialized"}, 503)
@@ -1414,6 +1457,7 @@ class Handler(BaseHTTPRequestHandler):
                 "available": True,
                 "media_server_source": DLNA_PROTOCOL.protocol_info("server"),
                 "renderer_sink": DLNA_PROTOCOL.protocol_info("renderer"),
+                "renderer_enabled": dlna_renderer_enabled(self.server.config),
                 "mpd_output": (MPD_SERVICE.output_capabilities() if MPD_SERVICE else {}),
             })
         if path == "/api/dlna/diagnostics":
@@ -2005,6 +2049,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except (TypeError, ValueError):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：DLNA 类型检测必须是布尔值"}, 400)
+            try:
+                renderer_enabled = payload_bool(
+                    payload, "dlna_renderer_enabled", dlna_renderer_enabled(self.server.config)
+                )
+            except (TypeError, ValueError):
+                return self.send_json({"ok": False, "message": "运行设置包含无效值：DLNA 渲染器开关必须是布尔值"}, 400)
             renderer_name = payload.get("renderer_name", self.server.config.get("renderer_name", "fnAudio Renderer"))
             if not renderer_name_is_valid(renderer_name):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：Renderer 名称必须是非空文本且不能包含控制字符"}, 400)
@@ -2021,12 +2071,16 @@ class Handler(BaseHTTPRequestHandler):
                         LYRICS_CACHE_BYTES_CONFIG_KEY: lyrics_budget,
                         "renderer_name": renderer_name,
                         "dlna_type_detection": dlna_type_detection,
+                        "dlna_renderer_enabled": renderer_enabled,
                     }),
                 ):
                     return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
                 renderer_name_changed = False
                 if DLNA_PROTOCOL and hasattr(DLNA_PROTOCOL, "set_renderer_name"):
                     renderer_name_changed = DLNA_PROTOCOL.set_renderer_name(renderer_name)
+                # Runs whether or not the name moved: this is the call that makes a
+                # flipped renderer switch visible to controllers on the network.
+                role_changed = apply_dlna_renderer_enabled(self.server.config)
                 if renderer_name_changed and DLNA_SSDP and hasattr(DLNA_SSDP, "announce_alive"):
                     DLNA_SSDP.announce_alive()
             # commit_config_update already re-applied the pool switch against the
@@ -2041,7 +2095,9 @@ class Handler(BaseHTTPRequestHandler):
                     LYRICS_CACHE_BYTES_CONFIG_KEY: runtime_lyrics_cache_bytes_limit(self.server.config),
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                     "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
+                    "dlna_renderer_enabled": dlna_renderer_enabled(self.server.config),
                 },
+                "renderer_role_changed": role_changed,
                 "status": library_connection_pool_status(),
             })
         if parsed.path == "/api/config/library":
@@ -2108,6 +2164,11 @@ class Handler(BaseHTTPRequestHandler):
         if not DLNA_PROTOCOL:
             return self.send_error(503, "DLNA service is not initialized")
         parts = [part for part in path.split("/") if part]
+        if parts[:2] == ["dlna", "renderer"] and not dlna_renderer_enabled(self.server.config):
+            # Answer as if the resource never existed. A controller that cached
+            # the LOCATION before the switch was flipped has to conclude the
+            # renderer is gone, not that it is temporarily broken.
+            return self.send_error(404)
         if len(parts) == 3 and parts[0] == "dlna" and parts[2] == "description.xml" and parts[1] in ("renderer", "server"):
             self.record_dlna("description", role=parts[1])
             return self.send_xml(DLNA_PROTOCOL.description(parts[1]), head_only=head_only)
@@ -2123,6 +2184,8 @@ class Handler(BaseHTTPRequestHandler):
         if not DLNA_PROTOCOL:
             return self.send_error(503, "DLNA service is not initialized")
         parts = [part for part in path.split("/") if part]
+        if parts[:2] == ["dlna", "renderer"] and not dlna_renderer_enabled(self.server.config):
+            return self.send_error(404)
         if len(parts) == 4 and parts[0] == "dlna" and parts[2] in ("avtransport", "rendering", "connection", "content") and parts[3] == "control" and parts[1] in ("renderer", "server"):
             self.record_dlna("soap", role=parts[1], service=parts[2], action=self.headers.get("SOAPACTION", ""))
             status, body = DLNA_PROTOCOL.control(parts[1], parts[2], raw, self.headers.get("SOAPACTION", ""))
@@ -3819,7 +3882,10 @@ def initialize_dlna_services(server):
         system_update_id=system_update_id,
         renderer_name=server.config.get("renderer_name", "fnAudio Renderer"),
     )
-    DLNA_SSDP = SsdpService(base_url)
+    DLNA_SSDP = SsdpService(
+        base_url,
+        roles=("renderer", "server") if dlna_renderer_enabled(server.config) else ("server",),
+    )
     configure_local_renderer_identity(
         DLNA_SSDP.location("renderer"),
         DLNA_SSDP.udn("renderer"),

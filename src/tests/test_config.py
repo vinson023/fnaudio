@@ -79,6 +79,24 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(save_config(path, config))
             self.assertIs(load_config(path)["dlna_type_detection"], False)
 
+    def test_dlna_renderer_defaults_off_and_survives_a_save(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            config = load_config(path)
+            self.assertIs(config["dlna_renderer_enabled"], False)
+            config["dlna_renderer_enabled"] = True
+            self.assertTrue(save_config(path, config))
+            self.assertIs(load_config(path)["dlna_renderer_enabled"], True)
+
+    def test_dlna_renderer_rejects_a_string_as_the_switch(self):
+        # A hand-edited "false" is not the boolean the renderer gate checks, so it
+        # has to fall back to the default rather than read as enabled.
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"dlna_renderer_enabled": "true"}, fh)
+            self.assertIs(load_config(path)["dlna_renderer_enabled"], False)
+
     def test_renderer_name_defaults_and_survives_a_save(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "config.json")

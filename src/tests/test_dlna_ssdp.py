@@ -106,6 +106,45 @@ class SsdpServiceTests(unittest.TestCase):
         self.assertEqual(sock.sendto.call_count, 4)
 
 
+    def test_set_roles_retracts_the_dropped_role_before_announcing(self):
+        """Turning the renderer off must also clear the cache controllers keep."""
+        service = SsdpService(lambda: "http://127.0.0.1:18080")
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        with mock.patch("dlna.ssdp.socket.socket", return_value=sock):
+            changed = service.set_roles(("server",))
+        self.assertTrue(changed)
+        self.assertEqual(service.roles, ("server",))
+        packets = [call.args[0] for call in sock.sendto.call_args_list]
+        byebye = [packet for packet in packets if b"NTS: ssdp:byebye\r\n" in packet]
+        alive = [packet for packet in packets if b"NTS: ssdp:alive\r\n" in packet]
+        # Five renderer targets retracted, four server targets re-announced.
+        self.assertEqual(len(byebye), 5)
+        self.assertEqual(len(alive), 4)
+        self.assertTrue(any(b"MediaRenderer" in packet for packet in byebye))
+        self.assertFalse([packet for packet in byebye if b"ContentDirectory" in packet])
+        self.assertFalse([packet for packet in alive if b"MediaRenderer" in packet])
+        self.assertTrue(any(b"ContentDirectory" in packet for packet in alive))
+
+    def test_set_roles_is_a_no_op_when_the_role_set_already_matches(self):
+        service = SsdpService(lambda: "http://127.0.0.1:18080", roles=("server",))
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        with mock.patch("dlna.ssdp.socket.socket", return_value=sock):
+            changed = service.set_roles(("server",))
+        self.assertFalse(changed)
+        self.assertEqual(sock.sendto.call_count, 0)
+
+    def test_set_roles_back_on_announces_the_renderer_without_a_byebye(self):
+        service = SsdpService(lambda: "http://127.0.0.1:18080", roles=("server",))
+        sock = mock.MagicMock()
+        sock.__enter__.return_value = sock
+        with mock.patch("dlna.ssdp.socket.socket", return_value=sock):
+            service.set_roles(("renderer", "server"))
+        packets = [call.args[0] for call in sock.sendto.call_args_list]
+        self.assertFalse([packet for packet in packets if b"NTS: ssdp:byebye\r\n" in packet])
+        self.assertEqual(len(packets), 9)
+
     def test_transient_receive_error_keeps_the_listener_answering(self):
         """An ICMP-derived reset must not end discovery for the process lifetime."""
         service = SsdpService(lambda: "http://127.0.0.1:18080", roles=("server",))

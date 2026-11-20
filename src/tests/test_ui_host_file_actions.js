@@ -39,7 +39,10 @@ function harness(sdk) {
     collectLibraryPaths: () => ['/vol1/existing'],
     resolveTrackLocation: async () => ({path: '/vol1/music/song.flac', folder: '/vol1/music'}),
     resetExternalShareDialog: location => { context.state.externalShareLocation = location; },
-    alert: message => alerts.push(message), console: {warn() {}},
+    // The page no longer calls alert(): a modal dialog stops the WebView's JS
+    // thread, so every failure goes to the non-blocking status line instead.
+    showAppError: message => alerts.push(String(message)),
+    showAppNotice: message => alerts.push(String(message)), console: {warn() {}},
     setTimeout: (callback, duration) => {
       timeoutDurations.push(duration);
       const id = {}; timers.set(id, callback); return id;

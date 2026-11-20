@@ -19,6 +19,39 @@ state.positionReportIntervalMs = 30000;
 state.sleepTimerDeadline = 0;
 state.sleepTimerTickId = 0;
 const $ = (id) => document.getElementById(id);
+// Status messages must never be modal. window.alert() stops the WebView's JS
+// thread until the dialog is dismissed, so one failed queue save used to freeze
+// the transport buttons, the settings save button and the list underneath them -
+// the reported "点不动" was this dialog, not a hit-test problem. Everything that
+// used to alert now lands here instead.
+let appNoticeHideTimer = 0;
+let appNoticeClearTimer = 0;
+function showAppNotice(message, options = {}) {
+  const text = String(message == null ? "" : message).trim();
+  if (!text) return false;
+  const node = $("appToast");
+  if (!node) return false;
+  const tone = options.tone === "error" || options.tone === "success" ? options.tone : "";
+  node.textContent = text;
+  node.classList.toggle("is-error", tone === "error");
+  node.classList.toggle("is-success", tone === "success");
+  node.hidden = false;
+  // Reading offsetWidth flushes the style change, so a second message restarts
+  // the fade instead of inheriting the visible state of the previous one.
+  void node.offsetWidth;
+  node.classList.add("is-visible");
+  clearTimeout(appNoticeHideTimer);
+  clearTimeout(appNoticeClearTimer);
+  const timeout = Number.isFinite(options.timeoutMs) ? Math.max(1200, options.timeoutMs) : 4200;
+  appNoticeHideTimer = setTimeout(() => {
+    node.classList.remove("is-visible");
+    appNoticeClearTimer = setTimeout(() => { node.hidden = true; }, 220);
+  }, timeout);
+  return true;
+}
+function showAppError(message) {
+  return showAppNotice(message, { tone: "error", timeoutMs: 6000 });
+}
 const SETTINGS_SAVE_BUTTON_IDS = [
   "saveLibrarySettingsBtn",
   "savePlaybackSettingsBtn",
@@ -699,6 +732,57 @@ function nativeHttpAvailable() {
     return false;
   }
 }
+// One re-login at a time. A burst of 401s (a library page plus its covers plus a
+// queue save) arrives together, and answering each with its own login attempt
+// would hammer fnOS with the same credential and race the stored profile.
+let nativeSessionRefreshPromise = null;
+let nativeSessionRefreshSequence = 0;
+const nativeSessionRefreshes = new Map();
+function finishNativeSessionRefresh(requestId, ok) {
+  const finish = nativeSessionRefreshes.get(requestId);
+  if (!finish) return;
+  nativeSessionRefreshes.delete(requestId);
+  finish(ok === true);
+}
+window.fnAudioNativeOnSessionRefreshed = payload => {
+  let result = payload;
+  try { if (typeof payload === "string") result = JSON.parse(payload); } catch (error) { return; }
+  if (!result || typeof result !== "object") return;
+  finishNativeSessionRefresh(String(result.requestId || ""), result.ok === true);
+};
+function refreshNativeSession() {
+  if (nativeSessionRefreshPromise) return nativeSessionRefreshPromise;
+  const bridge = window.FnAudioNative;
+  if (!bridge || typeof bridge.refreshSession !== "function") return Promise.resolve(false);
+  // The failure message belongs inside the single-flight body: every caller that
+  // shared this attempt would otherwise report the same failure again.
+  const reportFailure = () => showAppError("登录会话已失效，请重新打开 fnAudio 或重新登录。");
+  nativeSessionRefreshPromise = new Promise(resolve => {
+    const requestId = `session-${Date.now()}-${++nativeSessionRefreshSequence}`;
+    const timer = setTimeout(() => {
+      if (!nativeSessionRefreshes.delete(requestId)) return;
+      reportFailure();
+      resolve(false);
+    }, 30000);
+    nativeSessionRefreshes.set(requestId, ok => {
+      clearTimeout(timer);
+      if (!ok) reportFailure();
+      resolve(ok);
+    });
+    try {
+      bridge.refreshSession(requestId);
+    } catch (error) {
+      if (!nativeSessionRefreshes.delete(requestId)) return;
+      clearTimeout(timer);
+      reportFailure();
+      resolve(false);
+    }
+  }).then(ok => {
+    nativeSessionRefreshPromise = null;
+    return ok;
+  });
+  return nativeSessionRefreshPromise;
+}
 function isFnAudioApiUrl(url) {
   return url.origin === window.location.origin
     && /\/cgi\/ThirdParty\/fnaudio\/(?:index\.cgi\/)?api\//.test(url.pathname);
@@ -789,34 +873,46 @@ function apiFetch(input, init = {}) {
   new Headers(init.headers || {}).forEach((value, name) => headers.set(name, value));
   const headerObject = {};
   headers.forEach((value, name) => { headerObject[name] = value; });
-  const requestId = `http-${Date.now()}-${++nativeHttpRequestSequence}`;
-  return new Promise((resolve, reject) => {
-    const signal = init.signal;
-    if (signal?.aborted) {
-      reject(nativeAbortError());
-      return;
-    }
-    const abortHandler = () => {
-      const pending = nativeHttpRequests.get(requestId);
-      if (!pending) return;
-      clearNativeHttpRequest(requestId, pending, nativeAbortError());
-    };
-    const timer = setTimeout(() => {
-      const pending = nativeHttpRequests.get(requestId);
-      if (!pending) return;
-      clearNativeHttpRequest(requestId, pending, new TypeError("原生认证请求超时"));
-    }, 45000);
-    while (nativeHttpRequests.size >= MAX_NATIVE_HTTP_REQUESTS) evictOldestNativeHttpRequest();
-    nativeHttpRequests.set(requestId, { resolve, reject, timer, signal, abortHandler });
-    if (signal) signal.addEventListener("abort", abortHandler, { once: true });
-    try {
-      window.FnAudioNative.requestJson(requestId, requestMethod, url.href, JSON.stringify(headerObject), body);
-    } catch (error) {
-      const pending = nativeHttpRequests.get(requestId);
-      if (pending) clearNativeHttpRequest(requestId, pending, error);
-      else reject(error);
-    }
+  const sendOnce = () => {
+    const requestId = `http-${Date.now()}-${++nativeHttpRequestSequence}`;
+    return new Promise((resolve, reject) => {
+      const signal = init.signal;
+      if (signal?.aborted) {
+        reject(nativeAbortError());
+        return;
+      }
+      const abortHandler = () => {
+        const pending = nativeHttpRequests.get(requestId);
+        if (!pending) return;
+        clearNativeHttpRequest(requestId, pending, nativeAbortError());
+      };
+      const timer = setTimeout(() => {
+        const pending = nativeHttpRequests.get(requestId);
+        if (!pending) return;
+        clearNativeHttpRequest(requestId, pending, new TypeError("原生认证请求超时"));
+      }, 45000);
+      while (nativeHttpRequests.size >= MAX_NATIVE_HTTP_REQUESTS) evictOldestNativeHttpRequest();
+      nativeHttpRequests.set(requestId, { resolve, reject, timer, signal, abortHandler });
+      if (signal) signal.addEventListener("abort", abortHandler, { once: true });
+      try {
+        window.FnAudioNative.requestJson(requestId, requestMethod, url.href, JSON.stringify(headerObject), body);
+      } catch (error) {
+        const pending = nativeHttpRequests.get(requestId);
+        if (pending) clearNativeHttpRequest(requestId, pending, error);
+        else reject(error);
+      }
+    });
+  };
+  // fnOS expires the short session token in minutes, and nothing in the app used
+  // to notice: every request kept answering 401 "invalid token" until the process
+  // was restarted, which is why the transport buttons and the settings save button
+  // looked dead after the app had been open for a while. A 401 here now refreshes
+  // the session once and replays the request, so expiry stops being visible at all.
+  const attempt = allowRefresh => sendOnce().then(response => {
+    if (!allowRefresh || !response || response.status !== 401) return response;
+    return refreshNativeSession().then(refreshed => (refreshed ? sendOnce() : response));
   });
+  return attempt(true);
 }
 async function fetchJsonChecked(input, init = {}, fallbackMessage = "请求失败", options = {}) {
   // A strict caller treats "the body could not be read" as a failure instead of
@@ -2793,7 +2889,7 @@ async function controlIncomingRenderer(action, position = null) {
     setTimeout(refreshRendererSession, 250);
     return true;
   } catch (error) {
-    alert(error.message || "DLNA Renderer 控制失败");
+    showAppError(error.message || "DLNA Renderer 控制失败");
     return false;
   }
 }
@@ -2954,11 +3050,18 @@ async function coreControl(action, position = null, payload = {}, options = {}) 
 }
 async function playPreviousTrack() {
   if (!state.queue.length) return false;
-  return Boolean(await coreControl("previous"));
+  const ok = Boolean(await coreControl("previous"));
+  // coreControl answers false for a refused command, a rejected request and an
+  // expired session alike. Saying nothing made the button indistinguishable from
+  // one that never received the tap.
+  if (!ok) showAppError("上一曲没有执行成功，请检查与 NAS 的连接后重试。");
+  return ok;
 }
 async function playNextTrack() {
   if (!state.queue.length) return false;
-  return Boolean(await coreControl("next"));
+  const ok = Boolean(await coreControl("next"));
+  if (!ok) showAppError("下一曲没有执行成功，请检查与 NAS 的连接后重试。");
+  return ok;
 }
 function setupMediaSession() {
   if (nativePlaybackAvailable()) return;
@@ -3204,7 +3307,7 @@ async function remoteControl(action, position = null, quiet = false) {
     if (data.error === "playback_target_not_found") {
       return recoverUnavailablePlaybackTarget(!quiet, targetId);
     }
-    if (!quiet) alert(data.message || data.error || "远端控制失败");
+    if (!quiet) showAppError(data.message || data.error || "远端控制失败");
     return false;
   }
   if (targetId !== remoteDeviceId()) return true;
@@ -5117,7 +5220,7 @@ function notifyQueueTruncation(dropped, limit) {
   const policy = playbackCapabilityPolicy();
   const message = policy ? policy.truncationMessage(dropped, limit) : "";
   if (!message) return false;
-  alert(message);
+  showAppNotice(message, { timeoutMs: 6000 });
   return true;
 }
 // R587: the browser owns the transport for a local target, so it is the only
@@ -5369,7 +5472,7 @@ async function addTracksToQueue(tracks = []) {
     await commitQueue(queue, state.queue[state.index]?.id || "");
     render();
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
   }
 }
 async function addSelectedToQueue(ids = []) {
@@ -5385,7 +5488,7 @@ async function playTracks(tracks = []) {
   try {
     await commitQueue(items, items[0].id);
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
     return;
   }
   loadCurrent();
@@ -5471,11 +5574,11 @@ async function playFromCurrentTrack(trackId) {
   try {
     tracks = await allTracksForCurrentContext();
   } catch (error) {
-    alert("读取当前列表失败");
+    showAppError("读取当前列表失败");
     return;
   }
   const start = tracks.findIndex(item => String(item?.id || "") === id);
-  if (start < 0) return alert("当前歌曲已不在这个列表中");
+  if (start < 0) return showAppNotice("当前歌曲已不在这个列表中");
   const queue = tracks;
   if (!queue.length) return;
   state.streamOffset = 0;
@@ -5485,7 +5588,7 @@ async function playFromCurrentTrack(trackId) {
   try {
     await commitQueue(queue, id);
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
     return;
   }
   loadCurrent();
@@ -5531,7 +5634,7 @@ async function insertSelectedTracks(ids = []) {
     await commitQueue(queue, state.queue[state.index]?.id || queue[0]?.id || "");
     render();
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
   }
 }
 async function removeTrackFromQueue(trackId) {
@@ -5545,7 +5648,7 @@ async function removeTrackFromQueue(trackId) {
   try {
     await commitQueue(queue, nextCurrent);
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
     return;
   }
   if (!queue.length && removingCurrent) stopPlayback();
@@ -5559,7 +5662,7 @@ async function clearQueue() {
     await stopPlayback();
     render();
   } catch (error) {
-    alert(error.message || "清空播放队列失败");
+    showAppError(error.message || "清空播放队列失败");
   }
 }
 // The rows on screen, in the order they are drawn.
@@ -5684,7 +5787,7 @@ async function playById(id) {
     try {
       await commitQueue(queue, id);
     } catch (error) {
-      alert(error.message || "播放队列保存失败");
+      showAppError(error.message || "播放队列保存失败");
       return;
     }
   } else {
@@ -5717,7 +5820,7 @@ async function playGroup(name) {
   try {
     await commitQueue(queue, queue[0]?.id || "");
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
+    showAppError(error.message || "播放队列保存失败");
     return;
   }
   loadCurrent();
@@ -8390,7 +8493,7 @@ async function recoverUnavailablePlaybackTarget(notify = false, expectedTarget =
   updateDeviceLabel();
   render();
   scheduleUserStateSave();
-  if (notify) alert("原播放设备已离线，已切换到当前设备。请再次点击播放。");
+  if (notify) showAppNotice("原播放设备已离线，已切换到当前设备。请再次点击播放。");
   return false;
 }
 async function validateRestoredPlaybackTarget() {
@@ -9073,6 +9176,7 @@ const LIBRARY_CONNECTION_POOL_SETTING_KEY = "library_connection_pool";
 const LYRICS_CACHE_BUDGET_SETTING_KEY = "metadata_lyrics_cache_max_bytes";
 const RENDERER_NAME_SETTING_KEY = "renderer_name";
 const DLNA_TYPE_DETECTION_SETTING_KEY = "dlna_type_detection";
+const DLNA_RENDERER_ENABLED_SETTING_KEY = "dlna_renderer_enabled";
 function runtimeConnectionPoolInput() {
   return $("libraryConnectionPoolInput");
 }
@@ -9084,6 +9188,9 @@ function playbackRendererNameInput() {
 }
 function dlnaTypeDetectionInput() {
   return $("dlnaTypeDetectionInput");
+}
+function dlnaRendererEnabledInput() {
+  return $("dlnaRendererEnabledInput");
 }
 function applyRuntimeLyricsBudget(budget, limit) {
   // Show the budget the process really enforces. An unusable answer leaves the
@@ -9116,6 +9223,10 @@ async function loadRuntimeSettings() {
     const dlnaDetection = dlnaTypeDetectionInput();
     if (dlnaDetection && typeof data?.config?.[DLNA_TYPE_DETECTION_SETTING_KEY] === "boolean") {
       dlnaDetection.checked = data.config[DLNA_TYPE_DETECTION_SETTING_KEY];
+    }
+    const dlnaRenderer = dlnaRendererEnabledInput();
+    if (dlnaRenderer && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
+      dlnaRenderer.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
     }
     return data;
   } catch (error) {
@@ -10367,16 +10478,25 @@ function saveRuntimePaneSettings() {
 }
 async function saveDlnaSettings() {
   const input = dlnaTypeDetectionInput();
+  const renderer = dlnaRendererEnabledInput();
   if (!input) throw new Error("DLNA 设置控件不可用");
+  const body = { [DLNA_TYPE_DETECTION_SETTING_KEY]: input.checked === true };
+  // Omitted keys are preserved server-side, so a page that has not rendered the
+  // renderer switch yet must not send it at all rather than send `false` and
+  // silently turn the renderer off behind the user's back.
+  if (renderer) body[DLNA_RENDERER_ENABLED_SETTING_KEY] = renderer.checked === true;
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ [DLNA_TYPE_DETECTION_SETTING_KEY]: input.checked === true }),
+    body: JSON.stringify(body),
   });
   const data = await readResponseJsonBounded(response);
   if (!response.ok || data.ok !== true) throw new Error(data.message || "保存 DLNA 设置失败");
   if (typeof data?.config?.[DLNA_TYPE_DETECTION_SETTING_KEY] === "boolean") {
     input.checked = data.config[DLNA_TYPE_DETECTION_SETTING_KEY];
+  }
+  if (renderer && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
+    renderer.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
   }
   return data;
 }
@@ -10799,13 +10919,13 @@ async function runGroupAction(action) {
   try {
     tracks = await resolveSelectedGroupTracks(groupKey);
   } catch (error) {
-    alert("读取所选项目的歌曲失败");
+    showAppError("读取所选项目的歌曲失败");
     return;
   }
   if (!tracks.length) {
     // A folder with no audio file, or a row whose tracks went away while the menu
     // was open: a 播放 click that returns silently reads as a dead button (R499).
-    if (action === "play") alert("所选项目下没有可播放的歌曲");
+    if (action === "play") showAppNotice("所选项目下没有可播放的歌曲");
     return;
   }
   const ids = tracks.map(item => String(item.id));
@@ -11208,7 +11328,7 @@ async function openContainingFolder(trackId) {
     await runTrimHostAction("openFileManager", [folder]);
   } catch (error) {
     console.warn("openFileManager failed", error);
-    alert(error.message || "飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
+    showAppError(error.message || "飞牛文件管理打开失败，请确认 fnAudio 是从飞牛应用入口启动的");
     return false;
   }
   // The host only navigates to the directory, so landing there still leaves the
@@ -11289,7 +11409,7 @@ async function shareTrack(trackId) {
     await runTrimHostAction(null);
   } catch (error) {
     console.warn("fnOS file sharing handoff failed", error);
-    alert(error.message || "无法调用飞牛外链服务，请从飞牛应用入口打开 fnAudio 后重试");
+    showAppError(error.message || "无法调用飞牛外链服务，请从飞牛应用入口打开 fnAudio 后重试");
     return;
   }
   // Right-click share goes straight to fnOS's own panel. The built-in panel stays
@@ -11715,11 +11835,20 @@ function updateRepeatShuffleButtons() {
 async function toggleRepeat() {
   const nextRepeat = nextRepeatMode(state.repeat);
   const data = await coreControl("repeat", null, { repeat: nextRepeat });
+  if (!data) {
+    // The mode simply did not change and nothing was said about it. That silence
+    // is what "循环点不动" looked like from the outside: four taps, four identical
+    // screens, no error anywhere.
+    updateRepeatShuffleButtons();
+    showAppError("循环模式没有切换成功，请检查与 NAS 的连接后重试。");
+    return false;
+  }
   if (data?.core) state.repeat = data.core.repeat || state.repeat;
   else if (data) state.repeat = nextRepeat;
   if (nativePlaybackAvailable()) nativePlaybackCall("setRepeat", state.repeat);
   updateRepeatShuffleButtons();
   syncState();
+  return true;
 }
 // R587: shuffle is an order, not a coin flip. Switching it on reorders the
 // queue once, keeping the playing row in its slot, so everything after it is a
@@ -11758,18 +11887,26 @@ async function applyShuffleOrder(enabled) {
 }
 async function toggleShuffle() {
   const data = await coreControl("shuffle");
+  if (!data) {
+    // Without the core's answer the wanted direction is a guess, and reordering
+    // the queue on a guess would leave the order and the flag disagreeing.
+    updateRepeatShuffleButtons();
+    showAppError("随机播放没有切换成功，请检查与 NAS 的连接后重试。");
+    return false;
+  }
   const wanted = data?.core && typeof data.core.shuffle === "boolean" ? data.core.shuffle : !state.shuffle;
   try {
     await applyShuffleOrder(wanted);
   } catch (error) {
-    alert(error.message || "播放队列保存失败");
-    return;
+    showAppError(error.message || "播放队列保存失败");
+    return false;
   }
   // The host player must not shuffle a second time: the queue it was handed is
   // already in play order.
   if (nativePlaybackAvailable()) nativePlaybackCall("setShuffle", false);
   updateRepeatShuffleButtons();
   syncState();
+  return true;
 }
 function savePlaylistFromDialog() {
   const pending = state.pendingPlaylistTracks?.length
@@ -12033,7 +12170,7 @@ async function selectPlaybackTarget(id, name) {
     updateDeviceLabel();
     if (previousTarget === "local") nativeRemoteExit();
     else nativeRemoteEnter(true);
-    alert(error.message || "播放设备切换失败");
+    showAppError(error.message || "播放设备切换失败");
     return;
   } finally {
     state.deviceSwitchInFlight = false;
@@ -12072,7 +12209,7 @@ function cancelRemoteLoad() {
 }
 async function pushToDevice(deviceId, item = currentItem()) {
   if (state.deviceSwitchInFlight) return false;
-  if (!item) return alert("请先选择一首歌曲");
+  if (!item) return showAppNotice("请先选择一首歌曲");
   if (!state.remoteGeneration) state.remoteGeneration = Date.now() & 0x7fffffff;
   if (!state.remoteEngineEpoch) state.remoteEngineEpoch = 1;
   const loadKey = `${deviceId}:${item.id}`;
@@ -12104,7 +12241,7 @@ async function pushToDevice(deviceId, item = currentItem()) {
     if (!ownsLoad()) return false;
     if (!response.ok || data.ok !== true) {
       state.remoteLoadedKey = "";
-      alert(data.message || data.error || "播放设备接收失败");
+      showAppError(data.message || data.error || "播放设备接收失败");
       return false;
     }
     // Same authority rule as the status snapshot: a declaration from the server
@@ -12786,7 +12923,7 @@ audio.onerror = async () => {
     code: audio.error ? audio.error.code : 0,
   });
   if (action === "dsd-unsupported") {
-    alert("DSD 兼容流不可用，已停止本机播放。");
+    showAppNotice("DSD 兼容流不可用，已停止本机播放。");
     state.localErrorStreak = 0;
     stopLocalAudio();
     return;
@@ -12808,7 +12945,7 @@ audio.onerror = async () => {
   }
   // 连续失败上限，或队尾没有下一首：停下并给一句人话。
   if (streak + 1 > policy.MAX_CONSECUTIVE) {
-    alert(policy.stopMessage({ classification: verdict.classification, serverMessage: verdict.message }));
+    showAppError(policy.stopMessage({ classification: verdict.classification, serverMessage: verdict.message }));
   }
   state.localErrorStreak = 0;
   stopLocalAudio();

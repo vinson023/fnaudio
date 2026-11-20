@@ -1548,3 +1548,16 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
  * rule no longer hides the artist and release date -- they move to a second,
  * muted line under the title instead. */
 .album-list-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--ui-line);color:var(--ui-muted);font-size:12px}
+
+/* Non-blocking status line. It exists because every failure used to arrive as
+ * window.alert(): a native dialog that stops the WebView's JS thread until the
+ * user dismisses it, so a single failed queue save froze the transport buttons,
+ * the settings save button and the list underneath it. A message that cannot
+ * block the thread is the difference between "this failed" and "the app is dead".
+ * pointer-events stays none so it never steals a tap aimed at the player. */
+.app-toast{position:fixed;left:50%;bottom:calc(var(--ui-player-height, 150px) + 14px);transform:translateX(-50%) translateY(6px);z-index:80;max-width:min(440px,calc(100vw - 28px));padding:10px 14px;border-radius:8px;background:var(--ui-raised,var(--ui-surface))!important;color:var(--ui-text)!important;border:1px solid var(--ui-border)!important;box-shadow:var(--ui-shadow)!important;font-size:13px;line-height:1.45;text-align:left;pointer-events:none;opacity:0;transition:opacity .16s ease,transform .16s ease}
+.app-toast[hidden]{display:none!important}
+.app-toast.is-visible{opacity:1;transform:translateX(-50%) translateY(0)}
+.app-toast.is-error{border-color:var(--ui-danger)!important;color:var(--ui-danger)!important}
+.app-toast.is-success{border-color:var(--ui-success)!important;color:var(--ui-success)!important}
+@media(min-width:761px){.app-toast{bottom:calc(var(--ui-player-height, 88px) + 18px)}}

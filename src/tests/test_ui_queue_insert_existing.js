@@ -138,6 +138,8 @@ function build(queue, index, options) {
     },
     render: () => { calls.render += 1; },
     alert: message => calls.alert.push(String(message)),
+    showAppError: message => calls.alert.push(String(message)),
+    showAppNotice: message => calls.alert.push(String(message)),
   };
   vm.createContext(context);
   vm.runInContext(

@@ -58,6 +58,29 @@ class SsdpService:
         """Refresh controller caches after mutable device metadata changes."""
         self._announce("ssdp:alive")
 
+    def set_roles(self, roles: Iterable[str]) -> bool:
+        """Add or drop an advertised role without restarting the listener.
+
+        Both the M-SEARCH reply loop and the periodic announce read
+        ``self.roles`` on every pass, so swapping the tuple already governs
+        future traffic. What it cannot do is retract what controllers have
+        cached, so a dropped role is announced with ``ssdp:byebye`` first;
+        otherwise a phone keeps showing the old renderer entry for the full
+        max-age even though nothing answers it any more.
+        """
+        with self._lifecycle_lock:
+            new_roles = tuple(roles)
+            old_roles = self.roles
+            if new_roles == old_roles:
+                return False
+            removed = tuple(role for role in old_roles if role not in new_roles)
+            if removed:
+                self._announce("ssdp:byebye", roles=removed)
+            self.roles = new_roles
+            if new_roles:
+                self._announce("ssdp:alive")
+            return True
+
     def _targets(self, role: str):
         device = "urn:schemas-upnp-org:device:Media%s:1" % ("Renderer" if role == "renderer" else "Server")
         yield "upnp:rootdevice"
@@ -89,11 +112,14 @@ class SsdpService:
             usn += "::" + target
         return ("NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: %s\r\nNT: %s\r\nNTS: %s\r\nSERVER: %s\r\nUSN: %s\r\n\r\n" % (self._location(role), target, nts, UPNP_SERVER, usn)).encode("utf-8")
 
-    def _announce(self, nts: str) -> None:
+    def _announce(self, nts: str, roles: Iterable[str] | None = None) -> None:
+        # ``roles`` exists so a byebye can retract a role that is no longer in
+        # ``self.roles``; every other caller wants the current set.
+        active = self.roles if roles is None else tuple(roles)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-                for role in self.roles:
+                for role in active:
                     for target in self._targets(role):
                         sock.sendto(self._packet(role, target, nts), MULTICAST)
         except OSError:

@@ -84,6 +84,10 @@ assert.equal(rendererNameKey[1], "renderer_name");
 const dlnaTypeDetectionKey = app.match(/^const DLNA_TYPE_DETECTION_SETTING_KEY = "([^\"]+)";$/m);
 assert.ok(dlnaTypeDetectionKey, "the DLNA type detection key must be a single top-level constant");
 assert.equal(dlnaTypeDetectionKey[1], "dlna_type_detection");
+const dlnaRendererEnabledKey = app.match(/^const DLNA_RENDERER_ENABLED_SETTING_KEY = "([^\"]+)";$/m);
+assert.ok(dlnaRendererEnabledKey, "the DLNA renderer switch key must be a single top-level constant");
+assert.equal(dlnaRendererEnabledKey[1], "dlna_renderer_enabled");
+assert.match(configPy, /DEFAULT_DLNA_RENDERER_ENABLED = False/, "the renderer role must default to off");
 assert.match(configPy, /DEFAULT_RENDERER_NAME = "fnAudio Renderer"/, "configuration must preserve the renderer default");
 assert.match(dlnaServicePy, /friendly = html\.escape\(self\.renderer_name if is_renderer else "fnAudio Music Library"\)/, "only the renderer friendly name is configurable and XML-escaped");
 
@@ -135,10 +139,12 @@ const sources = [
   budgetConstLine,
   rendererNameKey[0],
   dlnaTypeDetectionKey[0],
+  dlnaRendererEnabledKey[0],
   functionSource("runtimeConnectionPoolInput"),
   functionSource("runtimeLyricsBudgetInput"),
   functionSource("playbackRendererNameInput"),
   functionSource("dlnaTypeDetectionInput"),
+  functionSource("dlnaRendererEnabledInput"),
   functionSource("applyRuntimeLyricsBudget"),
   functionSource("formatSize"),
   functionSource("loadRuntimeSettings"),
@@ -175,6 +181,7 @@ function harness(poolChecked, responses, budgetValue = "8388608") {
     lyricsCacheBudgetInput: budget,
     rendererNameInput: { value: "客厅 fnAudio" },
     dlnaTypeDetectionInput: { checked: true },
+    dlnaRendererEnabledInput: { checked: false },
     runtimeSettingsStatus: { textContent: "" },
     playbackSettingsStatus: { textContent: "" },
   };
@@ -231,12 +238,14 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   assert.deepEqual(h.calls[0].body, { library_connection_pool: false, [budgetConst[1]]: 8388608 }, "the unchecked box must send false rather than omit a setting");
   assert.equal(h.nodes.libraryConnectionPoolInput.checked, true);
 
-  // 5d2) DLNA 保存独立于高级设置，只发送自己的开关，并回显服务端值。
-  h = harness(true, [{ ok: true, json: { ok: true, config: { dlna_type_detection: false } } }]);
+  // 5d2) DLNA 保存独立于高级设置，只发送本 pane 的两个开关，并回显服务端值。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { dlna_type_detection: false, dlna_renderer_enabled: true } } }]);
   h.nodes.dlnaTypeDetectionInput.checked = false;
+  h.nodes.dlnaRendererEnabledInput.checked = true;
   await h.context.saveDlnaSettings();
-  assert.deepEqual(h.calls[0].body, { dlna_type_detection: false });
+  assert.deepEqual(h.calls[0].body, { dlna_type_detection: false, dlna_renderer_enabled: true });
   assert.equal(h.nodes.dlnaTypeDetectionInput.checked, false);
+  assert.equal(h.nodes.dlnaRendererEnabledInput.checked, true, "the renderer switch must follow the server echo");
 
   // 5e) Renderer identity is saved independently from the advanced controls.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);

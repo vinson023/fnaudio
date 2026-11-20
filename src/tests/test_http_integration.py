@@ -1627,6 +1627,70 @@ class HttpIntegrationTests(unittest.TestCase):
         with open(self.httpd.config_path, "r", encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["renderer_name"], "客厅 <DAC> & NAS")
 
+    def test_runtime_config_switches_the_renderer_role_on_and_off(self):
+        class SsdpService:
+            def __init__(self):
+                self.roles = []
+
+            def announce_alive(self):
+                pass
+
+            def set_roles(self, roles):
+                self.roles.append(tuple(roles))
+                return True
+
+        ssdp = SsdpService()
+        self.httpd.config["dlna_renderer_enabled"] = False
+        with mock.patch.object(server, "DLNA_SSDP", ssdp):
+            status, _headers, body = self.runtime_post({"dlna_renderer_enabled": True})
+            self.assertEqual(status, 200, body)
+            payload = json.loads(body)
+            self.assertIs(payload["config"]["dlna_renderer_enabled"], True)
+            self.assertIs(payload["renderer_role_changed"], True)
+            self.assertIs(self.httpd.config["dlna_renderer_enabled"], True)
+
+            status, _headers, body = self.runtime_post({"dlna_renderer_enabled": False})
+            self.assertEqual(status, 200, body)
+            self.assertIs(json.loads(body)["config"]["dlna_renderer_enabled"], False)
+        self.assertEqual(ssdp.roles, [("renderer", "server"), ("server",)])
+
+    def test_runtime_config_rejects_a_text_renderer_switch(self):
+        self.httpd.config["dlna_renderer_enabled"] = False
+        for value in ("true", 0, 1, None):
+            status, _headers, body = self.runtime_post({"dlna_renderer_enabled": value})
+            self.assertEqual(status, 400, value)
+            self.assertIn("布尔值", json.loads(body)["message"])
+            self.assertIs(self.httpd.config["dlna_renderer_enabled"], False)
+
+    def test_renderer_status_reports_a_switched_off_renderer_as_a_state(self):
+        class Renderer:
+            def snapshot(self):
+                return {"transport": "PLAYING", "uri": "http://192.0.2.10/a.mp3"}
+
+        class Protocol:
+            renderer = Renderer()
+
+        self.httpd.config["dlna_renderer_enabled"] = False
+        with mock.patch.object(server, "DLNA_PROTOCOL", Protocol()):
+            status, _headers, body = self.request(
+                "/api/dlna/renderer/status", headers=self.auth_headers("library.read")
+            )
+            self.assertEqual(status, 200, body)
+            payload = json.loads(body)
+            # A switched-off renderer is a state the pane renders, not a failure.
+            self.assertIs(payload["available"], False)
+            self.assertIs(payload["enabled"], False)
+            self.assertEqual(payload["state"], {})
+
+            self.httpd.config["dlna_renderer_enabled"] = True
+            status, _headers, body = self.request(
+                "/api/dlna/renderer/status", headers=self.auth_headers("library.read")
+            )
+            self.assertEqual(status, 200, body)
+            payload = json.loads(body)
+            self.assertIs(payload["available"], True)
+            self.assertEqual(payload["state"]["transport"], "PLAYING")
+
     def test_concurrent_renderer_name_saves_keep_persisted_and_runtime_values_in_sync(self):
         class LockProbe:
             def __init__(self):

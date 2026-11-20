@@ -62,7 +62,7 @@ function loadRouter(resolved) {
     selectedGroupDescriptors: () => [{ key: "group:albums:Release", type: "group", view: "albums", name: "Release" }],
     closeTrackContextMenu: () => events.push(["close"]),
     resolveSelectedGroupTracks: async () => { events.push(["resolve"]); return resolved; },
-    alert: message => events.push(["alert", String(message)]),
+    showAppNotice: message => events.push(["notice", String(message)]),
     playTracks: tracks => events.push(["playTracks", tracks.map(item => item.id)]),
     // R501: queue / playlist take the rows now.  Recording the raw argument is
     // deliberate — "did it hand over rows or ids" is the whole assertion.
@@ -90,13 +90,13 @@ function loadRouter(resolved) {
 
   const empty = loadRouter([]);
   await empty.run("play");
-  assert.deepEqual(empty.events.filter(([name]) => name === "alert"), [["alert", "所选项目下没有可播放的歌曲"]],
+  assert.deepEqual(empty.events.filter(([name]) => name === "notice"), [["notice", "所选项目下没有可播放的歌曲"]],
     "an empty folder or album must say so instead of returning silently");
   assert.equal(empty.events.filter(([name]) => name === "playTracks").length, 0);
 
   const emptyQueue = loadRouter([]);
   await emptyQueue.run("queue");
-  assert.equal(emptyQueue.events.filter(([name]) => name === "alert").length, 0,
+  assert.equal(emptyQueue.events.filter(([name]) => name === "notice").length, 0,
     "only play gained the empty-set message; queueing an empty selection stays silent as before");
 
   const queue = loadRouter(tracks);

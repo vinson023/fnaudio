@@ -253,7 +253,10 @@ console.log("UI queue and album-column regression checks passed.");
   const context = {getTrimSdk: async () => sdk, setTimeout, clearTimeout,
     resolveTrackLocation: async id => {
       assert.equal(id, "selected-track"); locationCalls++; return location;
-    }, alert: message => alerts.push(message), console: {warn() {}},
+    }, alert: message => alerts.push(message),
+    // alert() is gone from the page; failures land on the status line instead.
+    showAppError: message => alerts.push(String(message)),
+    showAppNotice: message => alerts.push(String(message)), console: {warn() {}},
     // R500: opening the folder is followed by a best-effort locate. The locate
     // itself is exercised in test_ui_native_file_locate.js; here it only has to be
     // reached with the same location and keep its failures out of the alert path.

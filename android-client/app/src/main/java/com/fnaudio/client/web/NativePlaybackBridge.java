@@ -65,6 +65,15 @@ public final class NativePlaybackBridge {
         void cancelRequestJson(String requestId);
 
         void rejectRequestJson(String requestId, String message);
+
+        /**
+         * Re-run the fnOS login with the credentials already stored for this
+         * connection, then answer {@code window.fnAudioNativeOnSessionRefreshed}
+         * with {requestId, ok}. A handler that cannot renew a session leaves this
+         * as a no-op; the page then reports the 401 instead of retrying forever.
+         */
+        default void refreshSession(String requestId) {
+        }
     }
 
     private final ControllerProvider provider;
@@ -220,6 +229,13 @@ public final class NativePlaybackBridge {
         String safeRequestId = requestId == null ? "" : requestId.trim();
         if (safeRequestId.isEmpty() || safeRequestId.length() > MAX_REQUEST_ID_LENGTH) return;
         if (httpRequestHandler != null) httpRequestHandler.cancelRequestJson(safeRequestId);
+    }
+
+    @JavascriptInterface
+    public void refreshSession(String requestId) {
+        String safeRequestId = requestId == null ? "" : requestId.trim();
+        if (safeRequestId.isEmpty() || safeRequestId.length() > MAX_REQUEST_ID_LENGTH) return;
+        if (httpRequestHandler != null) httpRequestHandler.refreshSession(safeRequestId);
     }
 
     @JavascriptInterface

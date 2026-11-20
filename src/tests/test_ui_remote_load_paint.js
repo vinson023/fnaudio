@@ -66,6 +66,8 @@ function harness(reply, options = {}) {
     AbortController: class { abort() {} },
     setTimeout: () => { calls.refreshes += 1; return 0; },
     alert: message => { calls.alerts.push(String(message)); },
+    showAppError: message => { calls.alerts.push(String(message)); },
+    showAppNotice: message => { calls.alerts.push(String(message)); },
     $: () => element,
     apiFetch: async () => ({ ok: reply.ok !== false, status: reply.ok === false ? 502 : 200 }),
     readResponseJsonBounded: async () => reply.body || reply,
