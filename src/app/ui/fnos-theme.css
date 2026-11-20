@@ -520,10 +520,7 @@ dialog::backdrop { background: var(--ui-backdrop) !important; backdrop-filter: n
    * the last icon sat 20px from the player's right edge at 1440, 103px at 1100 and
    * 78px at 1000.  The owner's complaint is exactly that drift ("固定靠右不管宽度
    * 怎么变都不能动"), and `end` keeps the 20px edge constant across the whole
-   * 761-1100 band.  `test_ui_player_actions_right_edge.js` holds it there -- and,
-   * since R623, also holds the 600-760 band where the row used to disappear
-   * entirely; that guard is new because the file this comment used to cite had
-   * never been written. */
+   * 761-1100 band.  `test_ui_player_actions_right_edge.js` holds it there. */
   .player-actions { grid-column: 2 !important; grid-row: 2 !important; justify-content: end !important; }
 }
 @media (max-width: 760px) {
@@ -1686,69 +1683,4 @@ html.fnaudio-android-client .sidebar-settings.android-session-actions .nav-item 
   .saved-view-row:hover .saved-view-remove{
     opacity: .6 !important;
   }
-}
-
-/* R623: 拉窄的桌面窗口不是手机。
- *
- * 760px 以下整条播放条原来会换成手机版：右侧那排图标（设备 / 词 / 收藏 /
- * 循环 / 随机 / 队列 / 音量）整排 display:none，传输键重新居中。于是窗口
- * 一跨过 760，owner 说的「右下角图标」就直接从右边缘跑到条中间去了 ——
- * 实测 761px 时最后一个图标距右边缘 20px，760px 时整排消失、循环键落在
- * 760px 窗口的 462–506px 处。这就是 R603 在 1100 断点上修掉的那个「固定
- * 靠右不管宽度怎么变都不能动」，只是再往下还有一档。
- *
- * 单行三列在 700px 以下放不下（左右两列各要 252px 给七个 36px 图标，中间
- * 传输键 140px，加内外边距一共要 764px），所以这里不硬塞单行，改成两行：
- * 第一行「曲目信息 + 居中传输键」，第二行整行留给图标组并靠右。图标组
- * 因此始终贴着播放条右边缘，窄到 600px 也一样；传输键也仍然在条的中线
- * 上（R485）。第一行要放下曲名 + 副标题 + 时长（实测 55px），第二行要放下
- * 36px 的图标，所以这一档的条高比桌面端多 4px（56+36），否则标题顶部会被
- * 条的上边缘切掉。顶边那条 4px 进度线跟着 token 走，不用单独改。
- *
- * 600px 以下才是真手机，手机版布局原样保留；矮横屏（≤540px 高）继续用
- * 上面声明过的侧栏播放器，所以这里排除掉。 */
-@media (min-width: 600px) and (max-width: 760px) and (min-height: 541px) {
-  :root { --ui-player-height: calc(var(--fn-player-h, 88px) + 4px); }
-  .player, body.mobile-search-active .player {
-    height: var(--ui-player-height) !important;
-    grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr) !important;
-    grid-template-rows: 56px 36px !important;
-    align-items: center !important;
-    column-gap: 16px !important;
-    row-gap: 0 !important;
-    padding: 0 20px !important;
-  }
-  .player .now-playing { grid-column: 1; grid-row: 1; }
-  .player .transport {
-    grid-column: 2 !important;
-    grid-row: 1 !important;
-    width: max-content !important;
-    max-width: 100% !important;
-    justify-self: center !important;
-    align-self: center !important;
-    transform: none !important;
-  }
-  /* 手机版把随机 / 循环塞进传输键行里，是因为手机上那一排是唯一的入口；
-   * 这一档右侧图标组还在，两个入口重复，按键也回到桌面的 40px。 */
-  .player .transport .mobile-transport-control { display: none !important; }
-  .player .transport .player-button { width: 40px !important; min-width: 40px !important; height: 40px !important; }
-  .player .transport .play-button { width: 44px !important; min-width: 44px !important; height: 44px !important; }
-  .player .player-actions {
-    display: flex !important;
-    grid-column: 1 / -1 !important;
-    grid-row: 2 !important;
-    justify-content: end !important;
-    align-self: center !important;
-  }
-  /* app.css 在 760 以下把这七个控件逐个 display:none，不只是隐藏整排；
-   * 容器恢复成 flex 之后还得把每个控件自己的 display 还回来。 */
-  .player .player-actions #deviceBtn,
-  .player .player-actions #lyricsBtn,
-  .player .player-actions #favoriteCurrentBtn,
-  .player .player-actions #repeatBtn,
-  .player .player-actions #shuffleBtn,
-  .player .player-actions #queueBtn { display: grid !important; }
-  .player .player-actions .volume-control { display: inline-grid !important; }
-  /* 安卓客户端是故意整排隐藏的（它的传输键带手机版对应入口），别在这里复活。 */
-  html.android-app .player-actions { display: none !important; }
 }

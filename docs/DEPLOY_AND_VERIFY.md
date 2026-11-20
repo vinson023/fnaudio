@@ -644,7 +644,7 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 （队列空闲，`pending=0`），所以真正钉住它的是单测
 `test_p1_the_save_path_returns_while_a_tag_write_is_still_running`（用阻塞 writer 造场景）。
 
-**② 窗口拉到最窄时右下角图标左移 —— 1100 断点 R603 已修；760 以下整排被换成手机版，R623 才修**
+**② 窗口拉到最窄时右下角图标左移 —— 已修，761–1440 全程 18–20 px**
 
 在 e2e fixture 上量「播放条右边缘 − 最后一个可见图标右边缘」：
 
@@ -659,33 +659,6 @@ R603 之前是 20 / 103 / 78（1100 / 1000），也就是一跨过 1100 整排�
 所以这条只能在桌面窗口/浏览器里量，不能拿手机去证。
 真机侧另有一支探针 `cdp_player_actions_widths.js`，用
 `Emulation.setDeviceMetricsOverride` 逐宽度改视口，量到的 ≥1200 也是 20 px。
-
-**R623 更正：上面这张表只到 761。** 760 及以下 `.player-actions` 整排 `display:none`，
-播放条整体换成手机版：曲目信息一行、5 键居中传输组（252 px）一行。实测跨这一格：
-
-- 761 px：右排 7 个图标都在，最后一个距右边缘 18 px（右缘 743 px）；
-- 760 px：整排消失，传输组从 311–451 px 变成 254–506 px，循环键落在 462–506 px。
-
-所以负责人说的「右下角图标左移」，是**这排图标整排消失、对应入口跑到条中间**，不是滑动；
-「稍微拉宽即恢复」正好是 760→761 这一格。**为什么原来那样**：单行三列在 700 以下排不下
-（左右各要 252 px 放七个 36 px 图标，中间 140 px，加 40 px 内边距与 32 px 列间距共 764 px），
-换手机版是「排不下」的结果，不能把断点简单往下挪。
-
-修法：`fnos-theme.css` 末尾新增 `@media (min-width: 600px) and (max-width: 760px) and (min-height: 541px)`，
-改成两行——第一行曲目信息 + 居中传输键，第二行整行给图标组并靠右；条高 92 px（56+36）。
-修后实测：
-
-| 宽度 | 761 | 760 | 740 | 700 | 660 | 620 | 600 | 599 | 560 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 图标距右边缘 | 18 | 20 | 20 | 20 | 20 | 20 | 20 | 隐藏 | 隐藏 |
-| 传输键中心偏移 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-
-599 以下仍是手机版（5 键居中、252 px），这是有意的：手机宽度上七个 36 px 图标排不下。
-守卫 `src/tests/test_ui_player_actions_right_edge.js`（删掉新档即变红，已验证）；
-截图 `tools/browser-e2e/artifacts/narrow-shots/player-761.png` 与 `player-760.png`。
-**踩到的坑**：app.css 在 760 以下不是隐藏容器，而是**逐个** `display:none` 那七个控件，
-只把容器还原成 flex 会得到一排空气（读数 `actionsVisible:true` 但 `iconCount:0`）；
-`.action-button/.device-button` 要还原成 `grid`，`.volume-control` 要 `inline-grid`。
 
 **③ 新装扫描未完成前前台一首歌都不显示 —— 已修，首行 1.2 秒**
 
@@ -734,9 +707,6 @@ R603 的实测轨迹（`.2` 机器，10,880 首）：首扫全程 `found` 从 0 
   量卡片归属、两行间距、中间有没有段落
 - `tools/browser-e2e/cdp_player_actions_widths.js` —— 复验「图标行右边缘不随宽度移动」：
   用 `Emulation.setDeviceMetricsOverride` 逐宽度改视口，量右边缘间距与实际生效的 `justify-content`
-- `tools/browser-e2e/measure_player_narrow_band.js` —— 复验「右下角图标在任何宽度都贴右」：
-  在 fixture 上扫 1440→360 共 18 档，分段校验（≥761 桌面单行 / 600–760 窄窗两行 / <600 手机版），
-  量图标右边缘间距与传输键中心偏移，不符合即退出码 1；`--shots` 另存各宽度播放条截图
 - `tools/build_release.ps1` / `tools/build_android_release.ps1` —— 出包
 - `tools/load_signing_env.ps1` —— 注入签名变量后构建
 - `tools/verify_release_evidence.ps1` —— 产物证据校验
