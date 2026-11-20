@@ -213,9 +213,14 @@
             </div>
             <div class="settings-group" data-settings-block="playback-identity">
               <div class="settings-group-head"><h3>设备身份</h3><span class="settings-badge is-save">需保存</span></div>
-              <label class="metadata-toggle"><input id="dlnaRendererEnabledInput" type="checkbox"><span><strong>作为播放器被其他设备推送</strong><small>开启后，局域网内的手机、电脑可以把音乐推送到 fnAudio 播放，fnAudio 也会出现在它们的投送列表里。默认关闭。</small></span></label>
-              <p class="dialog-help">给局域网中的多台 fnAudio 设置不同名称，只改变 Renderer 显示名称，不改变设备身份。</p>
-              <div class="metadata-settings-grid"><label><span>Renderer 名称</span><input id="rendererNameInput" type="text" maxlength="128" placeholder="例如：客厅播放器"></label></div>
+              <!-- R621: 开关与名称是同一件事的两半，必须挨着。R619 把它们搬进了同一个
+                   分类，但中间还夹着一段说明，用户仍要在这一屏里上下找两处 —— 那等于没
+                   搬到一起。现在两件控件同处一张卡片，说明全部下沉到卡片底部。 -->
+              <div class="renderer-identity">
+                <label class="metadata-toggle"><input id="dlnaRendererEnabledInput" type="checkbox"><span><strong>作为播放器被其他设备推送</strong></span></label>
+                <div class="metadata-settings-grid"><label><span>Renderer 名称</span><input id="rendererNameInput" type="text" maxlength="128" placeholder="例如：客厅播放器"></label></div>
+                <p class="dialog-help">给局域网中的多台 fnAudio 设置不同名称，只改变 Renderer 显示名称，不改变设备身份。开启后，局域网内的手机、电脑可以把音乐推送到 fnAudio 播放，fnAudio 也会出现在它们的投送列表里；默认关闭。</p>
+              </div>
               <p class="dialog-help" id="playbackSettingsStatus" aria-live="polite"></p>
             </div>
           </section>

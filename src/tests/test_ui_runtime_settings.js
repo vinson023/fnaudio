@@ -52,6 +52,22 @@ assert.doesNotMatch(networkPane, /data-settings-block="network-dlna"[^>]*data-se
 // 「服务与网络」是分类错，不是用户看错地方。
 assert.match(playbackPane, /data-settings-block="playback-identity"[\s\S]*?dlnaRendererEnabledInput/, "the renderer switch must sit with the renderer identity");
 assert.doesNotMatch(networkPane, /dlnaRendererEnabledInput/, "the renderer switch must not stay behind in the service pane");
+// R621: 同一个分类还不够。R619 把开关搬进来之后，开关与名称之间还夹着一段说明，
+// 用户仍然要在这一屏里上下找两处 —— 负责人原话「应该和 renderer 名称放在一起，
+// 不然用户两头找」。所以这里钉住的是「紧挨着」：两个控件之间不许出现 <p> 或 <small>，
+// 也不许跨出同一张 .renderer-identity 卡片。
+const identityStart = playbackPane.indexOf('data-settings-block="playback-identity"');
+const nextBlock = identityStart >= 0 ? playbackPane.indexOf('data-settings-block="', identityStart + 1) : -1;
+const identityBlock = identityStart >= 0 ? playbackPane.slice(identityStart, nextBlock > identityStart ? nextBlock : undefined) : "";
+assert.ok(identityBlock, "the renderer identity block must be locatable");
+assert.match(identityBlock, /class="renderer-identity"/, "the switch and the name must share one card");
+const switchAt = identityBlock.indexOf("dlnaRendererEnabledInput");
+const nameAt = identityBlock.indexOf("rendererNameInput");
+assert.ok(switchAt >= 0 && nameAt > switchAt, "the renderer name must follow the switch in the same card");
+const betweenSwitchAndName = identityBlock.slice(switchAt, nameAt);
+assert.doesNotMatch(betweenSwitchAndName, /<p\s/, "no paragraph may sit between the renderer switch and its name");
+assert.doesNotMatch(betweenSwitchAndName, /<small>/, "the switch hint must move below the name, not between them");
+assert.doesNotMatch(betweenSwitchAndName, /<\/div>\s*<\/div>/, "the name must stay inside the switch's card");
 assert.match(playbackPane, /<input id="rendererNameInput" type="text" maxlength="128"/, "the renderer name editor belongs to playback and devices and is bounded");
 assert.doesNotMatch(networkPane, /rendererNameInput/, "DLNA diagnostics must not own the general renderer identity field");
 assert.match(advancedPane, /<option value="8388608" selected>/, "the select must offer the shipped default");
