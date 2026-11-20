@@ -558,6 +558,9 @@ R619 已经把开关从「服务与网络」搬进了「播放与输出 → 设�
 - `verify_release_evidence.ps1` 三项全 True
 - JS：**143/143**（`test_ui_runtime_settings.js` 新增 6 条断言）
 - Python：`Ran 3506 tests in 285.507s` → `OK (skipped=7)`
+- 发布：注解标签 `v0.2.173`（锚在构建基线 `d7b81cb`）已 push，Release 已发
+  https://github.com/vinson023/fnaudio/releases/tag/v0.2.173 ，
+  附件下载回来核对尺寸与 sha256 与本地一致
 
 ### 6.4 0.2.167
 
@@ -631,6 +634,7 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 | `git_provenance_status: dirty` | 构建脚本有问题 | 工作区没提交干净 |
 | 应用中心弹「无法更新 fnaudio 执行脚本出错且原因未知」+ `Target crashed` | 新包坏了 | 升级瞬间 `install_callback` 用 `sock.bind(("0.0.0.0",53199))` 探端口，旧实例还没退出，于是打印「服务端口 53199 已被占用」并 `exit 1`。**0.2.171 起升级场景已放行自己的旧实例**；0.2.170 及以前**重试也没用**（旧实例被 `trim_http_cgi.service` 保活，杀不掉），见 6.2 |
 | 改了 `src/cmd/install_callback`、重新出包，装上去还报同一个错 | 修改没生效 / 包坏了 | fnOS 执行的是**部署目录**的 `/var/apps/fnaudio/cmd/install_callback`，不是新包里的那份。用 `grep -c <新加的标识> /var/apps/fnaudio/cmd/install_callback` 验证，为 0 就是没同步进去 |
+| 补发一个旧版本的 Release 后，releases 页的「Latest」标到了旧版本上 | 新版本没标 Latest | GitHub 的 Latest 按**发布时间**挑，不按版本号。补发 0.2.169 之后它就抢了 0.2.173 的标记，用 `gh release edit v0.2.173 --latest` 挪回去 |
 | 应用中心弹「无法安装 fnAudio 已安装相同或更高版本的 fnAudio」 | 包做坏了 | **同一版本号不能重装**。改完源码要再装一次，就得先把 `VERSION` / `src/manifest` / `versionCode` 一起往上推。0.2.172 就是这样作废的 |
 | 应用中心点「停用」后状态还是 `start`、卡片只剩「启用」 | 我们的 stop 脚本坏了 | `/stop/check`、`/stop/start` 都回 `code:0`，但登记状态不变——fnOS 认为已停，所以不会去停；而 `trim_http_cgi.service` 还在保活 `server.py`，端口照旧被占 |
 | `dumpsys package com.fnaudio.player` 什么都不输出 | 应用没装上 | 包名是 `com.fnaudio.client`（另有 `com.fnaudio.client.test` 是 instrumentation 包，versionCode 0，不是应用） |
