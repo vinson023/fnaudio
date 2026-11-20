@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 import urllib.parse
 import xml.etree.ElementTree as ET
 from unittest import mock
@@ -187,6 +188,25 @@ class DlnaMediaServerTests(unittest.TestCase):
         resource = next(node for node in next(iter(root)) if node.tag.rsplit("}", 1)[-1] == "res")
         self.assertNotIn("duration", resource.attrib)
         self.assertNotIn("size", resource.attrib)
+
+    def test_a_refused_control_request_names_the_status_not_urllib_wording(self):
+        # A peer that answers a SOAP action with its direct-access notice page
+        # used to reach the push dialog as urllib's own "HTTP Error 403:
+        # Forbidden" - no verb, no route, nothing to act on. The status is the
+        # part worth keeping, so the message has to carry it and nothing else.
+        item = {"id": "t1", "path": "/music/track.flac", "mime": "audio/flac", "duration": 180}
+        control = "http://192.168.5.22:53199/dlna/renderer/avtransport/control"
+        device = {"control_url": control, "capabilities": {"actions": ["SetAVTransportURI", "Play"]}}
+        Handler = type("Handler", (), {"server": type("Server", (), {"config": {}})()})
+        refusal = urllib.error.HTTPError(control, 403, "Forbidden", {}, None)
+
+        with mock.patch("dlna.media_server.soap_request", side_effect=refusal):
+            result = soap_push(device, item, Handler(), lambda value: value,
+                               lambda _handler: "http://nas:5666", lambda *_args: "")
+
+        self.assertFalse(result[0])
+        self.assertIn("403", result[1])
+        self.assertNotIn("Forbidden", result[1], "urllib's own wording is not a message")
 
 
     def test_media_url_encodes_the_id_segment_so_the_route_can_read_it_back(self):

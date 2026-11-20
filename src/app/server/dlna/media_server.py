@@ -6,7 +6,7 @@ import os
 import urllib.parse
 from typing import Any, Callable, Dict
 
-from .control_point import soap_request
+from .control_point import soap_failure, soap_request
 from .profiles import DSD_CAPABILITY_UNSUPPORTED, dsd_capability_state, protocol_info
 from .text_policy import MAX_DLNA_ID_CHARS, dlna_text
 
@@ -221,7 +221,7 @@ def soap_push(
         try:
             soap_request(control, "urn:schemas-upnp-org:service:AVTransport:1", action, args)
         except Exception as exc:
-            return False, str(exc)
+            return False, soap_failure(exc)
     return True, "pushed and started"
 
 

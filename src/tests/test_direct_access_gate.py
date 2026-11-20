@@ -90,6 +90,26 @@ class DirectAccessGateTests(unittest.TestCase):
                 self.assertTrue(gate.enforce_direct_access(path))
                 self.assertIsNone(gate.status)
 
+    def test_dlna_control_post_passes_the_gate(self):
+        # A UPnP action is SOAP and arrives as POST. The gate used to key on the
+        # verb alone, so a controller on another host got the notice page here
+        # and reported "HTTP Error 403: Forbidden".
+        for path in ("/dlna/renderer/avtransport/control",
+                     "/dlna/renderer/connection/control",
+                     "/dlna/server/content/control"):
+            with self.subTest(path=path):
+                gate = _FakeGate("192.168.5.30", command="POST")
+                self.assertTrue(gate.enforce_direct_access(path))
+                self.assertIsNone(gate.status)
+
+    def test_a_post_outside_the_control_routes_still_gets_the_notice(self):
+        for path in ("/upnp/media/abc123/x.flac", "/dlna/renderer/description.xml",
+                     "/dlna/renderer/avtransport/event", "/api/state/user"):
+            with self.subTest(path=path):
+                gate = _FakeGate("192.168.5.30", command="POST")
+                self.assertFalse(gate.enforce_direct_access(path))
+                self.assertEqual(gate.status, 403)
+
     def test_loopback_is_untouched(self):
         for path in ("/", "/app.js", "/api/library", "/api/state/user"):
             with self.subTest(path=path):

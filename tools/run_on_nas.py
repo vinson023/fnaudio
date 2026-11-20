@@ -23,6 +23,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("script")
     parser.add_argument("--py", default=DEFAULT_PY)
+    # 第二台机器（5.22 接 DAC 那台）账号密码与 SSH 端口和 5.141 一致，
+    # 所以只加 --host/--port，不另建一份凭据。
+    parser.add_argument("--host", default=HOST)
+    parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument(
         "--put",
@@ -36,7 +40,7 @@ def main():
     remote = posixpath.join("/tmp", "fnaudio-diag-%s.py" % uuid.uuid4().hex[:8])
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username="root", password=PASSWORD, timeout=20)
+    client.connect(args.host, port=args.port, username="root", password=PASSWORD, timeout=20)
     try:
         sftp = client.open_sftp()
         for pair in args.put:

@@ -5,6 +5,7 @@ import re
 import socket
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import math
@@ -202,6 +203,24 @@ def soap_fault(response):
     return ""
 
 
+def soap_failure(exc):
+    """Describe a refused SOAP action without leaking urllib's own wording.
+
+    ``str(HTTPError)`` is "HTTP Error 403: Forbidden" - no verb, no host, no
+    route - and that string is what the push dialog showed when a peer answered
+    a control request with its direct-access notice page. The status is the only
+    part of it worth keeping, so name what was refused and keep the code.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            status = int(getattr(exc, "code", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            status = 0
+        if status:
+            return "目标设备拒绝了 DLNA 控制请求（HTTP %d）" % status
+    return str(exc)
+
+
 def seconds_to_upnp_time(value):
     if isinstance(value, bool):
         value = 0.0
@@ -299,7 +318,7 @@ def upnp_control(device, action, position=None):
         if fault:
             return False, fault
     except Exception as exc:
-        return False, str(exc)
+        return False, soap_failure(exc)
     return True, "ok"
 
 

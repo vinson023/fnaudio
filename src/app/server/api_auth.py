@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 
 from api_route_policy import (
     PUBLIC_API_PATHS,
@@ -31,6 +32,25 @@ ALL_API_SCOPES = frozenset({
 # description under /dlna/ directly, over plain HTTP with no credentials to offer,
 # so blocking those would not secure anything - it would just stop playback.
 ANONYMOUS_LAN_PREFIXES = ("/dlna/", "/upnp/media/", "/upnp/cover/")
+
+# The half of the casting surface that arrives as POST.
+#
+# A UPnP action is a SOAP request: SetAVTransportURI, Play, GetTransportInfo and
+# GetProtocolInfo all arrive as POST carrying a SOAPACTION header, never as GET.
+# While the exception above covered GET/HEAD only, a renderer was discoverable,
+# describable and streamable but could not be controlled: another fnAudio on the
+# same LAN saw the device, read /dlna/renderer/description.xml with a 200, and
+# then took a 403 on the first action, which surfaced in its UI as the urllib
+# text "HTTP Error 403: Forbidden". The intent recorded above is that blocking
+# the casting surface "would not secure anything - it would just stop playback";
+# a POST-only hole in it stopped playback for exactly the cross-host case.
+#
+# These two roles and four services are precisely what handle_dlna_post routes;
+# every other POST under /dlna/ still gets the notice page, and so does every
+# POST under /upnp/.
+ANONYMOUS_LAN_CONTROL_PATH = re.compile(
+    r"^/dlna/(?:renderer|server)/(?:avtransport|rendering|connection|content)/control$"
+)
 
 # Said to the browser and to the API alike; the settings UI repeats it nowhere,
 # because a direct client never gets far enough to render a page.
@@ -85,9 +105,13 @@ def _normalized_peer(client_host):
 
 def anonymous_lan_route(method: str, path: str) -> bool:
     """True for the UPnP surface a renderer fetches without credentials."""
-    if (method.upper() if isinstance(method, str) else "") not in ("GET", "HEAD"):
-        return False
-    return normalize_path(path).startswith(ANONYMOUS_LAN_PREFIXES)
+    verb = method.upper() if isinstance(method, str) else ""
+    normalized = normalize_path(path)
+    if verb in ("GET", "HEAD"):
+        return normalized.startswith(ANONYMOUS_LAN_PREFIXES)
+    if verb == "POST":
+        return bool(ANONYMOUS_LAN_CONTROL_PATH.match(normalized))
+    return False
 
 
 def peer_may_reach(client_host, method: str, path: str) -> bool:

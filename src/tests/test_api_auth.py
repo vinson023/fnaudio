@@ -38,6 +38,31 @@ class ApiAuthTests(unittest.TestCase):
                 self.assertTrue(peer_may_reach("192.168.5.30", "GET", path))
                 self.assertTrue(authorize_api("192.168.5.30", "GET", path, "", [])[0])
 
+    def test_upnp_control_posts_reach_the_renderer(self):
+        # A UPnP action is SOAP: POST with a SOAPACTION header, never GET. While
+        # the exception covered GET/HEAD only, another fnAudio on the same LAN
+        # could discover and describe this renderer and then took a 403 on the
+        # first action, which its UI reported as "HTTP Error 403: Forbidden".
+        for path in ("/dlna/renderer/avtransport/control",
+                     "/dlna/renderer/rendering/control",
+                     "/dlna/renderer/connection/control",
+                     "/dlna/server/content/control",
+                     "/dlna/server/connection/control"):
+            with self.subTest(path=path):
+                self.assertTrue(peer_may_reach("192.168.5.30", "POST", path))
+                self.assertTrue(authorize_api("192.168.5.30", "POST", path, "", [])[0])
+
+    def test_the_dlna_control_exception_covers_no_other_write(self):
+        # Only the control routes take a POST. The stream, the cover, the
+        # description, the SCPD and the eventing URL still answer a write with
+        # the notice page, and so does every API route.
+        for path in ("/upnp/media/abc123/x.flac", "/upnp/cover/abc123/cover.jpg",
+                     "/dlna/renderer/description.xml", "/dlna/scpd/avtransport.xml",
+                     "/dlna/renderer/avtransport/event", "/dlna/renderer/avtransport/control/x",
+                     "/dlna/media/avtransport/control", "/api/state/user", "/"):
+            with self.subTest(path=path):
+                self.assertFalse(peer_may_reach("192.168.5.30", "POST", path))
+
     def test_lan_peer_cannot_reach_the_page_static_or_writes_to_dlna(self):
         for method, path in (("GET", "/"), ("GET", "/app.js"), ("POST", "/upnp/media/abc/x.flac"),
                              ("GET", "/media/abc/x.flac"), ("GET", "/api/access")):
