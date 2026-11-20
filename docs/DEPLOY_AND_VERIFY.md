@@ -621,6 +621,58 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 
 ---
 
+### 6.6 三条历史 bug 的复验（2026-11-20，0.2.173 上做）
+
+负责人的三条老问题（保存慢 / 图标左移 / 扫描期间空白）在 **R603（11-18）当天就修完了**，
+但待办条目一直没闭环，之后每一轮的总结里都还把它们写成「未修」。这一节是补上的复验。
+
+**① 「允许写入歌曲 Tag」取消勾选后保存要等好几秒 —— 已修，实测 130–155 ms**
+
+真机（独立 APK，直连 `192.168.5.141:5666`，页面即 0.2.173）上连续 POST
+`api/config/metadata`：
+
+| 动作 | 三次耗时 |
+| --- | --- |
+| 关（`tag_write_enabled=false`） | 137.5 / 137.9 / 130.8 ms |
+| 开（`tag_write_enabled=true`） | 148.4 / 118.4 / 154.3 ms |
+
+关的那条路以前会同步 join 写回线程，`_worker_shutdown_timeout()` 的下限就是 3 秒；
+现在 `shutdown(wait=False)`，join 交给 reaper。
+**测量有个副作用要记**：开关原本是**关**的，脚本按 R603 的写法把结尾固定在「开」，跑完就把配置改成了 `true`；已用一次 POST 还原成 `false` 并复核（`before:true → after:false`）。下次做这类「开关来回拨」的测量，收尾要还原成**测前读到的那个值**，不是固定的 `true`。
+
+**这台机器证不了「写回正在跑」那个条件**
+（队列空闲，`pending=0`），所以真正钉住它的是单测
+`test_p1_the_save_path_returns_while_a_tag_write_is_still_running`（用阻塞 writer 造场景）。
+
+**② 窗口拉到最窄时右下角图标左移 —— 已修，761–1440 全程 18–20 px**
+
+在 e2e fixture 上量「播放条右边缘 − 最后一个可见图标右边缘」：
+
+| 宽度 | 1440 | 1200 | 1100 | 1000 | 900 | 820 | 780 | 761 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 间距 | 20 | 20 | 18 | 18 | 18 | 18 | 18 | 18 |
+
+R603 之前是 20 / 103 / 78（1100 / 1000），也就是一跨过 1100 整排跳 83 px。
+剩下的 2 px 是两段断点用的 padding token 不同，肉眼不可见，**没有改**。
+
+注意载体：在安卓 app 里（`html.android-app`）`.player-actions` 是**故意隐藏**的，
+所以这条只能在桌面窗口/浏览器里量，不能拿手机去证。
+真机侧另有一支探针 `cdp_player_actions_widths.js`，用
+`Emulation.setDeviceMetricsOverride` 逐宽度改视口，量到的 ≥1200 也是 20 px。
+
+**③ 新装扫描未完成前前台一首歌都不显示 —— 已修，首行 1.2 秒**
+
+服务端 `publish_scan_progress()` 每 1.5 秒把已扫到的**快照**放进 `MUSIC_CACHE`
+（只在 `previous_items` 为空时启用，避免重扫时列表缩水）；前端 `scheduleScanProgressReload()`
+在「正在扫 + 列表还空 + 没有搜索词 + 不在文件夹视图」时 1.2 秒后重取第一页，回调里再校验一次。
+
+R603 的实测轨迹（`.2` 机器，10,880 首）：首扫全程 `found` 从 0 涨到 10880，
+修前 `/api/library?paged=1` **826 秒一直答 0 行**，修后 **20.1 秒**，再修掉空结果缓存后 **1.2 秒**。
+守卫：`test_library_scan_progress.py`（6 项）、`test_ui_scan_progress_reload.js`（14 条断言）。
+
+**为什么之前会被反复写成「未修」**：TODO 里 R603 那条明写「全部定位到根因并修完」，
+但之后的总结引用的是上一轮的总结而不是它——**汇报「仍未做」之前要回 TODO 与代码核实**。
+
 ## 7. 常见误判
 
 | 现象 | 不是原因 | 真正原因 |
@@ -653,6 +705,8 @@ GET  /api/library/status?refresh=1        // 触发扫描，10 秒后 count=118
 - `tools/browser-e2e/cdp_feiniu_playback.js` —— 在飞牛 app 内嵌 WebView 里复验设置项位置
 - `tools/browser-e2e/cdp_feiniu_renderer_card.js` —— 复验「开关与名称是否挨着」：
   量卡片归属、两行间距、中间有没有段落
+- `tools/browser-e2e/cdp_player_actions_widths.js` —— 复验「图标行右边缘不随宽度移动」：
+  用 `Emulation.setDeviceMetricsOverride` 逐宽度改视口，量右边缘间距与实际生效的 `justify-content`
 - `tools/build_release.ps1` / `tools/build_android_release.ps1` —— 出包
 - `tools/load_signing_env.ps1` —— 注入签名变量后构建
 - `tools/verify_release_evidence.ps1` —— 产物证据校验
