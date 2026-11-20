@@ -9318,6 +9318,11 @@ async function loadPlaybackSettings() {
       rendererSwitch.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
     }
     if (status) status.textContent = "";
+    // The rail quotes both the name and the switch, but it was computed before
+    // this fetch resolved, so without this it keeps saying "跟随设备名" while
+    // the field right below already shows the custom name — the two places
+    // disagree about the same setting (R621).
+    updateSettingsSummaries();
     return data;
   } catch (error) {
     if (status) status.textContent = "无法读取播放与设备设置，当前显示的是上一次已知状态";

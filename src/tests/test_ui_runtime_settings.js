@@ -168,6 +168,10 @@ const sources = [
   functionSource("dlnaRendererEnabledInput"),
   functionSource("applyRuntimeLyricsBudget"),
   functionSource("formatSize"),
+  // R621: loadPlaybackSettings 现在读完服务端回显就刷新一次侧栏摘要 —— 摘要引用了
+  // 名称与开关，不刷新就会一直说「跟随设备名」，和下面的输入框自相矛盾。
+  functionSource("settingsSummaryText"),
+  functionSource("updateSettingsSummaries"),
   functionSource("loadRuntimeSettings"),
   functionSource("saveRuntimeSettings"),
   functionSource("saveDlnaSettings"),
@@ -205,10 +209,12 @@ function harness(poolChecked, responses, budgetValue = "8388608") {
     dlnaRendererEnabledInput: { checked: false },
     runtimeSettingsStatus: { textContent: "" },
     playbackSettingsStatus: { textContent: "" },
+    settingsSummaryPlayback: { textContent: "" },
   };
   const calls = [];
   const context = {
     $: id => nodes[id] || null,
+    state: {},
     apiFetch: (url, init = {}) => {
       calls.push({ url, init, body: init.body == null ? null : JSON.parse(init.body) });
       return Promise.resolve(responses.shift());
@@ -287,6 +293,18 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   delete h.nodes.dlnaRendererEnabledInput;
   await h.context.savePlaybackSettings();
   assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio" }, "a pane without the switch must not send the key at all");
+
+  // 5e4) 侧栏摘要引用名称与开关。摘要在进 pane 时就先算过一次，那时请求还没回来，
+  // 所以读完服务端回显必须再算一次——否则摘要一直说「跟随设备名」，而下面输入框里
+  // 已经填着用户自己的名字，同一件事在两处自相矛盾（R621）。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器", dlna_renderer_enabled: false } } }]);
+  h.nodes.rendererNameInput.value = "";
+  await h.context.loadPlaybackSettings();
+  assert.equal(h.nodes.rendererNameInput.value, "书房播放器", "the name field must adopt the server echo");
+  assert.equal(h.nodes.settingsSummaryPlayback.textContent, "书房播放器", "the rail summary must follow the loaded name");
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器", dlna_renderer_enabled: true } } }]);
+  await h.context.loadPlaybackSettings();
+  assert.equal(h.nodes.settingsSummaryPlayback.textContent, "书房播放器 · 可被推送", "the rail summary must follow the switch too");
 
   // Playback read feedback is scoped to its pane and a successful retry clears only that stale warning.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
