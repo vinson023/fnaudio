@@ -46,11 +46,34 @@ UPNP_CACHE_KEEPALIVE_SECONDS = 25.0
 UPNP_PASSIVE_MAX_AGE_SECONDS = 60.0
 _UPNP_KEEPER_TICK_SECONDS = 5.0
 
+# How long a renderer that has stopped answering SSDP stays in the published list.
+#
+# The list used to carry every device it had ever seen forward forever, so a renderer whose
+# owner disabled it - or the same NAS after its port changed, which changes `location` and
+# therefore its `id` - stayed on the target list for the life of the process, and no amount of
+# rescanning removed it.  On the reference install the cache held four entries of which exactly
+# one still answered M-SEARCH (192.168.5.22:53199); the other three were a disabled renderer, the
+# same host's previous port, and a location whose description never loaded.
+#
+# The window is deliberately wider than UPNP_CACHE_KEEPALIVE_SECONDS (25 s): one lost M-SEARCH
+# reply on Wi-Fi must not make a live renderer blink out of the list, so a single missed round is
+# forgiven and only a device that misses two rounds in a row is evicted.
+UPNP_RETAIN_UNPROBED_SECONDS = 30.0
+
 # Locations the previous discovery pass spent a description request on. This is the whole
 # rotation memory: it is bounded by UPNP_DISCOVERY_DEVICE_PROBE_LIMIT by construction, so it
 # needs no cap of its own, and one round of history is enough to give every responder a turn
 # within two rounds.
 _UPNP_LAST_PROBED = frozenset()
+# Locations that answered the last M-SEARCH, whether or not the probe budget reached them.
+# Answering SSDP is the liveness signal; being described is not.  `_UPNP_SEEN_GENERATION` exists
+# so a caller can tell "discovery published a fresh answer" from "discovery never ran" (a mocked
+# or failed pass must not evict anything on a stale set).
+_UPNP_LAST_SEEN = frozenset()
+_UPNP_SEEN_GENERATION = 0
+# location -> time.monotonic() of the last round it answered.  Kept beside the device dicts rather
+# than inside them so the published payload shape does not grow an internal clock.
+_UPNP_SEEN_AT: Dict[str, float] = {}
 MAX_UPNP_IDENTITY_CHARS = 4096
 _UPNP_CAPABILITY_CACHE_LOCK = threading.RLock()
 LOCAL_RENDERER_IDENTITY = {"location": "", "udn": ""}
@@ -425,6 +448,19 @@ def probe_device_capabilities(device):
 
 
 
+def _publish_seen(locations):
+    """Record which locations answered this M-SEARCH round.
+
+    Answering is the only liveness fact discovery has; the probe budget decides who gets
+    described, not who is alive.  Publishing through one function (rather than assigning the
+    module global from the call site) is what lets the refresh worker distinguish a real round
+    from a pass that never reached the network.
+    """
+    global _UPNP_LAST_SEEN, _UPNP_SEEN_GENERATION
+    _UPNP_LAST_SEEN = frozenset(location for location in (locations or ()) if isinstance(location, str))
+    _UPNP_SEEN_GENERATION += 1
+
+
 def discover_upnp():
     global _UPNP_LAST_PROBED
     message = (
@@ -482,6 +518,9 @@ def discover_upnp():
                 }
     finally:
         sock.close()
+    # Publish before the probe phase: an exception or an exhausted budget while describing must
+    # not erase the answer this round already received.
+    _publish_seen(found.keys())
     devices = []
     probe_deadline = time.monotonic() + UPNP_DISCOVERY_PROBE_BUDGET_SECONDS
     # "A later refresh can continue probing the remainder" was only true if the arrival order
@@ -545,7 +584,7 @@ def discover_upnp():
     return devices
 
 
-def retain_unprobed_devices(previous, current):
+def retain_unprobed_devices(previous, current, seen=None, now=None):
     """Merge a rotated discovery round back over the devices it did not probe this time.
 
     `online` has always meant "the last description fetch produced a control URL" (see :468), not
@@ -554,18 +593,57 @@ def retain_unprobed_devices(previous, current):
     lose the renderer the user selected, because the target projection can only mark a device
     `selected` if it is present in this list (playback_targets_presentation.py:136).  Carried
     entries are marked `probed: False` so a consumer that cares about freshness can see it.
+
+    Carrying forward is bounded by `UPNP_RETAIN_UNPROBED_SECONDS`, not by the 128-device ceiling
+    alone.  `seen` is the set of locations that answered this round's M-SEARCH: a device inside it
+    is alive even if the probe budget never reached it, so it is kept and its clock is refreshed.
+    A device outside it has gone quiet, and is evicted once it has been quiet for longer than the
+    window - which is what finally removes a renderer that was disabled, and the ghost left behind
+    when a NAS changed port (a new port is a new `location`, hence a new `id`; nothing else ties
+    the two together).  `seen=None` means this round has no liveness answer at all (discovery never
+    ran); nothing is evicted on a guess.
     """
+    if now is None:
+        now = time.monotonic()
     merged = [dict(device) if isinstance(device, dict) else device for device in (current or ())]
-    known = {device.get("location") for device in merged if isinstance(device, dict)}
+    known = set()
+    for device in merged:
+        if isinstance(device, dict) and isinstance(device.get("location"), str):
+            known.add(device["location"])
+            # Probed this round: it answered SSDP and its description loaded.
+            _UPNP_SEEN_AT[device["location"]] = now
     for device in previous or ():
         if len(merged) >= UPNP_MAX_DISCOVERED_DEVICES:
             break
         if not isinstance(device, dict) or device.get("location") in known:
             continue
+        location = device.get("location")
+        if not isinstance(location, str) or not location:
+            continue
+        if seen is None:
+            keep = True
+        elif location in seen:
+            # Alive, just not described this round: refresh the clock so rotation can never
+            # starve a renderer out of the list.
+            keep = True
+            _UPNP_SEEN_AT[location] = now
+        else:
+            last_seen = _UPNP_SEEN_AT.get(location)
+            if last_seen is None:
+                # First round we are tracking it (carried over from a build without this clock):
+                # start the window now rather than evict on an age we cannot know.
+                keep = True
+                _UPNP_SEEN_AT[location] = now
+            else:
+                keep = (now - last_seen) <= UPNP_RETAIN_UNPROBED_SECONDS
+        if not keep:
+            continue
         retained = dict(device)
         retained["probed"] = False
         merged.append(retained)
-        known.add(device.get("location"))
+        known.add(location)
+    for location in [key for key in _UPNP_SEEN_AT if key not in known]:
+        _UPNP_SEEN_AT.pop(location, None)
     return merged
 
 
@@ -586,11 +664,16 @@ def refresh_upnp_cache_background():
 
     def worker():
         global _UPNP_REFRESH_THREAD
+        seen_generation = _UPNP_SEEN_GENERATION
         try:
             items = discover_upnp()
+            # Only a pass that actually published an answer may evict. A mocked or crashed
+            # discovery leaves the previous generation in place, and then `seen` stays None so
+            # nothing is dropped on a stale liveness set.
+            seen = _UPNP_LAST_SEEN if _UPNP_SEEN_GENERATION != seen_generation else None
             with _UPNP_CACHE_LOCK:
                 if generation == _UPNP_REFRESH_GENERATION:
-                    UPNP_CACHE["items"] = retain_unprobed_devices(UPNP_CACHE.get("items"), items)
+                    UPNP_CACHE["items"] = retain_unprobed_devices(UPNP_CACHE.get("items"), items, seen)
                     UPNP_CACHE["stamp"] = time.time()
                     UPNP_CACHE["refresh_completed"] = _bounded_counter(UPNP_CACHE.get("refresh_completed")) + 1
         except Exception:

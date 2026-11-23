@@ -17,8 +17,8 @@ android {
         applicationId "com.fnaudio.client"
         minSdk 23
         targetSdk 36
-        versionCode 431
-        versionName "0.2.173"
+        versionCode 432
+        versionName "0.2.174"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 

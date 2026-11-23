@@ -709,6 +709,7 @@ html.android-app .player-actions { display: none !important; }
 .diagnostic-entry { border-bottom-color: var(--ui-line) !important; }
 .diagnostic-entry strong { color: var(--ui-text) !important; }
 .diagnostic-entry span, .diagnostic-entry small { color: var(--ui-muted) !important; }
+.diagnostic-entry .diagnostic-peer { color: var(--ui-text) !important; font-weight: 600 !important; }
 .diagnostic-entry p { color: var(--ui-secondary) !important; }
 .format-badge{color: var(--ui-secondary) !important;border-color: var(--ui-border) !important;background: var(--ui-sidebar) !important;font-variant-numeric: tabular-nums }
 :root[data-theme="dark"] .track-cell-format {

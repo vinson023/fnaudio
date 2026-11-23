@@ -1,7 +1,38 @@
 import json
+import os
 import pathlib
+import shutil
+import subprocess
 import tempfile
 import unittest
+
+
+def find_bash():
+    """Locate a shell for the lifecycle scripts without trusting the launcher's PATH.
+
+    `tools/test_offline.ps1` runs unittest from PowerShell, whose PATH carries
+    `C:\\Program Files\\Git\\cmd` (git.exe) but not `usr\\bin` (bash.exe), so
+    `subprocess.run(["bash", ...])` raised WinError 2 for every case in
+    UninstallPurgeTests while the same cases passed when the suite was started from a
+    shell that had bash on PATH. Which interpreter runs a POSIX shell script is not part
+    of what these tests assert, so resolve it once, here, and name the directories Git for
+    Windows actually installs.
+    """
+    found = shutil.which("bash")
+    if found:
+        return found
+    program_files = os.environ.get("ProgramFiles") or r"C:\Program Files"
+    candidates = [
+        os.path.join(program_files, "Git", "bin", "bash.exe"),
+        os.path.join(program_files, "Git", "usr", "bin", "bash.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA") or "", "Programs", "Git", "bin", "bash.exe"),
+        "/bin/bash",
+        "/usr/bin/bash",
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
 
 
 class AppLifecycleScriptTests(unittest.TestCase):
@@ -76,14 +107,20 @@ class AppLifecycleScriptTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[2]
         script = (root / "src" / "cmd" / "uninstall_callback").read_text(encoding="utf-8")
         self.assertIn('wizard_uninstall_mode:-keep', script)
-        self.assertIn('wizard_uninstall_mode:-keep', script)
         self.assertIn('FNAUDIO_PURGE:-0', script)
         self.assertIn("safe_remove_app_data", script)
         self.assertIn('readlink -f -- "${target}"', script)
         self.assertIn('rm -rf -- "${resolved}"', script)
-        self.assertIn('@appdata/fnaudio(/(etc|var|data))?', script)
-        self.assertNotIn('@appdata/fnaudio/*', script)
         self.assertNotIn('rm -rf "${TRIM_PKGETC}"', script)
+        # R624: the allow-list named one layout while this fnOS build resolves the
+        # same directory somewhere else, so the real targets have to be named too.
+        self.assertIn("/usr/local/apps/@appconf/fnaudio", script)
+        self.assertIn("/usr/local/apps/@appdata/fnaudio", script)
+        self.assertIn("/var/apps/@appconf/fnaudio", script)
+        # 校验必须用 bash 正则而不是 glob：glob 的 `*` 会跨 `/`，
+        # /vol1/1000/music/@appconf/fnaudio 这种落在音乐库里的同名目录就会被误放行。
+        self.assertIn('=~ ^/(var/apps|usr/local/apps|(vol|volume)[0-9]+)$', script)
+
 
     def test_lifecycle_scripts_resolve_flat_and_targeted_ui_roots(self):
         root = pathlib.Path(__file__).resolve().parents[2]
@@ -296,6 +333,86 @@ class AppLifecycleScriptTests(unittest.TestCase):
         config = (root / "src" / "app" / "server" / "config.py").read_text(encoding="utf-8")
         self.assertNotIn("save_manifest_port", server)
         self.assertNotIn("save_manifest_port", config)
+
+
+class UninstallPurgeTests(unittest.TestCase):
+    """The purge branch is exercised, not grepped.
+
+    R624: the allow-list named /var/apps/@appconf/fnaudio while this fnOS build
+    resolves that same directory to /usr/local/apps/@appconf/fnaudio, so every
+    purge was refused, `|| true` hid the refusal, and a reinstall came back with
+    the previous settings. A test that only asserted the presence of strings
+    could not see that. These run the script with a stub `readlink` and a stub
+    `rm`, and read the decision out of the log it writes.
+    """
+
+    @staticmethod
+    def _run(resolved, mode="purge"):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        script = root / "src" / "cmd" / "uninstall_callback"
+        shell = find_bash()
+        if not shell:
+            raise unittest.SkipTest("no bash found; the lifecycle scripts cannot be exercised")
+        with tempfile.TemporaryDirectory() as work:
+            # Stub readlink and rm as shell *functions* rather than as executables on PATH.
+            # A stub directory at the head of PATH is not enough: when PATH does not already
+            # contain /usr/bin (the PowerShell-launched gate has no Git usr/bin at all), MSYS
+            # prepends /ucrt64/bin:/usr/bin itself, which put the real readlink ahead of the
+            # stub and made every purge look like a refusal. BASH_ENV is sourced by the
+            # non-interactive shell that runs the script, so the functions are already defined
+            # when it calls them, whatever PATH says.
+            stubs = pathlib.Path(work) / "stubs.sh"
+            stubs.write_text(
+                'readlink() { printf "%s\\n" "${FAKE_RESOLVED}"; }\n'
+                "rm() { :; }\n",
+                encoding="utf-8",
+            )
+            log = pathlib.Path(work) / "uninstall.log"
+            env = dict(os.environ)
+            env["BASH_ENV"] = str(stubs)
+            env["FAKE_RESOLVED"] = resolved
+            env["FNAUDIO_UNINSTALL_LOG"] = str(log)
+            env["wizard_uninstall_mode"] = mode
+            env.pop("FNAUDIO_PURGE", None)
+            subprocess.run([shell, str(script)], env=env, capture_output=True,
+                           timeout=60, check=False)
+            return log.read_text(encoding="utf-8") if log.exists() else ""
+
+    def test_the_layout_this_fnos_build_uses_is_accepted(self):
+        # readlink -f /var/apps/fnaudio/{etc,var} on the real box resolves here.
+        for resolved in ("/usr/local/apps/@appconf/fnaudio",
+                         "/usr/local/apps/@appdata/fnaudio"):
+            with self.subTest(resolved=resolved):
+                log = self._run(resolved)
+                self.assertIn(resolved, log)
+                self.assertNotIn("refusing", log)
+
+    def test_the_older_layouts_stay_accepted(self):
+        for resolved in ("/var/apps/@appconf/fnaudio",
+                         "/vol1/@appdata/fnaudio",
+                         "/vol02/@appdata/fnaudio"):
+            with self.subTest(resolved=resolved):
+                log = self._run(resolved)
+                self.assertIn(resolved, log)
+                self.assertNotIn("refusing", log)
+
+    def test_anything_that_is_not_fn_audio_app_data_is_refused(self):
+        for resolved in ("/etc/@appconf/fnaudio",
+                         "/usr/local/apps/@appconf/fnaudio-backup",
+                         "/usr/local/apps/@appconf/other-app",
+                         "/usr/local/apps/fnaudio",
+                         "/usr/local/apps/@appcache/fnaudio",
+                         "/vol1/1000/music/@appconf/fnaudio"):
+            with self.subTest(resolved=resolved):
+                log = self._run(resolved)
+                self.assertIn("refusing unexpected path", log)
+                self.assertNotIn("removed " + resolved, log)
+
+    def test_keep_never_touches_app_data(self):
+        log = self._run("/usr/local/apps/@appconf/fnaudio", mode="keep")
+        self.assertIn("keeping configuration and cache", log)
+        self.assertNotIn("removed", log)
+        self.assertNotIn("refusing", log)
 
 
 if __name__ == "__main__":

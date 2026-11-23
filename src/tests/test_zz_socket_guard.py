@@ -15,8 +15,12 @@ that cannot resolve (`.test`, `.invalid`) are deliberately not blocked: a reserv
 lookup answers instantly with no egress, while the harm this guard exists for is a
 dial that reaches a live host.
 """
+import contextlib
+import os
 import socket
 import unittest
+import urllib.request
+from unittest import mock
 
 _original_connect = socket.socket.connect
 _original_connect_ex = socket.socket.connect_ex
@@ -82,6 +86,61 @@ socket.socket.connect = _guarded_connect
 socket.socket.connect_ex = _guarded_connect_ex
 socket.create_connection = _guarded_create_connection
 
+PROXY_ENVIRONMENT_KEYS = ("http_proxy", "https_proxy", "all_proxy")
+
+
+@contextlib.contextmanager
+def _without_baked_proxy_routes(handler):
+    """Make the proxy handler decline every request instead of routing it.
+
+    `ProxyHandler.__init__` does `setattr(self, type + "_open", lambda ...,
+    proxy=url: ...)` for every proxy it is given, so the URL is captured in a
+    closure default at construction.  Clearing `handler.proxies` afterwards
+    changes nothing: the routing decision was already frozen into those
+    methods.
+
+    They cannot simply be deleted either -- `OpenerDirector.add_handler` put
+    this handler into the open chain for `https` because those methods existed,
+    and `_call_chain` does a plain `getattr` on each member.  So they are
+    swapped for a no-op: returning None is how a handler says "not mine, ask
+    the next one", which hands the request to the real `HTTPSHandler`.
+    """
+    def decline(_request):
+        return None
+
+    baked = {name: value for name, value in vars(handler).items() if name.endswith("_open")}
+    for name in baked:
+        setattr(handler, name, decline)
+    try:
+        yield
+    finally:
+        for name, value in baked.items():
+            setattr(handler, name, value)
+
+
+@contextlib.contextmanager
+def dialing_straight_at_the_wire():
+    """Strip the proxy so a dial actually reaches the guard.
+
+    A runner may export HTTP(S)_PROXY pointing at a loopback port.  The guard
+    lets loopback through on purpose, so a proxied request is never refused --
+    it gets answered, and the test then measures the proxy instead of the
+    policy.  `_METADATA_HTTP_OPENER` is built at import time, so the proxy is
+    already baked into its handler by the time this runs.
+    """
+    from metadata_service import _METADATA_HTTP_OPENER
+
+    handlers = [handler for handler in _METADATA_HTTP_OPENER.handlers
+                if isinstance(handler, urllib.request.ProxyHandler)]
+    environment = {key: value for key, value in os.environ.items()
+                   if key.lower() not in PROXY_ENVIRONMENT_KEYS}
+    with contextlib.ExitStack() as stack:
+        for handler in handlers:
+            stack.enter_context(_without_baked_proxy_routes(handler))
+            stack.enter_context(mock.patch.dict(handler.proxies, {}, clear=True))
+        stack.enter_context(mock.patch.dict(os.environ, environment, clear=True))
+        yield
+
 
 class SocketGuardTests(unittest.TestCase):
     def test_the_guard_refuses_a_dial_beyond_loopback(self):
@@ -137,8 +196,9 @@ class SocketGuardTests(unittest.TestCase):
 
         from metadata_service import _open_metadata_url
 
-        with self.assertRaises(ExternalNetworkAccess):
-            _open_metadata_url(urllib.request.Request("https://musicbrainz.org/ws/2/recording"), 2.0)
+        with dialing_straight_at_the_wire():
+            with self.assertRaises(ExternalNetworkAccess):
+                _open_metadata_url(urllib.request.Request("https://musicbrainz.org/ws/2/recording"), 2.0)
         self.assertTrue(any("musicbrainz.org:443" in item for item in external_access_attempts[-2:]),
                         "the dial was refused somewhere other than the socket layer")
 

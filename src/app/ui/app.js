@@ -10288,6 +10288,14 @@ function dlnaDiagnosticDetail(entry) {
   const detail = [entry.action, entry.format, entry.mime, entry.mode, entry.range].filter(Boolean).map(displayText).join(" · ");
   return detail || "设备查询";
 }
+// The peer address is the only thing in a DLNA trace that says *which* box on the LAN made the
+// request; two televisions of the same model report the same User-Agent. The server has always
+// recorded `client_ip`, but the row used to render `user_agent || client_ip`, so the address was
+// only ever visible for a client that sent no User-Agent at all - i.e. almost never.
+function dlnaDiagnosticPeer(entry) {
+  const peer = displayText(entry.client_ip || "");
+  return peer ? `<span class="diagnostic-peer">${escapeHtml(peer)}</span>` : "";
+}
 async function loadDlnaDiagnostics() {
   const list = $("dlnaDiagnosticsList");
   const summary = $("dlnaDiagnosticsSummary");
@@ -10308,13 +10316,15 @@ async function loadDlnaDiagnostics() {
     const data = result.data || {};
     if (!response.ok || data.available !== true) throw new Error(data.message || "DLNA 服务不可用");
     const entries = Array.isArray(data.entries) ? data.entries : [];
-    const clients = Object.keys(data.clients || {}).length;
+    // Count devices by address when the server reported one: a User-Agent is not an identity.
+    const peers = new Set(entries.map(entry => String(entry.client_ip || "").trim()).filter(Boolean));
+    const clients = peers.size || Object.keys(data.clients || {}).length;
     summary.textContent = entries.length ? `已记录 ${entries.length} 条请求，来自 ${clients} 个设备。` : "暂无设备访问记录。";
     list.innerHTML = entries.length ? entries.map(entry => `
       <article class="diagnostic-entry">
         <div><strong>${escapeHtml(displayText(entry.event || "请求"))}</strong><span>${escapeHtml(dlnaDiagnosticTime(entry.time))}</span></div>
-        <p>${escapeHtml(displayText(entry.user_agent || entry.client_ip || "未知设备"))}</p>
-        <small>${escapeHtml(dlnaDiagnosticDetail(entry))}</small>
+        <p>${escapeHtml(displayText(entry.user_agent || "未知设备"))}</p>
+        <small>${dlnaDiagnosticPeer(entry)}${escapeHtml(dlnaDiagnosticDetail(entry))}</small>
       </article>
     `).join("") : `<p class="dialog-help">让 DLNA 播放器浏览或播放一次音乐后，这里会显示其请求记录。</p>`;
   } catch (error) {

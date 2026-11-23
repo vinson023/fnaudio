@@ -1,4 +1,5 @@
 import sys
+import contextlib
 import http.server
 import socket
 import threading
@@ -501,6 +502,170 @@ class DlnaNetworkTests(unittest.TestCase):
             control_point.UPNP_CACHE.update(previous_cache)
             control_point._UPNP_REFRESH_GENERATION = previous_generation
             control_point._UPNP_REFRESH_THREAD = previous_thread
+
+    @contextlib.contextmanager
+    def _liveness_state(self):
+        """Isolate the discovery liveness memory, which outlives a single test."""
+        previous_seen = control_point._UPNP_LAST_SEEN
+        previous_generation = control_point._UPNP_SEEN_GENERATION
+        previous_stamps = dict(control_point._UPNP_SEEN_AT)
+        control_point._UPNP_SEEN_AT.clear()
+        try:
+            yield
+        finally:
+            control_point._UPNP_LAST_SEEN = previous_seen
+            control_point._UPNP_SEEN_GENERATION = previous_generation
+            control_point._UPNP_SEEN_AT.clear()
+            control_point._UPNP_SEEN_AT.update(previous_stamps)
+
+    def test_a_renderer_that_stopped_answering_is_evicted_after_the_window(self):
+        # The reported bug: three NASes running fnAudio, two with the renderer switched off and
+        # one that had changed port once, and the target list showed four entries - forever, and
+        # a rescan never cleared them. The merge had no age at all, only the 128-device ceiling,
+        # so an entry could only ever leave the list by being replaced.
+        live = {"id": "a" * 16, "location": response_hosts("198.51.100.20"), "online": True}
+        ghost = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        window = control_point.UPNP_RETAIN_UNPROBED_SECONDS
+        self.assertGreater(window, control_point.UPNP_CACHE_KEEPALIVE_SECONDS,
+                           "a window narrower than the keepalive would evict on one lost M-SEARCH reply")
+        with self._liveness_state():
+            first = control_point.retain_unprobed_devices([ghost, live], [live], set(), now=1000.0)
+            self.assertEqual([device["location"] for device in first],
+                             [live["location"], ghost["location"]],
+                             "the first round it is missing must not evict it")
+            inside = control_point.retain_unprobed_devices(first, [live], set(), now=1000.0 + window - 1)
+            self.assertEqual(len(inside), 2, "still inside the window")
+            after = control_point.retain_unprobed_devices(inside, [live], set(), now=1000.0 + window + 1)
+            self.assertEqual([device["location"] for device in after], [live["location"]],
+                             "a renderer that missed two rounds must leave the list")
+            self.assertEqual(list(control_point._UPNP_SEEN_AT), [live["location"]],
+                             "the age map must not keep locations that are no longer published")
+
+    def test_a_renderer_the_probe_budget_skipped_is_kept_and_its_clock_refreshed(self):
+        # Answering SSDP is liveness; being described is a budget decision. Rotation must never
+        # starve a renderer out of the list, or the rotation guard above would be defeated by the
+        # new window instead of by the old wholesale replacement.
+        probed = {"id": "a" * 16, "location": response_hosts("198.51.100.20"), "online": True}
+        skipped = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        with self._liveness_state():
+            merged = control_point.retain_unprobed_devices(
+                [skipped, probed], [probed], {skipped["location"]}, now=0.0)
+            self.assertEqual([device["location"] for device in merged],
+                             [probed["location"], skipped["location"]])
+            self.assertIs(merged[1]["probed"], False)
+            far = 10 * control_point.UPNP_RETAIN_UNPROBED_SECONDS
+            still = control_point.retain_unprobed_devices(merged, [probed], {skipped["location"]}, now=far)
+            self.assertEqual(len(still), 2, "a renderer that answered must never age out unprobed")
+
+    def test_a_changed_port_leaves_no_ghost_entry(self):
+        # `id` is a hash of `location`, and `location` contains the port, so a new port is a new
+        # device as far as the controller is concerned; the renderer's UDN is derived from the same
+        # base URL, so it changes too. Nothing but age can retire the entry left on the old port.
+        new = {"id": "a" * 16, "location": "http://198.51.100.21:53199/dlna/renderer/description.xml",
+               "online": True, "name": "FnAudio"}
+        old = {"id": "b" * 16, "location": "http://198.51.100.21:18080/dlna/renderer/description.xml",
+               "online": True, "name": "FnAudio"}
+        with self._liveness_state():
+            merged = control_point.retain_unprobed_devices([old], [new], {new["location"]}, now=0.0)
+            self.assertEqual(len(merged), 2, "the old port is still inside the window")
+            later = control_point.retain_unprobed_devices(
+                merged, [new], {new["location"]}, now=control_point.UPNP_RETAIN_UNPROBED_SECONDS + 1)
+            self.assertEqual([device["location"] for device in later], [new["location"]],
+                             "the previous port must not survive as a second entry with the same name")
+
+    def test_a_round_without_a_liveness_answer_never_evicts(self):
+        # `seen=None` means discovery never reported (mocked, or it raised before the receive
+        # window). Evicting on that would drop live renderers because of a failed pass.
+        known = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        with self._liveness_state():
+            self.assertEqual(control_point.retain_unprobed_devices([known], [], None, now=0.0),
+                             [dict(known, probed=False)])
+            self.assertEqual(len(control_point.retain_unprobed_devices([known], [], None, now=10 ** 6)), 1)
+
+    def _run_one_refresh(self, discovery, monotonic_now):
+        threads = []
+
+        class ThreadProbe:
+            def __init__(self, target=None, *args, **kwargs):
+                self.target = target
+
+            def start(self):
+                threads.append(self)
+
+            def join(self, timeout=None):
+                pass
+
+            def is_alive(self):
+                return False
+
+        with mock.patch.object(control_point.threading, "Thread", ThreadProbe), \
+                mock.patch.object(control_point, "discover_upnp", side_effect=discovery), \
+                mock.patch.object(control_point.time, "monotonic", return_value=monotonic_now):
+            self.assertTrue(control_point.refresh_upnp_cache_background())
+            threads[-1].target()
+        return [device["location"] for device in control_point.UPNP_CACHE["items"]]
+
+    def test_a_refresh_evicts_a_renderer_that_no_longer_answers(self):
+        live = {"id": "a" * 16, "location": response_hosts("198.51.100.20"), "online": True, "probed": True}
+        ghost = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True, "probed": False}
+
+        def discovery():
+            control_point._publish_seen({live["location"]})
+            return [live]
+
+        previous_cache = dict(control_point.UPNP_CACHE)
+        previous_generation = control_point._UPNP_REFRESH_GENERATION
+        previous_thread = control_point._UPNP_REFRESH_THREAD
+        with self._liveness_state():
+            try:
+                control_point.UPNP_CACHE.clear()
+                control_point.UPNP_CACHE.update({
+                    "stamp": 0, "items": [ghost], "refreshing": False,
+                    "refresh_started": 0, "refresh_completed": 0, "refresh_failed": 0, "refresh_skipped": 0,
+                })
+                first = self._run_one_refresh(discovery, 1000.0)
+                self.assertEqual(first, [live["location"], ghost["location"]],
+                                 "the first round the ghost is missing only starts its clock")
+                later = self._run_one_refresh(
+                    discovery, 1000.0 + control_point.UPNP_RETAIN_UNPROBED_SECONDS + 1)
+                self.assertEqual(later, [live["location"]],
+                                 "the worker must publish the eviction, not just the helper compute it")
+            finally:
+                control_point.UPNP_CACHE.clear()
+                control_point.UPNP_CACHE.update(previous_cache)
+                control_point._UPNP_REFRESH_GENERATION = previous_generation
+                control_point._UPNP_REFRESH_THREAD = previous_thread
+
+    def test_a_liveness_answer_from_an_earlier_pass_cannot_evict(self):
+        # A discovery pass that never published (it raised before the receive window, or a test
+        # double) leaves the previous generation behind. Reading that stale set as this round's
+        # answer would evict every renderer the earlier pass did not name.
+        live = {"id": "a" * 16, "location": response_hosts("198.51.100.20"), "online": True, "probed": True}
+        ghost = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True, "probed": False}
+
+        def silent_discovery():
+            return [live]
+
+        previous_cache = dict(control_point.UPNP_CACHE)
+        previous_generation = control_point._UPNP_REFRESH_GENERATION
+        previous_thread = control_point._UPNP_REFRESH_THREAD
+        with self._liveness_state():
+            try:
+                control_point._publish_seen({live["location"]})
+                control_point.UPNP_CACHE.clear()
+                control_point.UPNP_CACHE.update({
+                    "stamp": 0, "items": [ghost], "refreshing": False,
+                    "refresh_started": 0, "refresh_completed": 0, "refresh_failed": 0, "refresh_skipped": 0,
+                })
+                published = self._run_one_refresh(
+                    silent_discovery, 10 ** 6)
+                self.assertEqual(published, [live["location"], ghost["location"]],
+                                 "an unpublished round must not evict anything")
+            finally:
+                control_point.UPNP_CACHE.clear()
+                control_point.UPNP_CACHE.update(previous_cache)
+                control_point._UPNP_REFRESH_GENERATION = previous_generation
+                control_point._UPNP_REFRESH_THREAD = previous_thread
 
     def test_discovery_stops_before_network_probes_when_its_budget_is_exhausted(self):
         response = b"HTTP/1.1 200 OK\r\nLOCATION: http://198.51.100.20/device.xml\r\n\r\n"

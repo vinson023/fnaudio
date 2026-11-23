@@ -1,26 +1,83 @@
 #!/bin/bash
 # Default uninstall keeps configuration, cache and user-selected music folders.
 # If fnOS passes wizard_uninstall_mode=purge, fnAudio app data is removed too.
+#
+# R624: the data directories are not at one fixed path. On this fnOS build
+#   /var/apps/fnaudio/etc -> /usr/local/apps/@appconf/fnaudio
+#   /var/apps/fnaudio/var -> /usr/local/apps/@appdata/fnaudio
+# while older builds used /var/apps/@appconf/fnaudio and /volN/@appdata/fnaudio.
+# The allow-list used to name only the second shape, so `readlink -f` never
+# produced a match here, every purge was refused, and the refusal was swallowed
+# by `|| true` - "delete configuration and cache" deleted nothing and a
+# reinstall came back with the previous settings. The check below matches
+# "<root>/@appconf/fnaudio" and "<root>/@appdata/fnaudio" for the roots fnOS has
+# used, so it follows the platform instead of one snapshot of it.
+#
+# This runs after fnOS has already cleaned up, which is why the canonical
+# targets are named explicitly: the symlinks under /var/apps are usually gone by
+# then, and a dangling symlink makes `readlink -f` fail.
+UNINSTALL_LOG="${FNAUDIO_UNINSTALL_LOG:-/var/log/apps/fnaudio-uninstall.log}"
+
+say() {
+  printf '[fnaudio-uninstall] %s\n' "$*"
+  printf '%s [fnaudio-uninstall] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"${UNINSTALL_LOG}" 2>/dev/null || true
+}
+
+# Remove one fnAudio data directory, or refuse and say so.
 safe_remove_app_data() {
   target="${1:-}"
   [ -n "${target}" ] || return 1
-  resolved="$(readlink -f -- "${target}" 2>/dev/null)" || return 1
-  case "${resolved}" in
-    /var/apps/fnaudio/etc|/var/apps/fnaudio/var|/var/apps/fnaudio/data|/var/apps/@appdata/fnaudio|/var/apps/@appdata/fnaudio/etc|/var/apps/@appdata/fnaudio/var|/var/apps/@appdata/fnaudio/data|/var/apps/@appconf/fnaudio)
-      rm -rf -- "${resolved}" 2>/dev/null || return 1
-      ;;
-    *)
-      if [[ "${resolved}" =~ ^/(vol|volume)[0-9]+/@appdata/fnaudio(/(etc|var|data))?$ ]]; then
-        rm -rf -- "${resolved}" 2>/dev/null || return 1
-      else
-        echo "Refusing to purge unexpected fnAudio data path: ${resolved}" >&2
-        return 1
-      fi
-      ;;
-  esac
+  resolved="$(readlink -f -- "${target}" 2>/dev/null)"
+  # A path that no longer exists has nothing to purge, but an already-canonical
+  # candidate still has to be validated - and it is, because it is its own
+  # resolved form.
+  [ -n "${resolved}" ] || resolved="${target}"
+  while [ "${resolved}" != "${resolved%/}" ]; do resolved="${resolved%/}"; done
+  leaf="${resolved##*/}"
+  slot="${resolved%/*}"
+  slot="${slot##*/}"
+  root="${resolved%/*/*}"
+  if [ "${leaf}" != "fnaudio" ]; then
+    say "refusing unexpected path: ${resolved}"
+    return 1
+  fi
+  # Bash regex, not a glob: a glob's `*` spans `/`, which would have accepted
+  # /vol1/1000/music/@appconf/fnaudio - a directory inside the user's library.
+  if [[ ! "${slot}" =~ ^@(appconf|appdata)$ ]]; then
+    say "refusing unexpected path: ${resolved}"
+    return 1
+  fi
+  if [[ ! "${root}" =~ ^/(var/apps|usr/local/apps|(vol|volume)[0-9]+)$ ]]; then
+    say "refusing unexpected path: ${resolved}"
+    return 1
+  fi
+  if [ ! -e "${resolved}" ]; then
+    say "already gone: ${resolved}"
+    return 0
+  fi
+  if ! rm -rf -- "${resolved}" 2>/dev/null; then
+    say "failed to remove ${resolved}"
+    return 1
+  fi
+  say "removed ${resolved}"
+  return 0
 }
+
 if [ "${wizard_uninstall_mode:-keep}" = "purge" ] || [ "${FNAUDIO_PURGE:-0}" = "1" ]; then
-  safe_remove_app_data "${TRIM_PKGETC}" || true
-  safe_remove_app_data "${TRIM_PKGVAR}" || true
+  say "purge requested (mode=${wizard_uninstall_mode:-unset})"
+  for candidate in \
+    "${TRIM_PKGETC:-}" \
+    "${TRIM_PKGVAR:-}" \
+    /var/apps/fnaudio/etc \
+    /var/apps/fnaudio/var \
+    /usr/local/apps/@appconf/fnaudio \
+    /usr/local/apps/@appdata/fnaudio \
+    /var/apps/@appconf/fnaudio \
+    /var/apps/@appdata/fnaudio
+  do
+    safe_remove_app_data "${candidate}" || true
+  done
+else
+  say "keeping configuration and cache (mode=${wizard_uninstall_mode:-unset})"
 fi
 exit 0
