@@ -2,6 +2,7 @@ import socket
 import sys
 import threading
 import unittest
+import uuid
 from unittest import mock
 
 sys.path.insert(0, "app/server")
@@ -10,6 +11,32 @@ from dlna.ssdp import SsdpService
 
 
 class SsdpServiceTests(unittest.TestCase):
+    def test_the_udn_survives_a_port_and_name_change(self):
+        # The UDN used to be derived from the listen address, so moving the port
+        # made every controller on the LAN treat the same NAS as a new device and
+        # keep the old entry - the ghost that filled the picker with duplicates.
+        identity = "0f6e5d4c3b2a19080706050403020100"
+        before = SsdpService(lambda: "http://198.51.100.21:18080", identity=identity)
+        after = SsdpService(lambda: "http://198.51.100.21:53199", identity=identity)
+        self.assertEqual(before.udn("renderer"), after.udn("renderer"))
+        self.assertEqual(before.udn("server"), after.udn("server"))
+        self.assertNotEqual(before.udn("renderer"), before.udn("server"),
+                            "the two roles must stay two devices")
+
+    def test_two_hosts_with_the_same_identity_are_still_told_apart_by_role_only(self):
+        # The identity is per install, so two NASes never share one. Guarding the
+        # shape here keeps a future "use the hostname" shortcut from silently
+        # merging them: the same identity on the same role is the same device.
+        one = SsdpService(lambda: "http://198.51.100.21:53199", identity="aaa")
+        two = SsdpService(lambda: "http://198.51.100.22:53199", identity="bbb")
+        self.assertNotEqual(one.udn("renderer"), two.udn("renderer"))
+
+    def test_a_caller_without_an_identity_keeps_the_historic_derivation(self):
+        service = SsdpService(lambda: "http://198.51.100.21:18080")
+        self.assertEqual(service.udn("renderer"),
+                         "uuid:%s" % uuid.uuid5(uuid.NAMESPACE_URL,
+                                                "http://198.51.100.21:18080/renderer"))
+
     def test_announce_alive_rebroadcasts_all_discovery_targets(self):
         service = SsdpService(lambda: "http://127.0.0.1:18080")
         sock = mock.MagicMock()

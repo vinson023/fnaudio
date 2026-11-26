@@ -15,9 +15,17 @@ MULTICAST = ("239.255.255.250", 1900)
 class SsdpService:
     """Best-effort SSDP responder and alive announcer for the two DLNA roles."""
 
-    def __init__(self, base_url: Callable[[], str], roles: Iterable[str] = ("renderer", "server")):
+    def __init__(self, base_url: Callable[[], str], roles: Iterable[str] = ("renderer", "server"), identity: str = ""):
         self.base_url = base_url
         self.roles = tuple(roles)
+        # A stable per-install identity keeps the UDN from following the port and
+        # the advertised name.  Deriving it from base_url made every port change
+        # a brand-new device to every controller on the LAN, and the old one
+        # stayed in their caches as a duplicate until max-age expired - which is
+        # the "同一台设备显示了三次" report.  Empty keeps the old derivation so a
+        # caller that has no persisted identity (tests, older callers) behaves
+        # exactly as before.
+        self.identity = identity if isinstance(identity, str) else ""
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lifecycle_lock = threading.RLock()
@@ -93,6 +101,8 @@ class SsdpService:
         yield "uuid:%s" % self._uuid(role)
 
     def _uuid(self, role: str) -> str:
+        if self.identity:
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, "fnaudio/%s/%s" % (self.identity, role)))
         return str(uuid.uuid5(uuid.NAMESPACE_URL, self.base_url() + "/" + role))
 
     def _location(self, role: str) -> str:

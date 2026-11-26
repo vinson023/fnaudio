@@ -30,6 +30,15 @@ DEFAULT_DLNA_TYPE_DETECTION = True
 # stays on, because browsing the library over DLNA is the reason the service is
 # advertised at all.
 DEFAULT_DLNA_RENDERER_ENABLED = False
+# Some outputs have no volume at all: a USB DAC whose ALSA device exposes no
+# Playback Volume control, and a DLNA renderer that answers no RenderingControl
+# request.  The shipped policy is to refuse the write and say so rather than
+# pretend, because the only remaining way to attenuate is to scale the samples,
+# which ends bit-perfect output.  This switch is the explicit opt-in for that
+# trade: off keeps the refusal, on lets fnAudio apply its own gain.  It is a
+# setting rather than a per-target prompt because the user's DAC does not change
+# between tracks, and asking on every push would be noise.
+DEFAULT_VOLUME_SOFTWARE_FALLBACK = False
 MAX_RENDERER_NAME_CHARS = 128
 
 
@@ -42,6 +51,11 @@ def load_config(path: str) -> Dict[str, Any]:
         "renderer_name": DEFAULT_RENDERER_NAME,
         "dlna_type_detection": DEFAULT_DLNA_TYPE_DETECTION,
         "dlna_renderer_enabled": DEFAULT_DLNA_RENDERER_ENABLED,
+        # Stable per-install identity for the advertised DLNA device. Generated
+        # once at first start; the UDN is derived from it so a port or name
+        # change does not look like a different device to controllers.
+        "dlna_uuid": "",
+        "volume_software_fallback_enabled": DEFAULT_VOLUME_SOFTWARE_FALLBACK,
         "server_port": DEFAULT_PORT,
         "mpd_port": DEFAULT_MPD_PORT,
         "mpd_output_alsa_id": "",
@@ -113,6 +127,10 @@ def load_config(path: str) -> Dict[str, Any]:
     config["dlna_renderer_enabled"] = _strict_bool(
         config.get("dlna_renderer_enabled"), DEFAULT_DLNA_RENDERER_ENABLED
     )
+    config["dlna_uuid"] = _bounded_text(config.get("dlna_uuid"), 64)
+    config["volume_software_fallback_enabled"] = _strict_bool(
+        config.get("volume_software_fallback_enabled"), DEFAULT_VOLUME_SOFTWARE_FALLBACK
+    )
     config["mpd_dop"] = _strict_bool(config.get("mpd_dop"), False)
     config["metadata_enabled"] = _strict_bool(config.get("metadata_enabled"), False)
     config["metadata_fingerprint_enabled"] = _strict_bool(config.get("metadata_fingerprint_enabled"), False)
@@ -181,6 +199,11 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         "dlna_type_detection": _strict_bool(config.get("dlna_type_detection"), DEFAULT_DLNA_TYPE_DETECTION),
         "dlna_renderer_enabled": _strict_bool(
             config.get("dlna_renderer_enabled"), DEFAULT_DLNA_RENDERER_ENABLED
+        ),
+        # Round-tripped so a settings save cannot re-key the advertised device.
+        "dlna_uuid": _bounded_text(config.get("dlna_uuid"), 64),
+        "volume_software_fallback_enabled": _strict_bool(
+            config.get("volume_software_fallback_enabled"), DEFAULT_VOLUME_SOFTWARE_FALLBACK
         ),
         "server_port": _bounded_int(config.get("server_port"), DEFAULT_PORT, 1024, 65535),
         "mpd_port": _bounded_int(config.get("mpd_port"), DEFAULT_MPD_PORT, 1024, 65535),

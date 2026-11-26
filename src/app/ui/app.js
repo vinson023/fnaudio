@@ -8757,6 +8757,7 @@ async function loadDevices(forceRefresh = false) {
     renderDeviceTargets(targets, currentTarget);
     const scanButton = $("scanDevices");
     const refreshing = data.refreshing === true;
+    state.deviceRefreshInFlight = refreshing;
     const available = Math.max(0, targets.length - 1);
     scanButton.disabled = refreshing;
     scanButton.textContent = refreshing ? "更新中…" : "重新扫描";
@@ -8781,6 +8782,14 @@ async function loadDevices(forceRefresh = false) {
     if (token === state.deviceLoadRequestToken && state.deviceLoadController === controller) {
       state.deviceLoadInFlight = false;
       state.deviceLoadController = null;
+      // The click sets the busy label itself (the rescan runs before the
+      // response), so a failed load has to be able to put it back.
+      const scan = $("scanDevices");
+      if (scan) {
+        const busy = state.deviceRefreshInFlight === true;
+        scan.disabled = busy;
+        scan.textContent = busy ? "更新中…" : "重新扫描";
+      }
     }
   }
 }
@@ -12802,7 +12811,16 @@ $("deviceSearchInput").addEventListener("input", event => {
   state.deviceTargetsSignature = "";
   renderDeviceTargets(state.deviceTargetsRendered, resolvedDeviceTarget(state.deviceTargetsRendered, state.playTarget || "local"));
 });
-$("scanDevices").onclick = () => loadDevices(true);
+$("scanDevices").onclick = () => {
+  // 重新扫描 now answers with the result of a round that already ran, so
+  // `refreshing` is false by the time the list arrives and the busy state can no
+  // longer be inferred from the response. Show it here instead: without this the
+  // dialog looks frozen for the few seconds discovery takes.
+  const button = $("scanDevices");
+  button.disabled = true;
+  button.textContent = "更新中…";
+  loadDevices(true);
+};
 $("playBtn").onclick = () => {
   if (state.deviceSwitchInFlight) return;
   if (isIncomingRendererSession()) {

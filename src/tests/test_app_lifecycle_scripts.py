@@ -3,8 +3,11 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 
 def find_bash():
@@ -113,13 +116,23 @@ class AppLifecycleScriptTests(unittest.TestCase):
         self.assertIn('rm -rf -- "${resolved}"', script)
         self.assertNotIn('rm -rf "${TRIM_PKGETC}"', script)
         # R624: the allow-list named one layout while this fnOS build resolves the
-        # same directory somewhere else, so the real targets have to be named too.
-        self.assertIn("/usr/local/apps/@appconf/fnaudio", script)
-        self.assertIn("/usr/local/apps/@appdata/fnaudio", script)
-        self.assertIn("/var/apps/@appconf/fnaudio", script)
+        # same directory somewhere else, so the real targets have to be covered.
+        # R628: the list is generated from fnOS's own shape (<root>/@app<slot>/fnaudio)
+        # rather than naming two paths, because the slots the platform creates are
+        # @appconf/@appdata/@apphome/@appmeta/@apptemp and a purge has to take all
+        # of them - @apphome and @appmeta were what survived the previous purge.
+        self.assertIn("APP_DATA_SLOTS='@appconf @appdata @apphome @appmeta @apptemp'", script)
+        self.assertNotIn("@appshare", script.split("APP_DATA_SLOTS=")[1].split("\n")[0],
+                         "a purge must never take the shared folder: /vol1/@appshare/fnaudio holds music/")
+        self.assertIn('for root in /var/apps /usr/local/apps /vol[0-9]* /volume[0-9]*', script)
+        self.assertIn('${root}/${slot}/fnaudio', script)
+        self.assertIn("/var/apps/fnaudio/${legacy}", script)
         # 校验必须用 bash 正则而不是 glob：glob 的 `*` 会跨 `/`，
         # /vol1/1000/music/@appconf/fnaudio 这种落在音乐库里的同名目录就会被误放行。
         self.assertIn('=~ ^/(var/apps|usr/local/apps|(vol|volume)[0-9]+)$', script)
+        # A purge has to say what it actually deleted, not just that it tried.
+        self.assertIn("still present after purge", script)
+        self.assertIn("verified: no fnAudio app data left", script)
 
 
     def test_lifecycle_scripts_resolve_flat_and_targeted_ui_roots(self):
@@ -373,6 +386,11 @@ class UninstallPurgeTests(unittest.TestCase):
             env["FAKE_RESOLVED"] = resolved
             env["FNAUDIO_UNINSTALL_LOG"] = str(log)
             env["wizard_uninstall_mode"] = mode
+            # fnOS always passes these; the candidate list is generated from the
+            # platform's own shape otherwise, and on the test host none of those
+            # roots exist, so the script would have nothing to validate at all.
+            env["TRIM_PKGETC"] = "/usr/local/apps/@appconf/fnaudio"
+            env["TRIM_PKGVAR"] = "/usr/local/apps/@appdata/fnaudio"
             env.pop("FNAUDIO_PURGE", None)
             subprocess.run([shell, str(script)], env=env, capture_output=True,
                            timeout=60, check=False)
@@ -408,11 +426,92 @@ class UninstallPurgeTests(unittest.TestCase):
                 self.assertIn("refusing unexpected path", log)
                 self.assertNotIn("removed " + resolved, log)
 
+    def test_the_slots_the_previous_purge_left_behind_are_accepted(self):
+        # R628: @apphome, @apptemp and the per-volume @appmeta survived the R624
+        # purge. On 2026-11-26 all three existed on the box and the old list did
+        # not name a single one of them.
+        for resolved in ("/usr/local/apps/@apphome/fnaudio",
+                         "/usr/local/apps/@apptemp/fnaudio",
+                         "/usr/local/apps/@appmeta/fnaudio",
+                         "/vol1/@appmeta/fnaudio"):
+            with self.subTest(resolved=resolved):
+                log = self._run(resolved)
+                self.assertIn(resolved, log)
+                self.assertNotIn("refusing", log)
+
+    def test_the_shared_folder_is_never_purged(self):
+        # /vol1/@appshare/fnaudio/music is the user's music. "删除配置和缓存"
+        # promises not to touch it, so it is not a candidate at all.
+        log = self._run("/vol1/@appshare/fnaudio")
+        self.assertIn("refusing unexpected path", log)
+        self.assertNotIn("removed /vol1/@appshare/fnaudio", log)
+
+    def test_a_purge_reports_that_nothing_is_left_behind(self):
+        # The refusal above used to be the only thing the log contained, and it
+        # was swallowed by `|| true`. A purge now ends with an explicit verdict,
+        # so "did this delete anything?" is answerable from the log alone.
+        log = self._run("/usr/local/apps/@appconf/fnaudio")
+        self.assertIn("verified: no fnAudio app data left", log)
+        self.assertIn("purge complete", log)
+
     def test_keep_never_touches_app_data(self):
         log = self._run("/usr/local/apps/@appconf/fnaudio", mode="keep")
         self.assertIn("keeping configuration and cache", log)
         self.assertNotIn("removed", log)
         self.assertNotIn("refusing", log)
+
+
+class StructuredRequestLogPeerTests(unittest.TestCase):
+    """The request log has to name the peer, not just the route.
+
+    R628: `fnaudio.jsonl` recorded method/route/status and nothing about who
+    sent it, so "which device is casting" and "who keeps POSTing to the renderer
+    control URL" were unanswerable from the log - and that was the question the
+    403 report needed answered.
+    """
+
+    @staticmethod
+    def _handler(command, path, client_address):
+        sys.path.insert(0, "app/server")
+        import server
+        handler = object.__new__(server.Handler)
+        handler.command = command
+        handler.path = path
+        handler.client_address = client_address
+        handler.headers = {}
+        handler._request_id = "test-request"
+        handler._request_started_at = time.monotonic()
+        handler.server = type("Server", (), {"config": {}, "config_path": "/tmp/config.json"})()
+        return server, handler
+
+    def test_a_dlna_control_post_records_the_peer_address(self):
+        server, handler = self._handler(
+            "POST", "/dlna/renderer/avtransport/control", ("198.51.100.31", 5555))
+        written = []
+        with mock.patch.object(server.OBSERVABILITY, "write",
+                               side_effect=lambda path, event, **fields: written.append((event, fields))):
+            handler.record_request(200)
+        self.assertEqual(len(written), 1)
+        event, fields = written[0]
+        self.assertEqual(event, "http_request")
+        self.assertEqual(fields.get("peer"), "198.51.100.31")
+
+    def test_a_forwarded_request_logs_the_originating_address(self):
+        # The CGI relay connects from loopback; without X-Forwarded-For the log
+        # would name 127.0.0.1 for every LAN device.
+        server, handler = self._handler("GET", "/api/library", ("127.0.0.1", 1))
+        handler.headers = {"X-Forwarded-For": "192.168.5.44, 127.0.0.1"}
+        written = []
+        with mock.patch.object(server.OBSERVABILITY, "write",
+                               side_effect=lambda path, event, **fields: written.append(fields)):
+            handler.record_request(503)
+        self.assertEqual(written[0].get("peer"), "192.168.5.44")
+
+    def test_a_request_that_is_not_logged_writes_nothing(self):
+        server, handler = self._handler("GET", "/", ("192.168.5.44", 1))
+        with mock.patch.object(server.OBSERVABILITY, "write") as write:
+            handler.record_request(200)
+        write.assert_not_called()
 
 
 if __name__ == "__main__":

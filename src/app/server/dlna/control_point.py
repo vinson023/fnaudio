@@ -60,6 +60,17 @@ _UPNP_KEEPER_TICK_SECONDS = 5.0
 # forgiven and only a device that misses two rounds in a row is evicted.
 UPNP_RETAIN_UNPROBED_SECONDS = 30.0
 
+# An explicit rescan is a request for the truth now, so it runs a round in the
+# caller's thread instead of promising one later. The budget is far smaller than
+# a background pass (1.5 s instead of 12 s) because the whole round has to fit
+# inside the dialog's 6 s request timeout: 2.5 s of M-SEARCH replies plus this
+# is what the click actually waits for. Anything the budget skips still shows up
+# as "answered, not described yet", and a LAN description fetch is milliseconds.
+UPNP_RESCAN_PROBE_BUDGET_SECONDS = 1.5
+# How long an explicit rescan waits for a background round that was already
+# running before the click, before answering from the cache as it stands.
+UPNP_RESCAN_WAIT_SECONDS = 3.5
+
 # Locations the previous discovery pass spent a description request on. This is the whole
 # rotation memory: it is bounded by UPNP_DISCOVERY_DEVICE_PROBE_LIMIT by construction, so it
 # needs no cap of its own, and one round of history is enough to give every responder a turn
@@ -461,7 +472,7 @@ def _publish_seen(locations):
     _UPNP_SEEN_GENERATION += 1
 
 
-def discover_upnp():
+def discover_upnp(probe_budget=None):
     global _UPNP_LAST_PROBED
     message = (
         "M-SEARCH * HTTP/1.1\r\n"
@@ -515,6 +526,9 @@ def discover_upnp():
                     "id": hashlib.sha1(location.encode()).hexdigest()[:16],
                     "location": location,
                     "usn": headers.get("usn", ""),
+                    # Filled from the description when the probe succeeds; empty
+                    # means "not described yet", never "no identity".
+                    "udn": "",
                 }
     finally:
         sock.close()
@@ -522,7 +536,9 @@ def discover_upnp():
     # not erase the answer this round already received.
     _publish_seen(found.keys())
     devices = []
-    probe_deadline = time.monotonic() + UPNP_DISCOVERY_PROBE_BUDGET_SECONDS
+    if isinstance(probe_budget, bool) or not isinstance(probe_budget, (int, float)):
+        probe_budget = UPNP_DISCOVERY_PROBE_BUDGET_SECONDS
+    probe_deadline = time.monotonic() + max(0.0, float(probe_budget))
     # "A later refresh can continue probing the remainder" was only true if the arrival order
     # happened to change.  With more responders than the probe budget, the services that answer
     # within the first milliseconds (several on a single NAS) took all the slots in every round,
@@ -557,6 +573,10 @@ def discover_upnp():
             names = [x.text for x in root.iter() if x.tag.endswith("friendlyName") and x.text]
             udns = [x.text for x in root.iter() if x.tag.endswith("UDN") and x.text]
             device["name"] = names[0] if names else "UPnP 播放器"
+            # The UDN is the only identity the device itself claims, and unlike
+            # `location` it does not contain the port. Keeping it on the record
+            # is what lets the cache recognise "same renderer, new address".
+            device["udn"] = udns[0] if udns else ""
             avtransport = find_service(root, device["location"], "AVTransport") or {}
             connection = find_service(root, device["location"], "ConnectionManager") or {}
             device["control_url"] = avtransport.get("control_url")
@@ -584,7 +604,7 @@ def discover_upnp():
     return devices
 
 
-def retain_unprobed_devices(previous, current, seen=None, now=None):
+def retain_unprobed_devices(previous, current, seen=None, now=None, strict=False):
     """Merge a rotated discovery round back over the devices it did not probe this time.
 
     `online` has always meant "the last description fetch produced a control URL" (see :468), not
@@ -602,16 +622,29 @@ def retain_unprobed_devices(previous, current, seen=None, now=None):
     when a NAS changed port (a new port is a new `location`, hence a new `id`; nothing else ties
     the two together).  `seen=None` means this round has no liveness answer at all (discovery never
     ran); nothing is evicted on a guess.
+
+    Two additions for the explicit rescan (R628):
+
+    * A device whose UDN matches one discovered this round has moved, not multiplied.  The fresh
+      record already describes it at its new address, so the old row is dropped instead of carried
+      - this is what removes the duplicate the moment a NAS changes port.
+    * `strict=True` evicts anything that did not answer this round, without waiting out the window.
+      It is only used for a user-initiated rescan, where "重新扫描" is a request for the current
+      truth and a 30-second grace period reads as "the ghost never goes away".
     """
     if now is None:
         now = time.monotonic()
     merged = [dict(device) if isinstance(device, dict) else device for device in (current or ())]
     known = set()
+    moved = set()
     for device in merged:
         if isinstance(device, dict) and isinstance(device.get("location"), str):
             known.add(device["location"])
             # Probed this round: it answered SSDP and its description loaded.
             _UPNP_SEEN_AT[device["location"]] = now
+            udn = device.get("udn")
+            if isinstance(udn, str) and udn:
+                moved.add(udn)
     for device in previous or ():
         if len(merged) >= UPNP_MAX_DISCOVERED_DEVICES:
             break
@@ -620,6 +653,12 @@ def retain_unprobed_devices(previous, current, seen=None, now=None):
         location = device.get("location")
         if not isinstance(location, str) or not location:
             continue
+        udn = device.get("udn")
+        if isinstance(udn, str) and udn and udn in moved:
+            # Same device, new address: the live record above is the only row
+            # it should occupy. Its clock goes with the entry.
+            _UPNP_SEEN_AT.pop(location, None)
+            continue
         if seen is None:
             keep = True
         elif location in seen:
@@ -627,6 +666,8 @@ def retain_unprobed_devices(previous, current, seen=None, now=None):
             # starve a renderer out of the list.
             keep = True
             _UPNP_SEEN_AT[location] = now
+        elif strict:
+            keep = False
         else:
             last_seen = _UPNP_SEEN_AT.get(location)
             if last_seen is None:
@@ -637,6 +678,7 @@ def retain_unprobed_devices(previous, current, seen=None, now=None):
             else:
                 keep = (now - last_seen) <= UPNP_RETAIN_UNPROBED_SECONDS
         if not keep:
+            _UPNP_SEEN_AT.pop(location, None)
             continue
         retained = dict(device)
         retained["probed"] = False
@@ -701,6 +743,55 @@ def refresh_upnp_cache_background():
             UPNP_CACHE["refreshing"] = False
             UPNP_CACHE["refresh_failed"] = _bounded_counter(UPNP_CACHE.get("refresh_failed")) + 1
         return False
+    return True
+
+
+def rescan_upnp_devices(wait_seconds=UPNP_RESCAN_WAIT_SECONDS):
+    """Run one discovery round now and publish it, for an explicit rescan.
+
+    `/api/upnp/devices` and `/api/playback/targets?refresh=1` used to answer
+    with ``refreshing: true`` and the *previous* list, so the button labelled
+    重新扫描 could only ever show what discovery already knew - which is why a
+    ghost survived every click.  This runs the round in the caller's thread and
+    merges it strictly, so the response that comes back is the answer to the
+    click.
+
+    Returns True when a round was applied.  A round already in flight is waited
+    on rather than duplicated: two M-SEARCH passes racing would let the older
+    reply set the liveness answer, and `refreshing` is the same flag the keeper
+    and the worker use, so holding it is also what keeps them out.
+    """
+    deadline = time.monotonic() + (wait_seconds if isinstance(wait_seconds, (int, float))
+                                   and not isinstance(wait_seconds, bool) else UPNP_RESCAN_WAIT_SECONDS)
+    with _UPNP_CACHE_LOCK:
+        busy = bool(UPNP_CACHE.get("refreshing"))
+        if not busy:
+            UPNP_CACHE["refreshing"] = True
+            UPNP_CACHE["refresh_started"] = _bounded_counter(UPNP_CACHE.get("refresh_started")) + 1
+    if busy:
+        while time.monotonic() < deadline:
+            with _UPNP_CACHE_LOCK:
+                if not UPNP_CACHE.get("refreshing"):
+                    return True
+            time.sleep(0.05)
+        return False
+    seen_generation = _UPNP_SEEN_GENERATION
+    try:
+        items = discover_upnp(probe_budget=UPNP_RESCAN_PROBE_BUDGET_SECONDS)
+    except Exception:
+        with _UPNP_CACHE_LOCK:
+            UPNP_CACHE["refresh_failed"] = _bounded_counter(UPNP_CACHE.get("refresh_failed")) + 1
+            UPNP_CACHE["refreshing"] = False
+        return False
+    seen = _UPNP_LAST_SEEN if _UPNP_SEEN_GENERATION != seen_generation else None
+    try:
+        with _UPNP_CACHE_LOCK:
+            UPNP_CACHE["items"] = retain_unprobed_devices(UPNP_CACHE.get("items"), items, seen, strict=True)
+            UPNP_CACHE["stamp"] = time.time()
+            UPNP_CACHE["refresh_completed"] = _bounded_counter(UPNP_CACHE.get("refresh_completed")) + 1
+    finally:
+        with _UPNP_CACHE_LOCK:
+            UPNP_CACHE["refreshing"] = False
     return True
 
 

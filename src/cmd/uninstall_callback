@@ -2,26 +2,31 @@
 # Default uninstall keeps configuration, cache and user-selected music folders.
 # If fnOS passes wizard_uninstall_mode=purge, fnAudio app data is removed too.
 #
-# R624: the data directories are not at one fixed path. On this fnOS build
-#   /var/apps/fnaudio/etc -> /usr/local/apps/@appconf/fnaudio
-#   /var/apps/fnaudio/var -> /usr/local/apps/@appdata/fnaudio
-# while older builds used /var/apps/@appconf/fnaudio and /volN/@appdata/fnaudio.
-# The allow-list used to name only the second shape, so `readlink -f` never
-# produced a match here, every purge was refused, and the refusal was swallowed
-# by `|| true` - "delete configuration and cache" deleted nothing and a
-# reinstall came back with the previous settings. The check below matches
-# "<root>/@appconf/fnaudio" and "<root>/@appdata/fnaudio" for the roots fnOS has
-# used, so it follows the platform instead of one snapshot of it.
-#
-# This runs after fnOS has already cleaned up, which is why the canonical
-# targets are named explicitly: the symlinks under /var/apps are usually gone by
-# then, and a dangling symlink makes `readlink -f` fail.
+# R628: the previous allow-list named the two slots this fnOS build happens to
+# use (@appconf, @appdata) and nothing else, so a purge left @apphome, @apptemp
+# and the per-volume @appmeta behind.  It also trusted one snapshot of the
+# layout: /var/apps/fnaudio/etc is a symlink to /usr/local/apps/@appconf/fnaudio
+# on this build and a real directory on older ones, and the volume prefix has
+# been /volN, /volumeN and /vol0N.  The list below is generated from the same
+# shape fnOS uses everywhere - <root>/@app<slot>/fnaudio - so it follows the
+# platform instead of one build, and every removal is verified afterwards: the
+# log ends with a "still present" report, so a purge that silently did nothing
+# can no longer be mistaken for a working one.
 UNINSTALL_LOG="${FNAUDIO_UNINSTALL_LOG:-/var/log/apps/fnaudio-uninstall.log}"
 
 say() {
   printf '[fnaudio-uninstall] %s\n' "$*"
   printf '%s [fnaudio-uninstall] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"${UNINSTALL_LOG}" 2>/dev/null || true
 }
+
+# Every slot fnOS keeps per application. A purge means the app is gone, so the
+# home directory and the platform metadata go with the configuration: leaving
+# them behind is what made a reinstall come back configured.
+#
+# @appshare is deliberately absent. On this box /vol1/@appshare/fnaudio holds
+# `music/` - the shared folder the app publishes - and a purge that took it
+# would delete the user's music, which the uninstall wizard promises not to do.
+APP_DATA_SLOTS='@appconf @appdata @apphome @appmeta @apptemp'
 
 # Remove one fnAudio data directory, or refuse and say so.
 safe_remove_app_data() {
@@ -43,10 +48,13 @@ safe_remove_app_data() {
   fi
   # Bash regex, not a glob: a glob's `*` spans `/`, which would have accepted
   # /vol1/1000/music/@appconf/fnaudio - a directory inside the user's library.
-  if [[ ! "${slot}" =~ ^@(appconf|appdata)$ ]]; then
-    say "refusing unexpected path: ${resolved}"
-    return 1
-  fi
+  case " ${APP_DATA_SLOTS} " in
+    *" ${slot} "*) ;;
+    *)
+      say "refusing unexpected path: ${resolved}"
+      return 1
+      ;;
+  esac
   if [[ ! "${root}" =~ ^/(var/apps|usr/local/apps|(vol|volume)[0-9]+)$ ]]; then
     say "refusing unexpected path: ${resolved}"
     return 1
@@ -63,21 +71,100 @@ safe_remove_app_data() {
   return 0
 }
 
+# Report what a purge would still leave behind, so the log answers "did this
+# actually delete anything?" without a second uninstall to check.
+report_survivors() {
+  survivors=""
+  seen=""
+  for candidate in "$@"; do
+    [ -n "${candidate}" ] || continue
+    resolved="$(readlink -f -- "${candidate}" 2>/dev/null)"
+    [ -n "${resolved}" ] || resolved="${candidate}"
+    [ -e "${resolved}" ] || continue
+    # /var/apps/fnaudio/etc and /usr/local/apps/@appconf/fnaudio are the same
+    # directory; name it once.
+    case " ${seen} " in
+      *" ${resolved} "*) continue ;;
+    esac
+    seen="${seen} ${resolved}"
+    survivors="${survivors} ${resolved}"
+  done
+  if [ -n "${survivors}" ]; then
+    say "still present after purge:${survivors}"
+    return 1
+  fi
+  say "verified: no fnAudio app data left"
+  return 0
+}
+
 if [ "${wizard_uninstall_mode:-keep}" = "purge" ] || [ "${FNAUDIO_PURGE:-0}" = "1" ]; then
   say "purge requested (mode=${wizard_uninstall_mode:-unset})"
-  for candidate in \
-    "${TRIM_PKGETC:-}" \
-    "${TRIM_PKGVAR:-}" \
-    /var/apps/fnaudio/etc \
-    /var/apps/fnaudio/var \
-    /usr/local/apps/@appconf/fnaudio \
-    /usr/local/apps/@appdata/fnaudio \
-    /var/apps/@appconf/fnaudio \
-    /var/apps/@appdata/fnaudio
-  do
-    safe_remove_app_data "${candidate}" || true
+
+  # A custom cache_dir outside the app slots is not part of this removal: it is
+  # a path the user pointed at, and deleting it would be a surprise. Say so
+  # rather than leaving the traceback to "the cache is still there".
+  config_file="${TRIM_PKGETC:-/usr/local/apps/@appconf/fnaudio}/config.json"
+  if [ -f "${config_file}" ]; then
+    custom_cache="$("${FNAUDIO_PYTHON:-/var/apps/python312/target/bin/python3}" - "${config_file}" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        value = json.load(handle).get("cache_dir")
+except Exception:
+    value = ""
+if isinstance(value, str) and value.strip() and not value.startswith(("/var/apps", "/usr/local/apps", "/vol", "/volume")):
+    print(value.strip())
+PY
+)"
+    [ -n "${custom_cache}" ] && say "keeping user-configured cache_dir outside app data: ${custom_cache}"
+  fi
+
+  candidates="${TRIM_PKGETC:-} ${TRIM_PKGVAR:-}"
+  for root in /var/apps /usr/local/apps /vol[0-9]* /volume[0-9]*; do
+    [ -d "${root}" ] || continue
+    for slot in ${APP_DATA_SLOTS}; do
+      candidates="${candidates} ${root}/${slot}/fnaudio"
+    done
   done
+  # The app tree's own links, in case the platform removed the canonical slot
+  # but left these behind (and because they were the only names the first
+  # version of this script knew about). Only the ones that are actually there:
+  # after an out-of-band tree replacement they are gone, and a purge that
+  # prints "refusing unexpected path" for a name it invented reads like a
+  # failure even when everything it was asked to delete is gone.
+  for legacy in etc var home meta tmp; do
+    if [ -e "/var/apps/fnaudio/${legacy}" ] || [ -L "/var/apps/fnaudio/${legacy}" ]; then
+      candidates="${candidates} /var/apps/fnaudio/${legacy}"
+    fi
+  done
+
+  # The same directory shows up as a slot, as TRIM_PKGETC and as a symlink target;
+  # each is removed once and reported once.
+  unique=""
+  for candidate in ${candidates}; do
+    case " ${unique} " in
+      *" ${candidate} "*) continue ;;
+    esac
+    unique="${unique} ${candidate}"
+  done
+  candidates="${unique}"
+
+  result=0
+  for candidate in ${candidates}; do
+    safe_remove_app_data "${candidate}" || result=1
+  done
+  # shellcheck disable=SC2086
+  report_survivors ${candidates} || result=1
+  if [ "${result}" -eq 0 ]; then
+    say "purge complete"
+  else
+    # Still exit 0: the application is already removed at this point, and a
+    # non-zero exit makes fnOS report "执行脚本出错" over an uninstall that did
+    # happen. The log above is the report.
+    say "purge incomplete - see the lines above"
+  fi
 else
   say "keeping configuration and cache (mode=${wizard_uninstall_mode:-unset})"
 fi
+
 exit 0

@@ -559,8 +559,9 @@ class DlnaNetworkTests(unittest.TestCase):
 
     def test_a_changed_port_leaves_no_ghost_entry(self):
         # `id` is a hash of `location`, and `location` contains the port, so a new port is a new
-        # device as far as the controller is concerned; the renderer's UDN is derived from the same
-        # base URL, so it changes too. Nothing but age can retire the entry left on the old port.
+        # device as far as the controller is concerned. This case is the one where the description
+        # never loaded (`udn` is empty), so only age can retire the entry left on the old port -
+        # the UDN match in the test below is the fast path for a renderer that did answer.
         new = {"id": "a" * 16, "location": "http://198.51.100.21:53199/dlna/renderer/description.xml",
                "online": True, "name": "FnAudio"}
         old = {"id": "b" * 16, "location": "http://198.51.100.21:18080/dlna/renderer/description.xml",
@@ -572,6 +573,61 @@ class DlnaNetworkTests(unittest.TestCase):
                 merged, [new], {new["location"]}, now=control_point.UPNP_RETAIN_UNPROBED_SECONDS + 1)
             self.assertEqual([device["location"] for device in later], [new["location"]],
                              "the previous port must not survive as a second entry with the same name")
+
+    def test_a_renderer_that_changed_port_is_one_row_not_two(self):
+        # R628: the UDN no longer follows the listen address, so the renderer
+        # itself says "same device, new port". The merge uses that, and the old
+        # row goes immediately instead of occupying a second line for the whole
+        # grace window - which is the "改了一次端口却显示了三次" report.
+        udn = "uuid:11111111-1111-1111-1111-111111111111"
+        new = {"id": "a" * 16, "location": "http://198.51.100.21:53199/dlna/renderer/description.xml",
+               "online": True, "name": "FnAudio Real", "udn": udn}
+        old = {"id": "b" * 16, "location": "http://198.51.100.21:18080/dlna/renderer/description.xml",
+               "online": True, "name": "FnAudio", "udn": udn}
+        with self._liveness_state():
+            merged = control_point.retain_unprobed_devices([old], [new], {new["location"]}, now=0.0)
+        self.assertEqual([device["location"] for device in merged], [new["location"]])
+        self.assertEqual(merged[0]["name"], "FnAudio Real", "the current name is the one shown")
+        self.assertNotIn(old["location"], control_point._UPNP_SEEN_AT)
+
+    def test_a_different_device_on_a_new_port_is_still_its_own_row(self):
+        # Collapsing on the UDN must not collapse two NASes that happen to share
+        # a friendly name - only the identity the device itself claims counts.
+        mine = {"id": "a" * 16, "location": "http://198.51.100.21:53199/x.xml",
+                "online": True, "name": "FnAudio", "udn": "uuid:aaaa"}
+        other = {"id": "b" * 16, "location": "http://198.51.100.22:53199/x.xml",
+                 "online": True, "name": "FnAudio", "udn": "uuid:bbbb"}
+        with self._liveness_state():
+            merged = control_point.retain_unprobed_devices([other], [mine], {mine["location"]}, now=0.0)
+        self.assertEqual([device["location"] for device in merged], [mine["location"], other["location"]])
+
+    def test_an_explicit_rescan_evicts_without_waiting_out_the_window(self):
+        # 重新扫描 is a request for the truth now. The 30 s grace exists to forgive
+        # one lost M-SEARCH reply in the background, not to make the button lie.
+        ghost = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        with self._liveness_state():
+            control_point.retain_unprobed_devices([ghost], [ghost], set(), now=0.0)
+            merged = control_point.retain_unprobed_devices([ghost], [], set(), now=1.0, strict=True)
+            self.assertNotIn(ghost["location"], control_point._UPNP_SEEN_AT,
+                             "an evicted location must not keep its clock")
+        self.assertEqual(merged, [])
+
+    def test_an_explicit_rescan_keeps_a_renderer_that_answered(self):
+        answered = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        with self._liveness_state():
+            merged = control_point.retain_unprobed_devices(
+                [answered], [], {answered["location"]}, now=1.0, strict=True)
+        self.assertEqual([device["location"] for device in merged], [answered["location"]])
+        self.assertIs(merged[0]["probed"], False)
+
+    def test_an_explicit_rescan_never_evicts_without_a_liveness_answer(self):
+        known = {"id": "b" * 16, "location": response_hosts("198.51.100.21"), "online": True}
+        with self._liveness_state():
+            self.assertEqual(
+                [device["location"] for device in control_point.retain_unprobed_devices(
+                    [known], [], None, now=1.0, strict=True)],
+                [known["location"]],
+                "a rescan whose discovery never published must not empty the list")
 
     def test_a_round_without_a_liveness_answer_never_evicts(self):
         # `seen=None` means discovery never reported (mocked, or it raised before the receive

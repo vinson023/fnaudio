@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 import urllib.parse
 import urllib.request
@@ -23,6 +24,7 @@ from http.server import BaseHTTPRequestHandler
 
 from config import load_config, normalize_renderer_name, renderer_name_is_valid, save_config, save_proxy_port
 from config import DEFAULT_DLNA_RENDERER_ENABLED
+from config import DEFAULT_VOLUME_SOFTWARE_FALLBACK
 from library import (
     FS_CACHE,
     MUSIC_CACHE,
@@ -83,6 +85,7 @@ from dlna.control_point import (
     discover_upnp,
     find_service_url,
     refresh_upnp_cache_background,
+    rescan_upnp_devices,
     shutdown_upnp_cache_background,
     start_upnp_cache_keeper,
     stop_upnp_cache_keeper,
@@ -231,6 +234,16 @@ def dlna_renderer_enabled(config) -> bool:
     strict: ``"false"`` arriving as a string must not read as enabled.
     """
     return config.get("dlna_renderer_enabled", DEFAULT_DLNA_RENDERER_ENABLED) is True
+
+
+def volume_software_fallback_enabled(config) -> bool:
+    """Whether a target without hardware volume may be attenuated by fnAudio.
+
+    Strict for the same reason as the renderer switch: ``"false"`` arriving as a
+    string must not read as enabled.  Off is the shipped default because the
+    fallback scales the samples and therefore ends bit-perfect output.
+    """
+    return config.get("volume_software_fallback_enabled", DEFAULT_VOLUME_SOFTWARE_FALLBACK) is True
 
 
 def apply_dlna_renderer_enabled(config) -> bool:
@@ -965,6 +978,12 @@ class Handler(BaseHTTPRequestHandler):
         OBSERVABILITY.record_http_latency_route(observation["latency_route"], observation["elapsed_seconds"])
         if observation["write_log"]:
             config = getattr(self.server, "config", {}) or {}
+            # R628: the log named the route and the status but never the peer, so
+            # "who keeps POSTing to the renderer control URL" and "which device
+            # is casting" could not be answered from fnaudio.jsonl at all. The
+            # DLNA diagnostic ring has always carried client_ip; this is the same
+            # fact in the log that survives a restart.
+            context = request_context(self.headers, self.client_address)
             OBSERVABILITY.write(
                 config.get("structured_log_path") or os.path.join(os.path.dirname(getattr(self.server, "config_path", "") or "."), "fnaudio.jsonl"),
                 "http_request",
@@ -974,6 +993,7 @@ class Handler(BaseHTTPRequestHandler):
                 latency_route=observation["latency_route"],
                 duration_ms=round(observation["elapsed_seconds"] * 1000.0, 2),
                 status=status,
+                peer=context.get("client_ip", ""),
             )
 
     def send_json(self, payload, status=200, extra_headers=None):
@@ -1418,7 +1438,9 @@ class Handler(BaseHTTPRequestHandler):
             dirs = list_music_directories((query.get("path") or [""])[0])
             return self.send_json({"path": (query.get("path") or [""])[0], "dirs": dirs})
         if path == "/api/upnp/devices":
-            if upnp_cache_needs_refresh():
+            if (query.get("refresh") or [""])[0] == "1":
+                rescan_upnp_devices()
+            elif upnp_cache_needs_refresh():
                 refresh_upnp_cache_background()
             return self.send_json({"devices": cached_upnp_devices()})
         if path == "/api/dac/devices":
@@ -2750,7 +2772,12 @@ def playback_targets_payload(force_refresh=False):
     mpd_caps = mpd.get("output_capabilities") or {}
     core_state = PLAYBACK_CORE.snapshot()
     upmpdcli = upmpdcli_probe()
-    if force_refresh or upnp_cache_needs_refresh():
+    if force_refresh:
+        # An explicit rescan runs the round now. Answering with the previous
+        # list plus `refreshing: true` meant the button could only ever show what
+        # discovery already knew, so a stale entry survived every click.
+        rescan_upnp_devices()
+    elif upnp_cache_needs_refresh():
         refresh_upnp_cache_background()
     targets, current_target, current_target_name = build_targets(
         mpd,
@@ -3869,6 +3896,14 @@ def initialize_dlna_services(server):
         )
 
     renderer = DlnaRenderer(renderer_load, renderer_control, renderer_status, renderer_state_changed)
+    # The advertised device keeps one identity for the life of the install. The
+    # UDN used to be derived from the listen address, so changing the port made
+    # every controller on the LAN see a new device and keep the old one - the
+    # "同一台设备显示了三次" report. Generating it once and persisting it is what
+    # makes a rename or a port change an update instead of a duplicate.
+    if not server.config.get("dlna_uuid"):
+        server.config["dlna_uuid"] = uuid.uuid4().hex
+        save_config(server.config_path, server.config)
     DLNA_PROTOCOL = DlnaProtocolService(
         base_url,
         renderer,
@@ -3885,6 +3920,7 @@ def initialize_dlna_services(server):
     DLNA_SSDP = SsdpService(
         base_url,
         roles=("renderer", "server") if dlna_renderer_enabled(server.config) else ("server",),
+        identity=str(server.config.get("dlna_uuid") or ""),
     )
     configure_local_renderer_identity(
         DLNA_SSDP.location("renderer"),
