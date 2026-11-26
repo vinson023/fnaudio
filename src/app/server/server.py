@@ -1190,6 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                     "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
                     "dlna_renderer_enabled": dlna_renderer_enabled(self.server.config),
+                    "volume_software_fallback_enabled": volume_software_fallback_enabled(self.server.config),
                 },
                 "status": library_connection_pool_status(),
             })
@@ -2077,6 +2078,16 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except (TypeError, ValueError):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：DLNA 渲染器开关必须是布尔值"}, 400)
+            try:
+                volume_fallback = payload_bool(
+                    payload, "volume_software_fallback_enabled",
+                    volume_software_fallback_enabled(self.server.config),
+                )
+            except (TypeError, ValueError):
+                return self.send_json(
+                    {"ok": False, "message": "运行设置包含无效值：软件音量开关必须是布尔值"}, 400
+                )
+            previous_volume_fallback = volume_software_fallback_enabled(self.server.config)
             renderer_name = payload.get("renderer_name", self.server.config.get("renderer_name", "fnAudio Renderer"))
             if not renderer_name_is_valid(renderer_name):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：Renderer 名称必须是非空文本且不能包含控制字符"}, 400)
@@ -2094,6 +2105,7 @@ class Handler(BaseHTTPRequestHandler):
                         "renderer_name": renderer_name,
                         "dlna_type_detection": dlna_type_detection,
                         "dlna_renderer_enabled": renderer_enabled,
+                        "volume_software_fallback_enabled": volume_fallback,
                     }),
                 ):
                     return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)
@@ -2105,6 +2117,15 @@ class Handler(BaseHTTPRequestHandler):
                 role_changed = apply_dlna_renderer_enabled(self.server.config)
                 if renderer_name_changed and DLNA_SSDP and hasattr(DLNA_SSDP, "announce_alive"):
                     DLNA_SSDP.announce_alive()
+            # `mixer_type` is written into mpd.conf from mixer_policy(), so the
+            # switch only reaches the audio path once MPD has been rewritten and
+            # restarted.  Do it only on a real change: a restart costs a short
+            # gap in playback, and saving an unrelated field must not cause one.
+            if previous_volume_fallback != volume_fallback and MPD_SERVICE:
+                try:
+                    MPD_SERVICE.restart()
+                except Exception as exc:
+                    print("fnAudio mixer policy restart skipped: %s" % exc, flush=True)
             # commit_config_update already re-applied the pool switch against the
             # committed dictionary, so a turn-off has drained its idle handles before
             # this response claims success.  No restart is needed for this key; the
@@ -2118,6 +2139,7 @@ class Handler(BaseHTTPRequestHandler):
                     "renderer_name": self.server.config.get("renderer_name", "fnAudio Renderer"),
                     "dlna_type_detection": self.server.config.get("dlna_type_detection", True) is True,
                     "dlna_renderer_enabled": dlna_renderer_enabled(self.server.config),
+                    "volume_software_fallback_enabled": volume_software_fallback_enabled(self.server.config),
                 },
                 "renderer_role_changed": role_changed,
                 "status": library_connection_pool_status(),

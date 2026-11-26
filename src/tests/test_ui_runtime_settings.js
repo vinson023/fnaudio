@@ -108,6 +108,11 @@ assert.equal(dlnaTypeDetectionKey[1], "dlna_type_detection");
 const dlnaRendererEnabledKey = app.match(/^const DLNA_RENDERER_ENABLED_SETTING_KEY = "([^\"]+)";$/m);
 assert.ok(dlnaRendererEnabledKey, "the DLNA renderer switch key must be a single top-level constant");
 assert.equal(dlnaRendererEnabledKey[1], "dlna_renderer_enabled");
+const volumeFallbackKeyMatch = app.match(/^const VOLUME_SOFTWARE_FALLBACK_SETTING_KEY = "([^"]+)";$/m);
+assert.ok(volumeFallbackKeyMatch, "the software-volume switch key must be a single top-level constant");
+assert.equal(volumeFallbackKeyMatch[1], "volume_software_fallback_enabled");
+const volumeFallbackKey = volumeFallbackKeyMatch[1];
+assert.match(configPy, /DEFAULT_VOLUME_SOFTWARE_FALLBACK = False/, "software volume must default to off");
 assert.match(configPy, /DEFAULT_DLNA_RENDERER_ENABLED = False/, "the renderer role must default to off");
 assert.match(configPy, /DEFAULT_RENDERER_NAME = "fnAudio Renderer"/, "configuration must preserve the renderer default");
 assert.match(dlnaServicePy, /friendly = html\.escape\(self\.renderer_name if is_renderer else "fnAudio Music Library"\)/, "only the renderer friendly name is configurable and XML-escaped");
@@ -161,11 +166,13 @@ const sources = [
   rendererNameKey[0],
   dlnaTypeDetectionKey[0],
   dlnaRendererEnabledKey[0],
+  volumeFallbackKeyMatch[0],
   functionSource("runtimeConnectionPoolInput"),
   functionSource("runtimeLyricsBudgetInput"),
   functionSource("playbackRendererNameInput"),
   functionSource("dlnaTypeDetectionInput"),
   functionSource("dlnaRendererEnabledInput"),
+  functionSource("volumeSoftwareFallbackInput"),
   functionSource("applyRuntimeLyricsBudget"),
   functionSource("formatSize"),
   // R621: loadPlaybackSettings 现在读完服务端回显就刷新一次侧栏摘要 —— 摘要引用了
@@ -207,6 +214,7 @@ function harness(poolChecked, responses, budgetValue = "8388608") {
     rendererNameInput: { value: "客厅 fnAudio" },
     dlnaTypeDetectionInput: { checked: true },
     dlnaRendererEnabledInput: { checked: false },
+    volumeSoftwareFallbackInput: { checked: false },
     runtimeSettingsStatus: { textContent: "" },
     playbackSettingsStatus: { textContent: "" },
     settingsSummaryPlayback: { textContent: "" },
@@ -277,7 +285,7 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   // 5e) Renderer identity is saved independently from the advanced controls.
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
     await h.context.savePlaybackSettings();
-  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio", [dlnaRendererEnabledKey[1]]: false }, "the playback save must carry the renderer identity and its switch");
+  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio", [dlnaRendererEnabledKey[1]]: false, [volumeFallbackKey]: false }, "the playback save must carry the renderer identity, its switch and the software-volume switch");
   assert.equal(h.nodes.rendererNameInput.value, "书房播放器");
 
   // 5e2) 开关搬到「播放与输出」后，这个 pane 的保存必须把开关一起提交，
@@ -292,7 +300,20 @@ const okResponse = { ok: true, json: { ok: true, config: { library_connection_po
   h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
   delete h.nodes.dlnaRendererEnabledInput;
   await h.context.savePlaybackSettings();
-  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio" }, "a pane without the switch must not send the key at all");
+  assert.deepEqual(h.calls[0].body, { [rendererNameKey[1]]: "客厅 fnAudio", [volumeFallbackKey]: false }, "a pane without the renderer switch must not send that key at all");
+
+  // 5e3b) 软件音量开关同属这个 pane：勾上必须发 true，回显也必须采纳。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器", volume_software_fallback_enabled: true } } }]);
+  h.nodes.volumeSoftwareFallbackInput.checked = true;
+  await h.context.savePlaybackSettings();
+  assert.equal(h.calls[0].body[volumeFallbackKey], true, "the software-volume switch must be submitted with the pane");
+  assert.equal(h.nodes.volumeSoftwareFallbackInput.checked, true, "the switch must follow the server echo");
+
+  // 5e3c) 老页面没有这个控件时一个键都不能发：漏发是保留，发 false 等于偷偷关掉。
+  h = harness(true, [{ ok: true, json: { ok: true, config: { renderer_name: "书房播放器" } } }]);
+  delete h.nodes.volumeSoftwareFallbackInput;
+  await h.context.savePlaybackSettings();
+  assert.ok(!(volumeFallbackKey in h.calls[0].body), "a pane without the software-volume switch must not send the key");
 
   // 5e4) 侧栏摘要引用名称与开关。摘要在进 pane 时就先算过一次，那时请求还没回来，
   // 所以读完服务端回显必须再算一次——否则摘要一直说「跟随设备名」，而下面输入框里

@@ -205,6 +205,15 @@
               <p class="dialog-help">选择输出目标与 MP3 转码方式，点击后立即生效，不需要保存。</p>
               <div class="settings-device-controls" id="playbackDeviceControls"></div>
             </div>
+            <div class="settings-group" data-settings-block="playback-volume">
+              <div class="settings-group-head"><h3>输出音量</h3><span class="settings-badge is-save">需保存</span></div>
+              <!-- R629: 音量调控的边界是「这台输出到底有没有音量」。USB DAC 没有 ALSA
+                   Playback Volume、DLNA 接收端不答 RenderingControl 时，唯一剩下的办法是
+                   缩放音频样本，所以这是一个显式的取舍开关，默认关闭。 -->
+              <label class="metadata-toggle"><input id="volumeSoftwareFallbackInput" type="checkbox"><span><strong>允许调节没有硬件音量的输出</strong><small>USB DAC 没有音量控件、DLNA 接收端不支持音量调节时，由 fnAudio 自己调整音频样本代劳。</small></span></label>
+              <p class="dialog-help">关闭（默认）：这类输出保持固定电平，音量控件不起作用并说明原因。开启后<strong>会改变音频样本，输出不再是 bit-perfect</strong>；只影响上面两类输出，有硬件音量的设备仍然走设备自己的音量。</p>
+              <p class="dialog-help">切换这个开关会重启一次音频后端，播放会短暂中断；单纯修改名称或设备身份不会。</p>
+            </div>
             <div class="settings-group" data-settings-block="playback-sleep">
               <div class="settings-group-head"><h3>睡眠定时</h3><span class="settings-badge is-live">立即生效</span></div>
               <p class="dialog-help">到点后暂停播放，队列与进度都保留。定时按实际时间计算：切到后台、锁屏或重开应用都照样生效。</p>

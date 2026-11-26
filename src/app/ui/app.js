@@ -9223,6 +9223,7 @@ const LYRICS_CACHE_BUDGET_SETTING_KEY = "metadata_lyrics_cache_max_bytes";
 const RENDERER_NAME_SETTING_KEY = "renderer_name";
 const DLNA_TYPE_DETECTION_SETTING_KEY = "dlna_type_detection";
 const DLNA_RENDERER_ENABLED_SETTING_KEY = "dlna_renderer_enabled";
+const VOLUME_SOFTWARE_FALLBACK_SETTING_KEY = "volume_software_fallback_enabled";
 function runtimeConnectionPoolInput() {
   return $("libraryConnectionPoolInput");
 }
@@ -9237,6 +9238,9 @@ function dlnaTypeDetectionInput() {
 }
 function dlnaRendererEnabledInput() {
   return $("dlnaRendererEnabledInput");
+}
+function volumeSoftwareFallbackInput() {
+  return $("volumeSoftwareFallbackInput");
 }
 function applyRuntimeLyricsBudget(budget, limit) {
   // Show the budget the process really enforces. An unusable answer leaves the
@@ -9326,6 +9330,13 @@ async function loadPlaybackSettings() {
     if (rendererSwitch && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
       rendererSwitch.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
     }
+    // Same rule as the renderer switch: echo what the server says, never the
+    // markup default, or the pane would claim a trade is enabled that the audio
+    // path is not performing.
+    const volumeFallback = volumeSoftwareFallbackInput();
+    if (volumeFallback && typeof data?.config?.[VOLUME_SOFTWARE_FALLBACK_SETTING_KEY] === "boolean") {
+      volumeFallback.checked = data.config[VOLUME_SOFTWARE_FALLBACK_SETTING_KEY];
+    }
     if (status) status.textContent = "";
     // The rail quotes both the name and the switch, but it was computed before
     // this fetch resolved, so without this it keeps saying "跟随设备名" while
@@ -9355,6 +9366,10 @@ async function savePlaybackSettings() {
   // saving the device identity is also what commits it.
   const rendererSwitch = dlnaRendererEnabledInput();
   if (rendererSwitch) body[DLNA_RENDERER_ENABLED_SETTING_KEY] = rendererSwitch.checked === true;
+  // Omitted keys are preserved, so a pane that has not rendered this switch must
+  // not send it and silently turn the fallback off.
+  const volumeFallback = volumeSoftwareFallbackInput();
+  if (volumeFallback) body[VOLUME_SOFTWARE_FALLBACK_SETTING_KEY] = volumeFallback.checked === true;
   const response = await apiFetch("api/config/runtime", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -9367,6 +9382,9 @@ async function savePlaybackSettings() {
   }
   if (rendererSwitch && typeof data?.config?.[DLNA_RENDERER_ENABLED_SETTING_KEY] === "boolean") {
     rendererSwitch.checked = data.config[DLNA_RENDERER_ENABLED_SETTING_KEY];
+  }
+  if (volumeFallback && typeof data?.config?.[VOLUME_SOFTWARE_FALLBACK_SETTING_KEY] === "boolean") {
+    volumeFallback.checked = data.config[VOLUME_SOFTWARE_FALLBACK_SETTING_KEY];
   }
   return data;
 }

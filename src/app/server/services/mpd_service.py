@@ -157,6 +157,12 @@ DURABLE_CONFIG_MARKER = "@appconf"
 LEGACY_DATA_ROOT_PARTS = ("share", "mpd")
 RECLAIMED_INDEX_FILES = ("database", "state", "sticker.sql")
 
+# Said when the opt-in software-volume switch is what made a silent output
+# adjustable.  It has to name the trade in the same sentence as the permission:
+# scaling the samples is the only thing left once a USB DAC exposes no ALSA
+# Playback Volume, and it is exactly what gives up bit-perfect output.
+SOFTWARE_VOLUME_FALLBACK_MESSAGE = "已启用软件音量：修改的是音频样本，输出不再是 bit-perfect"
+
 # A loopback MPD client can be handed MPD's own listening port as its source
 # port, and that self-connection keeps the port claimed after MPD dies
 # (measured 2026-10-10: the app process held ``127.0.0.1:56660`` and MPD failed
@@ -2532,11 +2538,36 @@ class MpdService:
             body = body.split(",", 1)[0]
         return "hw:" + body
 
+    def _software_fallback_policy(self, requested: str, controls: List[str]) -> Dict[str, Any]:
+        """The opt-in answer for an output that has no hardware volume.
+
+        Reached only when `volume_software_fallback_enabled` is on.  Without it
+        these outputs keep the fixed-level answer and refuse the write; with it
+        MPD is told `mixer_type "software"`, which scales the samples.  That is
+        why `bitperfect` is false and `fallback` is true: the caller must be able
+        to say why the volume moved, not just that it did.
+        """
+        return {
+            "requested_mode": requested,
+            "mode": "software",
+            "available": True,
+            "bitperfect": False,
+            "control": "software",
+            "device": "",
+            "controls": controls,
+            "fallback": True,
+            "message": SOFTWARE_VOLUME_FALLBACK_MESSAGE,
+        }
+
     def mixer_policy(self, device: Optional[Dict[str, Any]] = None, mixer_probe: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         requested = _config_text(self.config.get("mpd_mixer_type"), "none", 32).strip().lower()
         if requested not in ("none", "software", "hardware"):
             requested = "none"
+        # A real JSON boolean only, like every other switch in this file.
+        fallback_enabled = self.config.get("volume_software_fallback_enabled") is True
         if requested == "none":
+            if fallback_enabled:
+                return self._software_fallback_policy(requested, [])
             return {
                 "requested_mode": requested,
                 "mode": "none",
@@ -2565,6 +2596,11 @@ class MpdService:
         controls = [str(control) for control in probe.get("controls") or []]
         control = self._preferred_mixer_control(controls, _config_text(self.config.get("mpd_mixer_control"), maximum=128))
         if not probe.get("available") or not control:
+            # The switch has to cover this branch as well as `requested == none`:
+            # choosing "hardware" and then finding no Playback Volume control is
+            # the situation the user is actually in when the DAC has no volume.
+            if fallback_enabled:
+                return self._software_fallback_policy(requested, controls)
             return {
                 "requested_mode": requested,
                 "mode": "none",
