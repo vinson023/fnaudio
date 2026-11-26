@@ -74,3 +74,41 @@ function button() {
   assert.equal(nodes.saveMetadataTagSettingsBtn.disabled, false);
   console.log("Settings save scope and overlapping metadata save isolation checks passed.");
 })();
+
+// Every settings block that owns a control has to be reachable from the footer.
+//
+// `markSettingsDirty` silently drops a block that belongs to no group, so a
+// control in an unmapped block can be changed but never saved - the footer with
+// the save button simply never appears. That is how R630 shipped the software
+// volume switch (reported 2026-11-26 as "勾选后没有保存按钮"). Blocks that apply
+// on click are listed here instead of being mapped, because they must not queue
+// a save at all.
+(() => {
+  const html = fs.readFileSync("app/ui/index.html", "utf8");
+  const groupsLiteral = app.match(/const SETTINGS_GROUPS = \[([\s\S]*?)\n\];/);
+  assert.ok(groupsLiteral, "SETTINGS_GROUPS must stay a literal array");
+  const mapped = new Set();
+  for (const entry of groupsLiteral[1].matchAll(/blocks:\s*\[(.*?)\]/g)) {
+    for (const id of entry[1].matchAll(/"([^"]+)"/g)) mapped.add(id[1]);
+  }
+  const tabsLiteral = app.match(/const SETTINGS_BLOCK_TABS = \{([\s\S]*?)\n\};/);
+  assert.ok(tabsLiteral, "SETTINGS_BLOCK_TABS must stay a literal object");
+  const tabbed = new Set(
+    [...tabsLiteral[1].matchAll(/(?:^|\n)\s*"?([A-Za-z0-9_-]+)"?\s*:/g)].map(m => m[1])
+  );
+  const APPLIES_ON_CLICK = new Set([
+    "playback-output", "playback-sleep", "appearance-theme", "advanced-paging",
+    "advanced-maintenance", "network-port", "metadata-tasks", "advanced-about",
+  ]);
+  const blocks = [...html.matchAll(/data-settings-block="([^"]+)"/g)].map(m => m[1]);
+  assert.ok(blocks.length > 8, "the settings dialog must still declare its blocks");
+  for (const id of new Set(blocks)) {
+    if (APPLIES_ON_CLICK.has(id)) continue;
+    assert.ok(mapped.has(id), id + " belongs to no SETTINGS_GROUPS entry, so its save button never appears");
+    assert.ok(tabbed.has(id), id + " is missing from SETTINGS_BLOCK_TABS");
+  }
+  for (const id of mapped) {
+    assert.ok(blocks.includes(id), id + " is mapped for saving but no longer exists in index.html");
+  }
+  console.log("Every saveable settings block is reachable from the footer.");
+})();

@@ -8979,7 +8979,7 @@ function bindSettingsTabs() {
  * switch and the lyrics budget share one POST and live on two different tabs. */
 const SETTINGS_GROUPS = [
   { key: "library", label: "音乐目录", blocks: ["library"], save: () => saveLibrarySettings() },
-  { key: "playback", label: "设备身份", blocks: ["playback-identity"], save: () => savePlaybackPaneSettings() },
+  { key: "playback", label: "播放与设备", blocks: ["playback-identity", "playback-volume"], save: () => savePlaybackPaneSettings() },
   { key: "metadata", label: "基础与安全", blocks: ["metadata-overview"], save: () => saveMetadataOverviewPaneSettings() },
   { key: "metadata-providers", label: "数据源", blocks: ["metadata-providers"], save: () => saveMetadataProviderPaneSettings() },
   { key: "metadata-tags", label: "Tag 写回", blocks: ["metadata-tags"], save: () => saveMetadataTagPaneSettings() },
@@ -8991,6 +8991,11 @@ const SETTINGS_GROUPS = [
 const SETTINGS_BLOCK_TABS = {
   library: "library",
   "playback-identity": "playback",
+  // Same endpoint as the identity block, so the same group writes it. Forgetting
+  // this entry is invisible until a user ticks the box: markSettingsDirty drops
+  // an unmapped block, the footer never appears, and the setting cannot be saved
+  // at all (reported 2026-11-26 as "勾选后没有保存按钮").
+  "playback-volume": "playback",
   "metadata-overview": "metadata",
   "metadata-providers": "metadata",
   "metadata-tags": "metadata",
