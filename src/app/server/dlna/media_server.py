@@ -68,6 +68,7 @@ def upnp_media_url(
     item: Dict[str, Any],
     safe_filename: Callable[[str], str],
     upnp_base_url: Callable[[Any], str],
+    gain: Any = None,
 ) -> str:
     source = _source_path(item)
     if item.get("cue_track"):
@@ -84,6 +85,12 @@ def upnp_media_url(
         _url_id_segment(item.get("id")),
         urllib.parse.quote(filename),
     )
+    # Only a renderer that cannot attenuate needs scaled bytes, and DSD is never
+    # re-encoded here (the resource is the original DSF/DFF). 100% is the
+    # original file, so the query string disappears and the resource stays
+    # bit-perfect.
+    if not item.get("is_dsd") and isinstance(gain, int) and not isinstance(gain, bool) and 0 < gain < 100:
+        url += "?transcode=gain&gain=%d" % max(1, min(99, gain))
     return url
 
 
@@ -167,6 +174,7 @@ def soap_push(
     safe_filename: Callable[[str], str],
     upnp_base_url: Callable[[Any], str],
     transcode_to_audio: Callable,
+    gain: Any = None,
 ):
     control = device.get("control_url")
     if not control:
@@ -187,10 +195,15 @@ def soap_push(
         if dsd_capability_state(device) == DSD_CAPABILITY_UNSUPPORTED:
             return False, "设备不支持源码 DSD，已阻止 PCM 转码"
 
-    uri = upnp_media_url(handler, item, safe_filename, upnp_base_url)
+    uri = upnp_media_url(handler, item, safe_filename, upnp_base_url, gain)
     resource_mime = upnp_resource_mime(item)
     resource_protocol = protocol_info({**item, "mime": resource_mime}, device)
-    resource_size = upnp_resource_size(item, handler.server.config, transcode_to_audio)
+    # A scaled resource is produced on demand, so the source file's size says
+    # nothing about the bytes the renderer will receive. Omitting the attribute
+    # is legal DIDL and is the only honest option; a size that is off by a few
+    # percent makes a renderer that trusts it truncate the track.
+    scaled = bool(uri.split("?", 1)[1:]) and "gain=" in uri
+    resource_size = 0 if scaled else upnp_resource_size(item, handler.server.config, transcode_to_audio)
     artwork_uri = "%s/upnp/cover/%s?size=160" % (
         upnp_base_url(handler),
         _url_id_segment(item.get("id")),

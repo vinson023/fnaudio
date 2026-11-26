@@ -552,6 +552,7 @@ from transcode import (
     cleanup_transcode_cache_if_due,
     find_ffmpeg,
     media_mode,
+    parse_gain_mode,
     playback_profile,
     public_access,
     prune_transcode_cache,
@@ -621,8 +622,72 @@ def read_complete_request_body(stream, length, chunk_size=64 * 1024):
     return b"".join(chunks)
 
 
-def soap_push(device, item, handler):
-    return dlna_soap_push(device, item, handler, safe_filename, upnp_base_url, transcode_to_audio)
+def soap_push(device, item, handler, gain=None):
+    return dlna_soap_push(device, item, handler, safe_filename, upnp_base_url, transcode_to_audio, gain)
+
+
+# The attenuation a push is currently using, per target.
+#
+# A renderer without RenderingControl cannot be told to change volume, so the
+# only lever left is the bytes: the media URL carries a gain and the served
+# resource becomes a re-encoded FLAC. The level therefore has to outlive a single
+# push - the next track, an auto-advance, a seek-triggered reload must all keep
+# it - which is why it lives beside the target instead of in the request.
+DLNA_PUSH_GAIN = {"target_id": "", "percent": 100}
+# Everything a stop/start cycle touches has to be invisible to the monitor loop
+# for a moment, or the transient STOPPED reads as "the track ended" and advances
+# the queue.
+DLNA_REPUSH_GUARD_SECONDS = 10.0
+
+
+def push_gain_for(target_id):
+    if not target_id or DLNA_PUSH_GAIN.get("target_id") != target_id:
+        return 100
+    try:
+        percent = int(DLNA_PUSH_GAIN.get("percent"))
+    except (TypeError, ValueError):
+        return 100
+    return max(1, min(100, percent))
+
+
+def dlna_transcode_volume_allowed(config) -> bool:
+    """Whether a push to a renderer without a mixer may scale the samples."""
+    mode = resolve_volume_mode(config, "dlna")
+    if mode == "fixed":
+        return False
+    if mode == "transcode":
+        return True
+    if mode == "device":
+        return False
+    return software_fallback_enabled(config)
+
+
+def repush_dlna_with_gain(device, state, config, percent):
+    """Re-send the current track at a new gain and put the needle back.
+
+    The renderer is streaming a URL; the only way to change the level is to give
+    it a different URL and start again. Position is read before the push so the
+    listener lands where they were, not at 0:00.
+    """
+    track_id = PLAYBACK_CORE.state.current_track_id
+    item = find_library_item(config, track_id) if track_id else None
+    if not item:
+        return {"ok": False, "message": "当前没有可重新推送的音轨", "target_id": state.target_id}
+    try:
+        position = safe_float((upnp_position_info(device) or {}).get("rel_seconds"))
+    except Exception:
+        position = 0.0
+    handler = SimpleNamespace(server=SimpleNamespace(config=config), headers={})
+    DLNA_MONITOR_GUARD.update({
+        "target_id": state.target_id,
+        "suppress_stop_until": time.monotonic() + DLNA_REPUSH_GUARD_SECONDS,
+    })
+    ok, message = soap_push(device, item, handler, gain=percent)
+    if ok and position > 0:
+        ok, seek_message = upnp_control(device, "seek", position)
+        if not ok:
+            message = "音量已改，但无法跳回原位置: %s" % seek_message
+    return {"ok": ok, "message": message, "target_id": state.target_id, "gain": percent}
 
 
 def dlna_output_open(track, state, context):
@@ -638,7 +703,7 @@ def dlna_output_open(track, state, context):
     # the monitor's authoritative queue advance can replay the just-finished
     # item.  Keep DLNA progression in one place: the monitor loads exactly
     # one next queue item after it observes a completed track.
-    ok, message = soap_push(device, item, handler)
+    ok, message = soap_push(device, item, handler, gain=push_gain_for(state.target_id))
     requested_position = safe_float(context.get("position"))
     if ok and requested_position > 0:
         ok, seek_message = upnp_control(device, "seek", requested_position)
@@ -674,8 +739,13 @@ def dlna_output_command(command, state, context):
         # must not be overridden by the global switch, exactly like `hardware`
         # on the DAC side.
         if mode == "transcode" or (mode == "auto" and software_fallback_enabled(config)):
-            return {"ok": False, "message": "该设备没有音量控制；软件增益需要转码推流，尚未启用",
-                    "target_id": state.target_id}
+            try:
+                percent = int(round(float(command.position)))
+            except (TypeError, ValueError, OverflowError):
+                percent = 100
+            percent = max(1, min(100, percent))
+            DLNA_PUSH_GAIN.update({"target_id": state.target_id, "percent": percent})
+            return repush_dlna_with_gain(device, state, config, percent)
         return {"ok": False, "message": "该设备没有音量控制，且未开启软件音量", "target_id": state.target_id}
     if command.action == "stop":
         DLNA_MONITOR_GUARD.update(
@@ -2650,9 +2720,12 @@ class Handler(BaseHTTPRequestHandler):
         # DLNA DSD pushes must expose the original DSF/DFF bytes. Browser
         # playback may still request server-side conversion explicitly.
         mode = "original" if item.get("is_dsd") else media_mode(item, query, self)
-        if str(item.get("path") or "").lower().endswith(".ape"):
+        gain_percent = parse_gain_mode(mode)
+        if not gain_percent and str(item.get("path") or "").lower().endswith(".ape"):
             # Renderers frequently omit source format support in their probe.
             # fnAudio always exposes the APE compatibility resource as FLAC.
+            # A gain request skips this: the gain path already decodes to FLAC,
+            # so leaving it in place would silently drop the attenuation.
             mode = "cue_flac" if item.get("cue_track") else "ape_flac"
         self.record_dlna(
             "media",
@@ -2662,7 +2735,14 @@ class Handler(BaseHTTPRequestHandler):
             mode=mode,
             method=self.command,
         )
-        if mode == "mp3":
+        if gain_percent:
+            # The renderer has no mixer, so the bytes carry the attenuation: the
+            # whole resource is a re-encode of this track at this level.
+            try:
+                target, mime = transcode_to_audio(item, self.server.config, mode)
+            except RuntimeError as exc:
+                return self.send_error(getattr(exc, "status", 503), str(exc))
+        elif mode == "mp3":
             try:
                 target, mime = transcode_to_audio(item, self.server.config, "mp3")
             except RuntimeError as exc:
@@ -2843,6 +2923,9 @@ def playback_targets_payload(force_refresh=False):
         PLAYBACK_CORE.registry.get("browser").capabilities(),
         PLAYBACK_CORE.registry.get("mpd").capabilities(),
         PLAYBACK_CORE.registry.get("dlna_push").capabilities(),
+        transcode_volume=dlna_transcode_volume_allowed(
+            getattr(getattr(MPD_OUTPUT, "service", None), "config", {}) or {}
+        ),
     )
     # Discovery is asynchronous. Keep the core target untouched while a
     # renderer is temporarily absent, but tell clients when it has no row.

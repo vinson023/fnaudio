@@ -167,7 +167,7 @@ class RemoteOutputMonitorTests(unittest.TestCase):
         state = SimpleNamespace(target_id="renderer-1")
         pushed = []
 
-        def capture_push(device, item, handler, next_item=None):
+        def capture_push(device, item, handler, next_item=None, gain=None):
             pushed.append(next_item)
             return True, "started"
 

@@ -68,11 +68,18 @@ def build_targets(
     browser_capabilities: Any,
     mpd_capabilities: Any,
     dlna_capabilities: Any,
+    transcode_volume: bool = False,
 ) -> Tuple[List[Dict[str, Any]], str, str]:
     """Return a compact, bounded target list and active target metadata.
 
     Keep all target row fields public/UI-safe. In particular, do not duplicate
     the complete MPD and upmpdcli diagnostic payload once per USB DAC row.
+
+    ``transcode_volume`` is the policy's answer to "may a push to a renderer
+    without a mixer scale the samples?". It turns the volume capability on for
+    those devices: the slider is offered because fnAudio can act on it by
+    re-pushing the track at a different gain, not because the device accepts a
+    SetVolume.
     """
     mpd_state = _mapping(mpd)
     capabilities = _mapping(mpd_state.get("output_capabilities"))
@@ -141,6 +148,8 @@ def build_targets(
         # One predicate for one fact: the transport list lights native DSD only on
         # the same probe record the push gate refuses on.
         target_caps["native_dsd"] = device_supports_native_dsd(device)
+        if transcode_volume and target_caps.get("volume") is not True:
+            target_caps["volume"] = True
         name = _text(device.get("name")) or "DLNA 设备"
         targets.append({
             "id": device_id,

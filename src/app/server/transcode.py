@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import os
 import re
 import signal
@@ -377,6 +378,21 @@ def media_mode(item, query, handler):
     requested = (query.get("transcode") or query.get("delivery") or ["auto"])[0]
     profile = (query.get("profile") or ["auto"])[0]
     ext = os.path.splitext(item["path"])[1].lower()
+    if requested == "gain":
+        # A gain push is a DLNA-only mode: the receiver has no volume of its own,
+        # so the bytes have to arrive already scaled. Full scale is answered with
+        # the original file, which keeps bit-perfect output at 100%, and DSD is
+        # never re-encoded (the push path exposes the original DSF/DFF bytes).
+        raw = query.get("gain")
+        raw = raw[0] if isinstance(raw, (list, tuple)) and raw else raw
+        try:
+            percent = int(raw)
+        except (TypeError, ValueError):
+            percent = MAX_GAIN_PERCENT
+        percent = max(1, min(MAX_GAIN_PERCENT, percent))
+        if percent >= MAX_GAIN_PERCENT or item.get("is_dsd"):
+            return "original"
+        return "%s%d" % (GAIN_MODE_PREFIX, percent)
     if requested in ("original", "upnp"):
         return "original"
     if requested in ("flac", "ape-flac", "ape_flac"):
@@ -424,16 +440,64 @@ def find_ffmpeg(config):
     return ""
 
 
+GAIN_MODE_PREFIX = "gain_flac:"
+MAX_GAIN_PERCENT = 100
+
+
+def parse_gain_mode(mode) -> int:
+    """Return the gain percent encoded in a `gain_flac:<n>` mode, else 0.
+
+    0 means "not a gain mode". Anything unreadable is also 0 rather than 100:
+    a malformed URL must not silently turn into a full-volume transcode.
+    """
+    if not isinstance(mode, str) or not mode.startswith(GAIN_MODE_PREFIX):
+        return 0
+    try:
+        percent = int(mode[len(GAIN_MODE_PREFIX):])
+    except (TypeError, ValueError):
+        return 0
+    return max(1, min(MAX_GAIN_PERCENT, percent))
+
+
+def gain_mode_percent_to_db(percent: int) -> float:
+    """Percent of full scale to the dB the ffmpeg volume filter takes."""
+    percent = max(1, min(MAX_GAIN_PERCENT, int(percent)))
+    return 20.0 * math.log10(percent / float(MAX_GAIN_PERCENT))
+
+
 def transcode_to_audio(item, config, mode="mp3"):
     if mode == "original":
         return item["path"], item["mime"]
+    gain_percent = parse_gain_mode(mode)
+    if gain_percent:
+        mode = "gain_flac"
     ffmpeg = find_ffmpeg(config)
     if not ffmpeg:
         raise TranscodeError(CODE_FFMPEG_MISSING, "系统中未找到可用的 ffmpeg")
     cache_dir = config.get("cache_dir") or os.path.join(os.path.dirname(item["path"]), ".fnaudio-cache")
     secure_directory(cache_dir)
     stem = _cache_item_stem(item)
-    if mode == "dsd_wav":
+    if mode == "gain_flac":
+        # One file per level, and the level is in the name: the cache entry is
+        # only reusable for the same attenuation, which is what keeps a slider
+        # drag from overwriting the file another push is currently streaming.
+        target = os.path.join(cache_dir, "%s.gain-%03d.flac" % (stem, gain_percent))
+        mime = "audio/flac"
+        command = [ffmpeg, "-threads", "0", "-y"]
+        if item.get("cue_track"):
+            # A CUE row is a slice of the image file; scaling the whole image
+            # would play every track of the album from the first sample.
+            command += ["-ss", str(max(0, safe_float(item.get("cue_start")))), "-i", item["path"]]
+            duration = safe_float(item.get("duration"))
+            if duration > 0:
+                command += ["-t", str(duration)]
+        else:
+            command += ["-i", item["path"]]
+        command += ["-vn", "-map", "0:a:0"]
+        if gain_percent < MAX_GAIN_PERCENT:
+            command += ["-af", "volume=%.2fdB" % gain_mode_percent_to_db(gain_percent)]
+        command += ["-codec:a", "flac"]
+    elif mode == "dsd_wav":
         target = os.path.join(cache_dir, stem + ".dsd-96k-24bit.wav")
         mime = "audio/wav"
         command = [ffmpeg, "-threads", "0", "-y", "-i", item["path"], "-vn", "-map", "0:a:0", "-ar", "96000", "-codec:a", "pcm_s24le"]
@@ -521,6 +585,18 @@ def transcode_to_audio(item, config, mode="mp3"):
                     secure_file(target)
                 except OSError as exc:
                     raise TranscodeError(CODE_PUBLISH_FAILED, "failed to publish transcode cache: %s" % exc) from exc
+                if gain_percent:
+                    # One level per track. Dragging the slider across ten stops
+                    # would otherwise leave ten full-length FLACs of the same
+                    # song in the cache, and the size-based pruner would then
+                    # evict other tracks to make room for them.
+                    stale_pattern = os.path.join(cache_dir, glob.escape(stem) + ".gain-*.flac")
+                    try:
+                        for stale in glob.glob(stale_pattern):
+                            if stale != target:
+                                os.remove(stale)
+                    except OSError:
+                        pass
         _clear_transcode_failure(target)
         return target, mime
     finally:

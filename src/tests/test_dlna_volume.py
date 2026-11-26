@@ -9,6 +9,7 @@ first one and the refusals around the second.
 
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, "app/server")
@@ -122,12 +123,20 @@ class PushVolumeCommandTests(unittest.TestCase):
         self.assertIn("未开启软件音量", result["message"])
         setter.assert_not_called()
 
-    def test_the_switch_points_at_the_unimplemented_transcode_path(self):
-        result, setter = self._run({"capabilities": {"volume": False}}, {"volume": {"software_fallback": True}})
-        self.assertIs(result["ok"], False)
-        self.assertIn("转码", result["message"],
-                      "the switch promises software gain; the message must not pretend it already works")
-        setter.assert_not_called()
+    def test_the_switch_routes_to_the_transcode_repush(self):
+        device = {"capabilities": {"volume": False}}
+        with mock.patch.object(self.server, "find_upnp_device", return_value=device), \
+                mock.patch.object(self.server, "repush_dlna_with_gain",
+                                  return_value={"ok": True, "message": "ok"}) as repush:
+            result = self.server.dlna_output_command(
+                self.command("volume", 37), self.state,
+                {"config": {"volume": {"software_fallback": True}}})
+        self.assertIs(result["ok"], True)
+        repush.assert_called_once_with(device, self.state,
+                                       {"volume": {"software_fallback": True}}, 37)
+        self.assertEqual(self.server.DLNA_PUSH_GAIN,
+                         {"target_id": "dlna:one", "percent": 37},
+                         "the level has to outlive this request: the next track needs it too")
 
     def test_a_fixed_target_refuses_even_when_the_device_could(self):
         result, setter = self._run({"capabilities": {"volume": True}},
@@ -141,6 +150,67 @@ class PushVolumeCommandTests(unittest.TestCase):
                                    {"volume": {"targets": {"dlna": "device"}, "software_fallback": True}})
         self.assertIs(result["ok"], False)
         self.assertIn("未开启软件音量", result["message"])
+
+
+class GainRepushTests(unittest.TestCase):
+    """Changing the level means a new URL, so the track is pushed again."""
+
+    @classmethod
+    def setUpClass(cls):
+        import server
+        from playback.models import PlaybackState
+        cls.server = server
+        cls.state = PlaybackState(target_id="dlna:two", target_kind="dlna_push")
+
+    def test_the_position_is_read_before_the_push_and_restored_after(self):
+        device = {"control_url": "http://198.51.100.20/av"}
+        with mock.patch.object(self.server, "find_library_item", return_value={"id": "t1"}), \
+                mock.patch.object(self.server.PLAYBACK_CORE, "state",
+                                  SimpleNamespace(current_track_id="t1")), \
+                mock.patch.object(self.server, "upnp_position_info", return_value={"rel_seconds": 42.5}), \
+                mock.patch.object(self.server, "soap_push", return_value=(True, "ok")) as push, \
+                mock.patch.object(self.server, "upnp_control", return_value=(True, "ok")) as control:
+            self.server.DLNA_MONITOR_GUARD.clear()
+            result = self.server.repush_dlna_with_gain(device, self.state, {}, 40)
+        self.assertIs(result["ok"], True)
+        self.assertEqual(push.call_args.kwargs.get("gain"), 40)
+        control.assert_called_once_with(device, "seek", 42.5)
+        self.assertGreater(self.server.DLNA_MONITOR_GUARD.get("suppress_stop_until", 0), 0,
+                           "the transient STOPPED must not be read as 'the track ended'")
+
+    def test_a_failed_seek_keeps_the_gain_and_says_so(self):
+        device = {"control_url": "http://198.51.100.20/av"}
+        with mock.patch.object(self.server, "find_library_item", return_value={"id": "t1"}), \
+                mock.patch.object(self.server.PLAYBACK_CORE, "state",
+                                  SimpleNamespace(current_track_id="t1")), \
+                mock.patch.object(self.server, "upnp_position_info", return_value={"rel_seconds": 10.0}), \
+                mock.patch.object(self.server, "soap_push", return_value=(True, "ok")), \
+                mock.patch.object(self.server, "upnp_control", return_value=(False, "seek refused")):
+            result = self.server.repush_dlna_with_gain(device, self.state, {}, 25)
+        self.assertIs(result["ok"], False)
+        self.assertIn("无法跳回原位置", result["message"])
+
+    def test_no_current_track_is_a_refusal_not_a_crash(self):
+        with mock.patch.object(self.server, "find_library_item", return_value=None):
+            result = self.server.repush_dlna_with_gain({}, self.state, {}, 30)
+        self.assertIs(result["ok"], False)
+        self.assertIn("没有可重新推送", result["message"])
+
+    def test_the_next_push_carries_the_level_that_was_set(self):
+        from playback.models import PlaybackState
+        track = mock.Mock(track_id="t1")
+        track.item = {"id": "t1"}
+        with mock.patch.object(self.server, "find_upnp_device", return_value={"control_url": "http://x/av"}), \
+                mock.patch.object(self.server, "soap_push", return_value=(True, "ok")) as push:
+            self.server.DLNA_PUSH_GAIN.update({"target_id": "dlna:three", "percent": 55})
+            self.server.dlna_output_open(
+                track, PlaybackState(target_id="dlna:three", target_kind="dlna_push"),
+                {"handler": mock.Mock(), "item": track.item, "position": 0})
+        self.assertEqual(push.call_args.kwargs.get("gain"), 55)
+
+    def test_a_different_target_starts_at_full_scale(self):
+        self.assertEqual(self.server.push_gain_for("dlna:other"), 100,
+                         "the level belongs to the renderer that was set, not to the next one")
 
 
 if __name__ == "__main__":
