@@ -24,11 +24,21 @@ def policy_for(config, device=None, probe=None):
 
 class SoftwareVolumeFallbackTests(unittest.TestCase):
     def test_off_keeps_the_fixed_level_refusal(self):
-        policy = policy_for({"mpd_mixer_type": "none", "volume_software_fallback_enabled": False})
+        # `auto` with the switch off: the DAC is probed, finds no control, and the
+        # write is refused exactly as before. The message names the control rather
+        # than the fixed level because this path did look.
+        policy = policy_for({"volume": {"targets": {"dac": "auto"}}, "volume_software_fallback_enabled": False})
         self.assertIs(policy["available"], False)
         self.assertEqual(policy["mode"], "none")
         self.assertIs(policy["bitperfect"], True)
-        self.assertIn("固定输出电平", policy["message"])
+        self.assertIn("Playback Volume", policy["message"])
+
+    def test_fixed_mode_does_not_even_probe_the_dac(self):
+        policy = policy_for({"volume": {"targets": {"dac": "fixed"}}, "volume_software_fallback_enabled": True})
+        self.assertIs(policy["available"], False)
+        self.assertEqual(policy["mode"], "none")
+        self.assertIn("固定输出电平", policy["message"],
+                      "an explicit 0 dB request must not be overridden by the fallback switch")
 
     def test_on_scales_the_samples_and_says_so(self):
         policy = policy_for({"mpd_mixer_type": "none", "volume_software_fallback_enabled": True})

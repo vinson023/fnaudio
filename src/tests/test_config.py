@@ -107,6 +107,75 @@ class ConfigTests(unittest.TestCase):
                 json.dump({"dlna_uuid": "x" * 5000}, fh)
             self.assertEqual(len(load_config(path)["dlna_uuid"]), 64)
 
+    def test_a_legacy_mixer_type_migrates_into_the_volume_policy(self):
+        # A config written before the policy existed only has the flat key. Its
+        # meaning has to survive: an explicit software/hardware choice stays, and
+        # `none` becomes `auto` because with the fallback switch off `auto` still
+        # resolves to a fixed level on an output without a control.
+        cases = {
+            "none": ("auto", "none"),
+            "software": ("software", "software"),
+            "hardware": ("hardware", "hardware"),
+            # An unreadable value fails closed: it must not be the thing that
+            # switches an attenuation path on.
+            "garbage": ("fixed", "none"),
+        }
+        for mixer, (target, mirror) in cases.items():
+            with self.subTest(mixer=mixer):
+                with tempfile.TemporaryDirectory() as root:
+                    path = os.path.join(root, "config.json")
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({"mpd_mixer_type": mixer}, fh)
+                    config = load_config(path)
+                    self.assertEqual(config["volume"]["targets"]["dac"], target)
+                    self.assertIs(config["volume"]["software_fallback"], False)
+                    self.assertEqual(config["mpd_mixer_type"], mirror)
+
+    def test_the_legacy_fallback_switch_migrates_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"volume_software_fallback_enabled": True}, fh)
+            config = load_config(path)
+            self.assertIs(config["volume"]["software_fallback"], True)
+            self.assertTrue(save_config(path, config))
+            persisted = json.load(open(path, encoding="utf-8"))
+            self.assertIs(persisted["volume"]["software_fallback"], True)
+            self.assertIs(persisted["volume_software_fallback_enabled"], True,
+                          "the flat key has to stay in sync for older readers")
+
+    def test_the_policy_object_wins_over_the_flat_key(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"mpd_mixer_type": "software",
+                           "volume": {"targets": {"dac": "hardware"}}}, fh)
+            config = load_config(path)
+            self.assertEqual(config["volume"]["targets"]["dac"], "hardware")
+            self.assertEqual(config["mpd_mixer_type"], "hardware",
+                             "the legacy mirror is rewritten from the policy, not the file")
+
+    def test_the_volume_policy_is_bounded_and_rejects_unknown_modes(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"volume": {"mode": "banana", "max_percent": 999,
+                                      "targets": {"dac": "banana", "dlna": "device", "renderer": 5}}}, fh)
+            volume = load_config(path)["volume"]
+            self.assertEqual(volume["mode"], "auto")
+            self.assertEqual(volume["max_percent"], 100)
+            self.assertEqual(volume["targets"]["dac"], "auto")
+            self.assertEqual(volume["targets"]["dlna"], "device")
+            self.assertEqual(volume["targets"]["renderer"], "auto")
+
+    def test_dlna_mode_does_not_accept_dac_vocabulary(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "config.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"volume": {"targets": {"dlna": "hardware"}}}, fh)
+            self.assertEqual(load_config(path)["volume"]["targets"]["dlna"], "auto",
+                             "a renderer has no ALSA control; `hardware` is not a DLNA mode")
+
     def test_dlna_renderer_rejects_a_string_as_the_switch(self):
         # A hand-edited "false" is not the boolean the renderer gate checks, so it
         # has to fall back to the default rather than read as enabled.

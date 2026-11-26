@@ -14,6 +14,7 @@ import tempfile
 from contextlib import contextmanager
 from process_output import check_output_bounded
 from summary_values import nonnegative_int
+from volume_policy import normalize_volume_policy
 import threading
 import time
 import urllib.parse
@@ -2560,14 +2561,17 @@ class MpdService:
         }
 
     def mixer_policy(self, device: Optional[Dict[str, Any]] = None, mixer_probe: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        requested = _config_text(self.config.get("mpd_mixer_type"), "none", 32).strip().lower()
-        if requested not in ("none", "software", "hardware"):
-            requested = "none"
-        # A real JSON boolean only, like every other switch in this file.
-        fallback_enabled = self.config.get("volume_software_fallback_enabled") is True
-        if requested == "none":
-            if fallback_enabled:
-                return self._software_fallback_policy(requested, [])
+        # The policy object is authoritative; `mpd_mixer_type` is only the legacy
+        # projection of it (see config.normalize_volume_policy), so reading both
+        # here is what keeps a config written by an older build working.
+        policy = normalize_volume_policy(
+            self.config.get("volume"),
+            self.config.get("mpd_mixer_type"),
+            self.config.get("volume_software_fallback_enabled"),
+        )
+        requested = policy["targets"]["dac"]
+        fallback_enabled = policy["software_fallback"]
+        if requested == "fixed":
             return {
                 "requested_mode": requested,
                 "mode": "none",
@@ -2596,9 +2600,9 @@ class MpdService:
         controls = [str(control) for control in probe.get("controls") or []]
         control = self._preferred_mixer_control(controls, _config_text(self.config.get("mpd_mixer_control"), maximum=128))
         if not probe.get("available") or not control:
-            # The switch has to cover this branch as well as `requested == none`:
-            # choosing "hardware" and then finding no Playback Volume control is
-            # the situation the user is actually in when the DAC has no volume.
+            # `auto` and `hardware` arrive here for the same reason: the DAC
+            # exposes no Playback Volume control. Whether that becomes software
+            # gain or a refused write is exactly what the switch decides.
             if fallback_enabled:
                 return self._software_fallback_policy(requested, controls)
             return {
@@ -2609,7 +2613,7 @@ class MpdService:
                 "control": "",
                 "device": "",
                 "controls": controls,
-                "fallback": True,
+                "fallback": requested == "hardware",
                 "message": str(probe.get("message") or "所选设备没有可用的 ALSA Playback Volume 控件；已回退固定音量"),
             }
         return {

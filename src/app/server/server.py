@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler
 from config import load_config, normalize_renderer_name, renderer_name_is_valid, save_config, save_proxy_port
 from config import DEFAULT_DLNA_RENDERER_ENABLED
 from config import DEFAULT_VOLUME_SOFTWARE_FALLBACK
+from volume_policy import normalize_volume_policy, resolve_volume_mode, software_fallback_enabled
 from library import (
     FS_CACHE,
     MUSIC_CACHE,
@@ -94,6 +95,7 @@ from dlna.control_point import (
     upnp_cache_status,
     upnp_control,
     upnp_position_info,
+    upnp_set_volume,
     upnp_transport_state,
 )
 from dlna.diagnostics import DlnaDiagnostics
@@ -242,8 +244,11 @@ def volume_software_fallback_enabled(config) -> bool:
     Strict for the same reason as the renderer switch: ``"false"`` arriving as a
     string must not read as enabled.  Off is the shipped default because the
     fallback scales the samples and therefore ends bit-perfect output.
+
+    The answer comes from the policy object, not from the flat key: the policy is
+    the source of truth and the flat key is only its legacy projection.
     """
-    return config.get("volume_software_fallback_enabled", DEFAULT_VOLUME_SOFTWARE_FALLBACK) is True
+    return software_fallback_enabled(config)
 
 
 def apply_dlna_renderer_enabled(config) -> bool:
@@ -652,6 +657,26 @@ def dlna_output_command(command, state, context):
     device = find_upnp_device(state.target_id)
     if not device:
         return {"ok": False, "message": "device not found"}
+    if command.action == "volume":
+        # The renderer's own volume is the only attenuation that keeps the bytes
+        # fnAudio sends untouched. Reaching for anything else means scaling the
+        # samples, which is a separate decision (`volume.targets.dlna` plus the
+        # software-fallback switch) and not implemented for pushes yet.
+        config = (context or {}).get("config") or {}
+        mode = resolve_volume_mode(config, "dlna")
+        if mode == "fixed":
+            return {"ok": False, "message": "此输出固定为满电平；如需调节请在设置中开启软件音量",
+                    "target_id": state.target_id}
+        if (device.get("capabilities") or {}).get("volume") is True:
+            ok, message = upnp_set_volume(device, command.position)
+            return {"ok": ok, "message": message, "target_id": state.target_id}
+        # `device` means "the renderer's own mixer or nothing": an explicit choice
+        # must not be overridden by the global switch, exactly like `hardware`
+        # on the DAC side.
+        if mode == "transcode" or (mode == "auto" and software_fallback_enabled(config)):
+            return {"ok": False, "message": "该设备没有音量控制；软件增益需要转码推流，尚未启用",
+                    "target_id": state.target_id}
+        return {"ok": False, "message": "该设备没有音量控制，且未开启软件音量", "target_id": state.target_id}
     if command.action == "stop":
         DLNA_MONITOR_GUARD.update(
             {"target_id": state.target_id, "suppress_stop_until": time.monotonic() + 5.0}
@@ -2088,6 +2113,15 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "message": "运行设置包含无效值：软件音量开关必须是布尔值"}, 400
                 )
             previous_volume_fallback = volume_software_fallback_enabled(self.server.config)
+            # The policy is what every reader consults, so the switch has to be
+            # written into it; the flat key is only the projection save_config
+            # derives for older readers.
+            volume_policy_candidate = normalize_volume_policy(
+                self.server.config.get("volume"),
+                self.server.config.get("mpd_mixer_type"),
+                self.server.config.get("volume_software_fallback_enabled"),
+            )
+            volume_policy_candidate["software_fallback"] = volume_fallback
             renderer_name = payload.get("renderer_name", self.server.config.get("renderer_name", "fnAudio Renderer"))
             if not renderer_name_is_valid(renderer_name):
                 return self.send_json({"ok": False, "message": "运行设置包含无效值：Renderer 名称必须是非空文本且不能包含控制字符"}, 400)
@@ -2106,6 +2140,7 @@ class Handler(BaseHTTPRequestHandler):
                         "dlna_type_detection": dlna_type_detection,
                         "dlna_renderer_enabled": renderer_enabled,
                         "volume_software_fallback_enabled": volume_fallback,
+                        "volume": volume_policy_candidate,
                     }),
                 ):
                     return self.send_json({"ok": False, "message": "保存运行设置失败"}, 500)

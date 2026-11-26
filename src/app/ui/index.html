@@ -210,8 +210,9 @@
               <!-- R629: 音量调控的边界是「这台输出到底有没有音量」。USB DAC 没有 ALSA
                    Playback Volume、DLNA 接收端不答 RenderingControl 时，唯一剩下的办法是
                    缩放音频样本，所以这是一个显式的取舍开关，默认关闭。 -->
-              <label class="metadata-toggle"><input id="volumeSoftwareFallbackInput" type="checkbox"><span><strong>允许调节没有硬件音量的输出</strong><small>USB DAC 没有音量控件、DLNA 接收端不支持音量调节时，由 fnAudio 自己调整音频样本代劳。</small></span></label>
-              <p class="dialog-help">关闭（默认）：这类输出保持固定电平，音量控件不起作用并说明原因。开启后<strong>会改变音频样本，输出不再是 bit-perfect</strong>；只影响上面两类输出，有硬件音量的设备仍然走设备自己的音量。</p>
+              <label class="metadata-toggle"><input id="volumeSoftwareFallbackInput" type="checkbox"><span><strong>允许调节没有硬件音量的输出</strong><small>USB DAC 没有音量控件时，由 fnAudio 自己调整音频样本代劳。</small></span></label>
+              <p class="dialog-help">关闭（默认）：这类输出保持固定电平，音量控件不起作用并说明原因。开启后<strong>会改变音频样本，输出不再是 bit-perfect</strong>；有硬件音量的设备仍然走设备自己的音量。</p>
+              <p class="dialog-help">推送到 DLNA 接收端时，设备自带音量（RenderingControl）就由设备自己调；设备没有音量时的转码增益还没接上，届时会在这里一并生效。</p>
               <p class="dialog-help">切换这个开关会重启一次音频后端，播放会短暂中断；单纯修改名称或设备身份不会。</p>
             </div>
             <div class="settings-group" data-settings-block="playback-sleep">

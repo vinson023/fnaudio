@@ -293,6 +293,37 @@ def upnp_soap_action(control, action, args=""):
     return soap_request(control, "urn:schemas-upnp-org:service:AVTransport:1", action, args)
 
 
+RENDERING_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+
+
+def upnp_set_volume(device, percent):
+    """Ask the renderer to change its own volume (RenderingControl SetVolume).
+
+    This is the only attenuation that costs nothing: the device applies it, the
+    bytes fnAudio sends are untouched, so bit-perfect output survives. When the
+    renderer has no RenderingControl service there is no such call to make and
+    the caller has to decide between refusing and scaling the samples itself.
+    """
+    control = device.get("volume_url")
+    if not control:
+        return False, "该设备不提供 RenderingControl 音量服务"
+    try:
+        value = int(round(float(percent)))
+    except (TypeError, ValueError, OverflowError):
+        value = 100
+    value = max(0, min(100, value))
+    try:
+        soap_request(
+            control,
+            RENDERING_SERVICE,
+            "SetVolume",
+            "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>%d</DesiredVolume>" % value,
+        )
+    except Exception as exc:
+        return False, soap_failure(exc)
+    return True, "ok"
+
+
 def upnp_transport_state(device):
     control = device.get("control_url")
     if not control:
@@ -431,11 +462,16 @@ def probe_device_capabilities(device):
     now_monotonic = time.monotonic()
     protocol = device_protocol_info(_device_value(device, "connection_url"))
     actions = scpd_actions(_device_value(device, "avtransport_scpd_url"))
+    # RenderingControl is what makes "change this device's volume" possible at
+    # all; asking its SCPD is how we learn it before the user drags a slider.
+    volume_actions = scpd_actions(_device_value(device, "volume_scpd_url"))
     capabilities = {
         "probed_at": now_wall,
         "probed_at_monotonic": now_monotonic,
         "protocol_info": protocol,
         "actions": actions,
+        "volume": "SetVolume" in volume_actions,
+        "mute": "SetMute" in volume_actions,
         "set_next_uri": "SetNextAVTransportURI" in actions,
         "seek_rel_time": "Seek" in actions,
         "next": "Next" in actions,
@@ -579,10 +615,15 @@ def discover_upnp(probe_budget=None):
             device["udn"] = udns[0] if udns else ""
             avtransport = find_service(root, device["location"], "AVTransport") or {}
             connection = find_service(root, device["location"], "ConnectionManager") or {}
+            rendering = find_service(root, device["location"], "RenderingControl") or {}
             device["control_url"] = avtransport.get("control_url")
             device["avtransport_scpd_url"] = avtransport.get("scpd_url")
             device["avtransport_event_url"] = avtransport.get("event_url")
             device["connection_url"] = connection.get("control_url")
+            # Needed for the volume command: without it the only way to attenuate
+            # a push is to re-encode the stream, which costs bit-perfect output.
+            device["volume_url"] = rendering.get("control_url")
+            device["volume_scpd_url"] = rendering.get("scpd_url")
             # Every fnAudio renderer uses the same control URL path. Compare
             # the exact SSDP identity so another NAS is not mistaken for us.
             if is_local_renderer(device, udns):

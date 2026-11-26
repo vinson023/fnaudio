@@ -41,6 +41,17 @@ DEFAULT_DLNA_RENDERER_ENABLED = False
 DEFAULT_VOLUME_SOFTWARE_FALLBACK = False
 MAX_RENDERER_NAME_CHARS = 128
 
+# Output volume is a policy, not a switch (see volume_policy.py for the model
+# and the migration from the flat keys below).
+from volume_policy import (  # noqa: E402
+    DEFAULT_VOLUME_POLICY,
+    DEFAULT_VOLUME_SOFTWARE_FALLBACK,
+    LEGACY_MIXER_TYPES,
+    VOLUME_TARGET_MODES,
+    legacy_mixer_type_from_volume,
+    normalize_volume_policy,
+)
+
 
 def load_config(path: str) -> Dict[str, Any]:
     config: Dict[str, Any] = {
@@ -56,6 +67,9 @@ def load_config(path: str) -> Dict[str, Any]:
         # change does not look like a different device to controllers.
         "dlna_uuid": "",
         "volume_software_fallback_enabled": DEFAULT_VOLUME_SOFTWARE_FALLBACK,
+        # None means "the file did not carry a policy yet"; normalization below
+        # migrates the two flat keys into it. A dict here would hide that.
+        "volume": None,
         "server_port": DEFAULT_PORT,
         "mpd_port": DEFAULT_MPD_PORT,
         "mpd_output_alsa_id": "",
@@ -131,6 +145,15 @@ def load_config(path: str) -> Dict[str, Any]:
     config["volume_software_fallback_enabled"] = _strict_bool(
         config.get("volume_software_fallback_enabled"), DEFAULT_VOLUME_SOFTWARE_FALLBACK
     )
+    # The policy is the source of truth; the two flat keys above are its legacy
+    # projection and are rewritten from it so an older reader cannot disagree.
+    config["volume"] = normalize_volume_policy(
+        config.get("volume"),
+        config.get("mpd_mixer_type"),
+        config.get("volume_software_fallback_enabled"),
+    )
+    config["volume_software_fallback_enabled"] = config["volume"]["software_fallback"]
+    config["mpd_mixer_type"] = legacy_mixer_type_from_volume(config["volume"])
     config["mpd_dop"] = _strict_bool(config.get("mpd_dop"), False)
     config["metadata_enabled"] = _strict_bool(config.get("metadata_enabled"), False)
     config["metadata_fingerprint_enabled"] = _strict_bool(config.get("metadata_fingerprint_enabled"), False)
@@ -188,6 +211,13 @@ def load_config(path: str) -> Dict[str, Any]:
 
 def save_config(path: str, config: Dict[str, Any]) -> bool:
     library_paths = _bounded_text_list(config.get("library_paths"), MAX_LIBRARY_PATHS, MAX_LIBRARY_PATH_TEXT)
+    # One policy, three keys in the file: the structured object is authoritative,
+    # the two flat ones are what an older reader still looks for.
+    volume_policy = normalize_volume_policy(
+        config.get("volume"),
+        config.get("mpd_mixer_type"),
+        config.get("volume_software_fallback_enabled"),
+    )
     payload = {
         "library_path": _bounded_text(config.get("library_path"), MAX_LIBRARY_PATH_TEXT),
         "library_paths": library_paths,
@@ -202,15 +232,14 @@ def save_config(path: str, config: Dict[str, Any]) -> bool:
         ),
         # Round-tripped so a settings save cannot re-key the advertised device.
         "dlna_uuid": _bounded_text(config.get("dlna_uuid"), 64),
-        "volume_software_fallback_enabled": _strict_bool(
-            config.get("volume_software_fallback_enabled"), DEFAULT_VOLUME_SOFTWARE_FALLBACK
-        ),
+        "volume_software_fallback_enabled": volume_policy["software_fallback"],
+        "volume": volume_policy,
+        "mpd_mixer_type": legacy_mixer_type_from_volume(volume_policy),
         "server_port": _bounded_int(config.get("server_port"), DEFAULT_PORT, 1024, 65535),
         "mpd_port": _bounded_int(config.get("mpd_port"), DEFAULT_MPD_PORT, 1024, 65535),
         "mpd_output_alsa_id": _bounded_text(config.get("mpd_output_alsa_id"), 512),
         "mpd_output_stable_id": _bounded_text(config.get("mpd_output_stable_id"), 512),
         "mpd_device_presence_samples": _bounded_int(config.get("mpd_device_presence_samples"), 2, 1, 5),
-        "mpd_mixer_type": _normalized_mixer_type(config.get("mpd_mixer_type")),
         "mpd_mixer_control": _bounded_text(config.get("mpd_mixer_control"), 128),
         "mpd_dop": _strict_bool(config.get("mpd_dop"), False),
         "mpd_nice": _bounded_int(config.get("mpd_nice"), 0, -5, 10),

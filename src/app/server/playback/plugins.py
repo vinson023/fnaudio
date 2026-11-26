@@ -198,6 +198,10 @@ class DlnaPushOutput(CallbackOutput):
                 "next_previous": True,
                 "native_dsd": True,
                 "server_transcode": False,
+                # A renderer's own volume is a per-device fact, not a property of
+                # the push plugin: the probed device capabilities override this
+                # default with True when it answers RenderingControl.
+                "volume": False,
             },
             **callbacks,
         )

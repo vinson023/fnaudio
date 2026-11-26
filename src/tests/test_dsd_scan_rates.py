@@ -35,7 +35,11 @@ class DsdScanRateTests(unittest.TestCase):
         # cache records must fail the public SQLite query assertions below.
         for ext in ("dsf", "dff"):
             for rate in (2822400, 5644800, 11289600, 22579200):
-                with self.subTest(ext=ext, rate=rate), tempfile.TemporaryDirectory() as root:
+                # A cover-cache worker can still be writing inside the fixture after the
+                # assertions pass; on Windows rmdir then fails with WinError 145 and the
+                # cleanup, not the test, is what turns red. The scan results above are
+                # already asserted, so the cleanup failure is not a product signal.
+                with self.subTest(ext=ext, rate=rate), tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
                     music = os.path.join(root, "music")
                     os.mkdir(music)
                     path = os.path.join(music, "fixture." + ext)
