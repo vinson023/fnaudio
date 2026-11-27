@@ -243,12 +243,25 @@ body{background:var(--fn-bg)!important;color:var(--fn-text)!important;overflow:h
    * 4dp track (13:1); 38px is the whole progress row here, so it costs no
    * layout change at all (44+38+50 plus the two 2px gaps is exactly the
    * 136px the phone player already reserves). */
-  .progress input{-webkit-appearance:none!important;appearance:none!important;height:38px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important}
+  /* R636: the rail is driven by pointer maths, not by the native range mapping,
+   * so the input is paint-only and the whole row (plus 8px above it) is the
+   * target.  The 8px slop is deliberate: it takes the bottom edge of the
+   * now-playing card, which used to swallow near-misses and open the lyrics
+   * view, and is exactly where a thumb aiming at a 4px line lands. */
+  .progress input{-webkit-appearance:none!important;appearance:none!important;height:38px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;pointer-events:none!important}
+  .progress::before{content:"";position:absolute;left:0;right:0;top:-8px;bottom:-2px}
   .progress input::-webkit-slider-runnable-track{height:4px!important;border:0!important;border-radius:0!important;background:linear-gradient(to right,var(--ui-accent) var(--seek-fill,0%),var(--ui-line) var(--seek-fill,0%))!important}
-  .progress input::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:6px!important;height:6px!important;margin-top:-1px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important;box-shadow:none!important}
+  .progress input::-webkit-slider-thumb{-webkit-appearance:none!important;appearance:none!important;width:10px!important;height:10px!important;margin-top:-3px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important;box-shadow:none!important}
   .progress input::-moz-range-track{height:4px!important;border:0!important;background:var(--ui-line)!important}
-  .progress input::-moz-range-thumb{width:6px!important;height:6px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important}
+  .progress input::-moz-range-thumb{width:10px!important;height:10px!important;border:0!important;border-radius:50%!important;background:var(--ui-accent)!important}
 }
+/* R636: while a drag is in progress the rail paints the position under the
+ * finger, not the position the player still reports. */
+.progress{position:relative;touch-action:none;cursor:pointer}
+.progress input{pointer-events:none!important}
+.progress.is-seeking input::-webkit-slider-thumb{width:14px!important;height:14px!important;margin-top:-5px!important}
+.progress .seek-bubble{position:absolute;bottom:calc(100% + 4px);transform:translateX(-50%);padding:2px 7px;border-radius:4px;background:var(--ui-surface);color:var(--ui-text);border:1px solid var(--ui-line);font-size:11px;line-height:1.3;white-space:nowrap;pointer-events:none;z-index:2}
+.progress .seek-bubble[hidden]{display:none}
 .player-actions{min-width:0;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:2px!important}.player-actions #deviceBtn,.player-actions #lyricsBtn,.player-actions #favoriteCurrentBtn,.player-actions #repeatBtn,.player-actions #shuffleBtn,.player-actions #queueBtn,.player-actions #volumeBtn{width:36px!important;height:36px!important;min-width:36px!important;flex-basis:36px!important;border-radius:6px!important}.player-actions #deviceBtn:hover,.player-actions #lyricsBtn:hover,.player-actions #favoriteCurrentBtn:hover,.player-actions #repeatBtn:hover,.player-actions #shuffleBtn:hover,.player-actions #queueBtn:hover,.player-actions #volumeBtn:hover{background:var(--ui-hover)!important;color:var(--ui-accent-hover)!important}
 dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surface)!important;color:var(--ui-text)!important;border:0!important;border-radius:8px!important;box-shadow:var(--ui-shadow)!important}dialog::backdrop{background:var(--ui-backdrop)!important}.dialog-head h2{font-size:18px;margin:0;color:var(--ui-text)!important}.dialog-help{font-size:13px;color:var(--ui-muted)!important}.device-row small{margin-top:4px;color:var(--ui-muted)!important}.device-row-radio{border-color:var(--ui-border)!important;color:var(--ui-on-accent)!important}.device-row.is-current .device-row-radio{background:var(--ui-accent)!important;border-color:var(--ui-accent)!important}
 

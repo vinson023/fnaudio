@@ -50,6 +50,9 @@ function build(options = {}) {
     nativePlaybackCall: (name, value) => calls.push(`native:${name}=${value}`),
     remoteControl: (action, position) => { calls.push(`remote:${action}=${position}`); return Promise.resolve(true); },
     setTimeout: (fn) => { fn(); return 0; },
+    // R637: the capability refresh also re-answers "should the volume keys drive
+    // the remote output"; that path has its own test, this one is about routing.
+    syncRemoteVolumeKeys() {},
     Math, Number, Boolean, String, Array, Object,
   };
   vm.createContext(context);

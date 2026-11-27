@@ -220,7 +220,7 @@ DEBT_AFTER_MOVE_OUT = 8530
 # fields (+108), and NativePlaybackBridge grew the handler default and the
 # @JavascriptInterface method (+16). The audited faces are untouched.
 JAVA_TOTAL_FILES = 68
-JAVA_TOTAL_LINES = 16038
+JAVA_TOTAL_LINES = 16092
 
 # Historical figures the note must keep quoting instead of correcting.
 PRESERVED_FIGURES = ("18,225", "9,695")

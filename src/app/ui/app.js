@@ -2606,6 +2606,8 @@ function installDialogFocusManagement() {
     }
   });
   observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open"] });
+  document.addEventListener("focusin", () => syncRemoteVolumeKeys());
+  document.addEventListener("focusout", () => setTimeout(syncRemoteVolumeKeys, 0));
 }
 function setNowPlayingCover(source) {
   return setCoverArtwork($("nowCover"), source);
@@ -12720,7 +12722,15 @@ function toggleLyrics() {
   openLyrics();
 }
 $("lyricsBtn").onclick = toggleLyrics;
-$("nowPlayingSummary").onclick = toggleLyrics;
+$("nowPlayingSummary").onclick = event => {
+  // R636: 拇指在轨道上方落空时不该跳歌词页。真实拖动结束后的一小段时间内，
+  // 任何落在信息卡上的 click 都当成手势的余波吃掉。
+  if (Date.now() - seekGesture.committedAt < 400) {
+    event.preventDefault();
+    return;
+  }
+  toggleLyrics(event);
+};
 $("nowPlayingSummary").onkeydown = event => {
   if (!["Enter", " "].includes(event.key)) return;
   event.preventDefault();
@@ -12980,6 +12990,7 @@ function syncVolumeAvailability() {
     button.setAttribute("aria-label", label);
   }
   input.title = fixed ? "此输出为固定音量，请在功放或音箱上调整" : "";
+  syncRemoteVolumeKeys();
 }
 $("volume").oninput = e => {
   const value = Number(e.target.value);
@@ -13005,6 +13016,57 @@ document.addEventListener("click", () => {
   const panel = $("volumePanel");
   if (panel) panel.hidden = true;
 });
+// R637: 手机音量键 → 远端音量。
+//
+// 音量键改的是手机自己的 STREAM_MUSIC，而远端输出根本不经过手机，所以按键
+// 一直是"数字在动、DAC 不动"。原生侧只负责把键交过来（MainActivity
+// dispatchKeyEvent），这里把它变成和滑块完全相同的一条命令，复用同一个单飞
+// 队列，长按的连发天然合并。
+const VOLUME_KEY_STEP = 5;
+let volumePanelHideTimer = 0;
+function remoteVolumePercent() {
+  const rail = $("volume");
+  const value = rail ? Number(rail.value) : 1;
+  return Number.isFinite(value) ? Math.round(Math.max(0, Math.min(1, value)) * 100) : 100;
+}
+function volumeKeysShouldDriveRemote() {
+  if (!nativePlaybackAvailable() || !isRemoteTarget()) return false;
+  // A dialog owns the screen and a text field owns the keyboard: neither should
+  // lose a volume key to a device that is not visible behind them.
+  if (document.querySelector("dialog[open]")) return false;
+  const active = document.activeElement;
+  if (!active) return true;
+  const tag = String(active.tagName || "").toUpperCase();
+  return !(tag === "INPUT" || tag === "TEXTAREA" || active.isContentEditable === true);
+}
+function syncRemoteVolumeKeys() {
+  if (!nativePlaybackAvailable()) return;
+  const enabled = volumeKeysShouldDriveRemote();
+  if (state.remoteVolumeKeys === enabled) return;
+  state.remoteVolumeKeys = enabled;
+  nativePlaybackCall("setRemoteVolumeKeys", enabled);
+}
+function showVolumePanelBriefly() {
+  const panel = $("volumePanel");
+  if (!panel) return;
+  panel.hidden = false;
+  clearTimeout(volumePanelHideTimer);
+  volumePanelHideTimer = setTimeout(() => {
+    const current = $("volumePanel");
+    if (current) current.hidden = true;
+  }, 1200);
+}
+// Called from the native side; returns the value it applied so the caller can log it.
+globalThis.fnAudioVolumeKey = direction => {
+  const step = direction >= 0 ? VOLUME_KEY_STEP : -VOLUME_KEY_STEP;
+  const next = Math.max(0, Math.min(100, remoteVolumePercent() + step));
+  const rail = $("volume");
+  if (rail) rail.value = String(next / 100);
+  updateVolumeRail(next / 100);
+  queueRemoteVolume(next);
+  showVolumePanelBriefly();
+  return next;
+};
 audio.volume = 1;
 if ($("volume")) $("volume").value = "1";
 // The rail is a gradient, so it starts empty unless the boot value is pushed
@@ -13014,6 +13076,8 @@ updateVolumeRail();
 // Until the first targets payload arrives the capability is unknown, and unknown
 // means "leave the control alone".
 syncVolumeAvailability();
+// R637: the native flag starts false; push the current answer once at boot.
+setTimeout(syncRemoteVolumeKeys, 0);
 // R587: a long listen has to survive a hard kill, not only a clean pause.
 setInterval(() => { if (!audio.paused) reportPlaybackPosition(false); }, 30000);
 audio.onplay = () => {
@@ -13196,13 +13260,113 @@ audio.onloadedmetadata = () => {
   syncPlayerProgress();
   updateMediaSessionPosition();
 };
+// R636: 进度条改由指针坐标驱动，不再依赖原生 range 的映射。
+//
+// 三个真问题叠在一起：`step` 默认 1，5 分钟的歌一格就是 3 秒；轨道只有 4px，
+// 往上偏十几像素就出了控件；而控件正上方 2px 就是整块可点的信息卡，差一点
+// 不是"没反应"，是直接跳歌词页。另外 onchange/pointerup/touchend 三处都提
+// 交，一次手势最多发三次 seek。
+const seekGesture = { active: false, pointerId: null, value: 0, committedAt: 0 };
+const SEEK_THUMB_RADIUS = 7;
+
+function seekPercentFromClientX(clientX) {
+  const rail = $("seek");
+  if (!rail) return null;
+  const rect = rail.getBoundingClientRect();
+  if (!(rect.width > 0)) return null;
+  // Chrome 的滑块圆心在 [r, width-r] 之间移动，按下两端时要能落到 0/100，
+  // 而不是停在几个百分点上。
+  const inset = Math.min(SEEK_THUMB_RADIUS, rect.width / 2);
+  const usable = Math.max(1, rect.width - inset * 2);
+  const ratio = (clientX - rect.left - inset) / usable;
+  return Math.max(0, Math.min(100, ratio * 100));
+}
+function setSeekRailValue(percent) {
+  const rail = $("seek");
+  if (rail) rail.value = String(percent);
+}
+function seekBubbleShow(percent) {
+  const bubble = $("seekBubble");
+  const row = $("progressRow");
+  const rail = $("seek");
+  const duration = seekDuration();
+  if (!bubble || !row || !rail || !duration) return;
+  bubble.textContent = clock(percent / 100 * duration);
+  const railRect = rail.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const x = railRect.left - rowRect.left + railRect.width * percent / 100;
+  bubble.style.left = `${Math.max(26, Math.min(rowRect.width - 26, x))}px`;
+  bubble.hidden = false;
+}
+function seekBubbleHide() {
+  const bubble = $("seekBubble");
+  if (bubble) bubble.hidden = true;
+}
+function seekGestureStart(event) {
+  if (event.button != null && event.button !== 0) return;
+  const percent = seekPercentFromClientX(event.clientX);
+  if (percent === null) return;
+  seekGesture.active = true;
+  seekGesture.pointerId = event.pointerId;
+  seekGesture.value = percent;
+  state.seeking = true;
+  const row = $("progressRow");
+  if (row) {
+    row.classList.add("is-seeking");
+    try { row.setPointerCapture(event.pointerId); } catch (error) {}
+  }
+  setSeekRailValue(percent);
+  previewSeek(percent);
+  seekBubbleShow(percent);
+  event.preventDefault();
+}
+function seekGestureMove(event) {
+  if (!seekGesture.active || event.pointerId !== seekGesture.pointerId) return;
+  const percent = seekPercentFromClientX(event.clientX);
+  if (percent === null) return;
+  seekGesture.value = percent;
+  setSeekRailValue(percent);
+  previewSeek(percent);
+  seekBubbleShow(percent);
+  event.preventDefault();
+}
+function seekGestureEnd(event) {
+  if (!seekGesture.active || event.pointerId !== seekGesture.pointerId) return;
+  seekGesture.active = false;
+  seekGesture.committedAt = Date.now();
+  const row = $("progressRow");
+  if (row) {
+    row.classList.remove("is-seeking");
+    try { row.releasePointerCapture(event.pointerId); } catch (error) {}
+  }
+  seekBubbleHide();
+  commitSeek(String(seekGesture.value));
+}
+function seekGestureCancel() {
+  if (!seekGesture.active) return;
+  seekGesture.active = false;
+  const row = $("progressRow");
+  if (row) row.classList.remove("is-seeking");
+  seekBubbleHide();
+  state.seeking = false;
+  syncPlayerProgress();
+}
+// 键盘仍然走原生 input/change；指针手势已经在 up 里提交过，400ms 内的原生
+// change 必须忽略，否则一次拖动会发两次 seek。
 $("seek").oninput = e => {
   state.seeking = true;
   previewSeek(e.target.value);
 };
-$("seek").onchange = e => commitSeek(e.target.value);
-$("seek").onpointerup = e => commitSeek(e.target.value);
-$("seek").ontouchend = e => commitSeek(e.target.value);
+$("seek").onchange = e => {
+  if (Date.now() - seekGesture.committedAt < 400) return;
+  commitSeek(e.target.value);
+};
+if ($("progressRow")) {
+  $("progressRow").addEventListener("pointerdown", seekGestureStart);
+  $("progressRow").addEventListener("pointermove", seekGestureMove);
+  $("progressRow").addEventListener("pointerup", seekGestureEnd);
+  $("progressRow").addEventListener("pointercancel", seekGestureCancel);
+}
 document.addEventListener("dblclick", event => {
   if (state.libraryInteractionBlocked && event.target.closest?.("#trackList")) {
     event.preventDefault();
