@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from process_output import check_output_bounded
 from summary_values import nonnegative_int
 from volume_policy import normalize_volume_policy
+from volume_policy import dsd_conversion_policy
 import threading
 import time
 import urllib.parse
@@ -46,7 +47,7 @@ from playback.mpd_errors import (
     legacy_decoder_error_summary,
 )
 from playback.alsa_output import alsa_devices, find_ffmpeg, probe_alsa_hw_params
-from transcode import transcode_to_audio
+from transcode import DSD_PCM_RATES, dsd_pcm_rate, transcode_to_audio
 from .process_supervisor import ProcessSupervisor
 
 MAX_MPD_PROC_CMDLINE_BYTES = 4096
@@ -667,6 +668,22 @@ class MpdService:
                 continue
         return dict(self.config)
 
+    def _dsd_pcm_path(self, item: Dict[str, Any], plan: Dict[str, Any]) -> str:
+        """Decode one DSD track to PCM inside a music root, or "" on failure.
+
+        A failed conversion must not stop playback: the track then plays as DSD
+        without fnAudio volume, which is exactly what it did before this mode
+        existed. The converted file has to live under a music root because MPD
+        refuses queue entries outside ``music_directory``.
+        """
+        try:
+            config = dict(self._mpd_transcode_config(str(item.get("path") or "")))
+            config["dsd_pcm_rate"] = self._dsd_pcm_rate_for(item, plan)
+            path, _mime = transcode_to_audio(item, config, "dsd_pcm")
+            return str(path or "")
+        except Exception:
+            return ""
+
     def index_status(self) -> Dict[str, Any]:
         """Return the last MPD index convergence job for the status endpoint."""
         with self._index_lock:
@@ -835,6 +852,10 @@ class MpdService:
         current_cue_ape = False
         generated_mpd_media = False
         generated_track_ids = set()
+        # Resolved lazily and once per queue build: the answer depends on the
+        # DAC's mixer, not on the track, and probing ALSA per entry would cost
+        # 2 s each - but a queue with no DSD in it must not probe at all.
+        dsd_plan = None
         try:
             queue_iterator = iter(queue)
         except Exception:
@@ -872,6 +893,15 @@ class MpdService:
                 current_cue_ape = current_cue_ape or (
                     track_id == str(current_track_id or "") and bool(item.get("cue_track"))
                 )
+            if item.get("is_dsd"):
+                if dsd_plan is None:
+                    dsd_plan = self.dsd_pcm_plan()
+                if dsd_plan.get("convert"):
+                    converted = self._dsd_pcm_path(item, dsd_plan)
+                    if converted:
+                        path = converted
+                        generated_mpd_media = True
+                        generated_track_ids.add(track_id)
             has_cue = bool(has_cue or item.get("cue_track"))
             entries.append(
                 {
@@ -1018,6 +1048,11 @@ class MpdService:
             if bool((item or {}).get("is_dsd")):
                 return {"ok": False, "message": "未找到可验证的 USB DAC，已阻止 DSD 转 PCM"}
             return {"ok": True, "dsd": False}
+        if bool((item or {}).get("is_dsd")) and self.dsd_pcm_plan(selected).get("convert"):
+            # In this mode the DAC never sees DSD: the queue carries a PCM decode
+            # so MPD's software mixer has something it can scale. The Native/DoP
+            # gate below is about passing 1-bit through, which no longer happens.
+            return {"ok": True, "dsd": False, "dsd_converted": True}
         descriptor_caps = dict(selected.get("caps") or {})
         quirk = dac_quirk_profile(selected, self.config.get("dac_profiles") or [])
         source_rate = int(_safe_float((item or {}).get("sample_rate")))
@@ -2627,6 +2662,42 @@ class MpdService:
             "fallback": False,
             "message": "使用所选 DAC 的 ALSA 硬件音量控件",
         }
+
+    def dsd_pcm_plan(self, device: Optional[Dict[str, Any]] = None, mixer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Whether DSD has to become PCM before fnAudio can attenuate it.
+
+        MPD 0.23's software mixer is a no-op on DSD (`PcmVolume::Apply` keeps the
+        samples as they are), so an output with no hardware mixer can only change
+        a DSD track's level if fnAudio hands MPD PCM in the first place. That
+        conversion is a real loss of the 1-bit stream, so `volume.dsd` can turn
+        it off; `auto` converts only when fnAudio is the one attenuating.
+        """
+        if dsd_conversion_policy(self.config) != "auto":
+            return {"convert": False, "rates": (), "reason": "policy-native"}
+        mixer = mixer if isinstance(mixer, dict) else self.mixer_policy(device)
+        if mixer.get("mode") != "software":
+            # A hardware mixer attenuates in the DAC and works on DSD; a fixed
+            # level has no volume to scale. Neither case needs PCM.
+            return {"convert": False, "rates": (), "reason": "mixer-" + str(mixer.get("mode") or "none")}
+        output = device or self._selected_alsa_output()
+        supported = set()
+        for rate in ((output or {}).get("caps") or {}).get("pcm_rates") or []:
+            try:
+                supported.add(int(rate))
+            except (TypeError, ValueError):
+                continue
+        rates = tuple(rate for rate in DSD_PCM_RATES if rate in supported) or (DSD_PCM_RATES[1],)
+        return {"convert": True, "rates": rates, "reason": "software-mixer"}
+
+    @staticmethod
+    def _dsd_pcm_rate_for(item: Dict[str, Any], plan: Dict[str, Any]) -> int:
+        """The rate one DSD track converts to, bounded by what the DAC takes."""
+        rates = tuple(plan.get("rates") or ())
+        wanted = dsd_pcm_rate(item)
+        if wanted in rates:
+            return wanted
+        lower = [rate for rate in rates if rate <= wanted]
+        return max(lower) if lower else min(rates) if rates else wanted
 
 
 def _mpd_quote(value: str) -> str:

@@ -28,9 +28,15 @@ VOLUME_TARGET_MODES = {
     "renderer": ("auto", "hardware", "software", "fixed"),
 }
 DEFAULT_VOLUME_SOFTWARE_FALLBACK = False
+# DSD cannot be scaled in software: MPD's `PcmVolume::Apply` returns DSD samples
+# untouched, so an attenuated output has to be fed PCM. `auto` converts only
+# when fnAudio is the one attenuating; `native` keeps the 1-bit stream and gives
+# up volume control on it.
+VOLUME_DSD_MODES = ("auto", "native")
 DEFAULT_VOLUME_POLICY = {
     "mode": "auto",
     "software_fallback": DEFAULT_VOLUME_SOFTWARE_FALLBACK,
+    "dsd": "auto",
     "max_percent": 100,
     "targets": {"dac": "auto", "dlna": "auto", "renderer": "auto"},
 }
@@ -57,6 +63,7 @@ def normalize_volume_policy(value, legacy_mixer_type=None, legacy_fallback=None)
     policy = {
         "mode": DEFAULT_VOLUME_POLICY["mode"],
         "software_fallback": DEFAULT_VOLUME_SOFTWARE_FALLBACK,
+        "dsd": DEFAULT_VOLUME_POLICY["dsd"],
         "max_percent": DEFAULT_VOLUME_POLICY["max_percent"],
         "targets": dict(DEFAULT_VOLUME_POLICY["targets"]),
     }
@@ -85,6 +92,9 @@ def normalize_volume_policy(value, legacy_mixer_type=None, legacy_fallback=None)
     if mode in {item for modes in VOLUME_TARGET_MODES.values() for item in modes}:
         policy["mode"] = mode
     policy["software_fallback"] = value.get("software_fallback") is True
+    dsd = _token(value.get("dsd"))
+    if dsd in VOLUME_DSD_MODES:
+        policy["dsd"] = dsd
     try:
         maximum = int(value.get("max_percent"))
     except Exception:
@@ -136,11 +146,24 @@ def software_fallback_enabled(config) -> bool:
     return policy["software_fallback"] is True
 
 
+def dsd_conversion_policy(config) -> str:
+    """`auto` (convert when fnAudio attenuates) or `native` (never convert)."""
+    config = config if isinstance(config, dict) else {}
+    policy = normalize_volume_policy(
+        config.get("volume"),
+        config.get("mpd_mixer_type"),
+        config.get("volume_software_fallback_enabled"),
+    )
+    return policy.get("dsd") or DEFAULT_VOLUME_POLICY["dsd"]
+
+
 __all__ = [
     "DEFAULT_VOLUME_POLICY",
     "DEFAULT_VOLUME_SOFTWARE_FALLBACK",
+    "VOLUME_DSD_MODES",
     "LEGACY_MIXER_TYPES",
     "VOLUME_TARGET_MODES",
+    "dsd_conversion_policy",
     "legacy_mixer_type_from_volume",
     "normalize_volume_policy",
     "resolve_volume_mode",

@@ -213,6 +213,7 @@
               <label class="metadata-toggle"><input id="volumeSoftwareFallbackInput" type="checkbox"><span><strong>允许调节没有硬件音量的输出</strong><small>USB DAC 没有音量控件、DLNA 接收端不支持音量时，由 fnAudio 自己调整音频样本代劳。</small></span></label>
               <p class="dialog-help">关闭（默认）：这类输出保持固定电平，音量控件不起作用并说明原因。开启后<strong>会改变音频样本，输出不再是 bit-perfect</strong>；有硬件音量的设备仍然走设备自己的音量。</p>
               <p class="dialog-help">推送到 DLNA 接收端时：设备自带音量（RenderingControl）由设备自己调，音质不受影响；设备没有音量时，开启后 fnAudio 会把当前音轨按音量重新编码再推送。改音量会从头重推并跳回原位置，<strong>播放会短暂中断一次</strong>，且该音轨不再 bit-perfect。</p>
+              <p class="dialog-help">DSD 音轨：MPD 的软件音量对 1-bit 样本是空操作，所以开启后这类输出上的 DSD 会先解码成 PCM（DSD64 → 176.4 kHz/24 bit，DSD128 及以上到 352.8 kHz）再播放，<strong>不再是原生 DSD</strong>，第一次播放需要几秒钟生成缓存。有硬件音量的设备不受影响，DSD 仍然原生直通。</p>
               <p class="dialog-help">切换这个开关会重启一次音频后端，播放会短暂中断；单纯修改名称或设备身份不会。</p>
             </div>
             <div class="settings-group" data-settings-block="playback-sleep">

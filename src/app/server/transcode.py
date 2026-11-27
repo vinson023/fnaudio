@@ -101,7 +101,7 @@ def transcode_failure(item, config, mode=None):
     """
     if not isinstance(item, dict):
         return None
-    modes = (mode,) if mode else ("mp3", "dsd_wav", "cue_flac", "ape_flac")
+    modes = (mode,) if mode else ("mp3", "dsd_wav", "dsd_pcm", "cue_flac", "ape_flac")
     source_mtime = _transcode_source_mtime(item)
     for candidate in modes:
         try:
@@ -465,6 +465,35 @@ def gain_mode_percent_to_db(percent: int) -> float:
     return 20.0 * math.log10(percent / float(MAX_GAIN_PERCENT))
 
 
+# DSD is a 1-bit 44.1 kHz-family stream: 2.8224 MHz for DSD64. Decimating it to
+# 16x the base clock keeps the full original band (DSD64 -> 176.4 kHz) instead of
+# the 96 kHz the DLNA fallback uses.
+#
+# This exists because MPD's software mixer is a documented no-op on DSD samples
+# (`PcmVolume::Apply`: "case SampleFormat::DSD: // TODO: implement this;
+# currently, it's a no-op"), so an output without a hardware mixer can only be
+# attenuated if the decoder hands MPD PCM in the first place.
+DSD_PCM_RATES = (88200, 176400, 352800)
+DSD_PCM_DEFAULT = 176400
+
+
+def dsd_pcm_rate(item, config=None):
+    """The PCM rate one DSD item is converted to.
+
+    DSD64 -> 176400, DSD128 -> 352800, DSD256+ stays at 352800 because that is
+    the highest rate the USB DACs in this class expose. A caller that knows the
+    DAC's descriptor can pass ``dsd_pcm_rate`` to avoid rate conversion later.
+    """
+    config = config if isinstance(config, dict) else {}
+    override = safe_float(config.get("dsd_pcm_rate"))
+    source = safe_float((item or {}).get("sample_rate"))
+    preferred = override if override > 0 else (source / 16.0 if source > 0 else float(DSD_PCM_DEFAULT))
+    if preferred <= 0:
+        preferred = float(DSD_PCM_DEFAULT)
+    # Snap to the 44.1 kHz family so the decimation stays a whole number.
+    return min(DSD_PCM_RATES, key=lambda rate: (abs(rate - preferred), rate))
+
+
 def transcode_to_audio(item, config, mode="mp3"):
     if mode == "original":
         return item["path"], item["mime"]
@@ -501,6 +530,24 @@ def transcode_to_audio(item, config, mode="mp3"):
         target = os.path.join(cache_dir, stem + ".dsd-96k-24bit.wav")
         mime = "audio/wav"
         command = [ffmpeg, "-threads", "0", "-y", "-i", item["path"], "-vn", "-map", "0:a:0", "-ar", "96000", "-codec:a", "pcm_s24le"]
+    elif mode == "dsd_pcm":
+        # Lossless PCM so the rate in the filename is also the truth on disk:
+        # one cache entry per rate keeps a DAC swap from reusing a rate the new
+        # device cannot take.
+        rate = dsd_pcm_rate(item, config)
+        target = os.path.join(cache_dir, "%s.dsd-%dk-24bit.flac" % (stem, rate // 1000))
+        mime = "audio/flac"
+        command = [ffmpeg, "-threads", "0", "-y"]
+        if item.get("cue_track"):
+            # A CUE row is a slice of a DSD image; converting the whole image
+            # would put the entire album on one queue entry.
+            command += ["-ss", str(max(0, safe_float(item.get("cue_start")))), "-i", item["path"]]
+            duration = safe_float(item.get("duration"))
+            if duration > 0:
+                command += ["-t", str(duration)]
+        else:
+            command += ["-i", item["path"]]
+        command += ["-vn", "-map", "0:a:0", "-ar", str(rate), "-codec:a", "flac"]
     elif mode == "ape_flac":
         target = os.path.join(cache_dir, stem + ".ape-source.flac")
         mime = "audio/flac"
@@ -613,6 +660,9 @@ def transcode_to_audio(item, config, mode="mp3"):
 def transcode_cache_target(item, config, mode="mp3"):
     cache_dir = config.get("cache_dir") or os.path.join(os.path.dirname(item["path"]), ".fnaudio-cache")
     stem = _cache_item_stem(item)
+    if mode == "dsd_pcm":
+        rate = dsd_pcm_rate(item, config)
+        return os.path.join(cache_dir, "%s.dsd-%dk-24bit.flac" % (stem, rate // 1000)), "audio/flac"
     if mode == "dsd_wav":
         return os.path.join(cache_dir, stem + ".dsd-96k-24bit.wav"), "audio/wav"
     if mode == "cue_flac":
