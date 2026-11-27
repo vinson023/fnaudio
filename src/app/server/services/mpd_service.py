@@ -165,6 +165,13 @@ RECLAIMED_INDEX_FILES = ("database", "state", "sticker.sql")
 # Playback Volume, and it is exactly what gives up bit-perfect output.
 SOFTWARE_VOLUME_FALLBACK_MESSAGE = "已启用软件音量：修改的是音频样本，输出不再是 bit-perfect"
 
+# Software volume is applied to samples as they are written, so the ALSA ring is
+# what delays a slider move: MPD's default `buffer_time` is 500 ms, which is
+# audibly "half a beat" behind a drag (reported 2026-11-27). 200 ms keeps a ring
+# that is still generous for the async-USB DACs this app targets, and a DAC that
+# needs more can say so in its profile (`buffer_time_ms`).
+SOFTWARE_VOLUME_BUFFER_MS = 200
+
 # A loopback MPD client can be handed MPD's own listening port as its source
 # port, and that self-connection keeps the port claimed after MPD dies
 # (measured 2026-10-10: the app process held ``127.0.0.1:56660`` and MPD failed
@@ -1167,6 +1174,17 @@ class MpdService:
                 [
                     '    mixer_device "%s"' % _mpd_quote(mixer["device"]),
                     '    mixer_control "%s"' % _mpd_quote(mixer["control"]),
+                ]
+            )
+        if mixer_type == "software":
+            # Only software volume is scaled as samples are written, so only it
+            # is delayed by the ALSA ring. A hardware mixer changes level inside
+            # the DAC and is already immediate, so nothing else gets touched.
+            buffer_ms = _config_int(quirk.get("buffer_time_ms"), SOFTWARE_VOLUME_BUFFER_MS, 40, 2000)
+            output_lines.extend(
+                [
+                    '    buffer_time "%d"' % (buffer_ms * 1000),
+                    '    period_time "%d"' % (max(10, buffer_ms // 4) * 1000),
                 ]
             )
         output_lines.extend(

@@ -25,6 +25,9 @@ function functionSource(name) {
   return match[0];
 }
 
+const volumeState = app.match(/^const remoteVolume = \{[^}]*\};$/m);
+assert.ok(volumeState, "the in-flight volume state must stay a single top-level literal");
+
 function build(options = {}) {
   const calls = [];
   const input = { disabled: false, title: "", value: "0.5" };
@@ -46,19 +49,25 @@ function build(options = {}) {
     nativePlaybackAvailable: () => options.native === true,
     nativePlaybackCall: (name, value) => calls.push(`native:${name}=${value}`),
     remoteControl: (action, position) => { calls.push(`remote:${action}=${position}`); return Promise.resolve(true); },
+    setTimeout: (fn) => { fn(); return 0; },
     Math, Number, Boolean, String, Array, Object,
   };
   vm.createContext(context);
   vm.runInContext([
+    volumeState[0],
     functionSource("activeTargetCapabilities"),
     functionSource("targetVolumeIsFixed"),
+    functionSource("volumePercentOf"),
+    functionSource("flushRemoteVolume"),
+    functionSource("queueRemoteVolume"),
     functionSource("applyVolumeToTarget"),
     functionSource("syncVolumeAvailability"),
-    "globalThis.h = { activeTargetCapabilities, targetVolumeIsFixed, applyVolumeToTarget, syncVolumeAvailability };",
+    "globalThis.h = { activeTargetCapabilities, targetVolumeIsFixed, applyVolumeToTarget, queueRemoteVolume, syncVolumeAvailability };",
   ].join("\n"), context);
   return { ...context.h, state, audio, calls, input, button };
 }
 
+(async () => {
 const TARGETS = [
   { id: "local", kind: "browser", selected: true, capabilities: { seek: true, volume: true } },
   { id: "mpd:dac1", kind: "mpd", capabilities: { seek: true, volume: true } },
@@ -105,9 +114,14 @@ const TARGETS = [
 }
 
 {
+  // R635: writes are coalesced while one is in flight, so the second value lands
+  // after the first answers - but it must still land, and it must be the value
+  // the user stopped on, not the first one.
   const env = build({ playTarget: "mpd:dac1" });
   env.applyVolumeToTarget(1);
   env.applyVolumeToTarget(0);
+  assert.deepEqual(env.calls, ["remote:volume=100"], "only one request may be on the wire");
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(env.calls, ["remote:volume=100", "remote:volume=0"]);
 }
 
@@ -117,6 +131,7 @@ const TARGETS = [
   env.applyVolumeToTarget(4);
   env.applyVolumeToTarget(-2);
   env.applyVolumeToTarget("nonsense");
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(env.calls, ["remote:volume=100", "remote:volume=0"]);
 }
 
@@ -147,10 +162,11 @@ const TARGETS = [
   // the sound; the commit handlers must exist, or a remote drag never lands.
   const input = app.match(/\$\("volume"\)\.oninput = e => \{[\s\S]*?\n\};/);
   assert.ok(input, "the volume input handler must stay extractable");
-  assert.match(input[0], /if \(!isRemoteTarget\(\)\)/, "the local write is gated on the target");
-  // Preview only: the commit lives on release, exactly like the seek rail, so a
-  // drag across a remote target costs one POST instead of one per pixel.
-  assert.doesNotMatch(input[0], /applyVolumeToTarget/, "the drag preview must not commit");
+  assert.match(input[0], /if \(isRemoteTarget\(\)\)[\s\S]*queueRemoteVolume\(/,
+    "a remote drag streams the level instead of only moving the rail");
+  assert.match(input[0], /audio\.volume = value/, "a local target still writes the element");
+  // R635: preview-only was the reported "慢半拍" - three seconds of dragging
+  // produced three seconds of silence and one jump on release.
   assert.match(input[0], /updateVolumeRail\(value\)/, "the rail still follows the finger");
   for (const handler of ["onchange", "onpointerup", "ontouchend"]) {
     assert.match(app, new RegExp(`\\$\\("volume"\\)\\.${handler} = e => applyVolumeToTarget\\(e\\.target\\.value\\)`),
@@ -169,3 +185,4 @@ const TARGETS = [
 }
 
 console.log("Volume target routing regression checks passed.");
+})().catch(error => { console.error(error); process.exitCode = 1; });

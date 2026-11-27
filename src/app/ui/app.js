@@ -12920,17 +12920,52 @@ function targetVolumeIsFixed() {
   const capabilities = activeTargetCapabilities();
   return Boolean(capabilities && capabilities.volume === false);
 }
-function applyVolumeToTarget(fraction) {
+function volumePercentOf(fraction) {
   const value = Math.max(0, Math.min(1, Number(fraction)));
-  if (!Number.isFinite(value)) return;
-  if (!isRemoteTarget()) {
-    audio.volume = value;
-    if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+  return Number.isFinite(value) ? Math.round(value * 100) : null;
+}
+// R635: a remote slider used to be committed only on release, so a drag moved
+// the rail and nothing else (\u201c响应会慢半拍\u201d, reported 2026-11-27). Writes now go
+// out during the drag: one request in flight at a time and the newest value
+// always winning, so a 300 ms drag costs a handful of writes instead of one per
+// pixel and never queues a value the user has already moved past. The backend
+// answers in ~20 ms, which is what makes this feel live rather than lagged.
+const remoteVolume = { inFlight: false, pending: null, loud: false };
+function flushRemoteVolume(loud = false) {
+  remoteVolume.loud = remoteVolume.loud || loud;
+  if (remoteVolume.inFlight || remoteVolume.pending === null) return;
+  const value = remoteVolume.pending;
+  const shout = remoteVolume.loud;
+  remoteVolume.pending = null;
+  remoteVolume.loud = false;
+  remoteVolume.inFlight = true;
+  remoteControl("volume", value, !shout).catch(() => {}).finally(() => {
+    remoteVolume.inFlight = false;
+    // Anything that arrived while the request was on the wire is coalesced into
+    // the single newest value; the ones in between were never audible anyway.
+    if (remoteVolume.pending !== null) setTimeout(flushRemoteVolume, 0);
+  });
+}
+function queueRemoteVolume(percent, loud = false) {
+  if (percent === null) return;
+  if (remoteVolume.pending === percent) {
+    remoteVolume.loud = remoteVolume.loud || loud;
     return;
   }
-  // The command speaks 0-100; the control speaks 0-1.  Fire-and-forget, but a
-  // transport failure must not surface as an unhandled rejection.
-  remoteControl("volume", Math.round(value * 100)).catch(() => {});
+  remoteVolume.pending = percent;
+  flushRemoteVolume(loud);
+}
+function applyVolumeToTarget(fraction) {
+  const percent = volumePercentOf(fraction);
+  if (percent === null) return;
+  if (!isRemoteTarget()) {
+    audio.volume = percent / 100;
+    if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", percent / 100);
+    return;
+  }
+  // The command speaks 0-100; the control speaks 0-1.  A transport failure must
+  // not surface as an unhandled rejection, and only the final commit is loud.
+  queueRemoteVolume(percent, true);
 }
 function syncVolumeAvailability() {
   const input = $("volume");
@@ -12949,12 +12984,14 @@ function syncVolumeAvailability() {
 $("volume").oninput = e => {
   const value = Number(e.target.value);
   updateVolumeRail(value);
-  // A remote target is committed on release: one POST per drag instead of one per
-  // pixel, and the same preview/commit split the seek rail already uses.
-  if (!isRemoteTarget()) {
-    audio.volume = value;
-    if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
+  if (isRemoteTarget()) {
+    // Live during the drag: the rail preview used to be the only thing that
+    // moved, and the level jumped once on release.
+    queueRemoteVolume(volumePercentOf(value));
+    return;
   }
+  audio.volume = value;
+  if (nativePlaybackAvailable()) nativePlaybackCall("setVolume", value);
 };
 $("volume").onchange = e => applyVolumeToTarget(e.target.value);
 $("volume").onpointerup = e => applyVolumeToTarget(e.target.value);
