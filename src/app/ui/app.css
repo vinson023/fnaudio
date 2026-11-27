@@ -1535,6 +1535,13 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
   .progress{box-sizing:border-box!important;width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden!important;padding-left:0!important;padding-right:0!important}
   .progress input{box-sizing:border-box!important;display:block!important;width:100%!important;max-width:100%!important;min-width:0!important}
 }
+/* R636: 拖动时的命中带与时间气泡都在这一行的盒子之外（::before 上扩 8px、
+ * 气泡在轨上方），上面那条 overflow:hidden 会把它们裁掉——裁掉的部分同样
+ * 不参与命中测试，等于命中带没长出来、气泡也看不见。轨道本身是 width:100%
+ * 且 border-box，横向不会溢出，所以这里放开纵向不带来副作用。 */
+@media(max-width:760px){
+  .progress{overflow:visible!important}
+}
 
 /* Mobile navigation owns settings and the transport configuration controls. */
 .mobile-settings-nav-item{display:none!important}
