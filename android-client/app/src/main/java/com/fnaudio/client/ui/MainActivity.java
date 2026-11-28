@@ -15,7 +15,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
-import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
@@ -118,13 +117,6 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
     private static final int MAX_BUNDLED_ASSET_BYTES = 8 * 1024 * 1024;
 
     private WebView webView;
-    /**
-     * Set by the page when the audible output is a remote device. The volume
-     * keys then belong to that device - the phone is not making any sound, so
-     * the system stream they would change is meaningless. Media3 1.10 has no
-     * setPlaybackToRemote, so the keys are taken here instead.
-     */
-    private volatile boolean remoteVolumeKeys;
     private ProgressBar pageProgress;
     private View errorPanel;
     private TextView errorMessage;
@@ -1692,38 +1684,6 @@ public final class MainActivity extends AppCompatActivity implements NativePlayb
             }
             command.run(mediaController);
         });
-    }
-
-    @Override
-    public void setRemoteVolumeKeys(boolean enabled) {
-        remoteVolumeKeys = enabled;
-    }
-
-    /**
-     * Volume keys drive the remote output while the page says so.
-     *
-     * Consuming both down and up is deliberate: letting the up through would
-     * show the system volume panel for a stream that is not playing, right
-     * under the app's own volume feedback. A key repeat arrives as repeated
-     * ACTION_DOWN, and the page coalesces those into one write in flight.
-     */
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (remoteVolumeKeys) {
-            int code = event.getKeyCode();
-            if (code == KeyEvent.KEYCODE_VOLUME_UP || code == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    WebView view = webView;
-                    if (view != null) {
-                        int direction = code == KeyEvent.KEYCODE_VOLUME_UP ? 1 : -1;
-                        view.evaluateJavascript(
-                                "window.fnAudioVolumeKey&&window.fnAudioVolumeKey(" + direction + ")", null);
-                    }
-                }
-                return true;
-            }
-        }
-        return super.dispatchKeyEvent(event);
     }
 
     @Override

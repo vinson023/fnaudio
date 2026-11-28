@@ -57,15 +57,6 @@ public final class NativePlaybackBridge {
 
         default void logout() {
         }
-
-        /**
-         * Whether the phone's hardware volume keys should drive the active
-         * output. The page sets this when the audible target is a remote
-         * device: the phone is silent then, and the stream those keys normally
-         * change has nothing to do with what the user hears.
-         */
-        default void setRemoteVolumeKeys(boolean enabled) {
-        }
     }
 
     public interface HttpRequestHandler {
@@ -106,11 +97,6 @@ public final class NativePlaybackBridge {
     @JavascriptInterface
     public void logout() {
         provider.logout();
-    }
-
-    @JavascriptInterface
-    public void setRemoteVolumeKeys(boolean enabled) {
-        provider.setRemoteVolumeKeys(enabled);
     }
 
     /** Switches the native MediaSession to a metadata/control-only remote player. */

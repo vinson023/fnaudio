@@ -2606,8 +2606,6 @@ function installDialogFocusManagement() {
     }
   });
   observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open"] });
-  document.addEventListener("focusin", () => syncRemoteVolumeKeys());
-  document.addEventListener("focusout", () => setTimeout(syncRemoteVolumeKeys, 0));
 }
 function setNowPlayingCover(source) {
   return setCoverArtwork($("nowCover"), source);
@@ -12990,7 +12988,6 @@ function syncVolumeAvailability() {
     button.setAttribute("aria-label", label);
   }
   input.title = fixed ? "此输出为固定音量，请在功放或音箱上调整" : "";
-  syncRemoteVolumeKeys();
 }
 $("volume").oninput = e => {
   const value = Number(e.target.value);
@@ -13016,57 +13013,6 @@ document.addEventListener("click", () => {
   const panel = $("volumePanel");
   if (panel) panel.hidden = true;
 });
-// R637: 手机音量键 → 远端音量。
-//
-// 音量键改的是手机自己的 STREAM_MUSIC，而远端输出根本不经过手机，所以按键
-// 一直是"数字在动、DAC 不动"。原生侧只负责把键交过来（MainActivity
-// dispatchKeyEvent），这里把它变成和滑块完全相同的一条命令，复用同一个单飞
-// 队列，长按的连发天然合并。
-const VOLUME_KEY_STEP = 5;
-let volumePanelHideTimer = 0;
-function remoteVolumePercent() {
-  const rail = $("volume");
-  const value = rail ? Number(rail.value) : 1;
-  return Number.isFinite(value) ? Math.round(Math.max(0, Math.min(1, value)) * 100) : 100;
-}
-function volumeKeysShouldDriveRemote() {
-  if (!nativePlaybackAvailable() || !isRemoteTarget()) return false;
-  // A dialog owns the screen and a text field owns the keyboard: neither should
-  // lose a volume key to a device that is not visible behind them.
-  if (document.querySelector("dialog[open]")) return false;
-  const active = document.activeElement;
-  if (!active) return true;
-  const tag = String(active.tagName || "").toUpperCase();
-  return !(tag === "INPUT" || tag === "TEXTAREA" || active.isContentEditable === true);
-}
-function syncRemoteVolumeKeys() {
-  if (!nativePlaybackAvailable()) return;
-  const enabled = volumeKeysShouldDriveRemote();
-  if (state.remoteVolumeKeys === enabled) return;
-  state.remoteVolumeKeys = enabled;
-  nativePlaybackCall("setRemoteVolumeKeys", enabled);
-}
-function showVolumePanelBriefly() {
-  const panel = $("volumePanel");
-  if (!panel) return;
-  panel.hidden = false;
-  clearTimeout(volumePanelHideTimer);
-  volumePanelHideTimer = setTimeout(() => {
-    const current = $("volumePanel");
-    if (current) current.hidden = true;
-  }, 1200);
-}
-// Called from the native side; returns the value it applied so the caller can log it.
-globalThis.fnAudioVolumeKey = direction => {
-  const step = direction >= 0 ? VOLUME_KEY_STEP : -VOLUME_KEY_STEP;
-  const next = Math.max(0, Math.min(100, remoteVolumePercent() + step));
-  const rail = $("volume");
-  if (rail) rail.value = String(next / 100);
-  updateVolumeRail(next / 100);
-  queueRemoteVolume(next);
-  showVolumePanelBriefly();
-  return next;
-};
 audio.volume = 1;
 if ($("volume")) $("volume").value = "1";
 // The rail is a gradient, so it starts empty unless the boot value is pushed
@@ -13076,8 +13022,6 @@ updateVolumeRail();
 // Until the first targets payload arrives the capability is unknown, and unknown
 // means "leave the control alone".
 syncVolumeAvailability();
-// R637: the native flag starts false; push the current answer once at boot.
-setTimeout(syncRemoteVolumeKeys, 0);
 // R587: a long listen has to survive a hard kill, not only a clean pause.
 setInterval(() => { if (!audio.paused) reportPlaybackPosition(false); }, 30000);
 audio.onplay = () => {
