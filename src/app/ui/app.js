@@ -12975,6 +12975,26 @@ function applyVolumeToTarget(fraction) {
   // not surface as an unhandled rejection, and only the final commit is loud.
   queueRemoteVolume(percent, true);
 }
+// R640: 移动端终于有一个能用的音量入口，但它只在“这个目标真的能调”时出现。
+//
+// 判据是目标能力（`capabilities.volume`），不是设置里的软件音量开关：那个开关
+// 回答的是“允许不允许改样本”，有硬件音量的 DAC、答 RenderingControl 的接收端
+// 在开关关闭时照样能调，用开关判定会把可用入口一起藏掉。`false` 才是“明确不能
+// 调”，缺失按 R596 的约定当作未知，仍然显示、由服务端拒绝。
+function volumeEntryShouldShow() {
+  if (!isRemoteTarget()) return false;
+  // 没有任何目标行（首帧、旧服务端）时不显示：那不是在“判定一个未知能力”，
+  // 而是还没有可判定的对象。真正“未知”的是 capabilities 里缺少 volume 键。
+  const capabilities = activeTargetCapabilities();
+  if (!capabilities) return false;
+  return capabilities.volume !== false;
+}
+// 转码增益一次改动要重新编码整轨、换 URL 重推，不能跟着拖动手指数十次地写；
+// 这类目标只在松手时提交一次。
+function volumeChangesNeedRelease() {
+  const capabilities = activeTargetCapabilities();
+  return Boolean(capabilities && capabilities.volume_mode === "transcode");
+}
 function syncVolumeAvailability() {
   const input = $("volume");
   if (!input) return;
@@ -12988,13 +13008,17 @@ function syncVolumeAvailability() {
     button.setAttribute("aria-label", label);
   }
   input.title = fixed ? "此输出为固定音量，请在功放或音箱上调整" : "";
+  const panel = $("volumePanel");
+  if (panel && !volumeEntryShouldShow()) panel.hidden = true;
+  if (document.body) document.body.classList.toggle("volume-entry-visible", volumeEntryShouldShow());
 }
 $("volume").oninput = e => {
   const value = Number(e.target.value);
   updateVolumeRail(value);
   if (isRemoteTarget()) {
-    // Live during the drag: the rail preview used to be the only thing that
-    // moved, and the level jumped once on release.
+    // Live during the drag, except where one step means re-encoding the track:
+    // that path is committed once, on release, by applyVolumeToTarget.
+    if (volumeChangesNeedRelease()) return;
     queueRemoteVolume(volumePercentOf(value));
     return;
   }

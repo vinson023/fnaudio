@@ -148,8 +148,15 @@ def build_targets(
         # One predicate for one fact: the transport list lights native DSD only on
         # the same probe record the push gate refuses on.
         target_caps["native_dsd"] = device_supports_native_dsd(device)
-        if transcode_volume and target_caps.get("volume") is not True:
+        # How the level would actually be applied matters to the client: a device
+        # that accepts SetVolume can follow a drag, while a transcode gain has to
+        # re-encode and re-push the whole track, so it must only be written on
+        # release.  Without this distinction the slider would hammer that path.
+        if target_caps.get("volume") is True:
+            target_caps["volume_mode"] = "device"
+        elif transcode_volume:
             target_caps["volume"] = True
+            target_caps["volume_mode"] = "transcode"
         name = _text(device.get("name")) or "DLNA 设备"
         targets.append({
             "id": device_id,

@@ -37,6 +37,8 @@ function build(options = {}) {
     classList: { toggled: [], toggle(name, on) { this.toggled.push(`${name}=${Boolean(on)}`); } },
     setAttribute(name, value) { button.attrs[name] = value; },
   };
+  const panel = { hidden: true };
+  const bodyClasses = new Set();
   const audio = { volume: 1 };
   const state = {
     playTarget: options.playTarget || "local",
@@ -44,7 +46,15 @@ function build(options = {}) {
   };
   const context = {
     state, audio, calls, input, button,
-    $: id => (id === "volume" ? input : id === "volumeBtn" ? button : null),
+    $: id => (id === "volume" ? input : id === "volumeBtn" ? button : id === "volumePanel" ? panel : null),
+    document: {
+      body: {
+        classList: {
+          toggle(name, on) { if (on) bodyClasses.add(name); else bodyClasses.delete(name); },
+          contains(name) { return bodyClasses.has(name); },
+        },
+      },
+    },
     isRemoteTarget: () => Boolean(state.playTarget) && state.playTarget !== "local",
     nativePlaybackAvailable: () => options.native === true,
     nativePlaybackCall: (name, value) => calls.push(`native:${name}=${value}`),
@@ -61,10 +71,12 @@ function build(options = {}) {
     functionSource("flushRemoteVolume"),
     functionSource("queueRemoteVolume"),
     functionSource("applyVolumeToTarget"),
+    functionSource("volumeEntryShouldShow"),
+    functionSource("volumeChangesNeedRelease"),
     functionSource("syncVolumeAvailability"),
-    "globalThis.h = { activeTargetCapabilities, targetVolumeIsFixed, applyVolumeToTarget, queueRemoteVolume, syncVolumeAvailability };",
+    "globalThis.h = { activeTargetCapabilities, targetVolumeIsFixed, applyVolumeToTarget, queueRemoteVolume, volumeEntryShouldShow, volumeChangesNeedRelease, syncVolumeAvailability };",
   ].join("\n"), context);
-  return { ...context.h, state, audio, calls, input, button };
+  return { ...context.h, state, audio, calls, input, button, panel, bodyClasses };
 }
 
 (async () => {
@@ -133,6 +145,55 @@ const TARGETS = [
   env.applyVolumeToTarget("nonsense");
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(env.calls, ["remote:volume=100", "remote:volume=0"]);
+}
+
+// --- R640: 移动端入口的三态（显示 / 显示但禁用 / 隐藏） -----------------------
+
+{
+  // 能调就出现：判据是目标能力，不是设置里的软件音量开关。
+  const env = build({ playTarget: "mpd:dac1", targets: TARGETS });
+  env.syncVolumeAvailability();
+  assert.equal(env.bodyClasses.has("volume-entry-visible"), true);
+  assert.equal(env.input.disabled, false);
+  assert.equal(env.panel.hidden, true, "同步能力不能顺手把浮层打开");
+}
+
+{
+  // 明确不能调 → 整个入口消失，并且把已经打开的浮层收起来。
+  const env = build({ playTarget: "mpd:fixed", targets: TARGETS });
+  env.panel.hidden = false;
+  env.syncVolumeAvailability();
+  assert.equal(env.bodyClasses.has("volume-entry-visible"), false);
+  assert.equal(env.panel.hidden, true, "隐藏在打开浮层之后也要把浮层关掉");
+}
+
+{
+  // 能力缺失（老服务端）按 R596 的约定算“未知”，仍然显示。
+  assert.equal(build({ playTarget: "upnp:r1", targets: TARGETS }).volumeEntryShouldShow(), true);
+  // 本地目标交给系统音量，不在这里再放一个。
+  assert.equal(build({ playTarget: "local", targets: TARGETS }).volumeEntryShouldShow(), false);
+  // 有行但没有 capabilities 块：未知，仍然是显示。
+  assert.equal(build({ playTarget: "x", targets: [{ id: "x", kind: "mpd" }] }).volumeEntryShouldShow(), false,
+    "no capabilities block at all leaves the fact unknown, and an unknown target gets no entry");
+}
+
+{
+  // 转码增益路径一次改动要重编码整轨，只能松手提交。
+  const transcode = build({ playTarget: "upnp:gain", targets: [
+    { id: "upnp:gain", kind: "dlna_push", capabilities: { volume: true, volume_mode: "transcode" } },
+  ] });
+  assert.equal(transcode.volumeChangesNeedRelease(), true);
+  const device = build({ playTarget: "upnp:tv", targets: [
+    { id: "upnp:tv", kind: "dlna_push", capabilities: { volume: true, volume_mode: "device" } },
+  ] });
+  assert.equal(device.volumeChangesNeedRelease(), false);
+  const mixer = build({ playTarget: "mpd:dac1", targets: TARGETS });
+  assert.equal(mixer.volumeChangesNeedRelease(), false);
+  // 拖动路径必须真的检查它，否则这条判定形同虚设。
+  const oninput = app.match(/\$\("volume"\)\.oninput = e => \{[\s\S]*?\n\};/);
+  assert.ok(oninput, "the volume input handler must stay extractable");
+  assert.match(oninput[0], /if \(volumeChangesNeedRelease\(\)\) return;/,
+    "a transcode-gain target must not be written on every drag step");
 }
 
 // --- the disabled state ----------------------------------------------------

@@ -1589,3 +1589,20 @@ dialog{width:min(520px,calc(100vw - 30px));padding:22px;background:var(--ui-surf
 .app-toast.is-error{border-color:var(--ui-danger)!important;color:var(--ui-danger)!important}
 .app-toast.is-success{border-color:var(--ui-success)!important;color:var(--ui-success)!important}
 @media(min-width:761px){.app-toast{bottom:calc(var(--ui-player-height, 88px) + 18px)}}
+
+/* R640: 移动端的音量入口。
+ *
+ * 只在 body.volume-entry-visible（syncVolumeAvailability 按目标能力切换）时出现，
+ * 位置沿用 .player-actions 在手机断点里的右下角，因此不占 transport 行、也不会
+ * 和 R636 的 seek 手势带重叠。浮层改成横向滑块并从播放器上方浮起——原来只有
+ * ≥761px 的竖直方案，手机上直接显示会溢出。
+ */
+@media(max-width:760px){
+  body.volume-entry-visible .player-actions .volume-control{display:inline-grid!important;width:38px!important;height:38px!important;flex-basis:38px!important}
+  body.volume-entry-visible .player-actions .volume-button{width:38px!important;height:38px!important;min-width:38px!important;flex-basis:38px!important;border-radius:10px!important;border:1px solid var(--ui-border)!important;background:var(--ui-surface)!important;color:var(--ui-secondary)!important;display:inline-grid!important;place-items:center!important}
+  body.volume-entry-visible .player-actions .volume-button:active,
+  body.volume-entry-visible .player-actions .volume-button.is-fixed-volume{color:var(--ui-accent)!important;border-color:var(--ui-accent)!important}
+  body.volume-entry-visible .player-actions .volume-panel{position:fixed!important;left:12px!important;right:12px!important;bottom:calc(var(--fn-player-height) + 10px)!important;width:auto!important;height:auto!important;max-width:none!important;padding:10px 16px!important;border:1px solid var(--ui-border)!important;border-radius:14px!important;background:var(--ui-surface)!important;box-shadow:var(--ui-shadow)!important;display:grid!important;place-items:center!important;transform:none!important;z-index:95!important}
+  body.volume-entry-visible .player-actions .volume-panel[hidden]{display:none!important}
+  body.volume-entry-visible .player-actions .volume-panel .volume-slider{width:100%!important;height:36px!important;writing-mode:horizontal-tb!important;direction:ltr!important;-webkit-appearance:none!important;appearance:none!important;accent-color:var(--ui-accent)!important;margin:0!important}
+}

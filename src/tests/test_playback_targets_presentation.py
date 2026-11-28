@@ -88,6 +88,40 @@ class PlaybackTargetsPresentationTests(unittest.TestCase):
         )
         self.assertEqual(len(targets[0]["capabilities"]), 32)
 
+    def test_a_renderer_that_takes_set_volume_says_so(self):
+        # R640: the client needs to know *how* the level would be applied. A
+        # device that accepts SetVolume can follow a drag; a transcode gain has
+        # to re-encode and re-push the track, so it may only be written on
+        # release. Without this distinction the slider hammers that path.
+        targets, _current, _name = build_targets(
+            {"available": True, "output_capabilities": {"devices": []}},
+            {"target_id": "local"},
+            [
+                {"id": "dlna:tv", "name": "TV", "online": True, "capabilities": {"volume": True}},
+                {"id": "dlna:amp", "name": "Amp", "online": True, "capabilities": {"volume": False}},
+            ],
+            {}, {}, {"seek": True},
+            transcode_volume=True,
+        )
+        by_id = {row["id"]: row["capabilities"] for row in targets}
+        self.assertEqual(by_id["dlna:tv"]["volume_mode"], "device")
+        self.assertEqual(by_id["dlna:tv"]["volume"], True)
+        self.assertEqual(by_id["dlna:amp"]["volume_mode"], "transcode")
+        self.assertEqual(by_id["dlna:amp"]["volume"], True,
+                         "the policy allows the gain path, so the control is offered")
+
+    def test_a_renderer_without_either_path_offers_no_volume(self):
+        targets, _current, _name = build_targets(
+            {"available": True, "output_capabilities": {"devices": []}},
+            {"target_id": "local"},
+            [{"id": "dlna:amp", "name": "Amp", "online": True, "capabilities": {"volume": False}}],
+            {}, {}, {"seek": True},
+            transcode_volume=False,
+        )
+        caps = {row["id"]: row["capabilities"] for row in targets}["dlna:amp"]
+        self.assertIs(caps.get("volume"), False)
+        self.assertNotIn("volume_mode", caps)
+
 
 if __name__ == "__main__":
     unittest.main()
